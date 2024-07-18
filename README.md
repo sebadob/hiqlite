@@ -77,7 +77,6 @@ This list is my no means exhaustive, these are just the next big things on my li
 - backups to s3
 - restore from remote backup
 - consistent queries on leader
-- `just` recipes for pipelines and testing
 - metrics / health endpoint or maybe even a simple health UI
 - proper documentation
 - more advanced examples
