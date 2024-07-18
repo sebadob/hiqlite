@@ -210,7 +210,7 @@ impl StateMachineSqlite {
         let is_locked = fs::File::open(path_lock_file).await.is_ok();
 
         if is_locked {
-            #[cfg(feature = "auto-rebuild")]
+            #[cfg(feature = "auto-heal")]
             {
                 warn!(
                     "Lock file already exists: {}\n\
@@ -236,7 +236,7 @@ impl StateMachineSqlite {
                 // }
             }
 
-            #[cfg(not(feature = "auto-rebuild"))]
+            #[cfg(not(feature = "auto-heal"))]
             panic!(
                 "Lock file already exists: {}\n\
                 Node did not shut down gracefully - needs manual interaction",
