@@ -1,5 +1,8 @@
 // Copyright 2024 Sebastian Dobe <sebastiandobe@mailbox.org>
 
+#![doc = include_str!("../README.md")]
+#![forbid(unsafe_code)]
+
 use crate::app_state::AppState;
 use crate::network::raft_server;
 use crate::network::NetworkStreaming;
