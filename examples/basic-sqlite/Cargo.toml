@@ -7,8 +7,9 @@ edition = "2021"
 #name = "basic-sqlite"
 
 [dependencies]
-clap = { version = "4.1.11", features = ["derive", "env"] }
 hiqlite = { path = "../../hiqlite" }
+
+clap = { version = "4.1.11", features = ["derive", "env"] }
 rust-embed = { version = "8.5.0", features = ["compression"] }
 serde = { version = "1.0.203", features = ["derive"] }
 tokio = { version = "1.35.1", features = ["fs", "rt-multi-thread"] }

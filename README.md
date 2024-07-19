@@ -56,6 +56,7 @@ in case of any errors or problems. The whole
 - persistent storage for Raft logs (with `rocksdb`) and SQLite state machine
 - fully authenticated networking
 - self-healing - features `auto-heal` and `auto-heal-logs`
+- automatic database migrations
 - strongly consistent, replicated `execute` queries
     - on a leader node, the client will not even bother with using networking
     - on a non-leader node, it will automatically switch over to a network connection so the request
@@ -73,7 +74,6 @@ in case of any errors or problems. The whole
 
 This list is my no means exhaustive, these are just the next big things on my list
 
-- automatic database migrations
 - TLS
 - backups to s3
 - restore from remote backup

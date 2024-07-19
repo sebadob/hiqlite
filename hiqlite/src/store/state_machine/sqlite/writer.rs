@@ -362,10 +362,14 @@ fn create_snapshot(
 }
 
 fn migrate(conn: &mut rusqlite::Connection, mut migrations: Vec<Migration>) -> Result<(), Error> {
+    info!("Applying database migrations");
+
     create_migrations_table(conn)?;
 
     let mut last_applied = last_applied_migration(conn, &migrations)?;
+    debug!("Last applied migration: {}", last_applied);
     migrations.retain(|m| m.id > last_applied);
+    debug!("Leftover migrations to apply: {:?}", migrations);
 
     for migration in migrations {
         if migration.id != last_applied + 1 {
@@ -423,7 +427,7 @@ fn last_applied_migration(
         .map(|r| r.expect("_migrations table corrupted"))
         .collect();
 
-    let mut last_applied = 1;
+    let mut last_applied = 0;
     for applied in already_applied {
         if last_applied + 1 != applied.id {
             panic!(
@@ -466,6 +470,11 @@ fn last_applied_migration(
 
 #[inline]
 fn apply_migration(txn: rusqlite::Transaction, migration: Migration) -> Result<(), Error> {
+    info!(
+        "Applying database migration {} {}",
+        migration.id, migration.name
+    );
+
     let sql = String::from_utf8_lossy(&migration.content);
     let mut batch = Batch::new(&txn, &sql);
 

@@ -9,7 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(rust_embed::Embed)]
 #[folder = "migrations"]
-struct MigrationScripts;
+struct Migrations;
 
 #[derive(Debug, Clone, Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -134,24 +134,27 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
             log("Waiting for the Cluster to become healthy");
             time::sleep(Duration::from_secs(1)).await;
         }
-        log("Cluster is online and all nodes are active members\n\n");
+        log("Cluster is online and all nodes are active members");
 
-        log("Our test table is automatically created via `./migrations/V1__init.sql`");
-        client
-            .execute(
-                r#"
-        CREATE TABLE IF NOT EXISTS test
-        (
-            id          TEXT    NOT NULL
-                CONSTRAINT test_pk
-                    PRIMARY KEY,
-            num         INTEGER NOT NULL,
-            description TEXT
-        )
-        "#,
-                params!(),
-            )
-            .await?;
+        log("Apply our database migrations");
+        client.migrate::<Migrations>().await?;
+
+        // log("Our test table is automatically created via `./migrations/V1__init.sql`");
+        // client
+        //     .execute(
+        //         r#"
+        // CREATE TABLE IF NOT EXISTS test
+        // (
+        //     id          TEXT    NOT NULL
+        //         CONSTRAINT test_pk
+        //             PRIMARY KEY,
+        //     num         INTEGER NOT NULL,
+        //     description TEXT
+        // )
+        // "#,
+        //         params!(),
+        //     )
+        //     .await?;
 
         log("Make sure table is empty from older example runs");
         client.execute("DELETE FROM test", params!()).await?;
