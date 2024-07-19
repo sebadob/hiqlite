@@ -5,7 +5,7 @@ Hiqlite is an embeddable SQLite database that can form a Raft cluster to provide
 
 ## Project Status
 
-This project is in a very early phase and if have quite a few things on the TODO before I would consider is to be
+This project is in a very early phase and I have quite a few things on the TODO before I would consider it to be
 ready for testing in a real application. Until it hits v0.1.0, I will not not care about any changelog or keeping
 track of changes, because it costs more time and effort than it's worth at this point.
 
@@ -17,7 +17,8 @@ an inconsistent state.
 An integration tests for the currently implemented features does exist.  
 Issues and discussions are not available in this early stage. It would simply not make any sense before v0.1.0.
 I will also push directly to master until it's hitting the first release, which will most probably break the examples
-from time to time. There will be an initial v0.0.1 tag though which put's the repo in a working state.
+from time to time. There is an initial **0.0.1 tag**, just in case I break the examples on `main` before the first
+release.
 
 ## Why
 

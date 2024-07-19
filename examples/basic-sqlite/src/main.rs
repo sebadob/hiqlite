@@ -121,14 +121,14 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
 
     // for simplicity, we will only do the inserts in this example on node 1,
     // the others will go to sleep
-    let is_node_i1 = config.node_id == 1;
+    let is_node_1 = config.node_id == 1;
 
     let client = start_node(config, true).await?;
 
     // give the client some time to initliaze everything
     time::sleep(Duration::from_secs(3)).await;
 
-    if is_node_i1 {
+    if is_node_1 {
         log("Wait until the cluster is fully online");
         while client.is_healthy().await.is_err() {
             log("Waiting for the Cluster to become healthy");
