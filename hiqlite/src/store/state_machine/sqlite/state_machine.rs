@@ -1,3 +1,4 @@
+use crate::migration::Migration;
 use crate::store::state_machine::sqlite::param::Param;
 use crate::store::state_machine::sqlite::snapshot_builder::SQLiteSnapshotBuilder;
 use crate::store::state_machine::sqlite::writer::{
@@ -34,7 +35,7 @@ pub enum QueryWrite {
     Execute(Query),
     Transaction(Vec<Query>),
     Batch(Cow<'static, str>),
-    // Migration(String), // TODO
+    Migration(Vec<Migration>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +50,7 @@ pub enum Response {
     Execute(ResponseExecute),
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
     Batch(ResponseBatch),
+    Migrate(Result<(), Error>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -742,6 +744,28 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
 
                     let result = rx.await.expect("to always get a response from sql writer");
                     Response::Batch(ResponseBatch { result })
+                }
+
+                EntryPayload::Membership(mem) => {
+                    self.data.last_membership = StoredMembership::new(Some(entry.log_id), mem);
+                    Response::Empty
+                }
+
+                EntryPayload::Normal(QueryWrite::Migration(migrations)) => {
+                    let (tx, rx) = oneshot::channel();
+                    let req = WriterRequest::Migrate(writer::Migrate {
+                        migrations,
+                        last_applied_log_id: self.data.last_applied_log_id,
+                        tx,
+                    });
+
+                    self.write_tx
+                        .send_async(req)
+                        .await
+                        .expect("sql writer to always be listening");
+
+                    let result = rx.await.expect("to always get a response from sql writer");
+                    Response::Migrate(result)
                 }
 
                 EntryPayload::Membership(mem) => {

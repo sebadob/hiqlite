@@ -153,6 +153,7 @@ impl DbClient {
                 Response::Execute(res) => res.result,
                 Response::Transaction(_) => unreachable!(),
                 Response::Batch(_) => unreachable!(),
+                Response::Migrate(_) => unreachable!(),
                 Response::Empty => unreachable!(),
             }
         } else {
@@ -230,6 +231,7 @@ impl DbClient {
                 Response::Execute(_) => unreachable!(),
                 Response::Transaction(res) => res,
                 Response::Batch(_) => unreachable!(),
+                Response::Migrate(_) => unreachable!(),
                 Response::Empty => unreachable!(),
             }
         } else {
@@ -284,6 +286,7 @@ impl DbClient {
                 Response::Execute(_) => unreachable!(),
                 Response::Transaction(_) => unreachable!(),
                 Response::Batch(res) => Ok(res.result),
+                Response::Migrate(_) => unreachable!(),
                 Response::Empty => unreachable!(),
             }
         } else {

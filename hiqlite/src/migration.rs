@@ -1,4 +1,5 @@
 use rust_embed::RustEmbed;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 pub struct Migrations;
@@ -59,7 +60,7 @@ impl Migrations {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Migration {
     pub id: u32,
     pub name: String,

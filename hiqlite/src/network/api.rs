@@ -342,8 +342,9 @@ async fn handle_socket_concurrent(
                             let resp: crate::Response = resp.data;
                             let res = match resp {
                                 crate::Response::Execute(res) => res.result,
-                                crate::Response::Transaction(_res) => todo!(),
-                                crate::Response::Batch(_res) => todo!(),
+                                crate::Response::Transaction(_res) => unreachable!(),
+                                crate::Response::Batch(_res) => unreachable!(),
+                                crate::Response::Migrate(_) => unreachable!(),
                                 crate::Response::Empty => unreachable!(),
                             };
                             ApiStreamResponse {
@@ -370,6 +371,7 @@ async fn handle_socket_concurrent(
                                 crate::Response::Execute(_) => unreachable!(),
                                 crate::Response::Transaction(res) => res,
                                 crate::Response::Batch(_res) => unreachable!(),
+                                crate::Response::Migrate(_) => unreachable!(),
                                 crate::Response::Empty => unreachable!(),
                             };
                             ApiStreamResponse {
@@ -392,6 +394,7 @@ async fn handle_socket_concurrent(
                                 crate::Response::Execute(_) => unreachable!(),
                                 crate::Response::Transaction(_) => unreachable!(),
                                 crate::Response::Batch(res) => res,
+                                crate::Response::Migrate(_) => unreachable!(),
                                 crate::Response::Empty => unreachable!(),
                             };
                             ApiStreamResponse {
