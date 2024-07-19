@@ -696,7 +696,6 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                         .expect("to always get a response from sql writer")
                         .map_err(Error::from);
                     Response::Execute(ResponseExecute { result })
-                    // }
                 }
 
                 EntryPayload::Normal(QueryWrite::Transaction(queries)) => {

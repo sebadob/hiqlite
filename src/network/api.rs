@@ -180,122 +180,21 @@ pub(crate) struct ApiStreamRequest {
 pub(crate) enum ApiStreamRequestPayload {
     Execute(Query),
     Transaction(Vec<Query>),
-    // Query,
+    Batch(Cow<'static, str>), // Query,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ApiStreamResponse {
     pub(crate) request_id: usize,
     pub(crate) result: Result<ApiStreamResponsePayload, Error>,
-    // payload: ApiStreamResponsePayload,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum ApiStreamResponsePayload {
     Execute(Result<usize, Error>),
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
-    // Query,
+    Batch(Vec<Result<usize, Error>>),
 }
-
-// async fn handle_socket_sequential(
-//     state: AppStateExt,
-//     socket: upgrade::UpgradeFut,
-// ) -> Result<(), fastwebsockets::WebSocketError> {
-//     let mut ws = fastwebsockets::FragmentCollector::new(socket.await?);
-//
-//     let client_id = match HandshakeSecret::server(&mut ws, &state.secret_api).await {
-//         Ok(id) => id,
-//         Err(err) => {
-//             error!("Error during WebSocket handshake: {}", err);
-//             ws.write_frame(Frame::close(1000, b"Invalid Handshake"))
-//                 .await?;
-//             return Ok(());
-//         }
-//     };
-//
-//     // make sure to NEVER loose the result of an execute from remote!
-//     // if we received one which is being executed and the TCP stream dies in between, we MUST ENSURE
-//     // that in case it was an Ok(_), the result gets to the client! Otherwise with retry logic we might
-//     // end up modifying something twice!
-//     let (buf_tx, buf_rx) = state
-//         .client_buffers
-//         .get(&client_id)
-//         .expect("Client ID to always be in client_buffers");
-//
-//     while let Ok(payload) = buf_rx.try_recv() {
-//         let frame = Frame::binary(Payload::Borrowed(&payload));
-//         if let Err(err) = ws.write_frame(frame).await {
-//             // if we error again, put the payload back into the buffer and exit
-//             let _ = buf_tx.send_async(payload).await;
-//             error!("Error during WebSocket handshake: {}", err);
-//             return Ok(());
-//         }
-//     }
-//
-//     // TODO this is working, but now split the channels and make it concurrent ...
-//
-//     while let Ok(frame) = ws.read_frame().await {
-//         let req = match frame.opcode {
-//             OpCode::Close => break,
-//             OpCode::Binary => {
-//                 let bytes = frame.payload.to_vec();
-//                 let req = match bincode::deserialize::<ApiStreamRequest>(&bytes) {
-//                     Ok(req) => req,
-//                     Err(err) => {
-//                         error!("Error deserializing ApiStreamRequest: {:?}", err);
-//                         ws.write_frame(Frame::close(1000, b"Error deserializing ApiStreamRequest"))
-//                             .await?;
-//                         break;
-//                     }
-//                 };
-//                 req
-//             }
-//             _ => {
-//                 ws.write_frame(Frame::close(1000, b"Invalid Request"))
-//                     .await?;
-//                 break;
-//             }
-//         };
-//
-//         let res = match req.payload {
-//             ApiStreamRequestPayload::Execute(sql) => {
-//                 match state.raft.client_write(Query::Execute(sql)).await {
-//                     Ok(resp) => {
-//                         let resp: crate::Response = resp.data;
-//                         let res = match resp {
-//                             crate::Response::Empty => unreachable!(),
-//                             crate::Response::Execute(res) => res.result,
-//                         };
-//                         ApiStreamResponse {
-//                             request_id: req.request_id,
-//                             result: Ok(ApiStreamResponsePayload::Execute(res)),
-//                         }
-//                     }
-//                     Err(err) => ApiStreamResponse {
-//                         request_id: req.request_id,
-//                         result: Ok(ApiStreamResponsePayload::Execute(Err(ApiError::from(err)))),
-//                     },
-//                 }
-//             }
-//         };
-//
-//         let payload = bincode::serialize(&res).unwrap();
-//         let frame = Frame::binary(Payload::from(payload));
-//         if let Err(err) = ws.write_frame(frame).await {
-//             error!("Error during WebSocket handshake: {}", err);
-//             // if we have a WebSocket error, save all open requests into the client_buffer
-//             let payload = bincode::serialize(&res).unwrap();
-//             buf_tx
-//                 .send_async(payload)
-//                 .await
-//                 .expect("client_buffer to always be working");
-//
-//             break;
-//         }
-//     }
-//
-//     Ok(())
-// }
 
 #[derive(Debug)]
 enum WsWriteMsg {
@@ -476,6 +375,28 @@ async fn handle_socket_concurrent(
                             ApiStreamResponse {
                                 request_id: req.request_id,
                                 result: Ok(ApiStreamResponsePayload::Transaction(res)),
+                            }
+                        }
+                        Err(err) => ApiStreamResponse {
+                            request_id: req.request_id,
+                            result: Ok(ApiStreamResponsePayload::Execute(Err(Error::from(err)))),
+                        },
+                    }
+                }
+
+                ApiStreamRequestPayload::Batch(sql) => {
+                    match state.raft.client_write(QueryWrite::Batch(sql)).await {
+                        Ok(resp) => {
+                            let resp: crate::Response = resp.data;
+                            let res = match resp {
+                                crate::Response::Execute(_) => unreachable!(),
+                                crate::Response::Transaction(_) => unreachable!(),
+                                crate::Response::Batch(res) => res,
+                                crate::Response::Empty => unreachable!(),
+                            };
+                            ApiStreamResponse {
+                                request_id: req.request_id,
+                                result: Ok(ApiStreamResponsePayload::Batch(res.result)),
                             }
                         }
                         Err(err) => ApiStreamResponse {

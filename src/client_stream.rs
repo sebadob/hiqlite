@@ -11,6 +11,7 @@ use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocket, W
 use http_body_util::Empty;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::future::Future;
 use std::ops::Deref;
@@ -28,6 +29,7 @@ use tracing::{debug, error, info, warn};
 pub enum ClientStreamReq {
     Execute(ClientExecutePayload),
     Transaction(ClientTransactionPayload),
+    Batch(ClientBatchPayload),
     LeaderChange((Option<u64>, Option<Node>)),
     StreamResponse(ApiStreamResponse),
     CleanupBuffer,
@@ -44,6 +46,13 @@ pub struct ClientExecutePayload {
 pub struct ClientTransactionPayload {
     pub request_id: usize,
     pub queries: Vec<Query>,
+    pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
+}
+
+#[derive(Debug)]
+pub struct ClientBatchPayload {
+    pub request_id: usize,
+    pub sql: Cow<'static, str>,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
@@ -180,6 +189,29 @@ async fn client_stream(
                     }
                 }
 
+                ClientStreamReq::Batch(batch) => {
+                    let req = ApiStreamRequest {
+                        request_id: batch.request_id,
+                        payload: ApiStreamRequestPayload::Batch(batch.sql),
+                    };
+
+                    match tx_write
+                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
+                        .await
+                    {
+                        Ok(_) => {
+                            in_flight.insert(req.request_id, batch.ack);
+                        }
+                        Err(err) => {
+                            error!("Error sending txn request to writer: {}", err);
+                            let _ = batch
+                                .ack
+                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
+                            break;
+                        }
+                    }
+                }
+
                 ClientStreamReq::LeaderChange((node_id, node)) => {
                     // ignore result just in case the writer has already exited anyway
                     let _ = tx_write.send_async(WritePayload::Close).await;
@@ -230,6 +262,9 @@ async fn client_stream(
                     unreachable!(
                         "we should never receive ClientStreamReq::Transaction from WS reader"
                     )
+                }
+                ClientStreamReq::Batch(_) => {
+                    unreachable!("we should never receive ClientStreamReq::Batch from WS reader")
                 }
                 ClientStreamReq::LeaderChange((node_id, node)) => {
                     update_leader(&leader, node_id, node).await;
