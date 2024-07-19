@@ -1,4 +1,5 @@
 use crate::app_state::AppState;
+use crate::migration::Migration;
 use crate::network::handshake::HandshakeSecret;
 use crate::network::{fmt_ok, get_payload, validate_secret, AppStateExt, Error};
 use crate::store::state_machine::sqlite::state_machine::{Params, Query, QueryWrite};
@@ -180,7 +181,8 @@ pub(crate) struct ApiStreamRequest {
 pub(crate) enum ApiStreamRequestPayload {
     Execute(Query),
     Transaction(Vec<Query>),
-    Batch(Cow<'static, str>), // Query,
+    Batch(Cow<'static, str>),
+    Migrate(Vec<Migration>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -194,6 +196,7 @@ pub(crate) enum ApiStreamResponsePayload {
     Execute(Result<usize, Error>),
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
     Batch(Vec<Result<usize, Error>>),
+    Migrate(Result<(), Error>),
 }
 
 #[derive(Debug)]
@@ -342,10 +345,7 @@ async fn handle_socket_concurrent(
                             let resp: crate::Response = resp.data;
                             let res = match resp {
                                 crate::Response::Execute(res) => res.result,
-                                crate::Response::Transaction(_res) => unreachable!(),
-                                crate::Response::Batch(_res) => unreachable!(),
-                                crate::Response::Migrate(_) => unreachable!(),
-                                crate::Response::Empty => unreachable!(),
+                                _ => unreachable!(),
                             };
                             ApiStreamResponse {
                                 request_id: req.request_id,
@@ -368,11 +368,8 @@ async fn handle_socket_concurrent(
                         Ok(resp) => {
                             let resp: crate::Response = resp.data;
                             let res = match resp {
-                                crate::Response::Execute(_) => unreachable!(),
                                 crate::Response::Transaction(res) => res,
-                                crate::Response::Batch(_res) => unreachable!(),
-                                crate::Response::Migrate(_) => unreachable!(),
-                                crate::Response::Empty => unreachable!(),
+                                _ => unreachable!(),
                             };
                             ApiStreamResponse {
                                 request_id: req.request_id,
@@ -391,15 +388,36 @@ async fn handle_socket_concurrent(
                         Ok(resp) => {
                             let resp: crate::Response = resp.data;
                             let res = match resp {
-                                crate::Response::Execute(_) => unreachable!(),
-                                crate::Response::Transaction(_) => unreachable!(),
                                 crate::Response::Batch(res) => res,
-                                crate::Response::Migrate(_) => unreachable!(),
-                                crate::Response::Empty => unreachable!(),
+                                _ => unreachable!(),
                             };
                             ApiStreamResponse {
                                 request_id: req.request_id,
                                 result: Ok(ApiStreamResponsePayload::Batch(res.result)),
+                            }
+                        }
+                        Err(err) => ApiStreamResponse {
+                            request_id: req.request_id,
+                            result: Ok(ApiStreamResponsePayload::Execute(Err(Error::from(err)))),
+                        },
+                    }
+                }
+
+                ApiStreamRequestPayload::Migrate(migrations) => {
+                    match state
+                        .raft
+                        .client_write(QueryWrite::Migration(migrations))
+                        .await
+                    {
+                        Ok(resp) => {
+                            let resp: crate::Response = resp.data;
+                            let res = match resp {
+                                crate::Response::Migrate(res) => res,
+                                _ => unreachable!(),
+                            };
+                            ApiStreamResponse {
+                                request_id: req.request_id,
+                                result: Ok(ApiStreamResponsePayload::Migrate(res)),
                             }
                         }
                         Err(err) => ApiStreamResponse {

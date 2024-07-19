@@ -171,8 +171,7 @@ impl DbClient {
                 .expect("To always receive an answer from Client Stream Manager")?;
             match res {
                 ApiStreamResponsePayload::Execute(res) => res,
-                ApiStreamResponsePayload::Transaction(_) => unreachable!(),
-                ApiStreamResponsePayload::Batch(_) => unreachable!(),
+                _ => unreachable!(),
             }
         }
     }
@@ -249,8 +248,7 @@ impl DbClient {
                 .expect("To always receive an answer from Client Stream Manager")?;
             match res {
                 ApiStreamResponsePayload::Transaction(res) => res,
-                ApiStreamResponsePayload::Execute(_) => unreachable!(),
-                ApiStreamResponsePayload::Batch(_) => unreachable!(),
+                _ => unreachable!(),
             }
         }
     }
@@ -303,9 +301,8 @@ impl DbClient {
                 .await
                 .expect("To always receive an answer from Client Stream Manager")?;
             match res {
-                ApiStreamResponsePayload::Transaction(_) => unreachable!(),
-                ApiStreamResponsePayload::Execute(_) => unreachable!(),
                 ApiStreamResponsePayload::Batch(res) => Ok(res),
+                _ => unreachable!(),
             }
         }
     }
