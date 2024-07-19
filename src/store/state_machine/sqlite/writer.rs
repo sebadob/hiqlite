@@ -6,7 +6,7 @@ use crate::{Error, Node, NodeId};
 use chrono::Utc;
 use openraft::{LogId, SnapshotMeta, StorageError, StorageIOError, StoredMembership};
 use rusqlite::backup::Progress;
-use rusqlite::{DatabaseName, Transaction};
+use rusqlite::{Batch, DatabaseName, Transaction};
 use std::borrow::Cow;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,9 +28,7 @@ pub enum WriterRequest {
 pub enum Query {
     Execute(SqlExecute),
     Transaction(SqlTransaction),
-    Batch(SqlExecute),
-    // Query(SqlQuery), // QueryOne()
-    // QueryOptional()
+    Batch(SqlBatch),
 }
 
 #[derive(Debug)]
@@ -48,18 +46,12 @@ pub struct SqlTransaction {
     pub tx: oneshot::Sender<Result<Vec<Result<usize, Error>>, Error>>,
 }
 
-// #[derive(Debug)]
-// pub struct SqlQuery {
-//     pub sql: Cow<'static, str>,
-//     pub params: Params,
-//     pub last_applied_log_id: Option<LogId<NodeId>>,
-//     pub tx: oneshot::Sender<Result<usize, SqlError>>,
-// }
-
-// #[derive(Debug)]
-// pub struct QueryResponse {
-//     pub result: Option<Result<usize, SqlError>>,
-// }
+#[derive(Debug)]
+pub struct SqlBatch {
+    pub sql: Cow<'static, str>,
+    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub tx: oneshot::Sender<Vec<Result<usize, Error>>>,
+}
 
 #[derive(Debug)]
 pub struct SnapshotRequest {
@@ -89,26 +81,11 @@ pub fn spawn_writer(
     let (tx, rx) = flume::bounded::<WriterRequest>(2);
 
     let _handle = thread::spawn(move || {
-        // let mut conn = crate::store::connect_sqlite(&path_db, &filename_db, in_memory, false)
-        //     .expect("Successful DB connection");
-        // let mut conn = StateMachineStore::connect(&path_db, &filename_db, in_memory, false)
-        //     .expect("Successful DB connection");
         let mut last_applied_log_id: Option<LogId<NodeId>> = None;
 
-        // conn.execute(
-        //     r#"CREATE TABLE IF NOT EXISTS _metadata
-        // (
-        //     snapshot_id BLOB    NOT NULL
-        //         CONSTRAINT _metadata_pk
-        //             PRIMARY KEY,
-        //     timestamp   INTEGER NOT NULL,
-        //     metadata    BLOB    NOT NULL
-        // )"#,
-        //     (),
-        // )
-        // // TODO handle error
-        // .unwrap();
+        // TODO before doing anything else, apply migrations
 
+        // we want to handle our metadata manually to not interfere with migrations in apps later on
         conn.execute(
             r#"CREATE TABLE IF NOT EXISTS _metadata
         (
@@ -119,19 +96,7 @@ pub fn spawn_writer(
         )"#,
             (),
         )
-        // TODO handle error
-        .unwrap();
-
-        // conn.execute(
-        //     r#"CREATE TABLE IF NOT EXISTS _log_id
-        // (
-        //     id BLOB NOT NULL
-        //         CONSTRAINT _log_id_pk
-        //             PRIMARY KEY
-        // )"#,
-        //     (),
-        // )
-        // .unwrap();
+        .expect("_metadata table creation to always succeed");
 
         loop {
             let req = match rx.recv() {
@@ -147,45 +112,6 @@ pub fn spawn_writer(
             debug!("Query in Write handler: {:?}", req);
 
             match req {
-                // WriterRequest::Query(query) => match query {
-                //     Query::Execute(q) => {
-                //         let mut stmt = match conn.prepare_cached(q.sql.as_ref()) {
-                //             Ok(stmt) => stmt,
-                //             Err(err) => {
-                //                 error!("Preparing cached query {}: {:?}", q.sql, err);
-                //                 q.tx.send(Err(SqlError::ExecuteReturnedResults))
-                //                     .expect("oneshot tx to never be dropped");
-                //                 continue;
-                //             }
-                //         };
-                //
-                //         // let params_len = q.params.len();
-                //         let mut params_err = None;
-                //         let mut idx = 1;
-                //         for param in q.params {
-                //             if let Err(err) = stmt.raw_bind_parameter(idx, param.into_sql()) {
-                //                 error!(
-                //                     "Error binding param on position {} to query {}: {:?}",
-                //                     idx, q.sql, err
-                //                 );
-                //                 params_err = Some(SqlError::InvalidQuery);
-                //                 break;
-                //             }
-                //
-                //             idx += 1;
-                //         }
-                //
-                //         if let Some(err) = params_err {
-                //             q.tx.send(Err(err)).expect("oneshot tx to never be dropped");
-                //             continue;
-                //         }
-                //
-                //         let res = stmt.raw_execute();
-                //
-                //         last_applied_log_id = q.last_applied_log_id;
-                //         q.tx.send(res).expect("oneshot tx to never be dropped");
-                //     }
-                // },
                 WriterRequest::Query(query) => match query {
                     Query::Execute(q) => {
                         let res = {
@@ -285,8 +211,24 @@ pub fn spawn_writer(
                         }
                     }
 
-                    Query::Batch(_) => {
-                        todo!();
+                    Query::Batch(req) => {
+                        let mut batch = Batch::new(&conn, req.sql.as_ref());
+                        let mut res = Vec::new();
+
+                        loop {
+                            match batch.next() {
+                                Ok(Some(mut stmt)) => {
+                                    res.push(stmt.execute().map_err(Error::from));
+                                }
+                                Ok(None) => break,
+                                Err(err) => {
+                                    res.push(Err(Error::from(err)));
+                                }
+                            }
+                        }
+
+                        last_applied_log_id = req.last_applied_log_id;
+                        req.tx.send(res).expect("oneshot tx to never be dropped");
                     }
                 },
 
