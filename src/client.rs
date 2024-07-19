@@ -169,6 +169,7 @@ impl DbClient {
             match res {
                 ApiStreamResponsePayload::Execute(res) => res,
                 ApiStreamResponsePayload::Transaction(_) => unreachable!(),
+                ApiStreamResponsePayload::Batch(_) => unreachable!(),
             }
         }
     }
@@ -245,6 +246,7 @@ impl DbClient {
             match res {
                 ApiStreamResponsePayload::Transaction(res) => res,
                 ApiStreamResponsePayload::Execute(_) => unreachable!(),
+                ApiStreamResponsePayload::Batch(_) => unreachable!(),
             }
         }
     }

@@ -218,7 +218,7 @@ pub fn spawn_writer(
                         loop {
                             match batch.next() {
                                 Ok(Some(mut stmt)) => {
-                                    res.push(stmt.execute().map_err(Error::from));
+                                    res.push(stmt.execute([]).map_err(Error::from));
                                 }
                                 Ok(None) => break,
                                 Err(err) => {
