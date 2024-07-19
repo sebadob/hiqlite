@@ -33,6 +33,10 @@ async fn test_cluster() -> Result<(), Error> {
     test_transactions(&client_1, &client_2, &client_3).await?;
     log("Transaction tests are fine");
 
+    log("Starting batch tests");
+    test_batch(&client_1, &client_2, &client_3).await?;
+    log("Batch tests are fine");
+
     // TODO impl + test
     // - migrations
     // - batch / simple queries
@@ -386,6 +390,73 @@ async fn test_transactions(
     assert_eq!(data[2].id, 13);
     assert_eq!(data[2].ts, now);
     assert_eq!(data[2].description, "Transaction Data id 13");
+
+    Ok(())
+}
+
+async fn test_batch(
+    client_1: &DbClient,
+    client_2: &DbClient,
+    client_3: &DbClient,
+) -> Result<(), Error> {
+    // we re-use the test table from the simple insert / query tests here
+    log("Inserting rows with batching");
+
+    let now = Utc::now().timestamp();
+    let mut results = client_1
+        .batch(format!(
+            r#"
+        INSERT INTO test VALUES
+            (21, {now}, "Batch Data 1"),
+            (22, {now}, "Batch Data 2"),
+            (23, {now}, "Batch Data 3");
+
+       INSERT INTO test VALUES (21, {now}, "This should error - unique key constraint");
+        "#
+        ))
+        .await?;
+
+    let rows_affected = results.remove(0)?;
+    assert_eq!(rows_affected, 3);
+
+    let should_be_err = results.remove(0);
+    assert!(should_be_err.is_err());
+
+    log("Make sure the other clients see the batch insertions");
+
+    let data: Vec<TestData> = client_2
+        .query_map("SELECT * FROM test WHERE id > $1", params!(20))
+        .await?;
+    assert_eq!(data.len(), 3);
+
+    assert_eq!(data[0].id, 21);
+    assert_eq!(data[0].ts, now);
+    assert_eq!(data[0].description, "Batch Data 1");
+
+    assert_eq!(data[1].id, 22);
+    assert_eq!(data[1].ts, now);
+    assert_eq!(data[1].description, "Batch Data 2");
+
+    assert_eq!(data[2].id, 23);
+    assert_eq!(data[2].ts, now);
+    assert_eq!(data[2].description, "Batch Data 3");
+
+    let data: Vec<TestData> = client_3
+        .query_as("SELECT * FROM test WHERE id > $1", params!(20))
+        .await?;
+    assert_eq!(data.len(), 3);
+
+    assert_eq!(data[0].id, 21);
+    assert_eq!(data[0].ts, now);
+    assert_eq!(data[0].description, "Batch Data 1");
+
+    assert_eq!(data[1].id, 22);
+    assert_eq!(data[1].ts, now);
+    assert_eq!(data[1].description, "Batch Data 2");
+
+    assert_eq!(data[2].id, 23);
+    assert_eq!(data[2].ts, now);
+    assert_eq!(data[2].description, "Batch Data 3");
 
     Ok(())
 }
