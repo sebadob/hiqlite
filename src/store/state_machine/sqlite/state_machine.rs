@@ -392,7 +392,7 @@ impl StateMachineSqlite {
         conn.pragma_update(None, "journal_size_limit", 16384)?;
         conn.pragma_update(None, "wal_autocheckpoint", 4_000)?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "busy_timeout", "100")?;
+        // conn.pragma_update(None, "busy_timeout", "5000")?;
         conn.pragma_update(None, "temp_store", "memory")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;

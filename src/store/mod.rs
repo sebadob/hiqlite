@@ -137,7 +137,7 @@ fn apply_pragmas(conn: &rusqlite::Connection, read_only: bool) -> Result<(), rus
     // conn.pragma_update(None, "wal_autocheckpoint", 100_000)?;
     conn.pragma_update(None, "wal_autocheckpoint", 10_000)?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.pragma_update(None, "busy_timeout", "100")?;
+    // conn.pragma_update(None, "busy_timeout", "5000")?;
     conn.pragma_update(None, "temp_store", "memory")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
