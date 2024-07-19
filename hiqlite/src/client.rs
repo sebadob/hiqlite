@@ -1,8 +1,9 @@
 use crate::app_state::AppState;
 use crate::client_stream::{
-    ClientBatchPayload, ClientExecutePayload, ClientStreamReq, ClientTransactionPayload,
+    ClientBatchPayload, ClientExecutePayload, ClientMigratePayload, ClientStreamReq,
+    ClientTransactionPayload,
 };
-use crate::migration::Migrations;
+use crate::migration::{Migration, Migrations};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::network::management::LearnerReq;
 use crate::network::{api, RaftWriteResponse, HEADER_NAME_SECRET};
@@ -151,10 +152,7 @@ impl DbClient {
             let resp: Response = res.data;
             match resp {
                 Response::Execute(res) => res.result,
-                Response::Transaction(_) => unreachable!(),
-                Response::Batch(_) => unreachable!(),
-                Response::Migrate(_) => unreachable!(),
-                Response::Empty => unreachable!(),
+                _ => unreachable!(),
             }
         } else {
             let (ack, rx) = oneshot::channel();
@@ -227,11 +225,8 @@ impl DbClient {
                 .await?;
             let resp: Response = res.data;
             match resp {
-                Response::Execute(_) => unreachable!(),
                 Response::Transaction(res) => res,
-                Response::Batch(_) => unreachable!(),
-                Response::Migrate(_) => unreachable!(),
-                Response::Empty => unreachable!(),
+                _ => unreachable!(),
             }
         } else {
             let (ack, rx) = oneshot::channel();
@@ -272,7 +267,6 @@ impl DbClient {
         }
     }
 
-    #[inline(always)]
     async fn batch_execute(
         &self,
         sql: Cow<'static, str>,
@@ -281,11 +275,8 @@ impl DbClient {
             let res = state.raft.client_write(QueryWrite::Batch(sql)).await?;
             let resp: Response = res.data;
             match resp {
-                Response::Execute(_) => unreachable!(),
-                Response::Transaction(_) => unreachable!(),
                 Response::Batch(res) => Ok(res.result),
-                Response::Migrate(_) => unreachable!(),
-                Response::Empty => unreachable!(),
+                _ => unreachable!(),
             }
         } else {
             let (ack, rx) = oneshot::channel();
@@ -307,9 +298,51 @@ impl DbClient {
         }
     }
 
-    pub async fn migrate<T: RustEmbed>() -> Result<(), Error> {
-        let _migrations = Migrations::build::<T>();
-        todo!()
+    #[cold]
+    pub async fn migrate<T: RustEmbed>(&self) -> Result<(), Error> {
+        match self.migrate_execute(Migrations::build::<T>()).await {
+            Ok(res) => Ok(res),
+            Err(err) => {
+                if self.was_leader_update_error(&err).await {
+                    // try once again after a leader switch
+                    self.migrate_execute(Migrations::build::<T>()).await
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
+    #[cold]
+    async fn migrate_execute(&self, migrations: Vec<Migration>) -> Result<(), Error> {
+        if let Some(state) = self.is_this_local_leader().await {
+            let res = state
+                .raft
+                .client_write(QueryWrite::Migration(migrations))
+                .await?;
+            let resp: Response = res.data;
+            match resp {
+                Response::Migrate(res) => res,
+                _ => unreachable!(),
+            }
+        } else {
+            let (ack, rx) = oneshot::channel();
+            self.tx_client
+                .send_async(ClientStreamReq::Migrate(ClientMigratePayload {
+                    request_id: self.new_request_id(),
+                    migrations,
+                    ack,
+                }))
+                .await
+                .expect("Client Stream Manager to always be running");
+            let res = rx
+                .await
+                .expect("To always receive an answer from Client Stream Manager")?;
+            match res {
+                ApiStreamResponsePayload::Migrate(res) => res,
+                _ => unreachable!(),
+            }
+        }
     }
 
     /// This is the most efficient and fastest way to query data from sqlite into a struct.
