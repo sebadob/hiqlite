@@ -9,13 +9,13 @@ default:
 
 # prints out the currently set version
 version:
-    #!/usr/bin/env bash
+    #!/usr/hiqlite_server/env bash
     echo "v$TAG"
 
 
 # clippy lint + check with minimal versions from nightly
 check:
-    #!/usr/bin/env bash
+    #!/usr/hiqlite_server/env bash
     set -euxo pipefail
     clear
     cargo update
@@ -25,7 +25,7 @@ check:
 
 # runs the full set of tests
 test:
-    #!/usr/bin/env bash
+    #!/usr/hiqlite_server/env bash
     set -euxo pipefail
     clear
     cargo test
@@ -33,14 +33,14 @@ test:
 
 # builds the code
 build:
-    #!/usr/bin/env bash
+    #!/usr/hiqlite_server/env bash
     set -euxo pipefail
     cargo build
 
 
 # builds the code in --release mode
 build-release:
-    #!/usr/bin/env bash
+    #!/usr/hiqlite_server/env bash
     set -euxo pipefail
     cargo build --release
 
@@ -61,7 +61,7 @@ verify: check test build msrv-verify
 
 # makes sure everything is fine
 verfiy-is-clean: verify
-    #!/usr/bin/env bash
+    #!/usr/hiqlite_server/env bash
     set -euxo pipefail
 
     # make sure everything has been committed
@@ -72,7 +72,7 @@ verfiy-is-clean: verify
 
 # sets a new git tag and pushes it
 release: verfiy-is-clean
-    #!/usr/bin/env bash
+    #!/usr/hiqlite_server/env bash
     set -euxo pipefail
 
     # make sure git is clean
@@ -84,13 +84,13 @@ release: verfiy-is-clean
 
 # dry-run publishing the latest version
 publish-dry: verfiy-is-clean
-    #!/usr/bin/env bash
+    #!/usr/hiqlite_server/env bash
     set -euxo pipefail
     cargo publish --dry-run
 
 
 # publishes the current version to cargo.io
 publish: verfiy-is-clean
-    #!/usr/bin/env bash
+    #!/usr/hiqlite_server/env bash
     set -euxo pipefail
     cargo publish

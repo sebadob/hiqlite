@@ -3,9 +3,13 @@ name = "basic-sqlite"
 version = "0.1.0"
 edition = "2021"
 
+#[[example]]
+#name = "basic-sqlite"
+
 [dependencies]
 clap = { version = "4.1.11", features = ["derive", "env"] }
-hiqlite = { path = "../../" }
+hiqlite = { path = "../../hiqlite" }
+rust-embed = { version = "8.5.0", features = ["compression"] }
 serde = { version = "1.0.203", features = ["derive"] }
 tokio = { version = "1.35.1", features = ["fs", "rt-multi-thread"] }
 tracing = "0.1.40"

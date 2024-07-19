@@ -1,0 +1,66 @@
+[package]
+name = "hiqlite"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+categories = ["database"]
+keywords = ["database", "sql", "sqlite", "raft"]
+description = "Hiqlite - highly-available, embeddable, raft-based SQLite"
+readme = "../README.md"
+repository = "https://github.com/sebadob/hiqlite"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = ["auto-heal", "auto-heal-logs", "sqlite", "webpki-roots"]
+
+auto-heal = []
+auto-heal-logs = ["openraft/loosen-follower-log-revert"]
+sqlite = []
+io-uring = ["rocksdb/io-uring"]
+jemalloc = ["rocksdb/jemalloc"]
+webpki-roots = ["reqwest/rustls-tls-webpki-roots"]
+
+[dependencies]
+axum.workspace = true
+axum-server.workspace = true
+bincode.workspace = true
+byteorder.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+deadpool.workspace = true
+fastwebsockets.workspace = true
+flume.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+openraft.workspace = true
+redb.workspace = true
+reqwest.workspace = true
+rocksdb.workspace = true
+rusqlite.workspace = true
+rust-embed.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_rusqlite.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+# make minimal versions happy
+lazy_static.workspace = true
+lz4-sys.workspace = true
+
+[build-dependencies]
+
+[dev-dependencies]
+tempfile = { version = "3.4.0" }
+tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }

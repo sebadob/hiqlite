@@ -424,6 +424,8 @@ async fn test_batch(
     assert!(should_be_err.is_err());
 
     log("Make sure the other clients see the batch insertions");
+    // race condition when we read too fast
+    time::sleep(Duration::from_millis(100)).await;
 
     let data: Vec<TestData> = client_2
         .query_map("SELECT * FROM test WHERE id > $1", params!(20))

@@ -1,11 +1,15 @@
 use clap::Parser;
-use hiqlite::{params, start_node, Error, Node, NodeConfig, Param, Row};
+use hiqlite::{params, start_node, Error, Migrations, Node, NodeConfig, Param, Row};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
 use tokio::fs;
 use tokio::time;
 use tracing_subscriber::EnvFilter;
+
+#[derive(rust_embed::Embed)]
+#[folder = "migrations"]
+struct MigrationScripts;
 
 #[derive(Debug, Clone, Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -73,6 +77,9 @@ async fn main() -> Result<(), Error> {
         .with_level(true)
         .with_env_filter(EnvFilter::from("info"))
         .init();
+
+    let migrations = Migrations::build::<MigrationScripts>();
+    debug(&migrations);
 
     match CliArgs::parse() {
         CliArgs::Server(args) => {

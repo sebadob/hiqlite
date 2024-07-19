@@ -1,6 +1,6 @@
 use crate::{Error, Node, NodeId};
-use std::borrow::Cow;
 use openraft::SnapshotPolicy;
+use std::borrow::Cow;
 
 pub use openraft::Config as RaftConfig;
 
@@ -32,8 +32,16 @@ pub struct NodeConfig {
 impl NodeConfig {
     // TODO impl some `from_`s like env, json, toml, cli
 
-    pub fn new(node_id: NodeId, nodes: Vec<Node>, secret_raft: String, secret_api: String) -> Result<Self, Error> {
-        let tls = nodes.first().map(|node| node.addr_raft.starts_with("https://")).unwrap_or(false);
+    pub fn new(
+        node_id: NodeId,
+        nodes: Vec<Node>,
+        secret_raft: String,
+        secret_api: String,
+    ) -> Result<Self, Error> {
+        let tls = nodes
+            .first()
+            .map(|node| node.addr_raft.starts_with("https://"))
+            .unwrap_or(false);
 
         let slf = Self {
             node_id,

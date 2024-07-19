@@ -1,7 +1,6 @@
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::StorageResult;
 use crate::NodeId;
-use clap::builder::Str;
 use openraft::storage::LogFlushed;
 use openraft::storage::LogState;
 use openraft::storage::RaftLogStorage;

@@ -1,0 +1,59 @@
+use rust_embed::RustEmbed;
+use std::borrow::Cow;
+
+pub struct Migrations;
+
+impl Migrations {
+    pub fn build<T: RustEmbed>() -> Vec<Migration> {
+        let mut files = T::iter()
+            .map(|name| {
+                let (id, _) = name
+                    .split_once('_')
+                    .expect("Migration file names must start with `<integer>_<migration_name>");
+                let id = id
+                    .parse::<u32>()
+                    .expect("Migration scripts must start with an increasing integer");
+                (id, name)
+            })
+            .collect::<Vec<(u32, Cow<'static, str>)>>();
+        files.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap());
+
+        let mut res: Vec<Migration> = Vec::with_capacity(files.len());
+
+        for (id, file_name) in files {
+            let data = T::get(file_name.as_ref()).unwrap();
+            let hash = hex::encode(data.metadata.sha256_hash());
+            let content = data.data.to_vec();
+
+            let stripped = file_name
+                .strip_suffix(".sql")
+                .expect("Migration scripts must always end with .sql");
+            let (_, name) = stripped.split_once('_').unwrap();
+
+            let migration = Migration {
+                id,
+                name: name.to_string(),
+                hash,
+                content,
+            };
+
+            let len = res.len();
+            if len > 0 && migration.id != (res[len - 1].id + 1) {
+                panic!("");
+            }
+
+            res.push(migration);
+        }
+
+        res
+    }
+}
+
+#[derive(Debug)]
+pub struct Migration {
+    pub id: u32,
+    pub name: String,
+    /// sha256 hash as hex
+    pub hash: String,
+    pub content: Vec<u8>,
+}

@@ -1,6 +1,6 @@
 // Copyright 2024 Sebastian Dobe <sebastiandobe@mailbox.org>
 
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("../../README.md")]
 #![forbid(unsafe_code)]
 
 use crate::app_state::AppState;
@@ -21,14 +21,12 @@ use tokio::sync::watch;
 use tokio::{task, time};
 use tracing::info;
 
-// #[cfg(feature = "kv")]
-// pub use crate::store::state_machine_memory::{Request, Response};
-
 pub use crate::client::DbClient;
 pub use crate::error::Error;
 pub use crate::store::state_machine::sqlite::state_machine::{Params, Response};
 pub use config::{NodeConfig, RaftConfig};
-pub use migration::Migration;
+// pub use hiqlite_macros::embed_migrations;
+pub use migration::{Migration, Migrations};
 pub use openraft::SnapshotPolicy;
 pub use rusqlite::Row;
 pub use store::state_machine::sqlite::param::Param;
@@ -44,7 +42,9 @@ mod store;
 
 type NodeId = u64;
 
-embed_migrations!("migrations");
+// use mac
+
+// hiqlite_macros::embed_migrations!("../../migrations");
 
 /// Create params for distributed SQL modifying queries.
 /// TODO create multiple branches here to be able to catch the correct sizes
@@ -95,9 +95,9 @@ impl Display for Node {
 pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbClient, Error> {
     node_config.is_valid()?;
 
-    // TODO remove after testing
-    let migration = migrations::build();
-    info!("\n\n{:?}\n", migration);
+    // // TODO remove after testing
+    // let migration = migrations::build();
+    // info!("\n\n{:?}\n", migration);
 
     let raft_config = Arc::new(node_config.config.validate().unwrap());
 
