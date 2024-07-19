@@ -179,9 +179,9 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
 
         log("Let's get the data back from the DB in a more efficient and faster way with more manual work");
 
-        // The `.query_as` can be used for types that implement serde::Serialize / ::Deserialze.
-        // This is easier and less work to implement, but a bit less efficient and slower than a
-        // manual implementation of `From<Row>`.
+        // The `.query_one` can be used for types that implement `impl<'r> From<&'r hiqlite::Row<'r>>``.
+        // This requires an additional manual step (no derive macro exists so far), but it is a
+        // more efficient and faster way to map a query result to a `struct`.
 
         let res: Entity = client
             .query_map_one("SELECT * FROM test WHERE id = $1", params!("id1"))
