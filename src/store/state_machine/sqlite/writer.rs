@@ -213,7 +213,8 @@ pub fn spawn_writer(
 
                     Query::Batch(req) => {
                         let mut batch = Batch::new(&conn, req.sql.as_ref());
-                        let mut res = Vec::new();
+                        // we can at least assume 2 statements in a batch execute
+                        let mut res = Vec::with_capacity(2);
 
                         loop {
                             match batch.next() {
@@ -221,6 +222,7 @@ pub fn spawn_writer(
                                     res.push(stmt.execute([]).map_err(Error::from));
                                 }
                                 Ok(None) => break,
+                                // will happen if the query can't be prepared -> syntax error
                                 Err(err) => {
                                     res.push(Err(Error::from(err)));
                                 }

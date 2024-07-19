@@ -1,5 +1,7 @@
 use crate::app_state::AppState;
-use crate::client_stream::{ClientExecutePayload, ClientStreamReq, ClientTransactionPayload};
+use crate::client_stream::{
+    ClientBatchPayload, ClientExecutePayload, ClientStreamReq, ClientTransactionPayload,
+};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::network::management::LearnerReq;
 use crate::network::{api, RaftWriteResponse, HEADER_NAME_SECRET};
@@ -247,6 +249,60 @@ impl DbClient {
                 ApiStreamResponsePayload::Transaction(res) => res,
                 ApiStreamResponsePayload::Execute(_) => unreachable!(),
                 ApiStreamResponsePayload::Batch(_) => unreachable!(),
+            }
+        }
+    }
+
+    /// Takes an arbitrary SQL String with multiple queries and executes all of them as a batch
+    pub async fn batch<S>(&self, sql: S) -> Result<Vec<Result<usize, Error>>, Error>
+    where
+        S: Into<Cow<'static, str>>,
+    {
+        let sql = sql.into();
+        match self.batch_execute(sql.clone()).await {
+            Ok(res) => Ok(res),
+            Err(err) => {
+                if self.was_leader_update_error(&err).await {
+                    // try once again after a leader switch
+                    self.batch_execute(sql).await
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    async fn batch_execute(
+        &self,
+        sql: Cow<'static, str>,
+    ) -> Result<Vec<Result<usize, Error>>, Error> {
+        if let Some(state) = self.is_this_local_leader().await {
+            let res = state.raft.client_write(QueryWrite::Batch(sql)).await?;
+            let resp: Response = res.data;
+            match resp {
+                Response::Execute(_) => unreachable!(),
+                Response::Transaction(_) => unreachable!(),
+                Response::Batch(res) => Ok(res.result),
+                Response::Empty => unreachable!(),
+            }
+        } else {
+            let (ack, rx) = oneshot::channel();
+            self.tx_client
+                .send_async(ClientStreamReq::Batch(ClientBatchPayload {
+                    request_id: self.new_request_id(),
+                    sql,
+                    ack,
+                }))
+                .await
+                .expect("Client Stream Manager to always be running");
+            let res = rx
+                .await
+                .expect("To always receive an answer from Client Stream Manager")?;
+            match res {
+                ApiStreamResponsePayload::Transaction(_) => unreachable!(),
+                ApiStreamResponsePayload::Execute(_) => unreachable!(),
+                ApiStreamResponsePayload::Batch(res) => Ok(res),
             }
         }
     }
