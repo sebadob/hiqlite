@@ -411,6 +411,7 @@ async fn test_batch(
             (22, {now}, "Batch Data 2"),
             (23, {now}, "Batch Data 3");
 
+       -- comments should be ignored and not throw errors
        INSERT INTO test VALUES (21, {now}, "This should error - unique key constraint");
         "#
         ))

@@ -65,6 +65,7 @@ uuid = { version = "1.8.0", features = ["v7"] }
 # make minimal versions happy
 lazy_static = "1.0.2"
 lz4-sys = "1.9.5"
+rust-embed = { version = "8.5.0", features = ["compression", "include-exclude"] }
 
 [build-dependencies]
 

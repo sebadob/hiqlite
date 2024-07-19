@@ -28,6 +28,7 @@ pub use crate::client::DbClient;
 pub use crate::error::Error;
 pub use crate::store::state_machine::sqlite::state_machine::{Params, Response};
 pub use config::{NodeConfig, RaftConfig};
+pub use migration::Migration;
 pub use openraft::SnapshotPolicy;
 pub use rusqlite::Row;
 pub use store::state_machine::sqlite::param::Param;
@@ -37,10 +38,13 @@ mod client;
 mod client_stream;
 mod config;
 mod error;
+mod migration;
 mod network;
 mod store;
 
 type NodeId = u64;
+
+embed_migrations!("migrations");
 
 /// Create params for distributed SQL modifying queries.
 /// TODO create multiple branches here to be able to catch the correct sizes
@@ -90,6 +94,10 @@ impl Display for Node {
 /// If an incorrect `node_config` was given.
 pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbClient, Error> {
     node_config.is_valid()?;
+
+    // TODO remove after testing
+    let migration = migrations::build();
+    info!("\n\n{:?}\n", migration);
 
     let raft_config = Arc::new(node_config.config.validate().unwrap());
 
