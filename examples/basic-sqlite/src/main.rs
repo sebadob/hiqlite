@@ -132,7 +132,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
         }
         log("Cluster is online and all nodes are active members\n\n");
 
-        log("Create a table for some test data");
+        log("Our test table is automatically created via `./migrations/V1__init.sql`");
         client
             .execute(
                 r#"
@@ -215,6 +215,8 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
         // fast ans safe against SQL injection.
         // If you can make use of this, use it! It is really fast!
 
+        log("Testing multiple executes in a transaction");
+
         let sql = "INSERT INTO test (id, num, description) VALUES ($1, $2, $3)";
         let res = client
             .txn([
@@ -234,6 +236,29 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
             let rows_affected = inner_res?;
             assert_eq!(rows_affected, 1);
         }
+
+        // We can also do simple `String` based batch executes
+        log("Testing simple query batching");
+
+        let mut results = client
+            .batch(
+                r#"
+            INSERT INTO test (id, num, description) VALUES
+                ('batch1', 1, "Batch desc 1"),
+                ('batch2', 2, "Batch desc 2"),
+                ('batch3', 3, "Batch desc 3");
+
+            DELETE FROM test WHERE id = 'id4';
+            "#,
+            )
+            .await?;
+
+        // we will receive a Vec with all the results again, just like for the transactio above
+        let rows_affected = results.remove(0)?;
+        assert_eq!(rows_affected, 3);
+
+        let rows_affected = results.remove(0)?;
+        assert_eq!(rows_affected, 1);
 
         time::sleep(Duration::from_secs(3)).await;
 

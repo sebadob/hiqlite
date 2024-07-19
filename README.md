@@ -59,7 +59,8 @@ in case of any errors or problems. The whole
     - on a leader node, the client will not even bother with using networking
     - on a non-leader node, it will automatically switch over to a network connection so the request
       is forwarded and initiated on the current Raft leader
-- batched executes, all within a single Transaction (very fast)
+- transaction executes (very fast)
+- simple `String` batch executes
 - `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
   This will end up behind a `serde` feature in the future which is not implemented yet.
 - `query_map()` for local reads for `structs` that implement `impl<'r> From<&'r hiqlite::Row<'r>>` which is the
@@ -72,7 +73,6 @@ in case of any errors or problems. The whole
 This list is my no means exhaustive, these are just the next big things on my list
 
 - automatic database migrations
-- simple, non-prepared batch queries
 - TLS
 - backups to s3
 - restore from remote backup
