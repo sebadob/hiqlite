@@ -1,7 +1,7 @@
 use crate::store::state_machine::sqlite::param::Param;
 use crate::store::state_machine::sqlite::snapshot_builder::SQLiteSnapshotBuilder;
 use crate::store::state_machine::sqlite::writer::{
-    self, MetaPersistRequest, SqlTransaction, WriterRequest,
+    self, MetaPersistRequest, SqlBatch, SqlTransaction, WriterRequest,
 };
 use crate::store::state_machine::sqlite::{reader, TypeConfigSqlite};
 use crate::store::StorageResult;
@@ -33,7 +33,7 @@ pub type Params = Vec<Param>;
 pub enum QueryWrite {
     Execute(Query),
     Transaction(Vec<Query>),
-    Batch(String),
+    Batch(Cow<'static, str>),
     // Migration(String), // TODO
 }
 
@@ -48,12 +48,17 @@ pub enum Response {
     Empty,
     Execute(ResponseExecute),
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
-    Batch(ResponseExecute),
+    Batch(ResponseBatch),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResponseExecute {
     pub result: Result<usize, Error>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResponseBatch {
+    pub result: Vec<Result<usize, Error>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -723,8 +728,21 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     Response::Transaction(resp)
                 }
 
-                EntryPayload::Normal(QueryWrite::Batch(batch)) => {
-                    todo!()
+                EntryPayload::Normal(QueryWrite::Batch(sql)) => {
+                    let (tx, rx) = oneshot::channel();
+                    let req = WriterRequest::Query(writer::Query::Batch(SqlBatch {
+                        sql,
+                        last_applied_log_id: self.data.last_applied_log_id,
+                        tx,
+                    }));
+
+                    self.write_tx
+                        .send_async(req)
+                        .await
+                        .expect("sql writer to always be listening");
+
+                    let result = rx.await.expect("to always get a response from sql writer");
+                    Response::Batch(ResponseBatch { result })
                 }
 
                 EntryPayload::Membership(mem) => {
