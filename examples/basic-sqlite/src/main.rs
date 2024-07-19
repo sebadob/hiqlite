@@ -1,5 +1,5 @@
 use clap::Parser;
-use hiqlite::{params, start_node, Error, Migrations, Node, NodeConfig, Param, Row};
+use hiqlite::{params, start_node, Error, Node, NodeConfig, Param, Row};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
@@ -77,9 +77,6 @@ async fn main() -> Result<(), Error> {
         .with_level(true)
         .with_env_filter(EnvFilter::from("info"))
         .init();
-
-    let migrations = Migrations::build::<MigrationScripts>();
-    debug(&migrations);
 
     match CliArgs::parse() {
         CliArgs::Server(args) => {

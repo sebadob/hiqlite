@@ -1,3 +1,4 @@
+use crate::migration::Migration;
 use crate::store::state_machine::sqlite::state_machine;
 use crate::store::state_machine::sqlite::state_machine::{
     Params, StateMachineData, StateMachineSqlite, StoredSnapshot,
@@ -19,6 +20,7 @@ use uuid::Uuid;
 pub enum WriterRequest {
     SnapshotApply((String, oneshot::Sender<StateMachineData>)),
     Query(Query),
+    Migrate(Migrate),
     Snapshot(SnapshotRequest),
     MetadataPersist(MetaPersistRequest),
     MetadataRead(oneshot::Sender<Vec<u8>>),
@@ -51,6 +53,13 @@ pub struct SqlBatch {
     pub sql: Cow<'static, str>,
     pub last_applied_log_id: Option<LogId<NodeId>>,
     pub tx: oneshot::Sender<Vec<Result<usize, Error>>>,
+}
+
+#[derive(Debug)]
+pub struct Migrate {
+    pub migrations: Vec<Migration>,
+    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub tx: oneshot::Sender<Result<(), Error>>,
 }
 
 #[derive(Debug)]
@@ -87,13 +96,14 @@ pub fn spawn_writer(
 
         // we want to handle our metadata manually to not interfere with migrations in apps later on
         conn.execute(
-            r#"CREATE TABLE IF NOT EXISTS _metadata
-        (
-            key  TEXT    NOT NULL
-                CONSTRAINT _metadata_pk
-                    PRIMARY KEY,
-            data BLOB    NOT NULL
-        )"#,
+            r#"
+            CREATE TABLE IF NOT EXISTS _metadata
+            (
+                key  TEXT    NOT NULL
+                    CONSTRAINT _metadata_pk
+                        PRIMARY KEY,
+                data BLOB    NOT NULL
+            )"#,
             (),
         )
         .expect("_metadata table creation to always succeed");
@@ -234,18 +244,32 @@ pub fn spawn_writer(
                     }
                 },
 
-                WriterRequest::Snapshot(req) => {
+                WriterRequest::Migrate(req) => {
+                    let res = migrate(&mut conn, req.migrations).map_err(Error::from);
+
+                    // TODO should be maybe always panic if migrations throw an error?
+
+                    last_applied_log_id = req.last_applied_log_id;
+                    req.tx.send(res).unwrap();
+                }
+
+                WriterRequest::Snapshot(SnapshotRequest {
+                    snapshot_id,
+                    path,
+                    last_membership,
+                    ack,
+                }) => {
                     match create_snapshot(
                         &conn,
-                        req.snapshot_id,
-                        req.path,
+                        snapshot_id,
+                        path,
                         last_applied_log_id,
-                        req.last_membership,
+                        last_membership,
                     ) {
-                        Ok(meta) => req.ack.send(Ok(SnapshotResponse { meta })),
+                        Ok(meta) => ack.send(Ok(SnapshotResponse { meta })),
                         Err(err) => {
                             error!("Error creating new snapshot: {:?}", err);
-                            req.ack.send(Err(StorageError::IO {
+                            ack.send(Err(StorageError::IO {
                                 source: StorageIOError::write(&err),
                             }))
                         }
@@ -335,4 +359,135 @@ fn create_snapshot(
     conn.execute(&q, ())?;
 
     Ok(metadata)
+}
+
+fn migrate(conn: &mut rusqlite::Connection, mut migrations: Vec<Migration>) -> Result<(), Error> {
+    create_migrations_table(conn)?;
+
+    let mut last_applied = last_applied_migration(conn, &migrations)?;
+    migrations.retain(|m| m.id > last_applied);
+
+    for migration in migrations {
+        if migration.id != last_applied + 1 {
+            panic!(
+                "Migration index has a gap between {} and {}",
+                last_applied, migration.id
+            );
+        }
+        last_applied = migration.id;
+
+        let txn = conn.transaction()?;
+        apply_migration(txn, migration)?;
+    }
+
+    Ok(())
+}
+
+#[inline]
+fn create_migrations_table(conn: &rusqlite::Connection) -> Result<(), Error> {
+    conn.execute(
+        r#"
+    CREATE TABLE IF NOT EXISTS _migrations
+    (
+        id   INTEGER    NOT NULL
+            CONSTRAINT _migrations_pk
+                PRIMARY KEY,
+        name TEXT       NOT NULL,
+        ts   INTEGER    NOT NULL,
+        hash TEXT       NOT NULL
+    )
+    "#,
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Validates the already applied migrations against the given ones and returns the
+/// start index for new to apply migrations, if everything was ok.
+#[inline]
+fn last_applied_migration(
+    conn: &rusqlite::Connection,
+    migrations: &[Migration],
+) -> Result<u32, Error> {
+    let mut stmt = conn.prepare("SELECT * FROM _migrations")?;
+    let already_applied: Vec<Migration> = stmt
+        .query_map([], |row| {
+            Ok(Migration {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                hash: row.get(2)?,
+                content: row.get(3)?,
+            })
+        })?
+        .map(|r| r.expect("_migrations table corrupted"))
+        .collect();
+
+    let mut last_applied = 1;
+    for applied in already_applied {
+        if last_applied + 1 != applied.id {
+            panic!(
+                "Applied migrations order mismatch: expected {}, got {}",
+                last_applied + 1,
+                applied.id
+            );
+        }
+        last_applied = applied.id;
+
+        match migrations.get(last_applied as usize - 1) {
+            None => panic!("Missing migration with id {}", last_applied),
+            Some(migration) => {
+                if applied.id != migration.id {
+                    panic!(
+                        "Migration id mismatch: applied {}, given {}",
+                        applied.id, migration.id
+                    );
+                }
+
+                if applied.name != migration.name {
+                    panic!(
+                        "Name for migration {} has changed: applied {}, given {}",
+                        migration.id, applied.name, migration.name
+                    );
+                }
+
+                if applied.hash != migration.hash {
+                    panic!(
+                        "Hash for migration {} has changed: applied {}, given {}",
+                        migration.id, applied.hash, migration.hash
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(last_applied)
+}
+
+#[inline]
+fn apply_migration(txn: rusqlite::Transaction, migration: Migration) -> Result<(), Error> {
+    let sql = String::from_utf8_lossy(&migration.content);
+    let mut batch = Batch::new(&txn, &sql);
+
+    while let Some(mut stmt) = batch.next()? {
+        stmt.execute([])?;
+    }
+
+    {
+        let mut stmt = txn.prepare(
+            r#"
+        INSERT INTO _migrations (id, name, ts, hash)
+        VALUES ($1, $2, $3, $4)
+        "#,
+        )?;
+        stmt.execute((
+            migration.id,
+            migration.name,
+            Utc::now().timestamp(),
+            migration.hash,
+        ))?;
+    }
+
+    txn.commit()?;
+    Ok(())
 }

@@ -16,7 +16,17 @@ impl Migrations {
                 (id, name)
             })
             .collect::<Vec<(u32, Cow<'static, str>)>>();
+
+        if files.is_empty() {
+            return Vec::default();
+        }
+
         files.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap());
+        if let Some((first_id, _)) = files.first() {
+            if *first_id != 1 {
+                panic!("Migrations must start at index 1");
+            }
+        }
 
         let mut res: Vec<Migration> = Vec::with_capacity(files.len());
 

@@ -2,6 +2,7 @@ use crate::app_state::AppState;
 use crate::client_stream::{
     ClientBatchPayload, ClientExecutePayload, ClientStreamReq, ClientTransactionPayload,
 };
+use crate::migration::Migrations;
 use crate::network::api::ApiStreamResponsePayload;
 use crate::network::management::LearnerReq;
 use crate::network::{api, RaftWriteResponse, HEADER_NAME_SECRET};
@@ -11,6 +12,7 @@ use crate::NodeId;
 use crate::{Node, Response};
 use openraft::RaftMetrics;
 use reqwest::Client;
+use rust_embed::RustEmbed;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -19,8 +21,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{oneshot, watch, RwLock};
 use tracing::debug;
-
-// TODO client auth for HTTP requests
 
 /// Raft / Database client
 #[derive(Clone)]
@@ -305,6 +305,11 @@ impl DbClient {
                 ApiStreamResponsePayload::Batch(res) => Ok(res),
             }
         }
+    }
+
+    pub async fn migrate<T: RustEmbed>() -> Result<(), Error> {
+        let _migrations = Migrations::build::<T>();
+        todo!()
     }
 
     /// This is the most efficient and fastest way to query data from sqlite into a struct.
