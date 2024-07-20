@@ -101,7 +101,7 @@ pub fn spawn_writer(
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(2);
 
-    let _handle = thread::spawn(move || {
+    task::spawn_blocking(move || {
         let mut last_applied_log_id: Option<LogId<NodeId>> = None;
 
         // TODO before doing anything else, apply migrations
@@ -421,8 +421,14 @@ fn create_backup(
     #[cfg(feature = "s3")]
     if let Some(s3) = s3_config {
         task::spawn(async move {
-            if let Err(err) = s3.push(&path_full, &file).await {
-                error!("Error pushing Backup to S3: {}", err);
+            info!("Background task for encrypting and pushing backup to S3 has been started");
+            match s3.push(&path_full, &file).await {
+                Ok(_) => {
+                    info!("Push backup to S3 has been finished");
+                }
+                Err(err) => {
+                    error!("Error pushing Backup to S3: {}", err);
+                }
             }
         });
     }

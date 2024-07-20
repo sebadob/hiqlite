@@ -58,6 +58,7 @@ in case of any errors or problems. The whole
 - self-healing - features `auto-heal` and `auto-heal-logs`
 - automatic database migrations
 - optional TLS everywhere for a zero-trust philosophy
+- backups to s3
 - strongly consistent, replicated `execute` queries
     - on a leader node, the client will not even bother with using networking
     - on a non-leader node, it will automatically switch over to a network connection so the request
@@ -75,7 +76,6 @@ in case of any errors or problems. The whole
 
 This list is by no means exhaustive, these are just the next big things
 
-- backups to s3
 - restore from remote backup
 - consistent queries on leader
 - metrics / health endpoint or maybe even a simple health UI

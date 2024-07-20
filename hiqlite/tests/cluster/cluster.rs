@@ -1,7 +1,9 @@
 use chrono::Utc;
-use hiqlite::{params, start_node, NodeConfig, Param};
+use cryptr::stream::writer::s3_writer::{Bucket, Credentials, UrlStyle};
+use hiqlite::{params, start_node, NodeConfig, Param, S3Config};
 use hiqlite::{DbClient, Error, Node};
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fmt::{Debug, Display};
 use std::time::Duration;
 use tokio::{fs, task, time};
@@ -42,6 +44,9 @@ async fn test_cluster() -> Result<(), Error> {
     log("Starting backup tests");
     test_backup(&client_1).await?;
     log("Backup tests finished");
+
+    // we should sleep a few seconds to make sure the s3 task in the background can finish
+    time::sleep(Duration::from_secs(3)).await;
 
     // TODO impl + test
     // - migrations
@@ -92,6 +97,29 @@ async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
             _ => unreachable!(),
         };
 
+        let s3_config = {
+            dotenvy::dotenv().ok();
+            if let Ok(url) = env::var("S3_URL") {
+                // we assume that all values exist when we can read the url successfully
+
+                let url = reqwest::Url::parse(&url).unwrap();
+                let bucket_name = env::var("S3_BUCKET").unwrap();
+                let region = env::var("S3_REGION").unwrap();
+                let key = env::var("S3_KEY").unwrap();
+                let secret = env::var("S3_SECRET").unwrap();
+
+                log("S3 env vars found");
+                Some(S3Config {
+                    bucket: Bucket::new(url.into(), UrlStyle::Path, bucket_name, region).unwrap(),
+                    credentials: Credentials::new(key, secret),
+                    danger_tls_no_verify: true,
+                })
+            } else {
+                log("No S3 env vars found - will skip S3 tests");
+                None
+            }
+        };
+
         NodeConfig {
             node_id,
             nodes,
@@ -105,7 +133,7 @@ async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
             tls_api: None,
             secret_raft: "asdasdasdasdasdasd".to_string(),
             secret_api: "qweqweqweqweqweqwe".to_string(),
-            s3_config: None, // TODO impl S3 tests
+            s3_config,
         }
     };
 

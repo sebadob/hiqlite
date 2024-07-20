@@ -5,14 +5,14 @@ use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
 pub struct S3Config {
-    bucket: Bucket,
-    credentials: Credentials,
-    danger_tls_no_verify: bool,
+    pub bucket: Bucket,
+    pub credentials: Credentials,
+    pub danger_tls_no_verify: bool,
 }
 
 impl S3Config {
-    pub fn new<C, S, U>(
-        endpoint: U,
+    pub fn new<C, S>(
+        endpoint: &str,
         path_style: UrlStyle,
         name: C,
         region: C,
@@ -22,10 +22,11 @@ impl S3Config {
     where
         C: Into<Cow<'static, str>>,
         S: Into<String>,
-        U: Into<reqwest::Url>,
     {
+        let endpoint = reqwest::Url::parse(endpoint).map_err(|err| Error::S3(err.to_string()))?;
+
         Ok(Self {
-            bucket: Bucket::new(endpoint.into(), path_style, name, region)
+            bucket: Bucket::new(endpoint, path_style, name, region)
                 .map_err(|err| Error::S3(err.to_string()))?,
             credentials: Credentials::new(key, secret),
             danger_tls_no_verify: false,

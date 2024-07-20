@@ -108,6 +108,12 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
             .expect("default CryptoProvider installation to succeed");
     }
 
+    #[cfg(feature = "s3")]
+    {
+        let enc_keys = cryptr::EncKeys::generate().map_err(|err| Error::S3(err.to_string()))?;
+        let _ = enc_keys.init();
+    }
+
     let raft_config = Arc::new(node_config.config.validate().unwrap());
 
     // let (log_store, state_machine_store) =
