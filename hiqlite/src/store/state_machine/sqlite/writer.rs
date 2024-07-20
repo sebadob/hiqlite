@@ -87,7 +87,6 @@ pub fn spawn_writer(
     // filename_db: String,
     mut conn: rusqlite::Connection,
     // in_memory: bool,
-    tx_logs: flume::Sender<logs::rocksdb::ActionWrite>,
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(2);
 

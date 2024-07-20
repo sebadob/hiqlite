@@ -1,23 +1,25 @@
 # Backups
 
-- [x] the sql writer needs a way to hook in the communication with the logs task
 - [ ] add data structures to be able to forward a backup task all the way from the `DbClient`
+    - [ ] state machine impl -> sql writer
+    - [ ] `DbClient` -> client stream -> server stream -> state machine impl
 - [ ] backups should be possible with file and / or s3 target
-- [ ] backups should have their own folder incl node id and timestamp, and maybe last applied log id
+- [ ] backups names should incl node id and timestamp, and maybe last applied log id
   to make a restore later on easier (needs a safe parser for the file name)
-- [ ] when writer receives a backup request, first create a backup of the logs to not loose some
-  if maybe purge or truncate run in between
-- [ ] when log backups are completed, start sqlite backup with `VACUUM INTO` just like for snapshots
-- [ ] if an s3 bucket is given, compress the whole folder as a .tar.gz, then encrypt and push to s3 with `cryptr`
+- [ ] start sqlite backup with `VACUUM INTO` just like for snapshots
+- [ ] if an s3 bucket is given, encrypt and push to s3 with `cryptr`
+
+-> We don't need to back up the logs. This would only be important to feature PITR, which is not a goal currently.
+When we don't backup logs, we also don't need to care about folder compression and so on, because we would have
+a single file only. This make the whole process a lot simpler and less error prone.
 
 ## Restore
 
-TODO find a way to restore backups in 2 ways:
+When applying a backup, we need to cleanup the `_metadata` from raft logs and cleanup the whole raft logs
+(during an online backup at least) to make sure we don't panic. This would basically reset the logs counter, which
+is a beneficial side-effect for very long running databases under heavy load (probably 10+ years ?).
 
-- just apply a full backup with logs + state machine -> self-explanatory
-- have the option to apply a backup from just a sqlite snapshot without logs to make migrations from existing
-  sqlite databases possible in an easy way
-- restore without logs could also be used for log id resets if ever necessary (probably never with a u64)
+We will not cleanup `_metadata` ahead of time to still have the possibility to take a look at backups manually.
 
 ## Housekeeping
 

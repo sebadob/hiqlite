@@ -52,7 +52,6 @@ pub enum ActionWrite {
     Remove(ActionRemove),
     Vote(ActionVote),
     Sync,
-    // Backup,
 }
 
 pub struct ActionAppend {
@@ -72,6 +71,10 @@ pub struct ActionRemove {
     until: Vec<u8>,
     last_log: Option<Vec<u8>>,
     ack: oneshot::Sender<Result<(), StorageError<NodeId>>>,
+}
+
+pub struct ActionBackup {
+    pub path: String,
 }
 
 /// converts an id to a byte vector for storing in the database.
@@ -372,7 +375,7 @@ impl LogStoreReader {
 #[derive(Debug)]
 pub struct LogStoreRocksdb {
     db: Arc<DB>,
-    pub(crate) tx_writer: flume::Sender<ActionWrite>,
+    tx_writer: flume::Sender<ActionWrite>,
     tx_reader: flume::Sender<ActionRead>,
 }
 

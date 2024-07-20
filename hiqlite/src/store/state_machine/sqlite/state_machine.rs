@@ -109,7 +109,6 @@ impl StateMachineSqlite {
     pub(crate) async fn new(
         data_dir: Cow<'static, str>,
         filename_db: Cow<'static, str>,
-        tx_logs_writer: flume::Sender<logs::rocksdb::ActionWrite>,
     ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
         let path_base = format!("{}/state_machine", data_dir);
 
@@ -136,7 +135,7 @@ impl StateMachineSqlite {
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write(&err),
             })?;
-        let write_tx = writer::spawn_writer(conn, tx_logs_writer);
+        let write_tx = writer::spawn_writer(conn);
 
         let read_pool = Self::connect_read_pool(path_db.as_ref(), filename_db.as_ref())
             .await
