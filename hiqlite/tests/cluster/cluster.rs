@@ -90,7 +90,11 @@ async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
             data_dir,
             filename_db: "hiqlite".into(),
             config: NodeConfig::raft_config(1000),
-            tls: false,
+            // TODO currently we can't test with TLS, because this depends on `axum_server`.
+            // This does not support graceful shutdown, which we need for testing from
+            // a single process
+            tls_raft: None,
+            tls_api: None,
             secret_raft: "asdasdasdasdasdasd".to_string(),
             secret_api: "qweqweqweqweqweqwe".to_string(),
         }

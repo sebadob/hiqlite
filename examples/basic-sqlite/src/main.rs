@@ -1,5 +1,5 @@
 use clap::Parser;
-use hiqlite::{params, start_node, Error, Node, NodeConfig, Param, Row};
+use hiqlite::{params, start_node, Error, Node, NodeConfig, Param, Row, ServerTlsConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
@@ -44,6 +44,25 @@ fn test_nodes() -> Vec<Node> {
             addr_raft: "127.0.0.1:20003".to_string(),
         },
     ]
+}
+
+fn node_config(node_id: u64, nodes: Vec<Node>) -> Result<NodeConfig, Error> {
+    NodeConfig::new(
+        node_id,
+        nodes,
+        Some(ServerTlsConfig {
+            key: "../../tls/key.pem",
+            cert: "../../tls/cert-chain.pem",
+            danger_tls_no_verify: true,
+        }),
+        Some(ServerTlsConfig {
+            key: "../../tls/key.pem",
+            cert: "../../tls/cert-chain.pem",
+            danger_tls_no_verify: true,
+        }),
+        "SuperSecureRaftSecret".to_string(),
+        "SuperSecureApiSecret".to_string(),
+    )
 }
 
 /// Matches our test table for this example.
@@ -92,12 +111,7 @@ async fn main() -> Result<(), Error> {
 
 async fn server(args: Option<Server>) -> Result<(), Error> {
     let config = if let Some(args) = args {
-        let mut config = NodeConfig::new(
-            args.node_id,
-            test_nodes(),
-            "SuperSecureRaftSecret".to_string(),
-            "SuperSecureApiSecret".to_string(),
-        )?;
+        let mut config = node_config(args.node_id, test_nodes())?;
 
         // to make this example work when starting all nodes on the same host,
         // we need to save into custom folders for each one
@@ -105,12 +119,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
         cleanup(config.data_dir.as_ref()).await;
         config
     } else {
-        let config = NodeConfig::new(
-            1,
-            vec![test_nodes()[0].clone()],
-            "SuperSecureRaftSecret".to_string(),
-            "SuperSecureApiSecret".to_string(),
-        )?;
+        let config = node_config(1, vec![test_nodes()[0].clone()])?;
         cleanup(config.data_dir.as_ref()).await;
         config
     };

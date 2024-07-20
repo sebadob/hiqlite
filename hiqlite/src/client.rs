@@ -8,8 +8,8 @@ use crate::network::api::ApiStreamResponsePayload;
 use crate::network::management::LearnerReq;
 use crate::network::{api, RaftWriteResponse, HEADER_NAME_SECRET};
 use crate::store::state_machine::sqlite::state_machine::{Params, Query, QueryWrite};
-use crate::Error;
 use crate::NodeId;
+use crate::{tls, Error};
 use crate::{Node, Response};
 use openraft::RaftMetrics;
 use reqwest::Client;
@@ -30,7 +30,7 @@ pub struct DbClient {
     leader: Arc<RwLock<(NodeId, String)>>,
     client: Arc<Client>,
     tx_client: flume::Sender<ClientStreamReq>,
-    tls: bool,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
     api_secret: String,
     request_id: Arc<AtomicUsize>,
     tx_shutdown: Option<watch::Sender<bool>>,
@@ -40,7 +40,7 @@ impl DbClient {
     /// Create a local client that skips network connections if not necessary
     pub(crate) fn new_local(
         state: Arc<AppState>,
-        tls: bool,
+        tls_config: Option<Arc<rustls::ClientConfig>>,
         tx_shutdown: watch::Sender<bool>,
     ) -> Self {
         let leader_id = state.id;
@@ -49,7 +49,12 @@ impl DbClient {
         let node_id = state.id;
         let secret = state.secret_api.clone();
         let leader = Arc::new(RwLock::new((leader_id, leader_addr)));
-        let tx_client = Self::open_stream(node_id, tls, secret.as_bytes().to_vec(), leader.clone());
+        let tx_client = Self::open_stream(
+            node_id,
+            tls_config.clone(),
+            secret.as_bytes().to_vec(),
+            leader.clone(),
+        );
 
         let api_secret = state.secret_api.clone();
         Self {
@@ -65,7 +70,7 @@ impl DbClient {
                     .unwrap(),
             ),
             tx_client,
-            tls,
+            tls_config,
             api_secret,
             request_id: Arc::new(AtomicUsize::new(0)),
             tx_shutdown: Some(tx_shutdown),
@@ -78,11 +83,22 @@ impl DbClient {
         leader_id: NodeId,
         leader_addr: String,
         tls: bool,
+        tls_no_verify: bool,
         api_secret: String,
     ) -> Self {
+        let tls_config = if tls {
+            Some(tls::build_tls_config(tls_no_verify))
+        } else {
+            None
+        };
+
         let leader = Arc::new(RwLock::new((leader_id, leader_addr)));
-        let tx_client =
-            Self::open_stream(node_id, tls, api_secret.as_bytes().to_vec(), leader.clone());
+        let tx_client = Self::open_stream(
+            node_id,
+            tls_config.clone(),
+            api_secret.as_bytes().to_vec(),
+            leader.clone(),
+        );
 
         Self {
             state: None,
@@ -97,7 +113,7 @@ impl DbClient {
                     .unwrap(),
             ),
             tx_client,
-            tls,
+            tls_config,
             api_secret,
             request_id: Arc::new(AtomicUsize::new(0)),
             tx_shutdown: None,
@@ -509,7 +525,11 @@ impl DbClient {
 
     #[inline(always)]
     async fn build_addr(&self, path: &str) -> String {
-        let scheme = if self.tls { "https" } else { "http" };
+        let scheme = if self.tls_config.is_some() {
+            "https"
+        } else {
+            "http"
+        };
         let url = {
             let lock = self.leader.read().await;
             format!("{}://{}{}", scheme, lock.1, path)

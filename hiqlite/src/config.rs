@@ -2,6 +2,7 @@ use crate::{Error, Node, NodeId};
 use openraft::SnapshotPolicy;
 use std::borrow::Cow;
 
+use crate::tls::ServerTlsConfig;
 pub use openraft::Config as RaftConfig;
 
 /// The config for a Raft Node
@@ -14,7 +15,7 @@ pub struct NodeConfig {
     /// The directory where the replication log, database and snapshots should be stored
     pub data_dir: Cow<'static, str>,
     /// If the SQLite should be written to disk, provide a filename here.
-    /// It is recommended to leave it set to None if your DB size fits fully into memory and
+    /// It is recommended to leave it set to None if your DB size fits fully into memory, and
     /// you can afford this. No data will be lost with an in-memory DB because Raft logs and
     /// snapshots are always persisted and the in-memory DB can be rebuilt quickly after a restart.
     pub filename_db: Cow<'static, str>,
@@ -22,7 +23,8 @@ pub struct NodeConfig {
     /// The internal Raft config. This must be the same on each node.
     pub config: RaftConfig,
     /// If RPC and HTTP connections should use TLS
-    pub tls: bool,
+    pub tls_raft: Option<ServerTlsConfig>,
+    pub tls_api: Option<ServerTlsConfig>,
     /// Secret for all Raft internal messages - at least 16 characters long
     pub secret_raft: String,
     /// Secret for Raft management and DB API - at least 16 characters long
@@ -35,21 +37,19 @@ impl NodeConfig {
     pub fn new(
         node_id: NodeId,
         nodes: Vec<Node>,
+        tls_raft: Option<ServerTlsConfig>,
+        tls_api: Option<ServerTlsConfig>,
         secret_raft: String,
         secret_api: String,
     ) -> Result<Self, Error> {
-        let tls = nodes
-            .first()
-            .map(|node| node.addr_raft.starts_with("https://"))
-            .unwrap_or(false);
-
         let slf = Self {
             node_id,
             nodes,
             data_dir: "hiqlite".into(),
             filename_db: "hiqlite.db".into(),
             config: Self::raft_config(10_000),
-            tls,
+            tls_raft,
+            tls_api,
             secret_raft,
             secret_api,
         };

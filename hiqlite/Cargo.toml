@@ -54,10 +54,12 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+webpki-roots.workspace = true
 
 # make minimal versions happy
 lazy_static.workspace = true
 lz4-sys.workspace = true
+tokio-rustls = { workspace = true, features = ["ring"] }
 
 [build-dependencies]
 

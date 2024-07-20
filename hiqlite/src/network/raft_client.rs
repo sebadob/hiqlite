@@ -1,7 +1,7 @@
 use crate::network::handshake::HandshakeSecret;
 use crate::network::raft_server::{RaftStreamRequest, RaftStreamResponse};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
-use crate::NodeId;
+use crate::{tls, NodeId};
 use crate::{Error, Node};
 use bytes::Bytes;
 use fastwebsockets::{Frame, OpCode, WebSocket};
@@ -24,6 +24,7 @@ use openraft::raft::InstallSnapshotResponse;
 use openraft::raft::VoteRequest;
 use openraft::raft::VoteResponse;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
@@ -45,7 +46,7 @@ where
 
 pub struct NetworkStreaming {
     pub node_id: NodeId,
-    pub tls: bool,
+    pub tls_config: Option<Arc<rustls::ClientConfig>>,
     pub secret_raft: Vec<u8>,
 }
 
@@ -61,7 +62,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
         let handle = task::spawn(Self::ws_handler(
             self.node_id,
             node.clone(),
-            self.tls,
+            self.tls_config.clone(),
             self.secret_raft.clone(),
             rx,
         ));
@@ -79,7 +80,7 @@ impl NetworkStreaming {
     async fn ws_handler<Err>(
         this_node: NodeId,
         node: Node,
-        tls: bool,
+        tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: Vec<u8>,
         rx: flume::Receiver<(
             RaftStreamRequest,
@@ -88,7 +89,8 @@ impl NetworkStreaming {
     ) where
         Err: std::error::Error + 'static + Clone,
     {
-        let mut ws = Self::try_connect(this_node, &node.addr_raft, tls, &secret).await;
+        let mut ws =
+            Self::try_connect(this_node, &node.addr_raft, tls_config.clone(), &secret).await;
         let mut req: Option<RaftStreamRequest> = None;
         let mut ack: Option<
             oneshot::Sender<Result<RaftStreamResponse, RPCError<NodeId, Node, Err>>>,
@@ -99,7 +101,8 @@ impl NetworkStreaming {
             while ws.is_none() {
                 info!("WsHandler trying to connect to {}", node.addr_raft);
                 time::sleep(Duration::from_secs(1)).await;
-                ws = Self::try_connect(this_node, &node.addr_raft, tls, &secret).await;
+                ws = Self::try_connect(this_node, &node.addr_raft, tls_config.clone(), &secret)
+                    .await;
 
                 // openraft will does cancel these requests internally when
                 // they take longer than the configured heartbeat
@@ -177,12 +180,10 @@ impl NetworkStreaming {
     async fn try_connect(
         node_id: NodeId,
         addr: &str,
-        tls: bool,
+        tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: &[u8],
     ) -> Option<WebSocket<TokioIo<Upgraded>>> {
-        let stream = TcpStream::connect(addr).await.ok()?;
-
-        let uri = if tls {
+        let uri = if tls_config.is_some() {
             format!("https://{}/stream", addr)
         } else {
             format!("http://{}/stream", addr)
@@ -201,9 +202,29 @@ impl NetworkStreaming {
             .body(Empty::<Bytes>::new())
             .ok()?;
 
-        let (mut ws, _) = fastwebsockets::handshake::client(&SpawnExecutor, req, stream)
-            .await
-            .ok()?;
+        let stream = TcpStream::connect(addr).await.ok()?;
+        let (mut ws, _) = if let Some(config) = tls_config {
+            let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
+            let tls_stream = match tls::into_tls_stream(addr, stream, config).await {
+                Ok(s) => s,
+                Err(err) => {
+                    error!("Error opening TLS stream to {}: {}", addr, err);
+                    return None;
+                }
+            };
+
+            match fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await {
+                Ok((ws, r)) => (ws, r),
+                Err(err) => {
+                    error!("{}", err);
+                    return None;
+                }
+            }
+        } else {
+            fastwebsockets::handshake::client(&SpawnExecutor, req, stream)
+                .await
+                .ok()?
+        };
 
         if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
             let _ = ws

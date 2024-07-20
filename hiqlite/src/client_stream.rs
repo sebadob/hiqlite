@@ -4,7 +4,7 @@ use crate::network::api::{
 };
 use crate::network::handshake::HandshakeSecret;
 use crate::store::state_machine::sqlite::state_machine::Query;
-use crate::{DbClient, Error, Node, NodeId};
+use crate::{tls, DbClient, Error, Node, NodeId};
 use axum::http::header::{CONNECTION, UPGRADE};
 use axum::http::Request;
 use bytes::Bytes;
@@ -74,13 +74,13 @@ enum WritePayload {
 impl DbClient {
     pub(crate) fn open_stream(
         node_id: NodeId,
-        tls: bool,
+        tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: Vec<u8>,
         leader: Arc<RwLock<(NodeId, String)>>,
     ) -> flume::Sender<ClientStreamReq> {
         // TODO option like "limit in-flight requests"
         let (tx, rx) = flume::unbounded();
-        task::spawn(client_stream(node_id, tls, secret, leader, rx));
+        task::spawn(client_stream(node_id, tls_config, secret, leader, rx));
         tx
     }
 }
@@ -89,7 +89,7 @@ impl DbClient {
 /// handles reconnects and leader switches.
 async fn client_stream(
     node_id: NodeId,
-    tls: bool,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
     secret: Vec<u8>,
     leader: Arc<RwLock<(NodeId, String)>>,
     rx_req: flume::Receiver<ClientStreamReq>,
@@ -103,7 +103,14 @@ async fn client_stream(
     > = HashMap::new();
 
     loop {
-        let ws = match try_connect(node_id, &leader.read().await.1.clone(), tls, &secret).await {
+        let ws = match try_connect(
+            node_id,
+            &leader.read().await.1.clone(),
+            tls_config.clone(),
+            &secret,
+        )
+        .await
+        {
             None => {
                 time::sleep(Duration::from_millis(250)).await;
                 warn!(
@@ -463,12 +470,10 @@ where
 async fn try_connect(
     node_id: NodeId,
     addr: &str,
-    tls: bool,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
     secret: &[u8],
 ) -> Option<WebSocket<TokioIo<Upgraded>>> {
-    let stream = TcpStream::connect(addr).await.ok()?;
-
-    let uri = if tls {
+    let uri = if tls_config.is_some() {
         format!("https://{}/stream", addr)
     } else {
         format!("http://{}/stream", addr)
@@ -487,9 +492,29 @@ async fn try_connect(
         .body(Empty::<Bytes>::new())
         .ok()?;
 
-    let (mut ws, _) = fastwebsockets::handshake::client(&SpawnExecutor, req, stream)
-        .await
-        .ok()?;
+    let stream = TcpStream::connect(addr).await.ok()?;
+    let (mut ws, _) = if let Some(config) = tls_config {
+        let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
+        let tls_stream = match tls::into_tls_stream(addr, stream, config).await {
+            Ok(s) => s,
+            Err(err) => {
+                error!("Error opening TLS stream to {}: {}", addr, err);
+                return None;
+            }
+        };
+
+        match fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await {
+            Ok((ws, r)) => (ws, r),
+            Err(err) => {
+                error!("{}", err);
+                return None;
+            }
+        }
+    } else {
+        fastwebsockets::handshake::client(&SpawnExecutor, req, stream)
+            .await
+            .ok()?
+    };
 
     if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
         let _ = ws

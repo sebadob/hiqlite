@@ -57,6 +57,7 @@ in case of any errors or problems. The whole
 - fully authenticated networking
 - self-healing - features `auto-heal` and `auto-heal-logs`
 - automatic database migrations
+- optional TLS everywhere for a zero-trust philosophy
 - strongly consistent, replicated `execute` queries
     - on a leader node, the client will not even bother with using networking
     - on a non-leader node, it will automatically switch over to a network connection so the request
@@ -72,9 +73,8 @@ in case of any errors or problems. The whole
 
 #### TODO implement
 
-This list is my no means exhaustive, these are just the next big things on my list
+This list is by no means exhaustive, these are just the next big things
 
-- TLS
 - backups to s3
 - restore from remote backup
 - consistent queries on leader

@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -28,6 +30,7 @@ pub use config::{NodeConfig, RaftConfig};
 pub use openraft::SnapshotPolicy;
 pub use rusqlite::Row;
 pub use store::state_machine::sqlite::param::Param;
+pub use tls::ServerTlsConfig;
 
 mod app_state;
 mod client;
@@ -37,6 +40,7 @@ mod error;
 mod migration;
 mod network;
 mod store;
+mod tls;
 
 type NodeId = u64;
 
@@ -93,9 +97,11 @@ impl Display for Node {
 pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbClient, Error> {
     node_config.is_valid()?;
 
-    // // TODO remove after testing
-    // let migration = migrations::build();
-    // info!("\n\n{:?}\n", migration);
+    if node_config.tls_api.is_some() || node_config.tls_raft.is_some() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("default CryptoProvider installation to succeed");
+    }
 
     let raft_config = Arc::new(node_config.config.validate().unwrap());
 
@@ -113,7 +119,7 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
     let network = NetworkStreaming {
         // let network = Network {
         node_id: node_config.node_id,
-        tls: node_config.tls,
+        tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
     };
 
@@ -160,37 +166,40 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
 
     // let compression_middleware = ServiceBuilder::new().layer(CompressionLayer::new());
 
-    // if let Ok(path) = env::var("TLS_CERT") {
-    //     let key = env::var("TLS_KEY").expect("TLS_KEY is missing");
-    //     let config = RustlsConfig::from_pem_file(PathBuf::from(path), PathBuf::from(key))
-    //         .await
-    //         .unwrap();
-    //
-    //     TLS.set(true).unwrap();
-    //
-    //     info!("listening on https://{}", &http_addr);
-    //     axum_server::bind_rustls(http_addr, config)
-    //         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-    //         .await
-    //         .unwrap();
-    // } else {
-    //     TLS.set(false).unwrap();
-
     let (tx_shutdown, rx_shutdown) = watch::channel(false);
 
     let router_internal = Router::new()
         .route("/stream", get(raft_server::stream))
+        .route("/ping", get(api::ping))
         // .layer(compression_middleware.clone().into_inner())
         .with_state(state.clone());
 
     info!("rpc internal listening on {}", &rpc_addr);
-    let listener = TcpListener::bind(rpc_addr).await?;
+
+    let tls_config = if let Some(config) = &node_config.tls_raft {
+        Some(config.server_config().await)
+    } else {
+        None
+    };
     let shutdown = shutdown_signal(rx_shutdown.clone());
     let _handle_internal = task::spawn(async move {
-        axum::serve(listener, router_internal.into_make_service())
-            .with_graceful_shutdown(shutdown)
-            .await
-            .unwrap()
+        if let Some(config) = tls_config {
+            let addr = SocketAddr::from_str(&rpc_addr).expect("valid RPC socket address");
+            // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
+            // properly with axum directly
+            axum_server::bind_rustls(addr, config)
+                .serve(router_internal.into_make_service())
+                .await
+                .unwrap();
+        } else {
+            let listener = TcpListener::bind(rpc_addr)
+                .await
+                .expect("valid RPC socket address");
+            axum::serve(listener, router_internal.into_make_service())
+                .with_graceful_shutdown(shutdown)
+                .await
+                .unwrap()
+        }
     });
 
     let router_api = Router::new()
@@ -211,19 +220,49 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
         .with_state(state.clone());
 
     info!("api external listening on {}", &api_addr);
-    let listener = TcpListener::bind(api_addr).await?;
+    let tls_config = if let Some(config) = &node_config.tls_api {
+        Some(config.server_config().await)
+    } else {
+        None
+    };
     let _handle_external = task::spawn(async move {
-        axum::serve(listener, router_api.into_make_service())
-            .with_graceful_shutdown(shutdown_signal(rx_shutdown))
-            .await
-            .unwrap()
+        if let Some(config) = tls_config {
+            let addr = SocketAddr::from_str(&api_addr).expect("valid RPC socket address");
+            // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
+            // properly with axum directly
+            axum_server::bind_rustls(addr, config)
+                .serve(router_api.into_make_service())
+                .await
+                .unwrap();
+        } else {
+            let listener = TcpListener::bind(api_addr)
+                .await
+                .expect("valid RPC socket address");
+            axum::serve(listener, router_api.into_make_service())
+                .with_graceful_shutdown(shutdown_signal(rx_shutdown))
+                .await
+                .unwrap()
+        }
     });
 
     if auto_init {
-        init_cluster(state.clone(), node_config.nodes, node_config.tls).await?;
+        init_cluster(
+            state.clone(),
+            node_config.nodes,
+            node_config.tls_raft.is_some(),
+            node_config
+                .tls_raft
+                .map(|c| c.danger_tls_no_verify)
+                .unwrap_or(false),
+        )
+        .await?;
     }
 
-    let client = DbClient::new_local(state, node_config.tls, tx_shutdown);
+    let client = DbClient::new_local(
+        state,
+        node_config.tls_api.map(|c| c.client_config()),
+        tx_shutdown,
+    );
 
     Ok(client)
 }
@@ -236,7 +275,7 @@ async fn init_cluster(
     state: Arc<AppState>,
     nodes: Vec<Node>,
     tls: bool,
-    // client: &DbClient,
+    tls_no_verify: bool,
 ) -> Result<(), Error> {
     // After the start, the cluster must be initialized.
     if state.id == 1 {
@@ -256,77 +295,33 @@ async fn init_cluster(
             return Ok(());
         }
 
-        wait_for_nodes_online(&state, &nodes, tls).await;
+        wait_for_nodes_online(&state, &nodes, tls, tls_no_verify).await;
 
         let mut nodes_set = BTreeMap::new();
         for node in nodes {
             nodes_set.insert(node.id, node);
         }
         state.raft.initialize(nodes_set).await?;
-
-        // // The init will be done on node 1 only.
-        // // This will bootstrap the cluster from a cold start.
-        // match client.init().await {
-        //     Ok(_) => {
-        //         info!("New Raft Cluster has been initialized");
-        //
-        //         time::sleep(Duration::from_secs(1)).await;
-        //
-        //         let mut new_members = BTreeSet::new();
-        //
-        //         // After the initialization, we add the others as learners.
-        //         for node in nodes {
-        //             new_members.insert(node.id);
-        //
-        //             // Don't add this node as learner to itself
-        //             if node.id != state.id {
-        //                 match client
-        //                     .add_learner(LearnerReq {
-        //                         node_id: node.id,
-        //                         addr_api: node.addr_api,
-        //                         addr_raft: node.addr_raft,
-        //                     })
-        //                     .await
-        //                 {
-        //                     Ok(res) => {
-        //                         info!("Node {} added as learner: {:?}", node.id, res)
-        //                     }
-        //                     Err(err) => {
-        //                         error!("Error adding Node {} as learner: {:?}", node.id, err)
-        //                     }
-        //                 }
-        //             }
-        //         }
-        //
-        //         time::sleep(Duration::from_secs(1)).await;
-        //
-        //         match client.change_membership(&new_members).await {
-        //             Ok(res) => {
-        //                 info!("Membership changed: {:?}", res)
-        //             }
-        //             Err(err) => {
-        //                 error!("Error changing membership: {:?}", err)
-        //             }
-        //         }
-        //     }
-        //     Err(err) => error!("{}", err),
-        // }
     }
 
     Ok(())
 }
 
-async fn wait_for_nodes_online(state: &AppState, nodes: &[Node], tls: bool) {
+async fn wait_for_nodes_online(state: &AppState, nodes: &[Node], tls: bool, tls_no_verify: bool) {
     let scheme = if tls { "https" } else { "http" };
     let remotes = nodes
         .iter()
         .filter_map(|node| {
-            (node.id != state.id).then_some(format!("{}://{}/ping", scheme, node.addr_api))
+            (node.id != state.id).then_some(format!("{}://{}/ping", scheme, node.addr_raft))
         })
         .collect::<Vec<String>>();
     let mut remotes_online = 0;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(tls_no_verify)
+        .http2_prior_knowledge()
+        .build()
+        .unwrap();
     while remotes_online != remotes.len() {
         info!("Waiting for remote nodes {:?} to become reachable", remotes);
 
