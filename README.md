@@ -51,14 +51,15 @@ in case of any errors or problems. The whole
 ### What is working
 
 - whole Raft cluster setup
-- everything a Raft is expected to do (thanks to `openraft`)
+- everything a Raft is expected to do (thanks to [openraft](https://github.com/datafuselabs/openraft))
 - Raft cluster auto-init based on given configuration
-- persistent storage for Raft logs (with `rocksdb`) and SQLite state machine
+- persistent storage for Raft logs (with [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb)) and SQLite state
+  machine
 - fully authenticated networking
 - self-healing - features `auto-heal` and `auto-heal-logs`
 - automatic database migrations
 - optional TLS everywhere for a zero-trust philosophy
-- backups to s3 (with `s3-simple`)
+- backups to s3 (with [s3-simple](https://crates.io/crates/s3-simple) + [cryptr](https://crates.io/crates/cryptr))
 - strongly consistent, replicated `execute` queries
     - on a leader node, the client will not even bother with using networking
     - on a non-leader node, it will automatically switch over to a network connection so the request
