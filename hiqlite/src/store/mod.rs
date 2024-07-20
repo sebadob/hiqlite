@@ -58,6 +58,7 @@ pub(crate) async fn new_storage(
     // where
     //     T: RaftLogStorage<TypeConfigSqlite>,
     // {
+    #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::S3Config>>,
 ) -> (logs::rocksdb::LogStoreRocksdb, StateMachineSqlite) {
     // let log_store = LogStore::new(db_path).await;
 
@@ -71,9 +72,15 @@ pub(crate) async fn new_storage(
     let log_store = logs::rocksdb::LogStoreRocksdb::new(&db_path).await;
 
     // let sm_store = state_machine_rocksdb::build_state_machine(db_path).await;
-    let sm_store = StateMachineSqlite::new(db_path, filename_db, node_id)
-        .await
-        .unwrap();
+    let sm_store = StateMachineSqlite::new(
+        db_path,
+        filename_db,
+        node_id,
+        #[cfg(feature = "s3")]
+        s3_config,
+    )
+    .await
+    .unwrap();
     (log_store, sm_store)
     // (log_store(db_path, mode).await, sm_store)
 }

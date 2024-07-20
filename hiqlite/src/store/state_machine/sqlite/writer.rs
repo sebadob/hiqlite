@@ -87,7 +87,9 @@ pub struct MetaPersistRequest {
 pub struct BackupRequest {
     pub node_id: NodeId,
     pub target_folder: String,
-    // pub s3_config: Option<S3Config>, // TODO
+    #[cfg(feature = "s3")]
+    pub s3_config: Option<std::sync::Arc<crate::S3Config>>,
+    pub last_applied_log_id: Option<LogId<NodeId>>,
     pub ack: oneshot::Sender<Result<(), Error>>,
 }
 
@@ -341,16 +343,20 @@ pub fn spawn_writer(
                     ack.send(meta).unwrap();
                 }
 
-                WriterRequest::Backup(BackupRequest {
-                    node_id,
-                    target_folder,
-                    ack,
-                }) => {
-                    match create_backup(&conn, node_id, target_folder) {
-                        Ok(meta) => ack.send(Ok(())),
+                WriterRequest::Backup(req) => {
+                    last_applied_log_id = req.last_applied_log_id;
+
+                    match create_backup(
+                        &conn,
+                        req.node_id,
+                        req.target_folder,
+                        #[cfg(feature = "s3")]
+                        req.s3_config,
+                    ) {
+                        Ok(meta) => req.ack.send(Ok(())),
                         Err(err) => {
                             error!("Error creating backup: {:?}", err);
-                            ack.send(Err(err))
+                            req.ack.send(Err(err))
                         }
                     }
                     .expect("snapshot listener to always exists");
@@ -390,7 +396,7 @@ fn create_backup(
     conn: &rusqlite::Connection,
     node_id: NodeId,
     target_folder: String,
-    // s3_config: Option<S3Config>, // TODO
+    #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::S3Config>>,
 ) -> Result<(), Error> {
     // TODO
     // - build target db file name with node id and timestamp
@@ -398,25 +404,28 @@ fn create_backup(
     // - connect to vacuumed db and remove metadata
     // - if we have an s3 target, encrypt and push it
 
-    let path = format!(
-        "{}/backup_node_{}_{}.sqlite",
-        target_folder,
-        node_id,
-        Utc::now().timestamp()
-    );
-    info!("Creating database backup into {}", path);
+    let file = format!("backup_node_{}_{}.sqlite", node_id, Utc::now().timestamp());
+    let path_full = format!("{}/{}", target_folder, file,);
+    info!("Creating database backup into {}", path_full);
 
-    conn.execute(&format!("VACUUM main INTO '{}'", path), ())?;
+    conn.execute(&format!("VACUUM main INTO '{}'", path_full), ())?;
 
     // connect to the backup and reset metadata
-    let conn_bkp = rusqlite::Connection::open(path)?;
+    let conn_bkp = rusqlite::Connection::open(&path_full)?;
     let mut stmt = conn_bkp.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
     let data = bincode::serialize(&StateMachineData::default()).unwrap();
     stmt.execute([data])?;
 
     info!("Database backup finished");
 
-    // TODO if we have an s3 target, spawn encrypt + upload task in the background
+    #[cfg(feature = "s3")]
+    if let Some(s3) = s3_config {
+        task::spawn(async move {
+            if let Err(err) = s3.push(&path_full, &file).await {
+                error!("Error pushing Backup to S3: {}", err);
+            }
+        });
+    }
 
     Ok(())
 }

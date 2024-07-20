@@ -32,6 +32,9 @@ pub use rusqlite::Row;
 pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
+#[cfg(feature = "s3")]
+pub use s3::S3Config;
+
 mod app_state;
 mod client;
 mod client_stream;
@@ -39,6 +42,8 @@ mod config;
 mod error;
 mod migration;
 mod network;
+#[cfg(feature = "s3")]
+mod s3;
 mod store;
 mod tls;
 
@@ -111,6 +116,8 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
         node_config.node_id,
         node_config.data_dir,
         node_config.filename_db,
+        #[cfg(feature = "s3")]
+        node_config.s3_config.map(Arc::new),
     )
     .await;
 

@@ -265,7 +265,7 @@ async fn client_stream(
 
                 ClientStreamReq::Backup(ClientBackupPayload { request_id, ack }) => {
                     let req = ApiStreamRequest {
-                        request_id: request_id,
+                        request_id,
                         payload: ApiStreamRequestPayload::Backup,
                     };
 

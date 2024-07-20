@@ -1,7 +1,7 @@
-///! There are a `redb` and `sqlite` logs store implementation around. These are not used currently but kept
-///! around until more tests with async logs commit can be done. The final solution will be decided upon before
-///! the first release... probably.
-///
+// There are a `redb` and `sqlite` logs store implementation around. These are not used currently but kept
+// around until more tests with async logs commit can be done. The final solution will be decided upon before
+// the first release... probably.
+
 pub mod memory;
 pub mod redb;
 pub mod rocksdb;

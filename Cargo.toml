@@ -21,6 +21,7 @@ byteorder = "1.4.3"
 bytes = "1.6.0"
 chrono = { version = "0.4.38", default-features = false, features = ["std", "clock", "now"] }
 clap = { version = "4.1.11", features = ["derive", "env"] }
+cryptr = { version = "0.4.0", features = ["s3"] }
 deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }
 fastwebsockets = { version = "0.8.0", features = ["upgrade", "with_axum", "unstable-split"] }
 flume = "0.11.0"

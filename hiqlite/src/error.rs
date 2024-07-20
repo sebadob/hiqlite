@@ -42,6 +42,8 @@ pub enum Error {
     RaftErrorFatal(Fatal<u64>),
     #[error("Request: {0}")]
     Request(String),
+    #[error("S3: {0}")]
+    S3(String),
     #[error("SnapshotError: {0}")]
     SnapshotError(RaftSnapshotError),
     #[error("Sqlite: {0}")]
@@ -104,6 +106,7 @@ impl IntoResponse for Error {
             Error::RaftError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::RaftErrorFatal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Request(_) => StatusCode::BAD_REQUEST,
+            Error::S3(_) => StatusCode::BAD_REQUEST,
             Error::SnapshotError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Sqlite(_) => StatusCode::BAD_REQUEST,
             Error::Timeout(_) => StatusCode::REQUEST_TIMEOUT,

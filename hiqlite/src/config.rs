@@ -29,6 +29,8 @@ pub struct NodeConfig {
     pub secret_raft: String,
     /// Secret for Raft management and DB API - at least 16 characters long
     pub secret_api: String,
+    #[cfg(feature = "s3")]
+    pub s3_config: Option<crate::S3Config>,
 }
 
 impl NodeConfig {
@@ -52,12 +54,42 @@ impl NodeConfig {
             tls_api,
             secret_raft,
             secret_api,
+            #[cfg(feature = "s3")]
+            s3_config: None,
         };
 
         slf.is_valid()?;
 
         Ok(slf)
     }
+
+    // #[cfg(feature = "s3")]
+    // pub fn new(
+    //     node_id: NodeId,
+    //     nodes: Vec<Node>,
+    //     tls_raft: Option<ServerTlsConfig>,
+    //     tls_api: Option<ServerTlsConfig>,
+    //     secret_raft: String,
+    //     secret_api: String,
+    //     s3_config: Option<crate::S3Config>,
+    // ) -> Result<Self, Error> {
+    //     let slf = Self {
+    //         node_id,
+    //         nodes,
+    //         data_dir: "hiqlite".into(),
+    //         filename_db: "hiqlite.db".into(),
+    //         config: Self::raft_config(10_000),
+    //         tls_raft,
+    //         tls_api,
+    //         secret_raft,
+    //         secret_api,
+    //         s3_config,
+    //     };
+    //
+    //     slf.is_valid()?;
+    //
+    //     Ok(slf)
+    // }
 
     /// Provides a good starting point for a `RaftConfig` inside a fast network.
     #[allow(deprecated)] // allow to not need ..Default::default() and miss config updates

@@ -71,23 +71,12 @@ pub struct StoredSnapshot {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StateMachineData {
     pub last_applied_log_id: Option<LogId<NodeId>>,
     pub last_membership: StoredMembership<NodeId, Node>,
     pub last_snapshot_id: Option<String>,
     pub last_snapshot_path: Option<String>,
-}
-
-impl Default for StateMachineData {
-    fn default() -> Self {
-        Self {
-            last_applied_log_id: None,
-            last_membership: Default::default(),
-            last_snapshot_id: None,
-            last_snapshot_path: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +87,9 @@ pub struct StateMachineSqlite {
     path_snapshots: String,
     path_backups: String,
     path_lock_file: String,
+
+    #[cfg(feature = "s3")]
+    s3_config: Option<Arc<crate::S3Config>>,
 
     pub read_pool: Arc<SqlitePool>,
     pub(crate) write_tx: flume::Sender<WriterRequest>,
@@ -125,6 +117,7 @@ impl StateMachineSqlite {
         data_dir: Cow<'static, str>,
         filename_db: Cow<'static, str>,
         this_node: NodeId,
+        #[cfg(feature = "s3")] s3_config: Option<Arc<crate::S3Config>>,
     ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
         let path_base = format!("{}/state_machine", data_dir);
 
@@ -203,6 +196,8 @@ impl StateMachineSqlite {
             path_snapshots,
             path_backups,
             path_lock_file,
+            #[cfg(feature = "s3")]
+            s3_config,
             read_pool: Arc::new(read_pool),
             write_tx,
         };
@@ -756,6 +751,9 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     let req = WriterRequest::Backup(writer::BackupRequest {
                         node_id: self.this_node,
                         target_folder: self.path_backups.clone(),
+                        #[cfg(feature = "s3")]
+                        s3_config: self.s3_config.clone(),
+                        last_applied_log_id: self.data.last_applied_log_id,
                         ack,
                     });
 

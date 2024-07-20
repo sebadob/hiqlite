@@ -15,13 +15,16 @@ repository = "https://github.com/sebadob/hiqlite"
 all-features = true
 
 [features]
-default = ["auto-heal", "auto-heal-logs", "sqlite", "webpki-roots"]
+# currently for ease of use, just everything is enabled by default until the first release
+#default = ["auto-heal", "auto-heal-logs", "sqlite", "webpki-roots"]
+default = ["auto-heal", "auto-heal-logs", "s3", "sqlite", "webpki-roots"]
 
 auto-heal = []
 auto-heal-logs = ["openraft/loosen-follower-log-revert"]
 sqlite = []
 io-uring = ["rocksdb/io-uring"]
 jemalloc = ["rocksdb/jemalloc"]
+s3 = ["dep:cryptr"]
 webpki-roots = ["reqwest/rustls-tls-webpki-roots"]
 
 [dependencies]
@@ -31,6 +34,7 @@ bincode.workspace = true
 byteorder.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+cryptr = { workspace = true, optional = true }
 deadpool.workspace = true
 fastwebsockets.workspace = true
 flume.workspace = true
@@ -65,4 +69,5 @@ log = "0.4.22"
 [build-dependencies]
 
 [dev-dependencies]
+dotenvy = "0.15.7"
 tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }

@@ -105,6 +105,7 @@ async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
             tls_api: None,
             secret_raft: "asdasdasdasdasdasd".to_string(),
             secret_api: "qweqweqweqweqweqwe".to_string(),
+            s3_config: None, // TODO impl S3 tests
         }
     };
 
