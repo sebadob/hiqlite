@@ -47,26 +47,27 @@ static KEY_COMMITTED: &[u8] = b"committed";
 static KEY_LAST_PURGED: &[u8] = b"last_purged";
 static KEY_VOTE: &[u8] = b"vote";
 
-enum ActionWrite {
+pub enum ActionWrite {
     Append(ActionAppend),
     Remove(ActionRemove),
     Vote(ActionVote),
     Sync,
+    // Backup,
 }
 
-struct ActionAppend {
+pub struct ActionAppend {
     rx: flume::Receiver<Option<(Vec<u8>, Vec<u8>)>>,
     // TODO with 0.10 the callback will be async ready
     callback: LogFlushed<TypeConfigSqlite>,
     ack: oneshot::Sender<Result<(), StorageIOError<NodeId>>>,
 }
 
-struct ActionVote {
+pub struct ActionVote {
     value: Vec<u8>,
     ack: oneshot::Sender<Result<(), StorageIOError<NodeId>>>,
 }
 
-struct ActionRemove {
+pub struct ActionRemove {
     from: Vec<u8>,
     until: Vec<u8>,
     last_log: Option<Vec<u8>>,
@@ -371,7 +372,7 @@ impl LogStoreReader {
 #[derive(Debug)]
 pub struct LogStoreRocksdb {
     db: Arc<DB>,
-    tx_writer: flume::Sender<ActionWrite>,
+    pub(crate) tx_writer: flume::Sender<ActionWrite>,
     tx_reader: flume::Sender<ActionRead>,
 }
 

@@ -5,7 +5,7 @@ use crate::store::state_machine::sqlite::writer::{
     self, MetaPersistRequest, SqlBatch, SqlTransaction, WriterRequest,
 };
 use crate::store::state_machine::sqlite::{reader, TypeConfigSqlite};
-use crate::store::StorageResult;
+use crate::store::{logs, StorageResult};
 use crate::{Error, Node, NodeId};
 use openraft::storage::RaftStateMachine;
 use openraft::{
@@ -85,8 +85,6 @@ pub struct StateMachineSqlite {
     path_lock_file: String,
 
     pub read_pool: Arc<SqlitePool>,
-    // pub read_pool: Arc<deadpool_sqlite::Pool>,
-    // pub(crate) read_tx: flume::Sender<ReaderRequest>,
     pub(crate) write_tx: flume::Sender<WriterRequest>,
 }
 
@@ -111,6 +109,7 @@ impl StateMachineSqlite {
     pub(crate) async fn new(
         data_dir: Cow<'static, str>,
         filename_db: Cow<'static, str>,
+        tx_logs_writer: flume::Sender<logs::rocksdb::ActionWrite>,
     ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
         let path_base = format!("{}/state_machine", data_dir);
 
@@ -137,12 +136,7 @@ impl StateMachineSqlite {
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write(&err),
             })?;
-        let write_tx = writer::spawn_writer(conn);
-        // sqlite_writer::spawn_writer(path_db.to_string(), filename_db.to_string(), in_memory);
-        // time::sleep(Duration::from_millis(100)).await;
-
-        // let read_tx =
-        //     sqlite_reader::spawn_reader(path_db.to_string(), filename_db.to_string(), in_memory);
+        let write_tx = writer::spawn_writer(conn, tx_logs_writer);
 
         let read_pool = Self::connect_read_pool(path_db.as_ref(), filename_db.as_ref())
             .await
@@ -151,7 +145,7 @@ impl StateMachineSqlite {
             })?;
 
         // only try to fetch the data from the DB if it actually existed beforehand
-        let state_machine_data = if db_exists {
+        let state_machine_data: StateMachineData = if db_exists {
             let (ack, rx) = oneshot::channel();
             write_tx
                 .send_async(WriterRequest::MetadataRead(ack))
@@ -161,9 +155,7 @@ impl StateMachineSqlite {
                 })?;
             let bytes = rx.await.expect("To always get Metadata from DB");
 
-            let data: StateMachineData = bincode::deserialize(&bytes).unwrap();
-            data
-            // bincode::deserialize(&bytes).unwrap()
+            bincode::deserialize(&bytes).unwrap()
         } else {
             let metadata = StateMachineData {
                 last_applied_log_id: None,
@@ -196,15 +188,11 @@ impl StateMachineSqlite {
             path_lock_file,
             read_pool: Arc::new(read_pool),
             write_tx,
-            // read_tx,
         };
 
         // TODO only apply the latest snapshot if we do not have a DB yet?
         // TODO or just apply it all the time and therefore don't care about graceful shutdown for SQLite?
         if !db_exists {
-            // if let Some(snapshot) = slf.get_current_snapshot_().await? {
-            //     slf.update_state_machine_(snapshot).await?;
-            // }
             if let Some(snapshot) = slf.read_current_snapshot_from_disk().await? {
                 slf.update_state_machine_(snapshot).await?;
             }

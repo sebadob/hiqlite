@@ -3,7 +3,8 @@
 - [ ] the sql writer needs a way to hook in the communication with the logs task
 - [ ] add data structures to be able to forward a backup task all the way from the `DbClient`
 - [ ] backups should be possible with file and / or s3 target
-- [ ] backups should have their own folder incl node id and timestamp
+- [ ] backups should have their own folder incl node id and timestamp, and maybe last applied log id
+  to make a restore later on easier (needs a safe parser for the file name)
 - [ ] when writer receives a backup request, first create a backup of the logs to not loose some
   if maybe purge or truncate run in between
 - [ ] when log backups are completed, start sqlite backup with `VACUUM INTO` just like for snapshots
