@@ -1,13 +1,13 @@
 # Backups
 
 - [x] create backup logic for sql writer
-- [ ] add data structures to be able to forward a backup task all the way from the `DbClient`
+- [x] add data structures to be able to forward a backup task all the way from the `DbClient`
     - [x] state machine impl -> sql writer
-    - [ ] `DbClient` -> client stream -> server stream -> state machine impl
+    - [x] `DbClient` -> client stream -> server stream -> state machine impl
 - [ ] backups should be possible with file and / or s3 target
-- [ ] backups names should incl node id and timestamp, and maybe last applied log id
+- [x] backups names should incl node id and timestamp
   to make a restore later on easier (needs a safe parser for the file name)
-- [ ] start sqlite backup with `VACUUM INTO` just like for snapshots
+- [x] start sqlite backup with `VACUUM INTO` just like for snapshots
 - [ ] if an s3 bucket is given, encrypt and push to s3 with `cryptr`
 
 -> We don't need to back up the logs. This would only be important to feature PITR, which is not a goal currently.

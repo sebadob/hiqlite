@@ -36,6 +36,7 @@ pub enum QueryWrite {
     Transaction(Vec<Query>),
     Batch(Cow<'static, str>),
     Migration(Vec<Migration>),
+    Backup,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +52,7 @@ pub enum Response {
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
     Batch(ResponseBatch),
     Migrate(Result<(), Error>),
+    Backup(Result<(), Error>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -94,6 +96,7 @@ pub struct StateMachineSqlite {
 
     this_node: NodeId,
     path_snapshots: String,
+    path_backups: String,
     path_lock_file: String,
 
     pub read_pool: Arc<SqlitePool>,
@@ -127,6 +130,11 @@ impl StateMachineSqlite {
 
         let path_snapshots = format!("{}/snapshots", path_base);
         fs::create_dir_all(&path_snapshots)
+            .await
+            .expect("Cannot create snapshots path");
+
+        let path_backups = format!("{}/backups", path_base);
+        fs::create_dir_all(&path_backups)
             .await
             .expect("Cannot create snapshots path");
 
@@ -193,6 +201,7 @@ impl StateMachineSqlite {
             data: state_machine_data,
             this_node,
             path_snapshots,
+            path_backups,
             path_lock_file,
             read_pool: Arc::new(read_pool),
             write_tx,
@@ -740,6 +749,23 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
 
                     let result = rx.await.expect("to always get a response from sql writer");
                     Response::Batch(ResponseBatch { result })
+                }
+
+                EntryPayload::Normal(QueryWrite::Backup) => {
+                    let (ack, rx) = oneshot::channel();
+                    let req = WriterRequest::Backup(writer::BackupRequest {
+                        node_id: self.this_node,
+                        target_folder: self.path_backups.clone(),
+                        ack,
+                    });
+
+                    self.write_tx
+                        .send_async(req)
+                        .await
+                        .expect("sql writer to always be listening");
+
+                    let result = rx.await.expect("to always get a response from sql writer");
+                    Response::Backup(result)
                 }
 
                 EntryPayload::Membership(mem) => {

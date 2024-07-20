@@ -79,6 +79,8 @@ use tracing::{error, info, warn};
 
 pub async fn ping() {}
 
+// TODO maybe remove this endpoint in favor or a generic REST endpoint which chooses the
+// the correct sub-method on its own? -> way better UX and response will be just `text` anyway?
 pub(crate) async fn execute(
     state: AppStateExt,
     headers: HeaderMap,
@@ -183,6 +185,7 @@ pub(crate) enum ApiStreamRequestPayload {
     Transaction(Vec<Query>),
     Batch(Cow<'static, str>),
     Migrate(Vec<Migration>),
+    Backup,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -197,6 +200,7 @@ pub(crate) enum ApiStreamResponsePayload {
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
     Batch(Vec<Result<usize, Error>>),
     Migrate(Result<(), Error>),
+    Backup(Result<(), Error>),
 }
 
 #[derive(Debug)]
@@ -423,6 +427,26 @@ async fn handle_socket_concurrent(
                         Err(err) => ApiStreamResponse {
                             request_id: req.request_id,
                             result: Ok(ApiStreamResponsePayload::Execute(Err(Error::from(err)))),
+                        },
+                    }
+                }
+
+                ApiStreamRequestPayload::Backup => {
+                    match state.raft.client_write(QueryWrite::Backup).await {
+                        Ok(resp) => {
+                            let resp: crate::Response = resp.data;
+                            let res = match resp {
+                                crate::Response::Backup(res) => res,
+                                _ => unreachable!(),
+                            };
+                            ApiStreamResponse {
+                                request_id: req.request_id,
+                                result: Ok(ApiStreamResponsePayload::Backup(res)),
+                            }
+                        }
+                        Err(err) => ApiStreamResponse {
+                            request_id: req.request_id,
+                            result: Ok(ApiStreamResponsePayload::Backup(Err(Error::from(err)))),
                         },
                     }
                 }

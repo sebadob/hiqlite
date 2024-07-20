@@ -28,13 +28,19 @@ use tracing::{debug, error, info, warn};
 
 #[derive(Debug)]
 pub enum ClientStreamReq {
+    // coming from the `DbClient`
     Execute(ClientExecutePayload),
     Transaction(ClientTransactionPayload),
     Batch(ClientBatchPayload),
     Migrate(ClientMigratePayload),
-    LeaderChange((Option<u64>, Option<Node>)),
+    Backup(ClientBackupPayload),
+
+    // coming from the WebSocket reader
     StreamResponse(ApiStreamResponse),
     CleanupBuffer,
+
+    // may come from `DbClient` or WebSocket reader
+    LeaderChange((Option<u64>, Option<Node>)),
 }
 
 #[derive(Debug)]
@@ -62,6 +68,12 @@ pub struct ClientBatchPayload {
 pub struct ClientMigratePayload {
     pub request_id: usize,
     pub migrations: Vec<Migration>,
+    pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
+}
+
+#[derive(Debug)]
+pub struct ClientBackupPayload {
+    pub request_id: usize,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
@@ -251,6 +263,28 @@ async fn client_stream(
                     }
                 }
 
+                ClientStreamReq::Backup(ClientBackupPayload { request_id, ack }) => {
+                    let req = ApiStreamRequest {
+                        request_id: request_id,
+                        payload: ApiStreamRequestPayload::Backup,
+                    };
+
+                    match tx_write
+                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
+                        .await
+                    {
+                        Ok(_) => {
+                            in_flight.insert(req.request_id, ack);
+                        }
+                        Err(err) => {
+                            error!("Error sending txn request to writer: {}", err);
+                            let _ = ack
+                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
+                            break;
+                        }
+                    }
+                }
+
                 ClientStreamReq::LeaderChange((node_id, node)) => {
                     // ignore result just in case the writer has already exited anyway
                     let _ = tx_write.send_async(WritePayload::Close).await;
@@ -307,6 +341,9 @@ async fn client_stream(
                 }
                 ClientStreamReq::Migrate(_) => {
                     unreachable!("we should never receive ClientStreamReq::Migrate from WS reader")
+                }
+                ClientStreamReq::Backup(_) => {
+                    unreachable!("we should never receive ClientStreamReq::Backup from WS reader")
                 }
                 ClientStreamReq::LeaderChange((node_id, node)) => {
                     update_leader(&leader, node_id, node).await;
