@@ -1,6 +1,6 @@
 # Backups
 
-- [ ] the sql writer needs a way to hook in the communication with the logs task
+- [x] the sql writer needs a way to hook in the communication with the logs task
 - [ ] add data structures to be able to forward a backup task all the way from the `DbClient`
 - [ ] backups should be possible with file and / or s3 target
 - [ ] backups should have their own folder incl node id and timestamp, and maybe last applied log id

@@ -14,9 +14,9 @@ there are quite a few logic bugs. I also have many panics and assertions in case
 I'd rather have my application panic so I can catch the error immediately than missing an error log and ending up in
 an inconsistent state.
 
-An integration tests for the currently implemented features does exist.  
+An integration test for the currently implemented features does exist.  
 Issues and discussions are not available in this early stage. It would simply not make any sense before v0.1.0.
-I will also push directly to master until it's hitting the first release, which will most probably break the examples
+I will also push directly to `main` until it's hitting the first release, which will most probably break the examples
 from time to time. There is an initial **0.0.1 tag**, just in case I break the examples on `main` before the first
 release.
 
