@@ -1,36 +1,38 @@
 use crate::Error;
-use cryptr::stream::writer::s3_writer::{Bucket, Credentials, UrlStyle};
+use cryptr::stream::s3::*;
 use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter};
-use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
 pub struct S3Config {
     pub bucket: Bucket,
-    pub credentials: Credentials,
-    pub danger_tls_no_verify: bool,
 }
 
 impl S3Config {
-    pub fn new<C, S>(
+    pub fn new<S>(
         endpoint: &str,
-        path_style: UrlStyle,
-        name: C,
-        region: C,
+        name: S,
+        region: S,
         key: S,
         secret: S,
+        path_style: bool,
     ) -> Result<Self, Error>
     where
-        C: Into<Cow<'static, str>>,
         S: Into<String>,
     {
         let endpoint = reqwest::Url::parse(endpoint).map_err(|err| Error::S3(err.to_string()))?;
+        let region = Region(region.into());
+        let credentials = Credentials {
+            access_key_id: AccessKeyId(key.into()),
+            access_key_secret: AccessKeySecret(secret.into()),
+        };
+        let options = Some(BucketOptions {
+            path_style,
+            list_objects_v2: true,
+        });
+        let bucket = Bucket::new(endpoint, name.into(), region, credentials, options)
+            .map_err(|err| Error::S3(err.to_string()))?;
 
-        Ok(Self {
-            bucket: Bucket::new(endpoint, path_style, name, region)
-                .map_err(|err| Error::S3(err.to_string()))?,
-            credentials: Credentials::new(key, secret),
-            danger_tls_no_verify: false,
-        })
+        Ok(Self { bucket })
     }
 
     pub(crate) async fn push(&self, path: &str, object: &str) -> Result<(), Error> {
@@ -39,10 +41,8 @@ impl S3Config {
             print_progress: false,
         });
         let writer = StreamWriter::S3(S3Writer {
-            credentials: Some(&self.credentials),
             bucket: &self.bucket,
             object,
-            danger_accept_invalid_certs: self.danger_tls_no_verify,
         });
 
         EncValue::encrypt_stream(reader, writer)
@@ -52,10 +52,8 @@ impl S3Config {
 
     pub(crate) async fn pull(&self, path: &str, object: &str) -> Result<(), Error> {
         let reader = StreamReader::S3(S3Reader {
-            credentials: Some(&self.credentials),
             bucket: &self.bucket,
             object,
-            danger_accept_invalid_certs: self.danger_tls_no_verify,
             print_progress: false,
         });
         let writer = StreamWriter::File(FileWriter {

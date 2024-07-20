@@ -1,5 +1,5 @@
 use chrono::Utc;
-use cryptr::stream::writer::s3_writer::{Bucket, Credentials, UrlStyle};
+use cryptr::stream::s3::*;
 use hiqlite::{params, start_node, NodeConfig, Param, S3Config};
 use hiqlite::{DbClient, Error, Node};
 use serde::{Deserialize, Serialize};
@@ -104,16 +104,22 @@ async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
 
                 let url = reqwest::Url::parse(&url).unwrap();
                 let bucket_name = env::var("S3_BUCKET").unwrap();
-                let region = env::var("S3_REGION").unwrap();
-                let key = env::var("S3_KEY").unwrap();
-                let secret = env::var("S3_SECRET").unwrap();
+                let region = Region(env::var("S3_REGION").unwrap());
+                let access_key_id = AccessKeyId(env::var("S3_KEY").unwrap());
+                let access_key_secret = AccessKeySecret(env::var("S3_SECRET").unwrap());
+                let credentials = Credentials {
+                    access_key_id,
+                    access_key_secret,
+                };
+                let options = Some(BucketOptions {
+                    path_style: true,
+                    list_objects_v2: true,
+                });
+
+                let bucket = Bucket::new(url, bucket_name, region, credentials, options).unwrap();
 
                 log("S3 env vars found");
-                Some(S3Config {
-                    bucket: Bucket::new(url.into(), UrlStyle::Path, bucket_name, region).unwrap(),
-                    credentials: Credentials::new(key, secret),
-                    danger_tls_no_verify: true,
-                })
+                Some(S3Config { bucket })
             } else {
                 log("No S3 env vars found - will skip S3 tests");
                 None
