@@ -60,9 +60,9 @@ webpki-roots.workspace = true
 lazy_static.workspace = true
 lz4-sys.workspace = true
 tokio-rustls = { workspace = true, features = ["ring"] }
+log = "0.4.22"
 
 [build-dependencies]
 
 [dev-dependencies]
-tempfile = { version = "3.4.0" }
 tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }

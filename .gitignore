@@ -1,5 +1,6 @@
-target
+hiqlite/tests/data_test
 examples/*/target
+target
 .idea
 *.log
 .lapce

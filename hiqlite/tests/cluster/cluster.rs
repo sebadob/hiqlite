@@ -4,9 +4,11 @@ use hiqlite::{DbClient, Error, Node};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
-use tokio::{task, time};
+use tokio::{fs, task, time};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+const TEST_DATA_DIR: &str = "tests/data_test";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn test_cluster() -> Result<(), Error> {
@@ -27,15 +29,19 @@ async fn test_cluster() -> Result<(), Error> {
 
     log("Starting data insertion and query tests");
     test_insert_query(&client_1, &client_2, &client_3).await?;
-    log("Basic query tests are fine");
+    log("Basic query tests finished");
 
     log("Starting Transaction tests");
     test_transactions(&client_1, &client_2, &client_3).await?;
-    log("Transaction tests are fine");
+    log("Transaction tests finished");
 
     log("Starting batch tests");
     test_batch(&client_1, &client_2, &client_3).await?;
-    log("Batch tests are fine");
+    log("Batch tests finished");
+
+    log("Starting backup tests");
+    test_backup(&client_1).await?;
+    log("Backup tests finished");
 
     // TODO impl + test
     // - migrations
@@ -51,13 +57,15 @@ async fn test_cluster() -> Result<(), Error> {
 }
 
 async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
-    let d1 = tempfile::TempDir::new()?;
-    let d2 = tempfile::TempDir::new()?;
-    let d3 = tempfile::TempDir::new()?;
+    let _ = fs::remove_dir_all(TEST_DATA_DIR).await;
 
-    let dir_1 = d1.path().as_os_str().to_str().unwrap();
-    let dir_3 = d3.path().as_os_str().to_str().unwrap();
-    let dir_2 = d2.path().as_os_str().to_str().unwrap();
+    let dir_1 = format!("{}/node_1", TEST_DATA_DIR);
+    let dir_2 = format!("{}/node_2", TEST_DATA_DIR);
+    let dir_3 = format!("{}/node_3", TEST_DATA_DIR);
+
+    fs::create_dir_all(&dir_1).await.unwrap();
+    fs::create_dir_all(&dir_2).await.unwrap();
+    fs::create_dir_all(&dir_3).await.unwrap();
 
     let build_config = |node_id: u64| -> NodeConfig {
         let nodes = vec![
@@ -466,6 +474,71 @@ async fn test_batch(
     assert_eq!(data[2].description, "Batch Data 3");
 
     Ok(())
+}
+
+async fn test_backup(client_1: &DbClient) -> Result<(), Error> {
+    log("Creating backup request via client_1");
+    client_1.backup().await?;
+
+    log("Find backup DB");
+
+    // the client will never see the backup path, so we need to
+    // build it on our own in the tests
+    let path = find_backup_file(1).await;
+
+    log("Make sure backup file path contains the correct node_id");
+    assert!(path.contains("/backup_node_1_"));
+
+    let conn_bkp = rusqlite::Connection::open(path).unwrap();
+
+    log("Check that a regular connection to the backup db is working");
+    let res = conn_bkp
+        .query_row("SELECT 1", [], |row| {
+            let i: i64 = row.get(0)?;
+            Ok(i)
+        })
+        .unwrap();
+    assert_eq!(res, 1);
+
+    log("Check backups for node 2 and 3");
+
+    // node 2
+    let path = find_backup_file(2).await;
+    assert!(path.contains("/backup_node_2_"));
+    let conn_bkp = rusqlite::Connection::open(path).unwrap();
+    let res = conn_bkp
+        .query_row("SELECT 1", [], |row| {
+            let i: i64 = row.get(0)?;
+            Ok(i)
+        })
+        .unwrap();
+    assert_eq!(res, 1);
+
+    // node 3
+    let path = find_backup_file(3).await;
+    assert!(path.contains("/backup_node_3_"));
+    let conn_bkp = rusqlite::Connection::open(path).unwrap();
+    let res = conn_bkp
+        .query_row("SELECT 1", [], |row| {
+            let i: i64 = row.get(0)?;
+            Ok(i)
+        })
+        .unwrap();
+    assert_eq!(res, 1);
+
+    Ok(())
+}
+
+async fn find_backup_file(node_id: u64) -> String {
+    let path_base = format!("{}/node_{}/state_machine/backups", TEST_DATA_DIR, node_id);
+    let mut ls = fs::read_dir(&path_base).await.unwrap();
+
+    if let Some(file) = ls.next_entry().await.unwrap() {
+        let file_name = file.file_name();
+        let name = file_name.to_str().unwrap();
+        return format!("{}/{}", path_base, name);
+    }
+    panic!("Backup folder is empty when it should not be");
 }
 
 fn log<S: Display>(s: S) {
