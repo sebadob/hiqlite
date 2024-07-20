@@ -77,10 +77,22 @@ pub struct StateMachineData {
     pub last_snapshot_path: Option<String>,
 }
 
+impl Default for StateMachineData {
+    fn default() -> Self {
+        Self {
+            last_applied_log_id: None,
+            last_membership: Default::default(),
+            last_snapshot_id: None,
+            last_snapshot_path: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StateMachineSqlite {
     pub data: StateMachineData,
 
+    this_node: NodeId,
     path_snapshots: String,
     path_lock_file: String,
 
@@ -109,6 +121,7 @@ impl StateMachineSqlite {
     pub(crate) async fn new(
         data_dir: Cow<'static, str>,
         filename_db: Cow<'static, str>,
+        this_node: NodeId,
     ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
         let path_base = format!("{}/state_machine", data_dir);
 
@@ -156,12 +169,7 @@ impl StateMachineSqlite {
 
             bincode::deserialize(&bytes).unwrap()
         } else {
-            let metadata = StateMachineData {
-                last_applied_log_id: None,
-                last_membership: Default::default(),
-                last_snapshot_id: None,
-                last_snapshot_path: None,
-            };
+            let metadata = StateMachineData::default();
             let data = bincode::serialize(&metadata).unwrap();
 
             let (ack, rx) = flume::unbounded();
@@ -183,6 +191,7 @@ impl StateMachineSqlite {
 
         let mut slf = Self {
             data: state_machine_data,
+            this_node,
             path_snapshots,
             path_lock_file,
             read_pool: Arc::new(read_pool),

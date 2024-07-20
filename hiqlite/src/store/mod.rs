@@ -50,6 +50,7 @@ pub type StorageResult<T> = Result<T, StorageError<NodeId>>;
 
 // ROCKSDB
 pub(crate) async fn new_storage(
+    node_id: NodeId,
     db_path: Cow<'static, str>,
     filename_db: Cow<'static, str>,
     // mode: NodeMode,
@@ -70,7 +71,9 @@ pub(crate) async fn new_storage(
     let log_store = logs::rocksdb::LogStoreRocksdb::new(&db_path).await;
 
     // let sm_store = state_machine_rocksdb::build_state_machine(db_path).await;
-    let sm_store = StateMachineSqlite::new(db_path, filename_db).await.unwrap();
+    let sm_store = StateMachineSqlite::new(db_path, filename_db, node_id)
+        .await
+        .unwrap();
     (log_store, sm_store)
     // (log_store(db_path, mode).await, sm_store)
 }

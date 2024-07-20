@@ -25,6 +25,7 @@ pub enum WriterRequest {
     Snapshot(SnapshotRequest),
     MetadataPersist(MetaPersistRequest),
     MetadataRead(oneshot::Sender<Vec<u8>>),
+    Backup(BackupRequest),
 }
 
 #[derive(Debug)]
@@ -79,7 +80,15 @@ pub struct SnapshotResponse {
 #[derive(Debug)]
 pub struct MetaPersistRequest {
     pub data: Vec<u8>,
-    pub ack: flume::Sender<()>,
+    pub ack: flume::Sender<()>, // TODO double check if flume sender makes sense
+}
+
+#[derive(Debug)]
+pub struct BackupRequest {
+    pub node_id: NodeId,
+    pub target_folder: String,
+    // pub s3_config: Option<S3Config>, // TODO
+    pub ack: oneshot::Sender<Result<(), Error>>,
 }
 
 pub fn spawn_writer(
@@ -331,6 +340,21 @@ pub fn spawn_writer(
 
                     ack.send(meta).unwrap();
                 }
+
+                WriterRequest::Backup(BackupRequest {
+                    node_id,
+                    target_folder,
+                    ack,
+                }) => {
+                    match create_backup(&conn, node_id, target_folder) {
+                        Ok(meta) => ack.send(Ok(())),
+                        Err(err) => {
+                            error!("Error creating backup: {:?}", err);
+                            ack.send(Err(err))
+                        }
+                    }
+                    .expect("snapshot listener to always exists");
+                }
             }
         }
     });
@@ -360,6 +384,41 @@ fn create_snapshot(
     conn.execute(&q, ())?;
 
     Ok(metadata)
+}
+
+fn create_backup(
+    conn: &rusqlite::Connection,
+    node_id: NodeId,
+    target_folder: String,
+    // s3_config: Option<S3Config>, // TODO
+) -> Result<(), Error> {
+    // TODO
+    // - build target db file name with node id and timestamp
+    // - vacuum into target file
+    // - connect to vacuumed db and remove metadata
+    // - if we have an s3 target, encrypt and push it
+
+    let path = format!(
+        "{}/backup_node_{}_{}.sqlite",
+        target_folder,
+        node_id,
+        Utc::now().timestamp()
+    );
+    info!("Creating database backup into {}", path);
+
+    conn.execute(&format!("VACUUM main INTO '{}'", path), ())?;
+
+    // connect to the backup and reset metadata
+    let conn_bkp = rusqlite::Connection::open(path)?;
+    let mut stmt = conn_bkp.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
+    let data = bincode::serialize(&StateMachineData::default()).unwrap();
+    stmt.execute([data])?;
+
+    info!("Database backup finished");
+
+    // TODO if we have an s3 target, spawn encrypt + upload task in the background
+
+    Ok(())
 }
 
 fn migrate(conn: &mut rusqlite::Connection, mut migrations: Vec<Migration>) -> Result<(), Error> {

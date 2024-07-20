@@ -1,7 +1,8 @@
 # Backups
 
+- [x] create backup logic for sql writer
 - [ ] add data structures to be able to forward a backup task all the way from the `DbClient`
-    - [ ] state machine impl -> sql writer
+    - [x] state machine impl -> sql writer
     - [ ] `DbClient` -> client stream -> server stream -> state machine impl
 - [ ] backups should be possible with file and / or s3 target
 - [ ] backups names should incl node id and timestamp, and maybe last applied log id

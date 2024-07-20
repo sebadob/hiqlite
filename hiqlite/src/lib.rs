@@ -107,8 +107,12 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
 
     // let (log_store, state_machine_store) =
     //     new_storage(&node_config.data_dir, node_config.filename_db.as_deref()).await;
-    let (log_store, state_machine_store) =
-        new_storage(node_config.data_dir, node_config.filename_db).await;
+    let (log_store, state_machine_store) = new_storage(
+        node_config.node_id,
+        node_config.data_dir,
+        node_config.filename_db,
+    )
+    .await;
 
     // let kv_store = state_machine_store.data.kvs.clone();
     let sql_writer = state_machine_store.write_tx.clone();
