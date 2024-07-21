@@ -1,6 +1,7 @@
 use chrono::Utc;
 use cryptr::stream::s3::*;
-use hiqlite::{params, start_node, NodeConfig, Param, S3Config};
+use cryptr::EncKeys;
+use hiqlite::{params, start_node, EncKeysFrom, NodeConfig, Param, S3Config};
 use hiqlite::{DbClient, Error, Node};
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -139,6 +140,7 @@ async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
             tls_api: None,
             secret_raft: "asdasdasdasdasdasd".to_string(),
             secret_api: "qweqweqweqweqweqwe".to_string(),
+            enc_keys_from: EncKeysFrom::Env,
             s3_config,
         }
     };

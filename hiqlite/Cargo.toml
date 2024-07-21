@@ -17,14 +17,15 @@ all-features = true
 [features]
 # currently for ease of use, just everything is enabled by default until the first release
 #default = ["auto-heal", "auto-heal-logs", "sqlite", "webpki-roots"]
-default = ["auto-heal", "auto-heal-logs", "s3", "sqlite", "webpki-roots"]
+default = ["auto-heal", "auto-heal-logs", "backup", "s3", "sqlite", "webpki-roots"]
 
 auto-heal = []
 auto-heal-logs = ["openraft/loosen-follower-log-revert"]
+backup = ["s3"]
 sqlite = []
 io-uring = ["rocksdb/io-uring"]
 jemalloc = ["rocksdb/jemalloc"]
-s3 = ["dep:cryptr"]
+s3 = ["backup", "dep:cryptr"]
 webpki-roots = ["reqwest/rustls-tls-webpki-roots"]
 
 [dependencies]

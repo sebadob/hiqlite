@@ -5,7 +5,16 @@ use std::borrow::Cow;
 use crate::tls::ServerTlsConfig;
 pub use openraft::Config as RaftConfig;
 
+#[cfg(feature = "s3")]
+#[derive(Debug, Clone)]
+pub enum EncKeysFrom {
+    Env,
+    File(String),
+}
+
 /// The config for a Raft Node
+///
+/// TODO if feature `serde` is set, should maybe be Serialize / Deserialize
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     /// The `node_id` defines which entry from the `nodes` is "this node"
@@ -29,13 +38,39 @@ pub struct NodeConfig {
     pub secret_raft: String,
     /// Secret for Raft management and DB API - at least 16 characters long
     pub secret_api: String,
+    /// From where `ENC_KEYS` should be read for S3 backup encryption.
+    #[cfg(feature = "s3")]
+    pub enc_keys_from: EncKeysFrom,
+    /// If an `S3Config` is given, it will be used to push backups to the S3 bucket.
     #[cfg(feature = "s3")]
     pub s3_config: Option<crate::S3Config>,
+}
+
+impl Default for NodeConfig {
+    fn default() -> Self {
+        Self {
+            node_id: 0,
+            nodes: vec![],
+            data_dir: "hiqlite".into(),
+            filename_db: "hiqlite.db".into(),
+            config: Self::raft_config(10_000),
+            tls_raft: None,
+            tls_api: None,
+            secret_raft: String::default(),
+            secret_api: String::default(),
+            #[cfg(feature = "s3")]
+            enc_keys_from: EncKeysFrom::Env,
+            #[cfg(feature = "s3")]
+            s3_config: None,
+        }
+    }
 }
 
 impl NodeConfig {
     // TODO impl some `from_`s like env, json, toml, cli
 
+    // TODO get rid of the `new()` because it gets messier the more features come.
+    // its a far better DX to just init directly and use `..Default::default()`
     pub fn new(
         node_id: NodeId,
         nodes: Vec<Node>,
@@ -54,6 +89,8 @@ impl NodeConfig {
             tls_api,
             secret_raft,
             secret_api,
+            #[cfg(feature = "s3")]
+            enc_keys_from: EncKeysFrom::Env,
             #[cfg(feature = "s3")]
             s3_config: None,
         };

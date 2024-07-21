@@ -1,6 +1,10 @@
+use crate::config::EncKeysFrom;
 use crate::Error;
 use cryptr::stream::s3::*;
-use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter};
+use cryptr::{
+    EncKeys, EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter,
+};
+use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub struct S3Config {
@@ -65,4 +69,17 @@ impl S3Config {
             .await
             .map_err(|err| Error::S3(err.to_string()))
     }
+}
+
+pub fn init_enc_keys(enc_keys_from: &EncKeysFrom) -> Result<(), Error> {
+    if let Err(err) = match enc_keys_from {
+        EncKeysFrom::Env => EncKeys::from_env(),
+        EncKeysFrom::File(path) => EncKeys::read_from_file(path),
+    }
+    .map_err(|err| Error::Error(err.to_string().into()))?
+    .init()
+    {
+        warn!("{}", err);
+    };
+    Ok(())
 }

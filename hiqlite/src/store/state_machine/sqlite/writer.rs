@@ -411,17 +411,22 @@ fn create_backup(
     conn.execute(&format!("VACUUM main INTO '{}'", path_full), ())?;
 
     // connect to the backup and reset metadata
-    let conn_bkp = rusqlite::Connection::open(&path_full)?;
-    let mut stmt = conn_bkp.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
-    let data = bincode::serialize(&StateMachineData::default()).unwrap();
-    stmt.execute([data])?;
+    // make sure connection is dropped before starting encrypt + push
+    {
+        let conn_bkp = rusqlite::Connection::open(&path_full)?;
+        let mut stmt =
+            conn_bkp.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
+        let data = bincode::serialize(&StateMachineData::default()).unwrap();
+        stmt.execute([data])?;
+    }
 
     info!("Database backup finished");
 
     #[cfg(feature = "s3")]
     if let Some(s3) = s3_config {
         task::spawn(async move {
-            info!("Background task for encrypting and pushing backup to S3 has been started");
+            info!("Background task for database encryption and S3 backup task has been started");
+
             match s3.push(&path_full, &file).await {
                 Ok(_) => {
                     info!("Push backup to S3 has been finished");

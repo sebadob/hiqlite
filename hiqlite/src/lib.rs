@@ -26,7 +26,7 @@ use tracing::info;
 pub use crate::client::DbClient;
 pub use crate::error::Error;
 pub use crate::store::state_machine::sqlite::state_machine::{Params, Response};
-pub use config::{NodeConfig, RaftConfig};
+pub use config::{EncKeysFrom, NodeConfig, RaftConfig};
 pub use openraft::SnapshotPolicy;
 pub use rusqlite::Row;
 pub use store::state_machine::sqlite::param::Param;
@@ -42,10 +42,14 @@ mod config;
 mod error;
 mod migration;
 mod network;
-#[cfg(feature = "s3")]
-mod s3;
 mod store;
 mod tls;
+
+#[cfg(feature = "backup")]
+mod backup;
+
+#[cfg(feature = "s3")]
+mod s3;
 
 type NodeId = u64;
 
@@ -87,15 +91,6 @@ impl Display for Node {
     }
 }
 
-// #[cfg(feature = "sqlite")]
-// openraft::declare_raft_types!(
-//     pub TypeConfigSqliteSqlite:
-//         D = Query,
-//         R = Response,
-//         Node = Node,
-//         SnapshotData = tokio::fs::File,
-// );
-
 /// Starts a Raft node.
 /// # Panics
 /// If an incorrect `node_config` was given.
@@ -109,10 +104,10 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
     }
 
     #[cfg(feature = "s3")]
-    {
-        let enc_keys = cryptr::EncKeys::generate().map_err(|err| Error::S3(err.to_string()))?;
-        let _ = enc_keys.init();
-    }
+    s3::init_enc_keys(&node_config.enc_keys_from)?;
+
+    #[cfg(feature = "backup")]
+    backup::check_restore_apply().await?;
 
     let raft_config = Arc::new(node_config.config.validate().unwrap());
 
