@@ -26,12 +26,14 @@ use tracing::info;
 pub use crate::client::DbClient;
 pub use crate::error::Error;
 pub use crate::store::state_machine::sqlite::state_machine::{Params, Response};
-pub use config::{EncKeysFrom, NodeConfig, RaftConfig};
+pub use config::{NodeConfig, RaftConfig};
 pub use openraft::SnapshotPolicy;
 pub use rusqlite::Row;
 pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
+#[cfg(feature = "s3")]
+pub use config::EncKeysFrom;
 #[cfg(feature = "s3")]
 pub use s3::S3Config;
 

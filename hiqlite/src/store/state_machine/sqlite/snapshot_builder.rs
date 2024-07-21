@@ -12,7 +12,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct SQLiteSnapshotBuilder {
     // pub last_applied_log_id: Option<LogId<NodeId>>,
-    pub last_membership: StoredMembership<NodeId, Node>,
+    // pub last_membership: StoredMembership<NodeId, Node>,
     pub path_snapshots: String,
     pub write_tx: flume::Sender<WriterRequest>,
 }
@@ -38,7 +38,7 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
         let (ack, rx) = oneshot::channel();
         let req = WriterRequest::Snapshot(SnapshotRequest {
             snapshot_id,
-            last_membership: self.last_membership.clone(),
+            // last_membership: self.last_membership.clone(),
             path: path.clone(),
             ack,
         });

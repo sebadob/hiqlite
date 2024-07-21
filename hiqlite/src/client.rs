@@ -8,6 +8,7 @@ use crate::network::api::ApiStreamResponsePayload;
 use crate::network::management::LearnerReq;
 use crate::network::{api, RaftWriteResponse, HEADER_NAME_SECRET};
 use crate::store::state_machine::sqlite::state_machine::{Params, Query, QueryWrite};
+use crate::store::state_machine::sqlite::writer::WriterRequest;
 use crate::NodeId;
 use crate::{tls, Error};
 use crate::{Node, Response};
@@ -550,8 +551,18 @@ impl DbClient {
     // #[must_use]
     pub async fn shutdown(self) -> Result<(), Error> {
         if let Some(state) = &self.state {
+            let (tx, rx) = oneshot::channel();
             match state.raft.shutdown().await {
                 Ok(_) => {
+                    state
+                        .sql_writer
+                        .send_async(WriterRequest::Shutdown(tx))
+                        .await
+                        .expect("SQL writer to always be running");
+                    rx.await.expect("To always get an answer from SQL writer");
+
+                    let _ = self.tx_client.send_async(ClientStreamReq::Shutdown).await;
+
                     if let Some(tx) = self.tx_shutdown {
                         tx.send(true).unwrap();
                     }

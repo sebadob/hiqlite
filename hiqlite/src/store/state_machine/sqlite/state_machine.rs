@@ -20,7 +20,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
 use tokio::{fs, task, time};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 type Entry = openraft::Entry<TypeConfigSqlite>;
@@ -97,7 +97,8 @@ pub struct StateMachineSqlite {
 
 impl Drop for StateMachineSqlite {
     fn drop(&mut self) {
-        // TODO send metadata persist action to writer
+        info!("StateMachineSqlite is being dropped");
+
         let (ack, rx) = flume::unbounded();
         self.write_tx
             .send(WriterRequest::MetadataPersist(MetaPersistRequest {
@@ -108,6 +109,8 @@ impl Drop for StateMachineSqlite {
         rx.recv().unwrap();
 
         Self::remove_lock_file(&self.path_lock_file);
+
+        info!("StateMachineSqlite has been dropped");
         // self.handle.abort();
     }
 }
@@ -149,7 +152,7 @@ impl StateMachineSqlite {
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write(&err),
             })?;
-        let write_tx = writer::spawn_writer(conn);
+        let write_tx = writer::spawn_writer(conn, path_lock_file.clone());
 
         let read_pool = Self::connect_read_pool(path_db.as_ref(), filename_db.as_ref())
             .await
@@ -166,9 +169,7 @@ impl StateMachineSqlite {
                 .map_err(|err| StorageError::IO {
                     source: StorageIOError::read(&err),
                 })?;
-            let bytes = rx.await.expect("To always get Metadata from DB");
-
-            bincode::deserialize(&bytes).unwrap()
+            rx.await.expect("To always get Metadata from DB")
         } else {
             let metadata = StateMachineData::default();
             let data = bincode::serialize(&metadata).unwrap();
@@ -287,8 +288,8 @@ impl StateMachineSqlite {
         // }
     }
 
-    fn remove_lock_file(path: &str) {
-        std::fs::remove_file(path).expect("The lock file to always exist when the node is running");
+    pub(crate) fn remove_lock_file(path: &str) {
+        let _ = std::fs::remove_file(path);
     }
 
     pub async fn connect(
@@ -297,48 +298,17 @@ impl StateMachineSqlite {
         read_only: bool,
     ) -> Result<rusqlite::Connection, Error> {
         task::spawn_blocking(move || {
-            // let conn = if in_memory {
-            //     // Self::apply_pragmas(&conn, read_only)?;
-            //     let mut flags = OpenFlags::default();
-            //     flags.set(OpenFlags::from_name("SQLITE_OPEN_URI").unwrap(), true);
-            //     flags.set(OpenFlags::from_name("SQLITE_OPEN_MEMORY").unwrap(), true);
-            //     flags.set(
-            //         OpenFlags::from_name("SQLITE_OPEN_SHARED_CACHE").unwrap(),
-            //         true,
-            //     );
-            //
-            //     // TODO in memory does not work this way - will create a file with that name
-            //     // TODO OpenFlag are fine here but do not exist for deadpool
-            //     // let addr = path.unwrap_or(IN_MEMORY_ADDR);
-            //     // let conn = rusqlite::Connection::open(path)?;
-            //     // Self::apply_pragmas(&conn, false)?;
-            //
-            //     let path_full = format!("file:{}", filename_db);
-            //     // let path_full = format!("file:{}?mode=memory&cache=shared", filename_db);
-            //
-            //     // TODO set db name to URI and try to open shared DB
-            //     rusqlite::Connection::open_with_flags(path_full, flags)?
-            //     // let conn = rusqlite::Connection::open(filename_db)?;
-            // } else {
             let path_full = format!("{}/{}", path, filename_db);
             let conn = rusqlite::Connection::open(path_full)?;
-            // };
-
             Self::apply_pragmas(&conn, read_only)?;
-
             Ok(conn)
         })
         .await?
     }
 
-    async fn connect_read_pool(
-        path: &str,
-        filename_db: &str,
-        // in_memory: bool,
-    ) -> Result<SqlitePool, Error> {
-        // ) -> Result<deadpool_sqlite::Pool, ApiError> {
+    /// TODO provide a way to pass in conn pool size
+    async fn connect_read_pool(path: &str, filename_db: &str) -> Result<SqlitePool, Error> {
         let path_full = format!("{}/{}", path, filename_db);
-        // let config = deadpool_sqlite::Config::new(path_full);
 
         let amount = 4;
         let mut conns = Vec::with_capacity(amount);
@@ -382,14 +352,6 @@ impl StateMachineSqlite {
             Ok::<(), Error>(())
         })
         .await?;
-
-        // conn.interact(|conn| {
-        //     conn.query_row("SELECT 1", (), |row| {
-        //         let res: i64 = row.get(0)?;
-        //         Ok(res)
-        //     })
-        // })
-        // .await??;
 
         Ok(pool)
     }
@@ -488,14 +450,6 @@ impl StateMachineSqlite {
 
         let id = snapshot_id.unwrap();
         let path_snapshot = format!("{}/{}", self.path_snapshots, id);
-        // let path_db = format!("{}/data", path_snapshot);
-        // let path_meta = format!("{}/meta", path_snapshot);
-
-        // let meta_bytes = fs::read(path_meta).await.map_err(|err| StorageError::IO {
-        //     source: StorageIOError::read(&err),
-        // })?;
-        // let meta = bincode::deserialize(&meta_bytes).unwrap();
-
         let db_path = self.path_snapshots.clone();
         let filename_db = id.to_string();
 
@@ -674,7 +628,10 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         let entries = entries.into_iter();
         let mut replies = Vec::with_capacity(entries.size_hint().0);
 
+        let mut log_id;
         for entry in entries {
+            log_id = Some(entry.log_id);
+
             // TODO probably should be moved after disk IO -> persist safely for crash resistance!
             let resp = match entry.payload {
                 EntryPayload::Blank => Response::Empty,
@@ -684,7 +641,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     let query = writer::Query::Execute(writer::SqlExecute {
                         sql,
                         params,
-                        last_applied_log_id: self.data.last_applied_log_id,
+                        last_applied_log_id: log_id,
                         tx,
                     });
 
@@ -704,7 +661,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     let (tx, rx) = oneshot::channel();
                     let req = WriterRequest::Query(writer::Query::Transaction(SqlTransaction {
                         queries,
-                        last_applied_log_id: self.data.last_applied_log_id,
+                        last_applied_log_id: log_id,
                         tx,
                     }));
 
@@ -733,7 +690,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     let (tx, rx) = oneshot::channel();
                     let req = WriterRequest::Query(writer::Query::Batch(SqlBatch {
                         sql,
-                        last_applied_log_id: self.data.last_applied_log_id,
+                        last_applied_log_id: log_id,
                         tx,
                     }));
 
@@ -753,7 +710,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                         target_folder: self.path_backups.clone(),
                         #[cfg(feature = "s3")]
                         s3_config: self.s3_config.clone(),
-                        last_applied_log_id: self.data.last_applied_log_id,
+                        last_applied_log_id: log_id,
                         ack,
                     });
 
@@ -766,16 +723,11 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     Response::Backup(result)
                 }
 
-                EntryPayload::Membership(mem) => {
-                    self.data.last_membership = StoredMembership::new(Some(entry.log_id), mem);
-                    Response::Empty
-                }
-
                 EntryPayload::Normal(QueryWrite::Migration(migrations)) => {
                     let (tx, rx) = oneshot::channel();
                     let req = WriterRequest::Migrate(writer::Migrate {
                         migrations,
-                        last_applied_log_id: self.data.last_applied_log_id,
+                        last_applied_log_id: log_id,
                         tx,
                     });
 
@@ -790,12 +742,26 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
 
                 EntryPayload::Membership(mem) => {
                     self.data.last_membership = StoredMembership::new(Some(entry.log_id), mem);
+
+                    let (ack, rx) = oneshot::channel();
+                    let req = WriterRequest::MetadataMembership(writer::MetaMembershipRequest {
+                        last_membership: self.data.last_membership.clone(),
+                        ack,
+                    });
+
+                    self.write_tx
+                        .send_async(req)
+                        .await
+                        .expect("sql writer to always be listening");
+
+                    rx.await.expect("to always get a response from sql writer");
+
                     Response::Empty
                 }
             };
 
             replies.push(resp);
-            self.data.last_applied_log_id = Some(entry.log_id);
+            self.data.last_applied_log_id = log_id;
         }
 
         Ok(replies)
@@ -804,7 +770,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     #[tracing::instrument(level = "trace", skip(self))]
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
         SQLiteSnapshotBuilder {
-            last_membership: self.data.last_membership.clone(),
+            // last_membership: self.data.last_membership.clone(),
             path_snapshots: self.path_snapshots.clone(),
             write_tx: self.write_tx.clone(),
         }

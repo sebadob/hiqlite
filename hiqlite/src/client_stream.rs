@@ -34,6 +34,7 @@ pub enum ClientStreamReq {
     Batch(ClientBatchPayload),
     Migrate(ClientMigratePayload),
     Backup(ClientBackupPayload),
+    Shutdown,
 
     // coming from the WebSocket reader
     StreamResponse(ApiStreamResponse),
@@ -113,6 +114,8 @@ async fn client_stream(
         usize,
         oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
     > = HashMap::new();
+
+    let mut shutdown = false;
 
     loop {
         let ws = match try_connect(
@@ -317,6 +320,11 @@ async fn client_stream(
                     in_flight_buf = HashMap::new();
                     awaiting_timeout = false;
                 }
+
+                ClientStreamReq::Shutdown => {
+                    shutdown = true;
+                    break;
+                }
             }
         }
 
@@ -345,6 +353,9 @@ async fn client_stream(
                 ClientStreamReq::Backup(_) => {
                     unreachable!("we should never receive ClientStreamReq::Backup from WS reader")
                 }
+                ClientStreamReq::Shutdown => {
+                    unreachable!("we should never receive ClientStreamReq::Shutdown from WS reader")
+                }
                 ClientStreamReq::LeaderChange((node_id, node)) => {
                     update_leader(&leader, node_id, node).await;
                 }
@@ -355,6 +366,11 @@ async fn client_stream(
                     // ignore in this case
                 }
             }
+        }
+
+        if shutdown {
+            warn!("Shutting down Client stream receiver");
+            break;
         }
 
         // copy all existing in-flight to in-flight buffer to make sure we use them first

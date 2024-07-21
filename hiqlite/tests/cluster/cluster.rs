@@ -1,6 +1,5 @@
 use chrono::Utc;
 use cryptr::stream::s3::*;
-use cryptr::EncKeys;
 use hiqlite::{params, start_node, EncKeysFrom, NodeConfig, Param, S3Config};
 use hiqlite::{DbClient, Error, Node};
 use serde::{Deserialize, Serialize};
@@ -46,8 +45,16 @@ async fn test_cluster() -> Result<(), Error> {
     test_backup(&client_1).await?;
     log("Backup tests finished");
 
-    // we should sleep a few seconds to make sure the s3 task in the background can finish
-    time::sleep(Duration::from_secs(3)).await;
+    log("Shutting down nodes");
+
+    client_1.shutdown().await?;
+    log("client_1 shutdown complete");
+    client_2.shutdown().await?;
+    log("client_2 shutdown complete");
+    client_3.shutdown().await?;
+    log("client_3 shutdown complete");
+
+    time::sleep(Duration::from_secs(1)).await;
 
     // TODO impl + test
     // - migrations

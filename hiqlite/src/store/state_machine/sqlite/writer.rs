@@ -10,6 +10,7 @@ use openraft::{LogId, SnapshotMeta, StorageError, StorageIOError, StoredMembersh
 use rusqlite::backup::Progress;
 use rusqlite::{Batch, DatabaseName, Transaction};
 use std::borrow::Cow;
+use std::default::Default;
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -24,8 +25,10 @@ pub enum WriterRequest {
     Migrate(Migrate),
     Snapshot(SnapshotRequest),
     MetadataPersist(MetaPersistRequest),
-    MetadataRead(oneshot::Sender<Vec<u8>>),
+    MetadataRead(oneshot::Sender<StateMachineData>),
+    MetadataMembership(MetaMembershipRequest),
     Backup(BackupRequest),
+    Shutdown(oneshot::Sender<()>),
 }
 
 #[derive(Debug)]
@@ -67,7 +70,7 @@ pub struct Migrate {
 #[derive(Debug)]
 pub struct SnapshotRequest {
     pub snapshot_id: Uuid,
-    pub last_membership: StoredMembership<NodeId, Node>,
+    // pub last_membership: StoredMembership<NodeId, Node>,
     pub path: String,
     pub ack: oneshot::Sender<Result<SnapshotResponse, StorageError<NodeId>>>,
 }
@@ -80,7 +83,13 @@ pub struct SnapshotResponse {
 #[derive(Debug)]
 pub struct MetaPersistRequest {
     pub data: Vec<u8>,
-    pub ack: flume::Sender<()>, // TODO double check if flume sender makes sense
+    pub ack: flume::Sender<()>, // TODO flume only needed for sync `drop()` -> convert to oneshot after being fixed
+}
+
+#[derive(Debug)]
+pub struct MetaMembershipRequest {
+    pub last_membership: StoredMembership<NodeId, Node>,
+    pub ack: oneshot::Sender<()>,
 }
 
 #[derive(Debug)]
@@ -97,14 +106,15 @@ pub fn spawn_writer(
     // path_db: String,
     // filename_db: String,
     mut conn: rusqlite::Connection,
+    path_lock_file: String,
     // in_memory: bool,
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(2);
 
     task::spawn_blocking(move || {
-        let mut last_applied_log_id: Option<LogId<NodeId>> = None;
+        let mut sm_data = StateMachineData::default();
 
-        // TODO before doing anything else, apply migrations
+        // TODO should we maybe save a backup task handle in case of shutdown overlap?
 
         // we want to handle our metadata manually to not interfere with migrations in apps later on
         conn.execute(
@@ -136,6 +146,8 @@ pub fn spawn_writer(
             match req {
                 WriterRequest::Query(query) => match query {
                     Query::Execute(q) => {
+                        sm_data.last_applied_log_id = q.last_applied_log_id;
+
                         let res = {
                             let mut stmt = match conn.prepare_cached(q.sql.as_ref()) {
                                 Ok(stmt) => stmt,
@@ -171,7 +183,6 @@ pub fn spawn_writer(
                             stmt.raw_execute().map_err(Error::from)
                         };
 
-                        last_applied_log_id = q.last_applied_log_id;
                         q.tx.send(res).expect("oneshot tx to never be dropped");
                     }
 
@@ -186,6 +197,8 @@ pub fn spawn_writer(
                                 continue;
                             }
                         };
+
+                        sm_data.last_applied_log_id = req.last_applied_log_id;
 
                         let mut results = Vec::with_capacity(req.queries.len());
                         'outer: for state_machine::Query { sql, params } in req.queries {
@@ -216,8 +229,6 @@ pub fn spawn_writer(
                             let res = stmt.raw_execute().map_err(Error::from);
                             results.push(res);
                         }
-
-                        last_applied_log_id = req.last_applied_log_id;
 
                         match txn.commit() {
                             Ok(()) => {
@@ -251,32 +262,31 @@ pub fn spawn_writer(
                             }
                         }
 
-                        last_applied_log_id = req.last_applied_log_id;
+                        sm_data.last_applied_log_id = req.last_applied_log_id;
                         req.tx.send(res).expect("oneshot tx to never be dropped");
                     }
                 },
 
                 WriterRequest::Migrate(req) => {
-                    let res = migrate(&mut conn, req.migrations).map_err(Error::from);
+                    sm_data.last_applied_log_id = req.last_applied_log_id;
 
                     // TODO should be maybe always panic if migrations throw an error?
-
-                    last_applied_log_id = req.last_applied_log_id;
+                    let res = migrate(&mut conn, req.migrations).map_err(Error::from);
                     req.tx.send(res).unwrap();
                 }
 
                 WriterRequest::Snapshot(SnapshotRequest {
                     snapshot_id,
                     path,
-                    last_membership,
+                    // last_membership,
                     ack,
                 }) => {
                     match create_snapshot(
                         &conn,
                         snapshot_id,
                         path,
-                        last_applied_log_id,
-                        last_membership,
+                        sm_data.last_applied_log_id,
+                        sm_data.last_membership.clone(),
                     ) {
                         Ok(meta) => ack.send(Ok(SnapshotResponse { meta })),
                         Err(err) => {
@@ -328,23 +338,48 @@ pub fn spawn_writer(
                     ack.send(()).unwrap();
                 }
 
+                WriterRequest::Shutdown(ack) => {
+                    let mut stmt = conn
+                        .prepare_cached("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")
+                        .expect("Metadata persist prepare to never fail");
+
+                    let data = bincode::serialize(&sm_data).unwrap();
+                    stmt.execute([data])
+                        .expect("Metadata persist to never fail");
+
+                    StateMachineSqlite::remove_lock_file(&path_lock_file);
+
+                    ack.send(()).unwrap();
+
+                    info!("Received shutdown signal. Metadata persisted successfully.");
+                    break;
+                }
+
                 WriterRequest::MetadataRead(ack) => {
                     let mut stmt = conn
                         .prepare_cached("SELECT data FROM _metadata WHERE key = 'meta'")
                         .expect("Metadata read prepare to always succeed");
 
-                    let meta = stmt
+                    let bytes = stmt
                         .query_row((), |row| {
                             let bytes: Vec<u8> = row.get(0)?;
                             Ok(bytes)
                         })
                         .expect("Database to always have at least default metadata");
 
+                    let meta: StateMachineData = bincode::deserialize(&bytes).unwrap();
+                    // TODO
+
                     ack.send(meta).unwrap();
                 }
 
+                WriterRequest::MetadataMembership(req) => {
+                    sm_data.last_membership = req.last_membership;
+                    req.ack.send(()).unwrap();
+                }
+
                 WriterRequest::Backup(req) => {
-                    last_applied_log_id = req.last_applied_log_id;
+                    sm_data.last_applied_log_id = req.last_applied_log_id;
 
                     match create_backup(
                         &conn,
@@ -363,6 +398,8 @@ pub fn spawn_writer(
                 }
             }
         }
+
+        warn!("SQL writer is shutting down");
     });
 
     tx
