@@ -57,7 +57,7 @@ in case of any errors or problems.
   machine
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
-- self-healing - features `auto-heal` and `auto-heal-logs`
+- self-healing with features `auto-heal` and `auto-heal-logs`
 - automatic database migrations
 - fully encrypted backups to s3 (
   with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
