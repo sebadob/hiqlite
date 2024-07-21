@@ -59,7 +59,8 @@ in case of any errors or problems.
 - optional TLS everywhere for a zero-trust philosophy
 - self-healing - features `auto-heal` and `auto-heal-logs`
 - automatic database migrations
-- backups to s3 (with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
+- fully encrypted backups to s3 (
+  with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
 - restore from remote backup
 - strongly consistent, replicated `execute` queries
     - on a leader node, the client will not even bother with using networking
