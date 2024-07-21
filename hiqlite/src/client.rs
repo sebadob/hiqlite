@@ -61,12 +61,12 @@ impl DbClient {
         Self {
             state: Some(state),
             leader,
+            // TODO do we even still need this for a local client? -> all raft messages should use internal API ?
             client: Arc::new(
                 Client::builder()
-                    // .user_agent("Raft Client")
                     .http2_prior_knowledge()
                     // TODO
-                    // .danger_accept_invalid_certs()
+                    // .danger_accept_invalid_certs(tls_config.as_ref().map(|c| c.))
                     .build()
                     .unwrap(),
             ),
@@ -153,7 +153,6 @@ impl DbClient {
             Ok(res) => Ok(res),
             Err(err) => {
                 if self.was_leader_update_error(&err).await {
-                    // try once again after a leader switch
                     self.execute_req(sql).await
                 } else {
                     Err(err)
@@ -191,21 +190,6 @@ impl DbClient {
         }
     }
 
-    // #[inline(always)]
-    // async fn stream_req_execute(&self, sql: Query) -> Result<ApiStreamResponsePayload, Error> {
-    //     let (ack, rx) = oneshot::channel();
-    //     self.tx_client
-    //         .send_async(ClientStreamReq::Execute(ClientExecutePayload {
-    //             request_id: self.new_request_id(),
-    //             sql,
-    //             ack,
-    //         }))
-    //         .await
-    //         .expect("Client Stream Manager to always be running");
-    //     rx.await
-    //         .expect("To always receive an answer from Client Stream Manager")
-    // }
-
     /// Takes multiple queries and executes all of them in a single transaction.
     pub async fn txn<C, Q>(&self, sql: Q) -> Result<Vec<Result<usize, Error>>, Error>
     where
@@ -224,7 +208,6 @@ impl DbClient {
             Ok(res) => Ok(res),
             Err(err) => {
                 if self.was_leader_update_error(&err).await {
-                    // try once again after a leader switch
                     self.txn_execute(queries).await
                 } else {
                     Err(err)
@@ -275,7 +258,6 @@ impl DbClient {
             Ok(res) => Ok(res),
             Err(err) => {
                 if self.was_leader_update_error(&err).await {
-                    // try once again after a leader switch
                     self.batch_execute(sql).await
                 } else {
                     Err(err)
@@ -321,7 +303,6 @@ impl DbClient {
             Ok(res) => Ok(res),
             Err(err) => {
                 if self.was_leader_update_error(&err).await {
-                    // try once again after a leader switch
                     self.migrate_execute(Migrations::build::<T>()).await
                 } else {
                     Err(err)
@@ -368,7 +349,6 @@ impl DbClient {
             Ok(res) => Ok(res),
             Err(err) => {
                 if self.was_leader_update_error(&err).await {
-                    // try once again after a leader switch
                     self.backup_execute().await
                 } else {
                     Err(err)
@@ -487,8 +467,6 @@ impl DbClient {
     // }
 
     pub async fn init(&self) -> Result<(), Error> {
-        // self.send_with_retry("/cluster/init", None::<String>.as_ref())
-        //     .await
         let url = self.build_addr("/cluster/init").await;
         let res = self
             .client
@@ -523,17 +501,6 @@ impl DbClient {
             let metrics = state.raft.metrics().borrow().clone();
             Ok(metrics)
         } else {
-            // let url = self.build_addr("/cluster/metrics").await;
-            // let res = self.client.get(url)
-            //     .header(HEADER_NAME_SECRET, &self.api_secret)
-            //     .send().await?;
-            // if res.status().is_success() {
-            //     let bytes = res.bytes().await?;
-            //     Ok(bincode::deserialize(bytes.as_ref()).unwrap())
-            // } else {
-            //     Err(res.json().await.unwrap())
-            // }
-
             self.send_with_retry("/cluster/metrics", None::<String>.as_ref())
                 .await
         }
@@ -543,12 +510,11 @@ impl DbClient {
     pub async fn is_healthy(&self) -> Result<(), Error> {
         let metrics = self.metrics().await?;
         metrics.running_state.map_err(Error::from)
-        // Ok(metrics.current_leader.is_some())
     }
 
+    // #[must_use]
     /// Perform a graceful shutdown for this Raft node.
     /// Works on local clients only and can't shut down remote nodes.
-    // #[must_use]
     pub async fn shutdown(self) -> Result<(), Error> {
         if let Some(state) = &self.state {
             let (tx, rx) = oneshot::channel();

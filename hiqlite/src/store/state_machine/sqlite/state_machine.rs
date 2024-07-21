@@ -30,6 +30,11 @@ pub type SqlitePool = deadpool::unmanaged::Pool<rusqlite::Connection>;
 
 pub type Params = Vec<Param>;
 
+pub struct PathDb(pub String);
+pub struct PathBackups(pub String);
+pub struct PathSnapshots(pub String);
+pub struct PathLockFile(pub String);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueryWrite {
     Execute(Query),
@@ -122,20 +127,13 @@ impl StateMachineSqlite {
         this_node: NodeId,
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::S3Config>>,
     ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
-        let path_base = format!("{}/state_machine", data_dir);
+        let (
+            PathDb(path_db),
+            PathBackups(path_backups),
+            PathSnapshots(path_snapshots),
+            PathLockFile(path_lock_file),
+        ) = Self::build_folders(data_dir.as_ref()).await;
 
-        let path_snapshots = format!("{}/snapshots", path_base);
-        fs::create_dir_all(&path_snapshots)
-            .await
-            .expect("Cannot create snapshots path");
-
-        let path_backups = format!("{}/backups", path_base);
-        fs::create_dir_all(&path_backups)
-            .await
-            .expect("Cannot create snapshots path");
-
-        let path_db = format!("{}/db", path_base);
-        let path_lock_file = format!("{}/lock", path_base);
         let mut db_exists = fs::File::open(format!("{}/{}", path_db, filename_db))
             .await
             .is_ok();
@@ -212,6 +210,36 @@ impl StateMachineSqlite {
         }
 
         Ok(slf)
+    }
+
+    pub fn path_base(data_dir: &str) -> String {
+        format!("{}/state_machine", data_dir)
+    }
+
+    pub async fn build_folders(
+        data_dir: &str,
+    ) -> (PathDb, PathBackups, PathSnapshots, PathLockFile) {
+        let path_base = Self::path_base(data_dir);
+
+        let path_snapshots = format!("{}/snapshots", path_base);
+        fs::create_dir_all(&path_snapshots)
+            .await
+            .expect("Cannot create snapshots path");
+
+        let path_backups = format!("{}/backups", path_base);
+        fs::create_dir_all(&path_backups)
+            .await
+            .expect("Cannot create snapshots path");
+
+        let path_db = format!("{}/db", path_base);
+        let path_lock_file = format!("{}/lock", path_base);
+
+        (
+            PathDb(path_db),
+            PathBackups(path_backups),
+            PathSnapshots(path_snapshots),
+            PathLockFile(path_lock_file),
+        )
     }
 
     async fn check_set_lock_file(path_lock_file: &str, path_db: &str, db_exists: &mut bool) {

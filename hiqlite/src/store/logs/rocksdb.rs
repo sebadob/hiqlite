@@ -1,5 +1,5 @@
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
-use crate::store::StorageResult;
+use crate::store::{logs, StorageResult};
 use crate::NodeId;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
@@ -381,7 +381,7 @@ pub struct LogStoreRocksdb {
 
 impl LogStoreRocksdb {
     pub async fn new(data_dir: &str) -> Self {
-        let dir = format!("{}/logs", data_dir);
+        let dir = logs::logs_dir(data_dir);
         fs::create_dir_all(&dir)
             .await
             .expect("Cannot create logs path");

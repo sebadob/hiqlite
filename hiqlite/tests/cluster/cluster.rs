@@ -21,8 +21,7 @@ async fn test_cluster() -> Result<(), Error> {
         .with_env_filter(EnvFilter::new("info"))
         .init();
 
-    log("Starting Cluster");
-
+    log("Starting cluster");
     let (client_1, client_2, client_3) = start_test_cluster().await?;
     log("Cluster has been started");
 
@@ -45,6 +44,10 @@ async fn test_cluster() -> Result<(), Error> {
     test_backup(&client_1).await?;
     log("Backup tests finished");
 
+    log("Change current database as preparation for backup restore tests");
+    test_backup_restore_prerequisites(&client_1).await?;
+    log("Change current database has been changed");
+
     log("Shutting down nodes");
 
     client_1.shutdown().await?;
@@ -54,16 +57,33 @@ async fn test_cluster() -> Result<(), Error> {
     client_3.shutdown().await?;
     log("client_3 shutdown complete");
 
+    // just give the s3 upload task in the background a second to finish
     time::sleep(Duration::from_secs(1)).await;
+
+    log("Trying to start the cluster again after shutdown with restore from backup");
+    let (client_1, client_2, client_3) = start_test_cluster_with_backup().await?;
+    log("Cluster has been started again");
+
+    wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
+    log("Cluster is healthy again");
+
+    log("Make sure databases are correctly restored");
+    test_db_is_healthy_after_restore(&client_1).await?;
+    test_db_is_healthy_after_restore(&client_2).await?;
+    test_db_is_healthy_after_restore(&client_3).await?;
+
+    client_1.shutdown().await?;
+    log("client_1 shutdown complete");
+    client_2.shutdown().await?;
+    log("client_2 shutdown complete");
+    client_3.shutdown().await?;
+    log("client_3 shutdown complete");
 
     // TODO impl + test
     // - migrations
-    // - batch / simple queries
-    // - backups to s3
     // - consistent queries on leader
 
     // TODO test
-    // - shutdown / restart
     // - self-heal capabilities after data loss
 
     Ok(())
@@ -72,6 +92,29 @@ async fn test_cluster() -> Result<(), Error> {
 async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
     let _ = fs::remove_dir_all(TEST_DATA_DIR).await;
 
+    let handle_client_1 = task::spawn(start_node(build_config(1).await, true));
+    let client_2 = start_node(build_config(2).await, true).await?;
+    let client_3 = start_node(build_config(3).await, true).await?;
+    let client_1 = handle_client_1.await??;
+
+    Ok((client_1, client_2, client_3))
+}
+
+async fn start_test_cluster_with_backup() -> Result<(DbClient, DbClient, DbClient), Error> {
+    let path = find_backup_file(1).await;
+    let (_path, backup_name) = path.rsplit_once('/').unwrap();
+    env::set_var("HIQLITE_BACKUP_RESTORE", backup_name);
+
+    let client_3 = start_node(build_config(3).await, true).await?;
+    let client_2 = start_node(build_config(2).await, true).await?;
+    let client_1 = start_node(build_config(1).await, true).await?;
+
+    env::remove_var("HIQLITE_BACKUP_RESTORE");
+
+    Ok((client_1, client_2, client_3))
+}
+
+async fn build_config(node_id: u64) -> NodeConfig {
     let dir_1 = format!("{}/node_1", TEST_DATA_DIR);
     let dir_2 = format!("{}/node_2", TEST_DATA_DIR);
     let dir_3 = format!("{}/node_3", TEST_DATA_DIR);
@@ -80,84 +123,75 @@ async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
     fs::create_dir_all(&dir_2).await.unwrap();
     fs::create_dir_all(&dir_3).await.unwrap();
 
-    let build_config = |node_id: u64| -> NodeConfig {
-        let nodes = vec![
-            Node {
-                id: 1,
-                addr_raft: "127.0.0.1:32001".to_string(),
-                addr_api: "127.0.0.1:31001".to_string(),
-            },
-            Node {
-                id: 2,
-                addr_raft: "127.0.0.1:32002".to_string(),
-                addr_api: "127.0.0.1:31002".to_string(),
-            },
-            Node {
-                id: 3,
-                addr_raft: "127.0.0.1:32003".to_string(),
-                addr_api: "127.0.0.1:31003".to_string(),
-            },
-        ];
-        let data_dir = match node_id {
-            1 => dir_1.to_string().into(),
-            2 => dir_2.to_string().into(),
-            3 => dir_3.to_string().into(),
-            _ => unreachable!(),
-        };
+    let nodes = vec![
+        Node {
+            id: 1,
+            addr_raft: "127.0.0.1:32001".to_string(),
+            addr_api: "127.0.0.1:31001".to_string(),
+        },
+        Node {
+            id: 2,
+            addr_raft: "127.0.0.1:32002".to_string(),
+            addr_api: "127.0.0.1:31002".to_string(),
+        },
+        Node {
+            id: 3,
+            addr_raft: "127.0.0.1:32003".to_string(),
+            addr_api: "127.0.0.1:31003".to_string(),
+        },
+    ];
+    let data_dir = match node_id {
+        1 => dir_1.to_string().into(),
+        2 => dir_2.to_string().into(),
+        3 => dir_3.to_string().into(),
+        _ => unreachable!(),
+    };
 
-        let s3_config = {
-            dotenvy::dotenv().ok();
-            if let Ok(url) = env::var("S3_URL") {
-                // we assume that all values exist when we can read the url successfully
+    let s3_config = {
+        dotenvy::dotenv().ok();
+        if let Ok(url) = env::var("S3_URL") {
+            // we assume that all values exist when we can read the url successfully
 
-                let url = reqwest::Url::parse(&url).unwrap();
-                let bucket_name = env::var("S3_BUCKET").unwrap();
-                let region = Region(env::var("S3_REGION").unwrap());
-                let access_key_id = AccessKeyId(env::var("S3_KEY").unwrap());
-                let access_key_secret = AccessKeySecret(env::var("S3_SECRET").unwrap());
-                let credentials = Credentials {
-                    access_key_id,
-                    access_key_secret,
-                };
-                let options = Some(BucketOptions {
-                    path_style: true,
-                    list_objects_v2: true,
-                });
+            let url = reqwest::Url::parse(&url).unwrap();
+            let bucket_name = env::var("S3_BUCKET").unwrap();
+            let region = Region(env::var("S3_REGION").unwrap());
+            let access_key_id = AccessKeyId(env::var("S3_KEY").unwrap());
+            let access_key_secret = AccessKeySecret(env::var("S3_SECRET").unwrap());
+            let credentials = Credentials {
+                access_key_id,
+                access_key_secret,
+            };
+            let options = Some(BucketOptions {
+                path_style: true,
+                list_objects_v2: true,
+            });
 
-                let bucket = Bucket::new(url, bucket_name, region, credentials, options).unwrap();
+            let bucket = Bucket::new(url, bucket_name, region, credentials, options).unwrap();
 
-                log("S3 env vars found");
-                Some(S3Config { bucket })
-            } else {
-                log("No S3 env vars found - will skip S3 tests");
-                None
-            }
-        };
-
-        NodeConfig {
-            node_id,
-            nodes,
-            data_dir,
-            filename_db: "hiqlite".into(),
-            config: NodeConfig::raft_config(1000),
-            // TODO currently we can't test with TLS, because this depends on `axum_server`.
-            // This does not support graceful shutdown, which we need for testing from
-            // a single process
-            tls_raft: None,
-            tls_api: None,
-            secret_raft: "asdasdasdasdasdasd".to_string(),
-            secret_api: "qweqweqweqweqweqwe".to_string(),
-            enc_keys_from: EncKeysFrom::Env,
-            s3_config,
+            log("S3 env vars found");
+            Some(S3Config { bucket })
+        } else {
+            log("No S3 env vars found - will skip S3 tests");
+            None
         }
     };
 
-    let handle_client_1 = task::spawn(start_node(build_config(1), true));
-    let client_2 = start_node(build_config(2), true).await?;
-    let client_3 = start_node(build_config(3), true).await?;
-    let client_1 = handle_client_1.await??;
-
-    Ok((client_1, client_2, client_3))
+    NodeConfig {
+        node_id,
+        nodes,
+        data_dir,
+        filename_db: "hiqlite".into(),
+        config: NodeConfig::raft_config(1000),
+        // TODO currently we can't test with TLS, because this depends on `axum_server`.
+        // This does not support graceful shutdown, which we need for testing from
+        // a single process
+        tls_raft: None,
+        tls_api: None,
+        secret_raft: "asdasdasdasdasdasd".to_string(),
+        secret_api: "qweqweqweqweqweqwe".to_string(),
+        enc_keys_from: EncKeysFrom::Env,
+        s3_config,
+    }
 }
 
 async fn wait_for_healthy_cluster(
@@ -368,6 +402,38 @@ async fn test_insert_query(
     log("Query multiple rows with 'query_map()'");
     let res: Vec<TestData> = client_1.query_map("SELECT * FROM test", params!()).await?;
     assert_eq!(res.len(), 2);
+
+    Ok(())
+}
+
+async fn test_db_is_healthy_after_restore(client: &DbClient) -> Result<(), Error> {
+    let data = TestData {
+        id: 3,
+        ts: 0, // Timestamp will be different anyway, we don't care right now
+        description: "My First Row from client 3".to_string(),
+    };
+
+    log("Check old data still exists");
+    let res: TestData = client
+        .query_as_one("SELECT * FROM test WHERE id = $1", params!(3))
+        .await?;
+    assert_eq!(res.id, data.id);
+    assert_eq!(res.description, data.description);
+
+    log("Make sure the database changes from before the restore have been reverted");
+    let res: Result<TestData, Error> = client
+        .query_as_one("SELECT * FROM test_changed WHERE id = $1", params!(3))
+        .await;
+    assert!(res.is_err());
+    if let Err(err) = res {
+        match err {
+            Error::Sqlite(s) => {
+                log(&s);
+                log(s.contains("no such table"));
+            }
+            _ => panic!("Should be an Error::Sqlite"),
+        }
+    }
 
     Ok(())
 }
@@ -583,6 +649,32 @@ async fn find_backup_file(node_id: u64) -> String {
         return format!("{}/{}", path_base, name);
     }
     panic!("Backup folder is empty when it should not be");
+}
+
+async fn test_backup_restore_prerequisites(client: &DbClient) -> Result<(), Error> {
+    // We want to introduce changes to the current database which can be compared to the
+    // backup that has been backed up right beforehand.
+    client
+        .execute(
+            r#"
+    CREATE TABLE test_changed
+    (
+        id          INTEGER NOT NULL
+                     CONSTRAINT test_pk
+                         PRIMARY KEY
+    )
+    "#,
+            params!(),
+        )
+        .await?;
+
+    client
+        .execute("INSERT INTO test_changed VALUES ($1)", params!(1337))
+        .await?;
+
+    client.execute("DROP TABLE test", params!()).await?;
+
+    Ok(())
 }
 
 fn log<S: Display>(s: S) {

@@ -8,3 +8,7 @@ pub mod rocksdb;
 
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+
+pub fn logs_dir(data_dir: &str) -> String {
+    format!("{}/logs", data_dir)
+}

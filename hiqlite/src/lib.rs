@@ -3,6 +3,8 @@
 #![doc = include_str!("../../README.md")]
 #![forbid(unsafe_code)]
 
+extern crate alloc;
+
 use crate::app_state::AppState;
 use crate::network::raft_server;
 use crate::network::NetworkStreaming;
@@ -109,7 +111,7 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
     s3::init_enc_keys(&node_config.enc_keys_from)?;
 
     #[cfg(feature = "backup")]
-    backup::check_restore_apply().await?;
+    backup::check_restore_apply(&node_config).await?;
 
     let raft_config = Arc::new(node_config.config.validate().unwrap());
 

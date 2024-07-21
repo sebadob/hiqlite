@@ -54,7 +54,7 @@ impl S3Config {
             .map_err(|err| Error::S3(err.to_string()))
     }
 
-    pub(crate) async fn pull(&self, path: &str, object: &str) -> Result<(), Error> {
+    pub(crate) async fn pull(&self, object: &str, path: &str) -> Result<(), Error> {
         let reader = StreamReader::S3(S3Reader {
             bucket: &self.bucket,
             object,

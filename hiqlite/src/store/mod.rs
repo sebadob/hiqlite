@@ -13,7 +13,7 @@ use std::cmp::PartialEq;
 use state_machine::sqlite::state_machine::StateMachineSqlite;
 
 // pub mod state_machine_memory;
-mod logs;
+pub mod logs;
 pub mod state_machine;
 
 pub type StorageResult<T> = Result<T, StorageError<NodeId>>;

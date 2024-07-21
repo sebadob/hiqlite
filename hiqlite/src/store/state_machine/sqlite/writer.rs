@@ -368,8 +368,6 @@ pub fn spawn_writer(
                         .expect("Database to always have at least default metadata");
 
                     let meta: StateMachineData = bincode::deserialize(&bytes).unwrap();
-                    // TODO
-
                     ack.send(meta).unwrap();
                 }
 
