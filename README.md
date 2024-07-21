@@ -6,19 +6,18 @@ Hiqlite is an embeddable SQLite database that can form a Raft cluster to provide
 ## Project Status
 
 This project is in a very early phase and I have quite a few things on the TODO before I would consider it to be
-ready for testing in a real application. Until it hits v0.1.0, I will not not care about any changelog or keeping
-track of changes, because it costs more time and effort than it's worth at this point.
+ready for testing in a real application. Until it hits v0.1.0, I will not not care about any changelog or something
+like that, because it costs more time and effort than it's worth at this point.
 
-However, you can take a look at the integration test or the example. These do work fine so far, but I am sure that
-there are quite a few logic bugs. I also have many panics and assertions in case of logic errors all over the code.
+However, you can take a look at the integration test (`hiqlite/tests/`) or the example. These do work fine so far.
+I do have many panics (that hopefully don't happen ^^) and assertions in case of logic errors all over the code.
 I'd rather have my application panic so I can catch the error immediately than missing an error log and ending up in
 an inconsistent state.
 
-An integration test for the currently implemented features does exist.  
-Issues and discussions are not available in this early stage. It would simply not make any sense before v0.1.0.
-I will also push directly to `main` until it's hitting the first release, which will most probably break the examples
-from time to time. There is an initial **0.0.1 tag**, just in case I break the examples on `main` before the first
-release.
+Issues and discussions are not available on purpose in this early stage. It would simply not make any sense before
+v0.1.0. I will also push directly to `main` until it's hitting the first release, which will most probably break the
+examples from time to time. There is an initial [0.0.1 Tag](https://github.com/sebadob/hiqlite/tree/v0.0.1), just in
+case I do break them.
 
 ## Why
 
@@ -26,10 +25,11 @@ Why another SQLite replication solution? Other projects exist already that can d
 them checks all boxes. They either require an additional independent process running on the side which can do async
 replication, need a special file system, or are running as a server.
 
-I don't think that running SQLite as a server is a good solution. Yes, it is very resource friendly, but you loose its
-biggest strength when doing this: having all you data local, which makes reads super fast without network latency.
-Hiqlite builds on top of `rusqlite` and provides an async wrapper around it to make it easy usable with `tokio`.
-For the Raft logic, it builds on top of`openraft` while providing its own storage and network implementations.
+I don't think that running SQLite as a server is a good solution. Yes, it is very resource friendly and it may
+be a good solution when you are heavily resource constrained, but you loose its biggest strength when doing this: having
+all you data local, which makes reads super fast without network latency.  
+Hiqlite builds on top of `rusqlite` and provides an async wrapper around it to make it easy usable with `tokio`. For the
+Raft logic, it builds on top of`openraft` while providing its own storage and network implementations.
 
 ## Goal
 
@@ -46,11 +46,11 @@ with real networking in between them. On another machine with older SATA SSDs it
 
 At the end, the goal is that you can have the simplicity and all the advantages of an embedded SQLite while still being
 able to run your application highly available (which is almost always mandatory for me) and having automatic fail-over
-in case of any errors or problems. The whole
+in case of any errors or problems.
 
 ### What is working
 
-- whole Raft cluster setup
+- full Raft cluster setup
 - everything a Raft is expected to do (thanks to [openraft](https://github.com/datafuselabs/openraft))
 - Raft cluster auto-init based on given configuration
 - persistent storage for Raft logs (with [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb)) and SQLite state
