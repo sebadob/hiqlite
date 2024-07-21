@@ -56,10 +56,11 @@ in case of any errors or problems.
 - persistent storage for Raft logs (with [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb)) and SQLite state
   machine
 - fully authenticated networking
+- optional TLS everywhere for a zero-trust philosophy
 - self-healing - features `auto-heal` and `auto-heal-logs`
 - automatic database migrations
-- optional TLS everywhere for a zero-trust philosophy
 - backups to s3 (with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
+- restore from remote backup
 - strongly consistent, replicated `execute` queries
     - on a leader node, the client will not even bother with using networking
     - on a non-leader node, it will automatically switch over to a network connection so the request
@@ -77,7 +78,6 @@ in case of any errors or problems.
 
 This list is by no means exhaustive, these are just the next big things
 
-- restore from remote backup
 - consistent queries on leader
 - metrics / health endpoint or maybe even a simple health UI
 - proper documentation
