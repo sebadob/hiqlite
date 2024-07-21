@@ -108,7 +108,7 @@ async fn test_cluster() -> Result<(), Error> {
 
     log("All tests successful");
 
-    // TODO something makes the test get stuck at the very end
+    // TODO sometimes something makes the test get stuck at the very end
 
     // TODO impl + test
     // - migrations

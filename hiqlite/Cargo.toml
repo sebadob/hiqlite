@@ -57,6 +57,7 @@ serde_rusqlite.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-rustls.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 webpki-roots.workspace = true
@@ -64,8 +65,6 @@ webpki-roots.workspace = true
 # make minimal versions happy
 lazy_static.workspace = true
 lz4-sys.workspace = true
-tokio-rustls = { workspace = true, features = ["ring"] }
-log = "0.4.22"
 
 [build-dependencies]
 
