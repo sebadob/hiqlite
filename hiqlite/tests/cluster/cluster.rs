@@ -3,17 +3,44 @@ use cryptr::stream::s3::*;
 use hiqlite::{params, start_node, EncKeysFrom, NodeConfig, Param, S3Config};
 use hiqlite::{DbClient, Error, Node};
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::fmt::{Debug, Display};
 use std::time::Duration;
+use std::{env, process};
 use tokio::{fs, task, time};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 const TEST_DATA_DIR: &str = "tests/data_test";
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+fn set_panic_hook() {
+    std::panic::set_hook(Box::new(|panic| {
+        eprintln!("{}\n", panic);
+
+        if let Some(location) = panic.location() {
+            tracing::error!(
+                message = %panic,
+                panic.file = location.file(),
+                panic.line = location.line(),
+                panic.column = location.column(),
+            );
+            eprintln!(
+                "{}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            );
+        } else {
+            tracing::error!(message = %panic);
+        }
+
+        process::exit(1);
+    }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_cluster() -> Result<(), Error> {
+    set_panic_hook();
+
     tracing_subscriber::fmt()
         .with_target(true)
         .with_thread_ids(true)
@@ -78,6 +105,10 @@ async fn test_cluster() -> Result<(), Error> {
     log("client_2 shutdown complete");
     client_3.shutdown().await?;
     log("client_3 shutdown complete");
+
+    log("All tests successful");
+
+    // TODO something makes the test get stuck at the very end
 
     // TODO impl + test
     // - migrations
