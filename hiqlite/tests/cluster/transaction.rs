@@ -2,6 +2,8 @@ use crate::execute_query::TestData;
 use crate::log;
 use chrono::Utc;
 use hiqlite::{params, DbClient, Error, Param};
+use std::time::Duration;
+use tokio::time;
 
 pub async fn test_transactions(
     client_1: &DbClient,
@@ -47,6 +49,8 @@ pub async fn test_transactions(
     assert_eq!(data[2].description, "Transaction Data id 13");
 
     log("Making sure transaction data exists for client 2");
+    time::sleep(Duration::from_millis(10)).await;
+
     let data: Vec<TestData> = client_2.query_map(select, params!(11)).await?;
     assert_eq!(data.len(), 3);
 

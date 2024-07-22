@@ -28,6 +28,8 @@ pub struct NodeConfig {
     /// you can afford this. No data will be lost with an in-memory DB because Raft logs and
     /// snapshots are always persisted and the in-memory DB can be rebuilt quickly after a restart.
     pub filename_db: Cow<'static, str>,
+    /// Enabled statement logging or the SQL writer
+    pub log_statements: bool,
     // pub mode: NodeMode,
     /// The internal Raft config. This must be the same on each node.
     pub config: RaftConfig,
@@ -53,6 +55,7 @@ impl Default for NodeConfig {
             nodes: vec![],
             data_dir: "hiqlite".into(),
             filename_db: "hiqlite.db".into(),
+            log_statements: false,
             config: Self::raft_config(10_000),
             tls_raft: None,
             tls_api: None,
@@ -84,6 +87,7 @@ impl NodeConfig {
             nodes,
             data_dir: "hiqlite".into(),
             filename_db: "hiqlite.db".into(),
+            log_statements: false,
             config: Self::raft_config(10_000),
             tls_raft,
             tls_api,
@@ -133,9 +137,9 @@ impl NodeConfig {
     pub fn raft_config(logs_until_snapshot: u64) -> RaftConfig {
         RaftConfig {
             cluster_name: "hiqlite".to_string(),
-            election_timeout_min: 750,
-            election_timeout_max: 1500,
-            heartbeat_interval: 250,
+            election_timeout_min: 500,
+            election_timeout_max: 1000,
+            heartbeat_interval: 100,
             // election_timeout_min: 250,
             // election_timeout_max: 500,
             // heartbeat_interval: 100,

@@ -1,6 +1,7 @@
 use crate::{log, TEST_DATA_DIR};
 use hiqlite::{params, DbClient, Error, Param};
 use tokio::fs;
+use tracing::info;
 
 pub async fn test_backup(client_1: &DbClient) -> Result<(), Error> {
     log("Creating backup request via client_1");
@@ -63,9 +64,9 @@ pub async fn test_backup_restore_prerequisites(client: &DbClient) -> Result<(), 
             r#"
     CREATE TABLE test_changed
     (
-        id          INTEGER NOT NULL
-                     CONSTRAINT test_pk
-                         PRIMARY KEY
+        id INTEGER NOT NULL
+             CONSTRAINT test_pk
+               PRIMARY KEY
     )
     "#,
             params!(),
@@ -92,3 +93,31 @@ pub async fn find_backup_file(node_id: u64) -> String {
     }
     panic!("Backup folder is empty when it should not be");
 }
+
+// pub fn ls_recursive(path: &str, indent: usize) -> String {
+//     use std::fmt::Write;
+//
+//     let mut ls = std::fs::read_dir(path).unwrap();
+//     let mut base_indent = String::with_capacity(indent);
+//     for _ in 0..indent {
+//         write!(base_indent, " ").unwrap();
+//     }
+//
+//     let mut res = String::default();
+//     while let Some(Ok(entry)) = ls.next() {
+//         let file_name = entry.file_name();
+//         let name = file_name.to_str().unwrap();
+//         writeln!(res, "{}{}", base_indent, name).unwrap();
+//
+//         if entry.metadata().unwrap().is_dir() {
+//             let sub = ls_recursive(entry.path().to_str().unwrap(), indent + 2);
+//             writeln!(res, "{}", sub).unwrap();
+//         }
+//     }
+//
+//     if res.is_empty() {
+//         writeln!(res, "{}<empty>", base_indent).unwrap();
+//     }
+//
+//     res
+// }

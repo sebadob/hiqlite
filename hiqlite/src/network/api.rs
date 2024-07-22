@@ -488,8 +488,11 @@ where
     S: Into<Cow<'static, str>>,
 {
     let stmt: Cow<'static, str> = stmt.into();
-    let conn = state.read_pool.get().await?;
+    if state.log_statements {
+        info!("query_map:\n{}\n{:?}", stmt, params)
+    }
 
+    let conn = state.read_pool.get().await?;
     task::spawn_blocking(move || {
         let mut stmt = conn.prepare_cached(stmt.as_ref())?;
 
@@ -536,8 +539,11 @@ where
     S: Into<Cow<'static, str>>,
 {
     let stmt: Cow<'static, str> = stmt.into();
-    let conn = state.read_pool.get().await?;
+    if state.log_statements {
+        info!("query_as:\n{}\n{:?}", stmt, params)
+    }
 
+    let conn = state.read_pool.get().await?;
     task::spawn_blocking(move || {
         let mut stmt = conn.prepare_cached(stmt.as_ref())?;
 

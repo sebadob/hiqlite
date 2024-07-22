@@ -215,6 +215,7 @@ impl LogStoreWriter {
                     ActionWrite::Shutdown => {
                         warn!("Raft logs store writer is being shut down");
                         db.flush_wal(true);
+                        // db.flush();
                         break;
                     }
                 }
@@ -457,8 +458,8 @@ impl LogStoreRocksdb {
         let tx_writer = LogStoreWriter::spawn(db.clone());
         let tx_reader = LogStoreReader::spawn(db.clone());
 
-        let sync_interval = time::interval(Duration::from_millis(200));
-        LogsSyncer::spawn(tx_writer.clone(), sync_interval);
+        // let sync_interval = time::interval(Duration::from_millis(200));
+        // LogsSyncer::spawn(tx_writer.clone(), sync_interval);
 
         LogStoreRocksdb {
             db,

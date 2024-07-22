@@ -103,11 +103,9 @@ pub struct BackupRequest {
 }
 
 pub fn spawn_writer(
-    // path_db: String,
-    // filename_db: String,
     mut conn: rusqlite::Connection,
     path_lock_file: String,
-    // in_memory: bool,
+    log_statements: bool,
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(2);
 
@@ -147,6 +145,10 @@ pub fn spawn_writer(
                 WriterRequest::Query(query) => match query {
                     Query::Execute(q) => {
                         sm_data.last_applied_log_id = q.last_applied_log_id;
+
+                        if log_statements {
+                            info!("Query::Execute:\n{}\n{:?}", q.sql, q.params);
+                        }
 
                         let res = {
                             let mut stmt = match conn.prepare_cached(q.sql.as_ref()) {
@@ -202,6 +204,10 @@ pub fn spawn_writer(
 
                         let mut results = Vec::with_capacity(req.queries.len());
                         'outer: for state_machine::Query { sql, params } in req.queries {
+                            if log_statements {
+                                info!("Query::Transaction:\n{}\n{:?}", sql, params);
+                            }
+
                             let mut stmt = match txn.prepare_cached(sql.as_ref()) {
                                 Ok(stmt) => stmt,
                                 Err(err) => {
@@ -245,6 +251,10 @@ pub fn spawn_writer(
                     }
 
                     Query::Batch(req) => {
+                        if log_statements {
+                            info!("Query::Batch:\n{}", req.sql);
+                        }
+
                         let mut batch = Batch::new(&conn, req.sql.as_ref());
                         // we can at least assume 2 statements in a batch execute
                         let mut res = Vec::with_capacity(2);

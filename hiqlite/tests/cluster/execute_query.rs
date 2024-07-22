@@ -2,6 +2,8 @@ use crate::log;
 use chrono::Utc;
 use hiqlite::{params, DbClient, Error, Param};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tokio::time;
 
 // serde derives are mandatory if we want to use the `query_as()`
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +72,7 @@ pub async fn test_execute_query(
     assert_eq!(rows_affected, 1);
 
     log("Making sure clients 2 and 3 can read the same data");
+    time::sleep(Duration::from_millis(10)).await;
 
     let res: TestData = client_2
         .query_as_one("SELECT * FROM test WHERE id = $1", params!(1))

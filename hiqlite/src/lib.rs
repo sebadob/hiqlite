@@ -34,6 +34,7 @@ pub use rusqlite::Row;
 pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
+use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
 #[cfg(feature = "s3")]
 pub use config::EncKeysFrom;
 #[cfg(feature = "s3")]
@@ -56,10 +57,6 @@ mod backup;
 mod s3;
 
 type NodeId = u64;
-
-// use mac
-
-// hiqlite_macros::embed_migrations!("../../migrations");
 
 /// Create params for distributed SQL modifying queries.
 /// TODO create multiple branches here to be able to catch the correct sizes
@@ -121,6 +118,7 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
         node_config.node_id,
         node_config.data_dir,
         node_config.filename_db,
+        node_config.log_statements,
         #[cfg(feature = "s3")]
         node_config.s3_config.map(Arc::new),
     )
@@ -178,6 +176,7 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
         secret_api: node_config.secret_api,
         secret_raft: node_config.secret_raft,
         client_buffers,
+        log_statements: node_config.log_statements,
     });
 
     // let compression_middleware = ServiceBuilder::new().layer(CompressionLayer::new());

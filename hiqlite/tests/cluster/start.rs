@@ -8,8 +8,6 @@ use std::time::Duration;
 use tokio::{fs, task, time};
 
 pub async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
-    let _ = fs::remove_dir_all(TEST_DATA_DIR).await;
-
     let handle_client_1 = task::spawn(start_node(build_config(1).await, true));
     let client_2 = start_node(build_config(2).await, true).await?;
     let client_3 = start_node(build_config(3).await, true).await?;
@@ -85,6 +83,7 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         nodes,
         data_dir,
         filename_db: "hiqlite".into(),
+        log_statements: true,
         config: NodeConfig::raft_config(1000),
         // TODO currently we can't test with TLS, because this depends on `axum_server`.
         // This does not support graceful shutdown, which we need for testing from

@@ -53,6 +53,7 @@ pub(crate) async fn new_storage(
     node_id: NodeId,
     db_path: Cow<'static, str>,
     filename_db: Cow<'static, str>,
+    log_statements: bool,
     // mode: NodeMode,
     // ) -> (T, StateMachineStore)
     // where
@@ -60,29 +61,25 @@ pub(crate) async fn new_storage(
     // {
     #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::S3Config>>,
 ) -> (logs::rocksdb::LogStoreRocksdb, StateMachineSqlite) {
-    // let log_store = LogStore::new(db_path).await;
-
     // let log_store: T = match mode {
     //     NodeMode::Disk | NodeMode::Memory => logs_rocks::LogStore::new(&db_path).await,
     //     NodeMode::Ephemeral => logs_memory::LogStore::new(),
     // };
 
-    // let memory_sqlite = mode != NodeMode::Disk;
-
     let log_store = logs::rocksdb::LogStoreRocksdb::new(&db_path).await;
 
-    // let sm_store = state_machine_rocksdb::build_state_machine(db_path).await;
     let sm_store = StateMachineSqlite::new(
         db_path,
         filename_db,
         node_id,
+        log_statements,
         #[cfg(feature = "s3")]
         s3_config,
     )
     .await
     .unwrap();
+
     (log_store, sm_store)
-    // (log_store(db_path, mode).await, sm_store)
 }
 
 // async fn log_store<LS>(db_path: Cow<'static, str>, mode: NodeMode) -> LS

@@ -18,6 +18,7 @@ pub struct AppState {
     pub sql_writer: flume::Sender<WriterRequest>,
     pub read_pool: Arc<SqlitePool>,
     pub config: Arc<Config>,
+    pub log_statements: bool,
     pub secret_raft: String,
     pub secret_api: String,
     // TODO this should become dynamic at some point to make dynamic cluster changes possible in the future

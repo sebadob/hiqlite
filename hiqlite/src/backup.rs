@@ -5,11 +5,15 @@ use crate::store::state_machine::sqlite::state_machine::{
 use crate::{Error, NodeConfig};
 use std::env;
 use tokio::{fs, task};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Check if the env var `HIQLITE_BACKUP_RESTORE` is set and restores the given backup if so.
 pub(crate) async fn check_restore_apply(node_config: &NodeConfig) -> Result<(), Error> {
     if let Ok(name) = env::var("HIQLITE_BACKUP_RESTORE") {
+        warn!(
+            "Found HIQLITE_BACKUP_RESTORE={} - starting backup restore process",
+            name
+        );
         restore_backup(node_config, &name).await?;
     }
     Ok(())
@@ -39,7 +43,7 @@ pub async fn restore_backup(node_config: &NodeConfig, backup_name: &str) -> Resu
         PathBackups(path_backups),
         PathSnapshots(path_snapshots),
         PathLockFile(path_lock_file),
-    ) = StateMachineSqlite::build_folders(&node_config.data_dir).await;
+    ) = StateMachineSqlite::build_folders(&node_config.data_dir, false).await;
     let path_logs = logs::logs_dir(&node_config.data_dir);
 
     let path_backup_s3 = format!("{}/restore.sqlite", path_base);
@@ -50,9 +54,9 @@ pub async fn restore_backup(node_config: &NodeConfig, backup_name: &str) -> Resu
 
     debug!("Removing old data");
     let _ = fs::remove_dir_all(&path_db).await;
+    let _ = fs::remove_dir_all(&path_backups).await;
     let _ = fs::remove_dir_all(&path_snapshots).await;
     let _ = fs::remove_dir_all(&path_lock_file).await;
-    let _ = fs::remove_dir_all(&path_backups).await;
     let _ = fs::remove_dir_all(&path_logs).await;
 
     fs::create_dir_all(&path_db).await?;

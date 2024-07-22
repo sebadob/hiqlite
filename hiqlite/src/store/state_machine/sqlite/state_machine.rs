@@ -125,24 +125,21 @@ impl StateMachineSqlite {
         data_dir: Cow<'static, str>,
         filename_db: Cow<'static, str>,
         this_node: NodeId,
+        log_statements: bool,
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::S3Config>>,
     ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
+        // IMPORTANT: Do NOT change the order of the db exists check!
+        // DB recovery will fail otherwise!
+        let mut db_exists = Self::db_exists(&data_dir, &filename_db).await;
+
         let (
             PathDb(path_db),
             PathBackups(path_backups),
             PathSnapshots(path_snapshots),
             PathLockFile(path_lock_file),
-        ) = Self::build_folders(data_dir.as_ref()).await;
+        ) = Self::build_folders(data_dir.as_ref(), true).await;
 
-        let mut db_exists = fs::File::open(format!("{}/{}", path_db, filename_db))
-            .await
-            .is_ok();
         Self::check_set_lock_file(&path_lock_file, &path_db, &mut db_exists).await;
-
-        if !db_exists {
-            // may error if is has been re-created already in auto-rebuild from lockfile
-            let _ = fs::create_dir_all(&path_db).await;
-        }
 
         // Always start the writer first
         let conn = Self::connect(path_db.to_string(), filename_db.to_string(), false)
@@ -150,7 +147,7 @@ impl StateMachineSqlite {
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write(&err),
             })?;
-        let write_tx = writer::spawn_writer(conn, path_lock_file.clone());
+        let write_tx = writer::spawn_writer(conn, path_lock_file.clone(), log_statements);
 
         let read_pool = Self::connect_read_pool(path_db.as_ref(), filename_db.as_ref())
             .await
@@ -189,6 +186,11 @@ impl StateMachineSqlite {
             metadata
         };
 
+        info!(
+            "\n\n\ndb_exists: {}\n\n{:?}\n\n",
+            db_exists, state_machine_data
+        );
+
         let mut slf = Self {
             data: state_machine_data,
             this_node,
@@ -205,6 +207,10 @@ impl StateMachineSqlite {
         // TODO or just apply it all the time and therefore don't care about graceful shutdown for SQLite?
         if !db_exists {
             if let Some(snapshot) = slf.read_current_snapshot_from_disk().await? {
+                info!(
+                    "\n\n\nfound sm snapshot with no existing db: {:?}\n\n",
+                    snapshot
+                );
                 slf.update_state_machine_(snapshot).await?;
             }
         }
@@ -212,27 +218,41 @@ impl StateMachineSqlite {
         Ok(slf)
     }
 
+    async fn db_exists(data_dir: &str, filename_db: &str) -> bool {
+        let path_db = Self::path_db(&data_dir);
+        let path_db_full = format!("{}/{}", path_db, filename_db);
+        fs::File::open(&path_db_full).await.is_ok()
+    }
+
     pub fn path_base(data_dir: &str) -> String {
         format!("{}/state_machine", data_dir)
     }
 
+    fn path_db(data_dir: &str) -> String {
+        format!("{}/db", Self::path_base(data_dir))
+    }
+
     pub async fn build_folders(
         data_dir: &str,
+        create: bool,
     ) -> (PathDb, PathBackups, PathSnapshots, PathLockFile) {
         let path_base = Self::path_base(data_dir);
 
-        let path_snapshots = format!("{}/snapshots", path_base);
-        fs::create_dir_all(&path_snapshots)
-            .await
-            .expect("Cannot create snapshots path");
-
+        let path_db = Self::path_db(data_dir);
         let path_backups = format!("{}/backups", path_base);
-        fs::create_dir_all(&path_backups)
-            .await
-            .expect("Cannot create snapshots path");
-
-        let path_db = format!("{}/db", path_base);
+        let path_snapshots = format!("{}/snapshots", path_base);
         let path_lock_file = format!("{}/lock", path_base);
+
+        if create {
+            // this may error if we did already re-create it in a lock file recovery before
+            let _ = fs::create_dir_all(&path_db).await;
+            fs::create_dir_all(&path_backups)
+                .await
+                .expect("create state machine folder backups");
+            fs::create_dir_all(&path_snapshots)
+                .await
+                .expect("create state machine folder snapshots");
+        }
 
         (
             PathDb(path_db),
@@ -281,39 +301,6 @@ impl StateMachineSqlite {
         } else if let Err(err) = fs::File::create(path_lock_file).await {
             panic!("Error creating lock file {}: {}", path_lock_file, err);
         }
-
-        // if let Err(err) = fs::File::create(path_lock_file).await {
-        //     #[cfg(feature = "auto-rebuild")]
-        //     {
-        //         error!(
-        //             "Lock file already exists: {}\n\
-        //             Node did not shut down gracefully - auto-rebuilding State Machine",
-        //             path_lock_file
-        //         );
-        //
-        //         // if we can't create the lock file, we will delete the current state machine
-        //         // data so it can be rebuilt.
-        //         // TODO is it enough to delete DB only, or do we need to do a full wipe?
-        //         let _ = fs::remove_dir_all(path_db).await;
-        //
-        //         // re-create the DB folder
-        //         if let Err(err) = fs::create_dir_all(path_db).await {
-        //             panic!("Cannot re-create DB folder {}: {}", path_db, err);
-        //         }
-        //
-        //         // // try again but panic if it fails this time
-        //         // if let Err(err) = fs::File::create(path_lock_file).await {
-        //         //     panic!("Cannot create lock file {}: {}", path_lock_file, err);
-        //         // }
-        //     }
-        //
-        //     #[cfg(not(feature = "auto-rebuild"))]
-        //     panic!(
-        //         "Lock file already exists: {}\n\
-        //         Node did not shut down gracefully - needs manual interaction",
-        //         path_lock_file
-        //     );
-        // }
     }
 
     pub(crate) fn remove_lock_file(path: &str) {
