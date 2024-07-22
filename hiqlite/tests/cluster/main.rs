@@ -116,9 +116,6 @@ async fn test_cluster() -> Result<(), Error> {
     // - migrations
     // - consistent queries on leader
 
-    // TODO test
-    // - self-heal capabilities after data loss
-
     Ok(())
 }
 

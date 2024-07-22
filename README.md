@@ -86,4 +86,4 @@ This list is by no means exhaustive, these are just the next big things
 
 #### TODO add to tests
 
-- self-heal capabilities after data loss
+- migrations

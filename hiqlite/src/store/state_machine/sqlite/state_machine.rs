@@ -192,8 +192,6 @@ impl StateMachineSqlite {
             metadata
         };
 
-        info!("\n\ndb_exists: {}\n{:?}\n\n", db_exists, state_machine_data);
-
         let mut slf = Self {
             data: state_machine_data,
             this_node,
@@ -206,14 +204,8 @@ impl StateMachineSqlite {
             write_tx,
         };
 
-        // TODO only apply the latest snapshot if we do not have a DB yet?
-        // TODO or just apply it all the time and therefore don't care about graceful shutdown for SQLite?
         if !db_exists {
             if let Some(snapshot) = slf.read_current_snapshot_from_disk().await? {
-                info!(
-                    "\n\n\nfound sm snapshot with no existing db: {:?}\n\n",
-                    snapshot
-                );
                 // needed in case we lost the DB for some reason but still have a snapshot
                 // on disk we can re-use
                 slf.update_state_machine_(snapshot).await?;

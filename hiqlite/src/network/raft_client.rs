@@ -55,7 +55,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
-        println!("Building new Raft client with target {}", node);
+        info!("Building new Raft client with target {}", node);
 
         let (sender, rx) = flume::unbounded();
 
@@ -104,7 +104,7 @@ impl NetworkStreaming {
                 ws = Self::try_connect(this_node, &node.addr_raft, tls_config.clone(), &secret)
                     .await;
 
-                // openraft will does cancel these requests internally when
+                // openraft does cancel these requests internally when
                 // they take longer than the configured heartbeat
                 let is_closed = if let Some(ack) = &ack {
                     ack.is_closed()
@@ -129,7 +129,7 @@ impl NetworkStreaming {
                                 let bytes = frame.payload.to_vec();
                                 let resp = RaftStreamResponse::from(bytes);
                                 if let Err(err) = ack_tx.send(Ok(resp)) {
-                                    eprintln!(
+                                    error!(
                                         "Error forwarding response from Node {}: {:?}",
                                         node.id, err
                                     );

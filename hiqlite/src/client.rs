@@ -21,8 +21,10 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{oneshot, watch, RwLock};
-use tracing::debug;
+use tokio::time;
+use tracing::{debug, error};
 
 /// Raft / Database client
 #[derive(Clone)]
@@ -516,6 +518,15 @@ impl DbClient {
             Err(Error::LeaderChange(
                 "The leader voting process has not finished yet".into(),
             ))
+        }
+    }
+
+    pub async fn wait_until_healthy(&self) {
+        while let Err(err) = self.is_healthy().await {
+            let metrics = self.metrics().await.unwrap();
+            error!("\nWaiting for cluster to become healthy: {}", err);
+            error!("{:?}\n", metrics);
+            time::sleep(Duration::from_millis(1000)).await;
         }
     }
 

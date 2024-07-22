@@ -3,7 +3,10 @@ use crate::execute_query::TestData;
 use hiqlite::{params, DbClient, Error, Param};
 
 pub async fn is_client_db_healthy(client: &DbClient) -> Result<(), Error> {
-    assert!(client.is_healthy().await.is_ok());
+    let is_healthy = client.is_healthy().await;
+    debug(&is_healthy);
+    assert!(is_healthy.is_ok());
+
     // we will do the select 1 to catch leader switches that may have
     // happened in between and trigger a client stream switch that way
     client.batch("SELECT 1;").await?;
