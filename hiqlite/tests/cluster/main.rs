@@ -97,6 +97,8 @@ async fn test_cluster() -> Result<(), Error> {
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
     log("Cluster is healthy again");
 
+    time::sleep(Duration::from_millis(1000)).await;
+
     log("Make sure databases are correctly restored");
     backup_restore::test_db_is_healthy_after_restore(&client_1).await?;
     backup_restore::test_db_is_healthy_after_restore(&client_2).await?;

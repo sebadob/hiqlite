@@ -1,7 +1,6 @@
 use crate::{log, TEST_DATA_DIR};
 use hiqlite::{params, DbClient, Error, Param};
 use tokio::fs;
-use tracing::info;
 
 pub async fn test_backup(client_1: &DbClient) -> Result<(), Error> {
     log("Creating backup request via client_1");

@@ -34,7 +34,6 @@ pub use rusqlite::Row;
 pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
-use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
 #[cfg(feature = "s3")]
 pub use config::EncKeysFrom;
 #[cfg(feature = "s3")]
@@ -124,14 +123,12 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
     )
     .await;
 
-    // let kv_store = state_machine_store.data.kvs.clone();
     let sql_writer = state_machine_store.write_tx.clone();
     let sql_reader = state_machine_store.read_pool.clone();
 
     // Create the network layer that will connect and communicate the raft instances and
     // will be used in conjunction with the store created above.
     let network = NetworkStreaming {
-        // let network = Network {
         node_id: node_config.node_id,
         tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),

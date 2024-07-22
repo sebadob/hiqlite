@@ -105,13 +105,20 @@ impl Drop for StateMachineSqlite {
         info!("StateMachineSqlite is being dropped");
 
         let (ack, rx) = flume::unbounded();
-        self.write_tx
+        if let Err(err) = self
+            .write_tx
             .send(WriterRequest::MetadataPersist(MetaPersistRequest {
                 data: bincode::serialize(&self.data).unwrap(),
                 ack,
             }))
-            .unwrap();
-        rx.recv().unwrap();
+        {
+            error!(
+                "Error sending metadata persist request to SQL writer: {}",
+                err
+            );
+        } else {
+            rx.recv().unwrap();
+        }
 
         Self::remove_lock_file(&self.path_lock_file);
 
@@ -141,7 +148,7 @@ impl StateMachineSqlite {
 
         Self::check_set_lock_file(&path_lock_file, &path_db, &mut db_exists).await;
 
-        // Always start the writer first
+        // Always start the writer first! -> creates mandatory tables
         let conn = Self::connect(path_db.to_string(), filename_db.to_string(), false)
             .await
             .map_err(|err| StorageError::IO {
@@ -155,7 +162,6 @@ impl StateMachineSqlite {
                 source: StorageIOError::read(&err),
             })?;
 
-        // only try to fetch the data from the DB if it actually existed beforehand
         let state_machine_data: StateMachineData = if db_exists {
             let (ack, rx) = oneshot::channel();
             write_tx
@@ -186,10 +192,7 @@ impl StateMachineSqlite {
             metadata
         };
 
-        info!(
-            "\n\n\ndb_exists: {}\n\n{:?}\n\n",
-            db_exists, state_machine_data
-        );
+        info!("\n\ndb_exists: {}\n{:?}\n\n", db_exists, state_machine_data);
 
         let mut slf = Self {
             data: state_machine_data,
@@ -211,6 +214,8 @@ impl StateMachineSqlite {
                     "\n\n\nfound sm snapshot with no existing db: {:?}\n\n",
                     snapshot
                 );
+                // needed in case we lost the DB for some reason but still have a snapshot
+                // on disk we can re-use
                 slf.update_state_machine_(snapshot).await?;
             }
         }
@@ -285,11 +290,6 @@ impl StateMachineSqlite {
                 }
 
                 *db_exists = false;
-
-                // // try again but panic if it fails this time
-                // if let Err(err) = fs::File::create(path_lock_file).await {
-                //     panic!("Cannot create lock file {}: {}", path_lock_file, err);
-                // }
             }
 
             #[cfg(not(feature = "auto-heal"))]
@@ -483,13 +483,6 @@ impl StateMachineSqlite {
                 })?;
             let metadata = stmt
                 .query_row((), |row| {
-                    // let (snapshot_id, last_membership) = stmt.query_map((), |row| {
-                    // let id_bytes: Vec<u8> = row.get(0).unwrap();
-                    // let id = Uuid::from_slice(&id_bytes).unwrap();
-                    // let metadata_bytes: Vec<u8> = row.get(2).unwrap();
-                    // let metadata: SnapshotMeta<NodeId, Node> =
-                    //     bincode::deserialize(&metadata_bytes).unwrap();
-                    // Ok((id, metadata))
                     let meta_bytes: Vec<u8> = row.get(0)?;
                     let metadata: StateMachineData =
                         bincode::deserialize(&meta_bytes).expect("Metadata to deserialize ok");
@@ -500,35 +493,31 @@ impl StateMachineSqlite {
                 })?;
 
             Ok::<StateMachineData, StorageError<NodeId>>(metadata)
-            // Ok::<std::option::Option<(Uuid, SnapshotMeta<u64, Node>)>, StorageError<NodeId>>(res)
         })
         .await
         .map_err(|err| StorageError::IO {
             source: StorageIOError::write(&err),
         })??;
 
+        let snapshot_id = id.to_string();
+
         if let Some(path) = metadata.last_snapshot_path {
-            let meta = SnapshotMeta {
-                last_log_id: metadata.last_applied_log_id,
-                last_membership: metadata.last_membership,
-                snapshot_id: metadata.last_snapshot_id.unwrap(),
-            };
-            let snapshot = StoredSnapshot { meta, path };
-            Ok(Some(snapshot))
-        } else {
-            Ok(None)
+            assert_eq!(path, path_snapshot)
+        }
+        if let Some(id) = metadata.last_snapshot_id {
+            assert_eq!(id, snapshot_id)
         }
 
-        // match res {
-        //     None => Ok(None),
-        //     Some((id, meta)) => {
-        // let snapshot = StoredSnapshot {
-        //     meta,
-        //     path: format!("{}/{}", self.path_snapshots, metadata),
-        // };
-        // Ok(Some(snapshot))
-        //     }
-        // }
+        let meta = SnapshotMeta {
+            last_log_id: metadata.last_applied_log_id,
+            last_membership: metadata.last_membership,
+            snapshot_id,
+        };
+        let snapshot = StoredSnapshot {
+            meta,
+            path: path_snapshot,
+        };
+        Ok(Some(snapshot))
     }
 
     async fn get_current_snapshot_(&self) -> StorageResult<Option<StoredSnapshot>> {
@@ -549,86 +538,21 @@ impl StateMachineSqlite {
             Ok(None)
         }
     }
-
-    // async fn persist_snapshot(&self, snapshot: StoredSnapshot) -> StorageResult<()> {
-    //     // let path_new = format!("{}/{}", self.path_snapshots, snapshot.meta.snapshot_id);
-    //     fs::create_dir_all(&self.path_snapshots).await.map_err(|err| StorageError::IO {
-    //         source: StorageIOError::write(&err),
-    //     })?;
-    //
-    //     // let path_meta = format!("{}/meta", path_new);;
-    //     // let meta_bytes = bincode::serialize(&snapshot.meta).unwrap();
-    //     // fs::write(path_meta, meta_bytes).await.map_err(|err| StorageError::IO { source: StorageIOError::read(&err) })?;
-    //
-    //     // TODO fix src path
-    //     let src = snapshot.meta.snapshot_id;
-    //     let tar = format!("{}/data", path_new);;
-    //     fs::copy(&src, tar).await.map_err(|err| StorageError::IO { source: StorageIOError::write(&err) })?;
-    //
-    //     fs::remove_dir_all(src).await.map_err(|err| StorageError::IO { source: StorageIOError::write(&err) })?;
-    //
-    //     Ok(())
-    // }
-
-    // async fn spawn_write_handler(conn: rusqlite::Connection) -> flume::Sender<Query> {
-    //     let (tx, rx) = flume::bounded::<Query>(2);
-    //
-    //     let _handle = std::thread::spawn(move || loop {
-    //     // let _handle = task::spawn_blocking(move || loop {
-    //         let query = match rx.recv() {
-    //             Ok(q) => q,
-    //             Err(err) => {
-    //                 error!("SQLite write handler channel recv error: {:?}", err);
-    //                 continue;
-    //             }
-    //         };
-    //         debug!("Query in Write handler: {:?}", query);
-    //
-    //         match query {
-    //             Query::Execute(q) => {
-    //                 let res = {
-    //                     let mut stmt = match conn.prepare_cached(q.sql.as_ref()) {
-    //                         Ok(stmt) => stmt,
-    //                         Err(err) => {
-    //                             error!("Preparing cached query {}: {:?}", q.sql, err);
-    //                             return Err(SqlError::ExecuteReturnedResults);
-    //                         }
-    //                     };
-    //
-    //                     let params_len = q.params.len();
-    //                     for i in 0..params_len {
-    //                         let value = q
-    //                             .params
-    //                             .get(i)
-    //                             .expect("bounded params.get() should never panic");
-    //                         if let Err(err) = stmt.raw_bind_parameter(i + 1, value) {
-    //                             error!(
-    //                                 "Error binding param {} to query {}: {:?}",
-    //                                 value, q.sql, err
-    //                             );
-    //                             return Err(SqlError::InvalidQuery);
-    //                         }
-    //                     }
-    //
-    //                     stmt.raw_execute()
-    //                 };
-    //
-    //                 q.tx.send(res).expect("oneshot tx to never be dropped");
-    //             }
-    //         }
-    //     });
-    //
-    //     tx
-    // }
 }
 
 impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
-    // type SnapshotBuilder = Self;
     type SnapshotBuilder = SQLiteSnapshotBuilder;
 
     async fn applied_state(
         &mut self,
     ) -> Result<(Option<LogId<NodeId>>, StoredMembership<NodeId, Node>), StorageError<NodeId>> {
+        info!(
+            "\n\n State Machine applied_state: {:?}\n",
+            (
+                self.data.last_applied_log_id,
+                self.data.last_membership.clone(),
+            )
+        );
         Ok((
             self.data.last_applied_log_id,
             self.data.last_membership.clone(),
@@ -647,7 +571,6 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         for entry in entries {
             log_id = Some(entry.log_id);
 
-            // TODO probably should be moved after disk IO -> persist safely for crash resistance!
             let resp = match entry.payload {
                 EntryPayload::Blank => Response::Empty,
 

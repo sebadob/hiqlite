@@ -1,7 +1,6 @@
-use crate::execute_query::TestData;
 use crate::start::build_config;
-use crate::{check, debug, log, TEST_DATA_DIR};
-use hiqlite::{params, start_node, DbClient, Error, Param};
+use crate::{check, log, TEST_DATA_DIR};
+use hiqlite::{start_node, DbClient, Error};
 use std::time::Duration;
 use tokio::{fs, time};
 

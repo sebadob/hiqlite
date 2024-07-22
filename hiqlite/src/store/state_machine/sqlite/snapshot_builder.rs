@@ -28,11 +28,11 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
         // - return snapshot handle
 
         let snapshot_id = Uuid::now_v7();
-        fs::create_dir_all(&self.path_snapshots)
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::write(&err),
-            })?;
+        // fs::create_dir_all(&self.path_snapshots)
+        //     .await
+        //     .map_err(|err| StorageError::IO {
+        //         source: StorageIOError::write(&err),
+        //     })?;
 
         let path = format!("{}/{}", self.path_snapshots, snapshot_id);
         let (ack, rx) = oneshot::channel();

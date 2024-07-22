@@ -6,12 +6,13 @@ use crate::{Error, NodeConfig};
 use std::env;
 use tokio::{fs, task};
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 /// Check if the env var `HIQLITE_BACKUP_RESTORE` is set and restores the given backup if so.
 pub(crate) async fn check_restore_apply(node_config: &NodeConfig) -> Result<(), Error> {
     if let Ok(name) = env::var("HIQLITE_BACKUP_RESTORE") {
         warn!(
-            "Found HIQLITE_BACKUP_RESTORE={} - starting backup restore process",
+            "Found HIQLITE_BACKUP_RESTORE={} - starting restore process",
             name
         );
         restore_backup(node_config, &name).await?;
@@ -59,8 +60,11 @@ pub async fn restore_backup(node_config: &NodeConfig, backup_name: &str) -> Resu
     let _ = fs::remove_dir_all(&path_lock_file).await;
     let _ = fs::remove_dir_all(&path_logs).await;
 
-    fs::create_dir_all(&path_db).await?;
-    let path_db_full = format!("{}/{}", path_db, &node_config.filename_db);
+    // we re-use the snapshot logic during the creation of a new
+    // state machine to our advantage here
+    fs::create_dir_all(&path_snapshots).await?;
+    let snapshot_id = Uuid::now_v7();
+    let path_db_full = format!("{}/{}", path_snapshots, snapshot_id);
     debug!(
         "Copy Database backup in place from {} to {}",
         path_backup_s3, path_db_full
@@ -71,8 +75,6 @@ pub async fn restore_backup(node_config: &NodeConfig, backup_name: &str) -> Resu
 
     debug!("Removing database temp file {}", path_backup_s3);
     fs::remove_file(&path_backup_s3).await?;
-
-    info!("Database backup restore finished");
 
     Ok(())
 }
@@ -93,3 +95,28 @@ async fn is_metadata_ok(path_db: String) -> Result<(), Error> {
     .await??;
     Ok(())
 }
+
+// pub async fn snapshot_after_restore(
+//     tx_writer: &flume::Sender<WriterRequest>,
+//     data_dir: &str,
+// ) -> Result<(), Error> {
+//     let snapshot_id = Uuid::now_v7();
+//     fs::create_dir_all(&self.path_snapshots)
+//         .await
+//         .map_err(|err| StorageError::IO {
+//             source: StorageIOError::write(&err),
+//         })?;
+//
+//     let path = format!("{}/{}", self.path_snapshots, snapshot_id);
+//     let (ack, rx) = oneshot::channel();
+//     let req = WriterRequest::Snapshot(SnapshotRequest {
+//         snapshot_id,
+//         // last_membership: self.last_membership.clone(),
+//         path: path.clone(),
+//         ack,
+//     });
+//     self.write_tx
+//         .send_async(req)
+//         .await
+//         .expect("Sender to always be listening");
+// }
