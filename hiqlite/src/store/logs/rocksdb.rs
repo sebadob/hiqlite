@@ -425,7 +425,9 @@ impl LogStoreRocksdb {
 
         // TODO check if we can have a setup that never writes SST files and only ever uses a WAL
         // with rollover -> maybe manual wal compaction on purge?
-        opts.set_manual_wal_flush(false);
+        // TODO needs fine-tuning https://github.com/facebook/rocksdb/wiki/Write-Ahead-Log-(WAL)
+        // TODO double check that our own LocsSyncer does everything properly or if we can optimize
+        opts.set_manual_wal_flush(true);
 
         opts.set_compression_type(DBCompressionType::None);
         // TODO maybe disable auto compaction and do it after every purge / truncate manually?
