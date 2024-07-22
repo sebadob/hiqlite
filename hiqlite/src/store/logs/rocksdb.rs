@@ -41,7 +41,7 @@ use std::time::Duration;
 use tokio::sync::{oneshot, RwLock};
 use tokio::time::Interval;
 use tokio::{fs, task, time};
-use tracing::{error, trace};
+use tracing::{error, info, trace, warn};
 
 static KEY_COMMITTED: &[u8] = b"committed";
 static KEY_LAST_PURGED: &[u8] = b"last_purged";
@@ -52,6 +52,7 @@ pub enum ActionWrite {
     Remove(ActionRemove),
     Vote(ActionVote),
     Sync,
+    Shutdown,
 }
 
 pub struct ActionAppend {
@@ -116,7 +117,11 @@ impl LogStoreWriter {
                         }
 
                         let is_ok = res.is_ok();
-                        ack.send(res.clone()).unwrap();
+                        if let Err(err) = ack.send(res.clone()) {
+                            // this should usually not happen, but it may during a shutdown crash
+                            error!("error sending back ack after logs append - syncing now!");
+                            db.flush_wal(true);
+                        }
 
                         if is_ok {
                             // TODO the callback could be batched maybe for higher throughput
@@ -206,6 +211,12 @@ impl LogStoreWriter {
                         //
                         // assert!(callbacks.is_empty());
                     }
+
+                    ActionWrite::Shutdown => {
+                        warn!("Raft logs store writer is being shut down");
+                        db.flush_wal(true);
+                        break;
+                    }
                 }
             }
         });
@@ -216,25 +227,27 @@ impl LogStoreWriter {
 
 // TODO Should not be started depending on when the log has been start, but instead
 // after the very first append message has been received to be more in sync with the master
-// struct LogsSyncer;
-//
-// impl LogsSyncer {
-//     fn spawn(tx_writer: flume::Sender<ActionWrite>, mut interval: Interval) {
-//         task::spawn(async move {
-//             loop {
-//                 interval.tick().await;
-//                 if let Err(err) = tx_writer.send_async(ActionWrite::Sync).await {
-//                     error!("Error sending ActionWrite::Sync to LogStoreWriter");
-//                 }
-//             }
-//         });
-//     }
-// }
+struct LogsSyncer;
+
+impl LogsSyncer {
+    fn spawn(tx_writer: flume::Sender<ActionWrite>, mut interval: Interval) {
+        task::spawn(async move {
+            loop {
+                interval.tick().await;
+                if let Err(err) = tx_writer.send_async(ActionWrite::Sync).await {
+                    warn!("Error sending ActionWrite::Sync to LogStoreWriter");
+                    break;
+                }
+            }
+        });
+    }
+}
 
 enum ActionRead {
     Logs(ActionReadLogs),
     LogState(oneshot::Sender<Result<LogState<TypeConfigSqlite>, StorageIOError<NodeId>>>),
     Vote(oneshot::Sender<Result<Option<Vec<u8>>, StorageIOError<NodeId>>>),
+    Shutdown,
 }
 
 struct ActionReadLogs {
@@ -364,6 +377,11 @@ impl LogStoreReader {
 
                         ack.send(res).unwrap();
                     }
+
+                    ActionRead::Shutdown => {
+                        warn!("Raft logs store reader is being shut down");
+                        break;
+                    }
                 }
             }
         });
@@ -377,6 +395,13 @@ pub struct LogStoreRocksdb {
     db: Arc<DB>,
     tx_writer: flume::Sender<ActionWrite>,
     tx_reader: flume::Sender<ActionRead>,
+}
+
+impl Drop for LogStoreRocksdb {
+    fn drop(&mut self) {
+        self.tx_writer.send(ActionWrite::Shutdown);
+        self.tx_reader.send(ActionRead::Shutdown);
+    }
 }
 
 impl LogStoreRocksdb {
@@ -430,8 +455,8 @@ impl LogStoreRocksdb {
         let tx_writer = LogStoreWriter::spawn(db.clone());
         let tx_reader = LogStoreReader::spawn(db.clone());
 
-        // let sync_interval = time::interval(Duration::from_millis(1000));
-        // LogsSyncer::spawn(tx_writer.clone(), sync_interval);
+        let sync_interval = time::interval(Duration::from_millis(200));
+        LogsSyncer::spawn(tx_writer.clone(), sync_interval);
 
         LogStoreRocksdb {
             db,

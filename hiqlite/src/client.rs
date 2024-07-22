@@ -509,7 +509,14 @@ impl DbClient {
     /// Check the Raft health state
     pub async fn is_healthy(&self) -> Result<(), Error> {
         let metrics = self.metrics().await?;
-        metrics.running_state.map_err(Error::from)
+        metrics.running_state?;
+        if metrics.current_leader.is_some() {
+            Ok(())
+        } else {
+            Err(Error::LeaderChange(
+                "The leader voting process has not finished yet".into(),
+            ))
+        }
     }
 
     // #[must_use]
