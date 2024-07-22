@@ -216,7 +216,7 @@ impl StateMachineSqlite {
     }
 
     async fn db_exists(data_dir: &str, filename_db: &str) -> bool {
-        let path_db = Self::path_db(&data_dir);
+        let path_db = Self::path_db(data_dir);
         let path_db_full = format!("{}/{}", path_db, filename_db);
         fs::File::open(&path_db_full).await.is_ok()
     }
@@ -538,13 +538,6 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     async fn applied_state(
         &mut self,
     ) -> Result<(Option<LogId<NodeId>>, StoredMembership<NodeId, Node>), StorageError<NodeId>> {
-        info!(
-            "\n\n State Machine applied_state: {:?}\n",
-            (
-                self.data.last_applied_log_id,
-                self.data.last_membership.clone(),
-            )
-        );
         Ok((
             self.data.last_applied_log_id,
             self.data.last_membership.clone(),

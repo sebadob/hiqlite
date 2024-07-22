@@ -276,9 +276,21 @@ impl NetworkConnectionStreaming {
             .send_async((req, tx))
             .await
             .map_err(|err| RPCError::Network(NetworkError::new(&err)))?;
+
         rx.await
             .unwrap()
             .map_err(|err| RPCError::Network(NetworkError::new(&err)))
+
+        // let res = rx
+        //     .await
+        //     .unwrap()
+        //     .map_err(|err| RPCError::Network(NetworkError::new(&err)));
+        //
+        // if let Err(err) = &res {
+        //     error!("\n\nerr in raft client send:\n{:?}\n", err);
+        // }
+        //
+        // res
     }
 }
 

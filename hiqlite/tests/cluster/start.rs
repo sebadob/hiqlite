@@ -8,15 +8,13 @@ use std::time::Duration;
 use tokio::{fs, task, time};
 
 pub async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
-    let handle_client_1 = task::spawn(start_node(build_config(1).await, true));
-    // let handle_client_2 = task::spawn(start_node(build_config(2).await, true));
-    // let handle_client_3 = task::spawn(start_node(build_config(3).await, true));
-    let client_2 = start_node(build_config(2).await, true).await?;
-    let client_3 = start_node(build_config(3).await, true).await?;
+    let handle_client_1 = task::spawn(start_node(build_config(1).await));
+    let handle_client_2 = task::spawn(start_node(build_config(2).await));
+    let handle_client_3 = task::spawn(start_node(build_config(3).await));
 
     let client_1 = handle_client_1.await??;
-    // let client_2 = handle_client_2.await??;
-    // let client_3 = handle_client_3.await??;
+    let client_2 = handle_client_2.await??;
+    let client_3 = handle_client_3.await??;
 
     Ok((client_1, client_2, client_3))
 }

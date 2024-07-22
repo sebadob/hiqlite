@@ -4,6 +4,7 @@ use crate::NodeId;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use byteorder::WriteBytesExt;
+use flume::RecvError;
 use openraft::storage::Snapshot;
 use openraft::storage::{LogFlushed, LogState, RaftLogStorage};
 use openraft::BasicNode;
@@ -105,6 +106,15 @@ impl LogStoreWriter {
             // let mut callbacks = Vec::with_capacity(8);
 
             while let Ok(action) = rx.recv() {
+                // loop {
+                //     let action = match rx.recv() {
+                //         Ok(action) => action,
+                //         Err(err) => {
+                //             error!("LogStoreWriter: {}", err);
+                //             continue;
+                //         }
+                //     };
+
                 match action {
                     ActionWrite::Append(ActionAppend { rx, callback, ack }) => {
                         let mut res = Ok(());
@@ -214,12 +224,15 @@ impl LogStoreWriter {
 
                     ActionWrite::Shutdown => {
                         warn!("Raft logs store writer is being shut down");
-                        db.flush_wal(true);
+                        // db.flush_wal(true);
                         // db.flush();
                         break;
                     }
                 }
             }
+
+            db.flush_wal(true);
+            warn!("\n\nLogs Writer exiting!\n");
         });
 
         tx
@@ -394,15 +407,8 @@ impl LogStoreReader {
 #[derive(Debug)]
 pub struct LogStoreRocksdb {
     db: Arc<DB>,
-    tx_writer: flume::Sender<ActionWrite>,
+    pub(crate) tx_writer: flume::Sender<ActionWrite>,
     tx_reader: flume::Sender<ActionRead>,
-}
-
-impl Drop for LogStoreRocksdb {
-    fn drop(&mut self) {
-        self.tx_writer.send(ActionWrite::Shutdown);
-        self.tx_reader.send(ActionRead::Shutdown);
-    }
 }
 
 impl LogStoreRocksdb {
@@ -458,8 +464,8 @@ impl LogStoreRocksdb {
         let tx_writer = LogStoreWriter::spawn(db.clone());
         let tx_reader = LogStoreReader::spawn(db.clone());
 
-        // let sync_interval = time::interval(Duration::from_millis(200));
-        // LogsSyncer::spawn(tx_writer.clone(), sync_interval);
+        let sync_interval = time::interval(Duration::from_millis(200));
+        LogsSyncer::spawn(tx_writer.clone(), sync_interval);
 
         LogStoreRocksdb {
             db,

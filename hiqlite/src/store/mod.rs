@@ -6,6 +6,7 @@ use openraft::StorageError;
 use rusqlite::OpenFlags;
 use std::borrow::Cow;
 use std::cmp::PartialEq;
+use std::sync::Arc;
 // in-memory
 // use crate::store::state_machine_memory::StateMachineStore;
 

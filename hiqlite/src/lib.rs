@@ -3,8 +3,6 @@
 #![doc = include_str!("../../README.md")]
 #![forbid(unsafe_code)]
 
-extern crate alloc;
-
 use crate::app_state::AppState;
 use crate::network::raft_server;
 use crate::network::NetworkStreaming;
@@ -13,16 +11,14 @@ use crate::store::new_storage;
 use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
-use tokio::{task, time};
+use tokio::task;
 use tracing::info;
 
 pub use crate::client::DbClient;
@@ -52,6 +48,7 @@ mod tls;
 #[cfg(feature = "backup")]
 mod backup;
 
+mod init;
 #[cfg(feature = "s3")]
 mod s3;
 
@@ -94,7 +91,7 @@ impl Display for Node {
 /// Starts a Raft node.
 /// # Panics
 /// If an incorrect `node_config` was given.
-pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbClient, Error> {
+pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     node_config.is_valid()?;
 
     if node_config.tls_api.is_some() || node_config.tls_raft.is_some() {
@@ -123,6 +120,7 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
     )
     .await;
 
+    let logs_writer = log_store.tx_writer.clone();
     let sql_writer = state_machine_store.write_tx.clone();
     let sql_reader = state_machine_store.read_pool.clone();
 
@@ -153,12 +151,11 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
         (node.addr_api.clone(), node.addr_raft.clone())
     };
 
+    // TODO put behind Mutex to make it dynamic?
     let mut client_buffers = HashMap::new();
     for node in &node_config.nodes {
-        // if node.id != node_config.node_id {
         let (tx, rx) = flume::unbounded();
         client_buffers.insert(node.id, (tx, rx));
-        // }
     }
 
     let state = Arc::new(AppState {
@@ -166,8 +163,10 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
         addr_api: api_addr.clone(),
         addr_raft: rpc_addr.clone(),
         raft,
+        raft_lock: Arc::new(Default::default()),
         read_pool: sql_reader,
         sql_writer,
+        logs_writer,
         // kv_store,
         config: raft_config,
         secret_api: node_config.secret_api,
@@ -175,6 +174,8 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
         client_buffers,
         log_statements: node_config.log_statements,
     });
+
+    init::init_pristine_node_1(&state).await?;
 
     // let compression_middleware = ServiceBuilder::new().layer(CompressionLayer::new());
 
@@ -218,8 +219,9 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
         .nest(
             "/cluster",
             Router::new()
-                .route("/add-learner", post(management::add_learner))
-                .route("/change-membership", post(management::change_membership))
+                .route("/add_learner", post(management::add_learner))
+                .route("/become_member", post(management::become_member))
+                .route("/change_membership", post(management::change_membership))
                 .route("/init", post(management::init))
                 .route("/metrics", get(management::metrics)),
         )
@@ -257,18 +259,16 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
         }
     });
 
-    if auto_init {
-        init_cluster(
-            state.clone(),
-            node_config.nodes,
-            node_config.tls_raft.is_some(),
-            node_config
-                .tls_raft
-                .map(|c| c.danger_tls_no_verify)
-                .unwrap_or(false),
-        )
-        .await?;
-    }
+    init::become_cluster_member(
+        &state,
+        node_config.nodes,
+        node_config.tls_raft.is_some(),
+        node_config
+            .tls_raft
+            .map(|c| c.danger_tls_no_verify)
+            .unwrap_or(false),
+    )
+    .await?;
 
     let client = DbClient::new_local(
         state,
@@ -281,71 +281,4 @@ pub async fn start_node(node_config: NodeConfig, auto_init: bool) -> Result<DbCl
 
 async fn shutdown_signal(mut rx: watch::Receiver<bool>) {
     let _ = rx.changed().await;
-}
-
-async fn init_cluster(
-    state: Arc<AppState>,
-    nodes: Vec<Node>,
-    tls: bool,
-    tls_no_verify: bool,
-) -> Result<(), Error> {
-    // After the start, the cluster must be initialized.
-    if state.id == 1 {
-        // Do not try to initialize already initialized nodes
-        if state.raft.is_initialized().await? {
-            return Ok(());
-        }
-
-        // If it is not initialized, wait long enough to make sure this
-        // node is not joined again to an already existing cluster after data loss.
-        let heartbeat = state.raft.config().heartbeat_interval;
-        // We will wait for 5 heartbeats to make sure no other cluster is running
-        time::sleep(Duration::from_millis(heartbeat * 5)).await;
-
-        // Make sure we are not initialized by now, otherwise go on
-        if state.raft.is_initialized().await? {
-            return Ok(());
-        }
-
-        wait_for_nodes_online(&state, &nodes, tls, tls_no_verify).await;
-
-        let mut nodes_set = BTreeMap::new();
-        for node in nodes {
-            nodes_set.insert(node.id, node);
-        }
-        state.raft.initialize(nodes_set).await?;
-    }
-
-    Ok(())
-}
-
-async fn wait_for_nodes_online(state: &AppState, nodes: &[Node], tls: bool, tls_no_verify: bool) {
-    let scheme = if tls { "https" } else { "http" };
-    let remotes = nodes
-        .iter()
-        .filter_map(|node| {
-            (node.id != state.id).then_some(format!("{}://{}/ping", scheme, node.addr_raft))
-        })
-        .collect::<Vec<String>>();
-    let mut remotes_online = 0;
-
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(tls_no_verify)
-        .http2_prior_knowledge()
-        .build()
-        .unwrap();
-    while remotes_online != remotes.len() {
-        info!("Waiting for remote nodes {:?} to become reachable", remotes);
-
-        remotes_online = 0;
-        time::sleep(Duration::from_secs(1)).await;
-
-        for node in &remotes {
-            if client.get(node).send().await.is_ok() {
-                remotes_online += 1;
-            }
-        }
-    }
-
-    info!("All remote nodes are reachable");
 }

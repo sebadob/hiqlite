@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use thiserror::Error;
 use tokio::task::JoinError;
+use tracing::error;
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum Error {
@@ -127,14 +128,14 @@ impl From<std::io::Error> for Error {
 
 impl From<Box<bincode::ErrorKind>> for Error {
     fn from(value: Box<ErrorKind>) -> Self {
-        eprintln!("bincode::ErrorKind: {}", value);
+        error!("\n\nbincode::ErrorKind: {}\n", value);
         Self::Bincode(value.to_string())
     }
 }
 
 impl From<reqwest::Error> for Error {
     fn from(value: reqwest::Error) -> Self {
-        eprintln!("reqwest::Error: {}", value);
+        error!("reqwest::Error: {}", value);
         if value.is_connect() {
             Self::Connect(value.to_string())
         } else if value.is_timeout() {
@@ -147,91 +148,91 @@ impl From<reqwest::Error> for Error {
 
 impl From<RaftWriteError> for Error {
     fn from(value: RaftWriteError) -> Self {
-        eprintln!("ClientWriteError: {}", value);
+        error!("ClientWriteError: {}", value);
         Self::ClientWriteError(value)
     }
 }
 
 impl From<RaftInitError> for Error {
     fn from(value: RaftInitError) -> Self {
-        eprintln!("InitializeError: {}", value);
+        error!("InitializeError: {}", value);
         Self::InitializeError(value)
     }
 }
 
 impl From<RaftSnapshotError> for Error {
     fn from(value: RaftSnapshotError) -> Self {
-        eprintln!("SnapshotError: {}", value);
+        error!("SnapshotError: {}", value);
         Self::SnapshotError(value)
     }
 }
 
 impl From<RaftError<u64>> for Error {
     fn from(value: RaftError<u64>) -> Self {
-        eprintln!("RaftError: {}", value);
+        error!("RaftError: {}", value);
         Self::RaftError(value)
     }
 }
 
 impl From<RaftError<u64, CheckIsLeaderError<u64, Node>>> for Error {
     fn from(value: RaftError<u64, CheckIsLeaderError<u64, Node>>) -> Self {
-        eprintln!("CheckIsLeaderError: {}", value);
+        error!("CheckIsLeaderError: {}", value);
         Self::CheckIsLeaderError(value)
     }
 }
 
 impl From<Fatal<u64>> for Error {
     fn from(value: Fatal<u64>) -> Self {
-        eprintln!("RaftErrorFatal: {}", value);
+        error!("RaftErrorFatal: {}", value);
         Self::RaftErrorFatal(value)
     }
 }
 
 impl From<rusqlite::Error> for Error {
     fn from(value: rusqlite::Error) -> Self {
-        eprintln!("Sqlite: {}", value);
+        error!("Sqlite: {}", value);
         Self::Sqlite(value.to_string().into())
     }
 }
 
 impl From<deadpool::managed::BuildError> for Error {
     fn from(value: BuildError) -> Self {
-        eprintln!("Sqlite: {}", value);
+        error!("Sqlite: {}", value);
         Self::Sqlite(value.to_string().into())
     }
 }
 
 impl From<deadpool::managed::PoolError<rusqlite::Error>> for Error {
     fn from(value: PoolError<rusqlite::Error>) -> Self {
-        eprintln!("Sqlite: {}", value);
+        error!("Sqlite: {}", value);
         Self::Sqlite(value.to_string().into())
     }
 }
 
 impl From<deadpool::unmanaged::PoolError> for Error {
     fn from(value: deadpool::unmanaged::PoolError) -> Self {
-        eprintln!("Sqlite: {}", value);
+        error!("Sqlite: {}", value);
         Self::Sqlite(value.to_string().into())
     }
 }
 
 impl From<serde_json::Error> for Error {
     fn from(value: serde_json::Error) -> Self {
-        eprintln!("BadRequest: {}", value);
+        error!("BadRequest: {}", value);
         Self::BadRequest(value.to_string().into())
     }
 }
 
 impl From<fastwebsockets::WebSocketError> for Error {
     fn from(value: WebSocketError) -> Self {
-        eprintln!("WebSocket: {}", value);
+        error!("WebSocket: {}", value);
         Self::WebSocket(value.to_string())
     }
 }
 
 impl From<JoinError> for Error {
     fn from(value: JoinError) -> Self {
-        eprintln!("JoinError: {}", value);
+        error!("JoinError: {}", value);
         Self::Error(value.to_string().into())
     }
 }

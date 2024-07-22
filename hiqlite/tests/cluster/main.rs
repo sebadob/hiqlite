@@ -19,7 +19,7 @@ mod transaction;
 pub const TEST_DATA_DIR: &str = "tests/data_test";
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_cluster() -> Result<(), Error> {
+async fn test_cluster() {
     set_panic_hook();
 
     // always start clean
@@ -33,12 +33,30 @@ async fn test_cluster() -> Result<(), Error> {
         .with_env_filter(EnvFilter::new("info"))
         .init();
 
+    match exec_tests().await {
+        Ok(_) => {
+            log("All tests successful");
+        }
+        Err(err) => {
+            panic!("\n!!!\n{}\n!!!\n", err);
+        }
+    }
+
+    // TODO impl + test
+    // - migrations
+    // - consistent queries on leader
+}
+
+async fn exec_tests() -> Result<(), Error> {
     log("Starting cluster");
     let (client_1, client_2, client_3) = start::start_test_cluster().await?;
     log("Cluster has been started");
 
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
     log("Cluster is healthy");
+
+    let metrics = client_1.metrics().await?;
+    debug(&metrics);
 
     log("Starting data insertion and query tests");
     execute_query::test_execute_query(&client_1, &client_2, &client_3).await?;
@@ -60,7 +78,8 @@ async fn test_cluster() -> Result<(), Error> {
     client_3.shutdown().await?;
     log("client_3 shutdown complete");
 
-    time::sleep(Duration::from_millis(100)).await;
+    // logs sync task runs every 200ms -> needs to catch the closed channel
+    time::sleep(Duration::from_millis(250)).await;
 
     let (client_1, client_2, client_3) = start::start_test_cluster().await?;
     log("Cluster has been restarted");
@@ -107,14 +126,6 @@ async fn test_cluster() -> Result<(), Error> {
     log("Start self-healing capabilities tests");
     test_self_healing(client_1, client_2, client_3).await?;
     log("Self-healing capabilities tests finished");
-
-    log("All tests successful");
-
-    // TODO sometimes something makes the test get stuck at the very end
-
-    // TODO impl + test
-    // - migrations
-    // - consistent queries on leader
 
     Ok(())
 }

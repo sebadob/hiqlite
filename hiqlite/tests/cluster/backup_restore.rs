@@ -1,16 +1,22 @@
 use crate::execute_query::TestData;
-use crate::{backup, log, start};
+use crate::start::build_config;
+use crate::{backup, log};
 use hiqlite::{params, start_node, DbClient, Error, Param};
 use std::env;
+use tokio::task;
 
 pub async fn start_test_cluster_with_backup() -> Result<(DbClient, DbClient, DbClient), Error> {
     let path = backup::find_backup_file(1).await;
     let (_path, backup_name) = path.rsplit_once('/').unwrap();
     env::set_var("HIQLITE_BACKUP_RESTORE", backup_name);
 
-    let client_3 = start_node(start::build_config(3).await, true).await?;
-    let client_2 = start_node(start::build_config(2).await, true).await?;
-    let client_1 = start_node(start::build_config(1).await, true).await?;
+    let handle_client_1 = task::spawn(start_node(build_config(1).await));
+    let handle_client_2 = task::spawn(start_node(build_config(2).await));
+    let handle_client_3 = task::spawn(start_node(build_config(3).await));
+
+    let client_1 = handle_client_1.await??;
+    let client_2 = handle_client_2.await??;
+    let client_3 = handle_client_3.await??;
 
     env::remove_var("HIQLITE_BACKUP_RESTORE");
 

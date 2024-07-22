@@ -7,6 +7,7 @@ use crate::migration::{Migration, Migrations};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::network::management::LearnerReq;
 use crate::network::{api, RaftWriteResponse, HEADER_NAME_SECRET};
+use crate::store::logs::rocksdb::ActionWrite;
 use crate::store::state_machine::sqlite::state_machine::{Params, Query, QueryWrite};
 use crate::store::state_machine::sqlite::writer::WriterRequest;
 use crate::NodeId;
@@ -486,7 +487,7 @@ impl DbClient {
     }
 
     pub async fn add_learner(&self, req: LearnerReq) -> Result<RaftWriteResponse, Error> {
-        self.send_with_retry("/cluster/add-learner", Some(&req))
+        self.send_with_retry("/cluster/add_learner", Some(&req))
             .await
     }
 
@@ -494,7 +495,7 @@ impl DbClient {
         &self,
         req: &BTreeSet<NodeId>,
     ) -> Result<RaftWriteResponse, Error> {
-        self.send_with_retry("/cluster/change-membership", Some(req))
+        self.send_with_retry("/cluster/change_membership", Some(req))
             .await
     }
 
@@ -538,11 +539,14 @@ impl DbClient {
             let (tx, rx) = oneshot::channel();
             match state.raft.shutdown().await {
                 Ok(_) => {
+                    let _ = state.logs_writer.send_async(ActionWrite::Shutdown).await;
+
                     state
                         .sql_writer
                         .send_async(WriterRequest::Shutdown(tx))
                         .await
                         .expect("SQL writer to always be running");
+
                     rx.await.expect("To always get an answer from SQL writer");
 
                     let _ = self.tx_client.send_async(ClientStreamReq::Shutdown).await;

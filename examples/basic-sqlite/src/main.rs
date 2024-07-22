@@ -132,7 +132,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
     // the others will go to sleep
     let is_node_1 = config.node_id == 1;
 
-    let client = start_node(config, true).await?;
+    let client = start_node(config).await?;
 
     // give the client some time to initliaze everything
     time::sleep(Duration::from_secs(3)).await;
