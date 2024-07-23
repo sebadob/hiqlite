@@ -228,7 +228,7 @@ async fn handle_socket_concurrent(
         }
     };
 
-    // make sure to NEVER loose the result of an execute from remote!
+    // make sure to NEVER lose the result of an execute from remote!
     // if we received one which is being executed and the TCP stream dies in between, we MUST ENSURE
     // that in case it was an Ok(_), the result gets to the client! Otherwise with retry logic we might
     // end up modifying something twice!
@@ -472,9 +472,8 @@ async fn handle_socket_concurrent(
 }
 
 // TODO
-// - query_one
 // - query_optional
-// - Transaction read + write
+// - read transaction ?
 // - query_simple
 // - Batch (same as simple?)
 

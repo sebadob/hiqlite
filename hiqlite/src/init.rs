@@ -10,6 +10,8 @@ use tracing::{error, info};
 
 /// Initializes a fresh node 1, if it has not been set up yet.
 pub async fn init_pristine_node_1(state: &Arc<AppState>) -> Result<(), Error> {
+    // TODO will probably be an issue if node 1 died and needs to join an existing cluster
+    // TODO -> add remote lookup when the metrics endpoint is implemented
     if state.id == 1 {
         if is_initialized_timeout(state).await? {
             return Ok(());

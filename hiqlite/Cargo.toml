@@ -16,7 +16,8 @@ all-features = true
 
 [features]
 # currently for ease of use, just everything is enabled by default until the first release
-default = ["auto-heal", "auto-heal-logs", "backup", "s3", "sqlite"]
+default = ["auto-heal", "backup", "s3", "sqlite"]
+#default = ["auto-heal", "auto-heal-logs", "backup", "s3", "sqlite"]
 
 auto-heal = []
 auto-heal-logs = ["openraft/loosen-follower-log-revert"]

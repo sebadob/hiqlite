@@ -79,6 +79,7 @@ pub struct ActionBackup {
     pub path: String,
 }
 
+// TODO we maybe don't need that at all and can use `.to_be_bytes()` -> check + bench
 /// converts an id to a byte vector for storing in the database.
 /// Note that we're using big endian encoding to ensure correct sorting of keys
 #[inline]
@@ -106,15 +107,6 @@ impl LogStoreWriter {
             // let mut callbacks = Vec::with_capacity(8);
 
             while let Ok(action) = rx.recv() {
-                // loop {
-                //     let action = match rx.recv() {
-                //         Ok(action) => action,
-                //         Err(err) => {
-                //             error!("LogStoreWriter: {}", err);
-                //             continue;
-                //         }
-                //     };
-
                 match action {
                     ActionWrite::Append(ActionAppend { rx, callback, ack }) => {
                         let mut res = Ok(());

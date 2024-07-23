@@ -45,6 +45,17 @@ pub async fn test_self_healing(
     client_healed.is_healthy().await?;
     log("Client has self-healed successfully");
 
+    log("Check that we can recover from full volume loss");
+    let client_healed = if !is_leader(&client_1, 1).await? {
+        client_1 = shutdown_remove_all_restart(client_1, 1).await?;
+        &client_1
+    } else {
+        client_2 = shutdown_remove_all_restart(client_2, 2).await?;
+        &client_2
+    };
+    client_healed.is_healthy().await?;
+    log("Client has self-healed successfully");
+
     time::sleep(Duration::from_secs(1)).await;
 
     // since we took ownership, we need to shut down the clients here
@@ -77,6 +88,22 @@ async fn shutdown_lock_sm_db_restart(client: DbClient, node_id: u64) -> Result<D
     Ok(client)
 }
 
+async fn shutdown_remove_all_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
+    log(format!("Shutting down client {}", node_id));
+    client.shutdown().await?;
+    time::sleep(Duration::from_millis(150)).await;
+
+    let folder = folder_base(node_id);
+    log(format!("Deleting {}", folder));
+    fs::remove_dir_all(folder).await?;
+
+    log(format!("Re-starting client {}", node_id));
+    let client = start_node(build_config(node_id).await).await?;
+    time::sleep(Duration::from_millis(150)).await;
+
+    Ok(client)
+}
+
 async fn shutdown_remove_sm_db_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
@@ -93,7 +120,6 @@ async fn shutdown_remove_sm_db_restart(client: DbClient, node_id: u64) -> Result
     Ok(client)
 }
 
-// TODO this version with just a single node is not working yet
 async fn shutdown_remove_logs_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
@@ -110,18 +136,22 @@ async fn shutdown_remove_logs_restart(client: DbClient, node_id: u64) -> Result<
     Ok(client)
 }
 
-fn folder_logs(node_id: u64) -> String {
-    format!("{}/node_{}/logs", TEST_DATA_DIR, node_id)
-}
-
-fn folder_state_machine(node_id: u64) -> String {
-    format!("{}/node_{}/state_machine", TEST_DATA_DIR, node_id)
-}
-
 async fn is_leader(client: &DbClient, node_id: u64) -> Result<bool, Error> {
     if let Some(leader) = client.metrics().await?.current_leader {
         Ok(leader == node_id)
     } else {
         Err(Error::LeaderChange("No leader exists right now".into()))
     }
+}
+
+fn folder_base(node_id: u64) -> String {
+    format!("{}/node_{}", TEST_DATA_DIR, node_id)
+}
+
+fn folder_logs(node_id: u64) -> String {
+    format!("{}/logs", folder_base(node_id))
+}
+
+fn folder_state_machine(node_id: u64) -> String {
+    format!("{}/state_machine", folder_base(node_id))
 }
