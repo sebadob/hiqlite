@@ -1,20 +1,21 @@
-use crate::app_state::AppState;
 use crate::network::management::LearnerReq;
 use crate::network::HEADER_NAME_SECRET;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
-use crate::{init, Error, Node};
-use openraft::Raft;
+use crate::{Error, Node, NodeId};
+use openraft::{Membership, Raft};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 /// Initializes a fresh node 1, if it has not been set up yet.
 pub async fn init_pristine_node_1(
     raft: &Raft<TypeConfigSqlite>,
     this_node: u64,
     nodes: &[Node],
+    secret_api: &str,
+    tls: bool,
+    tls_no_verify: bool,
 ) -> Result<(), Error> {
     // TODO will probably be an issue if node 1 died and needs to join an existing cluster
     // TODO -> add remote lookup when the metrics endpoint is implemented
@@ -22,6 +23,11 @@ pub async fn init_pristine_node_1(
         let this_node = get_this_node(this_node, nodes);
 
         if is_initialized_timeout(raft).await? {
+            return Ok(());
+        }
+
+        if should_node_1_skip_init(nodes, secret_api, tls, tls_no_verify).await? {
+            warn!("node 1 should skip its own init - found existing cluster on remotes");
             return Ok(());
         }
 
@@ -40,9 +46,94 @@ fn get_this_node(this_node: u64, nodes: &[Node]) -> Node {
         .collect::<Vec<&Node>>();
     let node = filtered
         .first()
-        .expect("this node to always exist in all nodes")
-        .clone();
+        .cloned()
+        .expect("this node to always exist in all nodes");
     (*node).clone()
+}
+
+async fn should_node_1_skip_init(
+    nodes: &[Node],
+    secret_api: &str,
+    tls: bool,
+    tls_no_verify: bool,
+) -> Result<bool, Error> {
+    let client = reqwest::Client::builder()
+        .http2_prior_knowledge()
+        .danger_accept_invalid_certs(tls_no_verify)
+        .build()
+        .unwrap();
+
+    // no need for +1 since this very node is the +1
+    let quorum = nodes.len() / 2;
+
+    let scheme = if tls { "https" } else { "http" };
+    let mut skip_nodes = vec![1];
+
+    loop {
+        for node in nodes {
+            if skip_nodes.contains(&node.id) {
+                continue;
+            }
+
+            let url = format!("{}://{}/cluster/membership", scheme, node.addr_api);
+            debug!("checking membership via {}", url);
+
+            let res = client
+                .get(url)
+                .header(HEADER_NAME_SECRET, secret_api)
+                .send()
+                .await;
+            match res {
+                Ok(resp) => {
+                    debug!("{} status: {}", node.id, resp.status());
+                    if resp.status().is_success() {
+                        let body = resp.bytes().await?;
+                        let membership: Membership<NodeId, Node> =
+                            bincode::deserialize(body.as_ref()).unwrap();
+
+                        // If one of our remote nodes is already initialized, we need to check the total
+                        // nodes it is already connected to and if node 1 is in the list.
+                        // If it is, it means that this very node has lost its volume and need to
+                        // re-join the cluster.
+                        let contains_this = membership
+                            .nodes()
+                            .filter(|(id, _node)| **id == 1)
+                            .collect::<Vec<(&u64, &Node)>>();
+
+                        if contains_this.is_empty() {
+                            panic!(
+                                r#"
+        Remote member is already initialized but does not contain this node in its members.
+        This can only happen with a bad configuration or if the cluster has been modified manually.
+        Please add node 1 as a learner to the cluster to fix this issue.
+                            "#
+                            );
+                        } else {
+                            // if this node is already a remote member but is not initialized, it has lost
+                            // its volume and needs to join remote -> skip our own init
+                            return Ok(true);
+                        }
+                    } else {
+                        let body = resp.bytes().await?;
+                        if let Ok(Error::Config(err)) = bincode::deserialize::<Error>(body.as_ref())
+                        {
+                            error!("{}", err);
+                            skip_nodes.push(node.id);
+                        }
+                    }
+                }
+                Err(err) => {
+                    error!("Error sending membership request: {}", err);
+                }
+            }
+
+            if skip_nodes.len() >= quorum {
+                return Ok(false);
+            }
+        }
+
+        time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 /// If this node is a non cluster member, it will try to become a learner and
@@ -86,7 +177,7 @@ pub async fn become_cluster_member(
         "add_learner",
         &payload,
         this_node.id,
-        &nodes,
+        nodes,
         secret_api,
         true,
     )
@@ -99,7 +190,7 @@ pub async fn become_cluster_member(
         "become_member",
         &payload,
         this_node.id,
-        &nodes,
+        nodes,
         secret_api,
         false,
     )
@@ -108,6 +199,7 @@ pub async fn become_cluster_member(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn try_become(
     // state: &Arc<AppState>,
     raft: &Raft<TypeConfigSqlite>,
@@ -133,7 +225,7 @@ async fn try_become(
             }
 
             let url = format!("{}://{}/cluster/{}", scheme, node.addr_api, suffix);
-            info!("Sending request to {}", url);
+            debug!("Sending request to {}", url);
 
             let res = client
                 .post(url)
@@ -145,19 +237,19 @@ async fn try_become(
             match res {
                 Ok(resp) => {
                     if resp.status().is_success() {
-                        info!("Becoming was successful");
+                        debug!("Becoming was successful");
                         return Ok(());
                     } else {
                         let body = resp.bytes().await?;
-                        let err = bincode::deserialize::<Error>(&body)?;
-
-                        if let Some((id, _)) = err.is_forward_to_leader() {
-                            if id.is_none() {
-                                info!("Vote in progress, stepping back");
-                                time::sleep(Duration::from_secs(1)).await;
+                        if let Ok(err) = bincode::deserialize::<Error>(&body) {
+                            if let Some((id, _)) = err.is_forward_to_leader() {
+                                if id.is_none() {
+                                    info!("Vote in progress, stepping back");
+                                    time::sleep(Duration::from_secs(1)).await;
+                                }
+                            } else {
+                                error!("Becoming error: {}", err);
                             }
-                        } else {
-                            error!("Becoming error: {}", err);
                         }
                     }
                 }

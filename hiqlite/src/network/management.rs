@@ -1,4 +1,4 @@
-use crate::network::{fmt_ok, validate_secret, AppStateExt, Error};
+use crate::network::{fmt_ok, get_payload, validate_secret, AppStateExt, Error};
 use crate::Node;
 use crate::NodeId;
 use axum::body;
@@ -60,7 +60,12 @@ pub(crate) async fn add_learner(
         node_id,
         addr_api,
         addr_raft,
-    } = bincode::deserialize(body.as_ref())?;
+    } = get_payload(&headers, body)?;
+    // let LearnerReq {
+    //     node_id,
+    //     addr_api,
+    //     addr_raft,
+    // } = bincode::deserialize(body.as_ref())?;
     let node = Node {
         id: node_id,
         addr_raft,
@@ -72,7 +77,7 @@ pub(crate) async fn add_learner(
     // -> remove the membership and re-add it as a new learner, so it can catch up again.
     {
         // hold this lock the whole time, even over await points, to never have race conditions here ...
-        let lock = state.raft_lock.lock().await;
+        let _lock = state.raft_lock.lock().await;
 
         let metrics = state.raft.metrics().borrow().clone();
         let members = metrics.membership_config;
@@ -165,7 +170,7 @@ pub(crate) async fn become_member(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    let payload = bincode::deserialize::<Node>(body.as_ref())?;
+    let payload = get_payload::<Node>(&headers, body)?;
     info!("\n\nNode membership req on server: {:?}\n", payload);
 
     // we want to hold the lock until we finished to not end up with race conditions
@@ -193,15 +198,30 @@ pub(crate) async fn become_member(
     }
 }
 
+pub(crate) async fn get_membership(
+    state: AppStateExt,
+    headers: HeaderMap,
+) -> Result<Response, Error> {
+    validate_secret(&state, &headers)?;
+
+    if !state.raft.is_initialized().await? {
+        return Err(Error::Config("Raft node has not been initialized".into()));
+    }
+
+    let metrics = state.raft.metrics().borrow().clone();
+    let members = metrics.membership_config;
+    fmt_ok(headers, members.membership())
+}
+
 /// Changes specified learners to members, or remove members.
-pub(crate) async fn change_membership(
+pub(crate) async fn post_membership(
     state: AppStateExt,
     headers: HeaderMap,
     body: body::Bytes,
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    let payload: BTreeSet<NodeId> = bincode::deserialize(body.as_ref())?;
+    let payload = get_payload::<BTreeSet<NodeId>>(&headers, body)?;
     // retain false removes current cluster members if they do not appear in the new list
     fmt_ok(headers, state.raft.change_membership(payload, false).await?)
 }

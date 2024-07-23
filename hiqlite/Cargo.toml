@@ -65,7 +65,6 @@ webpki-roots.workspace = true
 # make minimal versions happy
 lazy_static.workspace = true
 lz4-sys.workspace = true
-log = "0.4.22"
 
 [build-dependencies]
 

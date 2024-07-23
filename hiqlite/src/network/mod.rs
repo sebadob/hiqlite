@@ -29,6 +29,7 @@ pub(crate) type RaftWriteError = RaftError<u64, ClientWriteError<u64, crate::Nod
 
 pub static HEADER_NAME_SECRET: &str = "X-API-SECRET";
 
+#[inline(always)]
 fn get_payload<T>(headers: &HeaderMap, body: body::Bytes) -> Result<T, Error>
 where
     T: for<'a> Deserialize<'a>,

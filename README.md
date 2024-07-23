@@ -52,21 +52,26 @@ in case of any errors or problems.
 
 - full Raft cluster setup
 - everything a Raft is expected to do (thanks to [openraft](https://github.com/datafuselabs/openraft))
-- Raft cluster auto-init based on given configuration
 - persistent storage for Raft logs (with [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb)) and SQLite state
   machine
+- "magic" auto setup, no need to do any manual init or management for the Raft
+- self-healing - each node can automatically recover from:
+    - lost cached WAL buffers for the state machine
+    - lost cached WAL buffer for the logs store
+    - complete loss of the state machine DB (SQLite)
+    - complete loss of the logs storage (rocksdb)
+    - complete loss of the whole volume itself
+- automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
-- self-healing with features `auto-heal` and `auto-heal-logs`
-- automatic database migrations
 - fully encrypted backups to s3 (
-  with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
-- restore from remote backup
+  with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr) )
+- restore from remote backup (with log index roll-over)
 - strongly consistent, replicated `execute` queries
     - on a leader node, the client will not even bother with using networking
     - on a non-leader node, it will automatically switch over to a network connection so the request
       is forwarded and initiated on the current Raft leader
-- transaction executes (very fast)
+- transaction executes
 - simple `String` batch executes
 - `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
   This will end up behind a `serde` feature in the future which is not implemented yet.

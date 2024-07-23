@@ -4,7 +4,6 @@ use crate::store::state_machine::sqlite::state_machine::{
     PathBackups, PathDb, PathLockFile, PathSnapshots, StateMachineData, StateMachineSqlite,
 };
 use crate::{Error, NodeConfig};
-use openraft::error::Fatal;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -130,7 +129,7 @@ async fn restore_backup_cleanup_task(state: Arc<AppState>) {
         time::sleep(Duration::from_millis(500)).await;
     }
 
-    let mut last_log = 0;
+    let last_log;
     loop {
         let metrics = state.raft.metrics().borrow().clone();
         if let Some(last_applied) = metrics.last_applied {

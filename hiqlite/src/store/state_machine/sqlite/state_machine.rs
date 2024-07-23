@@ -781,9 +781,6 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfigSqlite>>, StorageError<NodeId>> {
         let snap = self.get_current_snapshot_().await?;
-
-        info!("\n\n\nget_current_snapshot: {:?}\n\n", snap);
-
         match snap {
             None => Ok(None),
             Some(snap) => {

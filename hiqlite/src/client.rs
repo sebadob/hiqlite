@@ -495,8 +495,7 @@ impl DbClient {
         &self,
         req: &BTreeSet<NodeId>,
     ) -> Result<RaftWriteResponse, Error> {
-        self.send_with_retry("/cluster/change_membership", Some(req))
-            .await
+        self.send_with_retry("/cluster/membership", Some(req)).await
     }
 
     pub async fn metrics(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {

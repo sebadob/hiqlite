@@ -30,7 +30,6 @@ pub use rusqlite::Row;
 pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
-use crate::init::init_pristine_node_1;
 #[cfg(feature = "s3")]
 pub use config::EncKeysFrom;
 #[cfg(feature = "s3")]
@@ -144,7 +143,19 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     .await
     .expect("Raft create failed");
 
-    init::init_pristine_node_1(&raft, node_config.node_id, &node_config.nodes).await?;
+    init::init_pristine_node_1(
+        &raft,
+        node_config.node_id,
+        &node_config.nodes,
+        &node_config.secret_api,
+        node_config.tls_api.is_some(),
+        node_config
+            .tls_api
+            .as_ref()
+            .map(|c| c.danger_tls_no_verify)
+            .unwrap_or(false),
+    )
+    .await?;
 
     let (api_addr, rpc_addr) = {
         let node = node_config
@@ -227,7 +238,10 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
             Router::new()
                 .route("/add_learner", post(management::add_learner))
                 .route("/become_member", post(management::become_member))
-                .route("/change_membership", post(management::change_membership))
+                .route(
+                    "/membership",
+                    get(management::get_membership).post(management::post_membership),
+                )
                 .route("/init", post(management::init))
                 .route("/metrics", get(management::metrics)),
         )

@@ -1,8 +1,6 @@
 use crate::start::build_config;
-use crate::{check, debug, log, TEST_DATA_DIR};
-use axum::response::IntoResponse;
+use crate::{check, log, TEST_DATA_DIR};
 use hiqlite::{start_node, DbClient, Error};
-use log::log;
 use std::time::Duration;
 use tokio::{fs, time};
 
@@ -37,9 +35,6 @@ pub async fn test_self_healing(
     check::is_client_db_healthy(&client_healed).await?;
     log("Client has self-healed successfully");
 
-    // wait for snapshot replication behind the scenes
-    // time::sleep(Duration::from_millis(5000)).await;
-
     log("Test recovery from logs data loss on non-leader");
     let client_healed = if !is_leader(&client_1, 1).await? {
         client_1 = shutdown_remove_logs_restart(client_1, 1).await?;
@@ -53,9 +48,6 @@ pub async fn test_self_healing(
     check::is_client_db_healthy(client_healed).await?;
     log("Client has self-healed successfully");
 
-    // wait for snapshot replication behind the scenes
-    // time::sleep(Duration::from_millis(5000)).await;
-
     log("Check recovery from full volume loss");
     let client_healed = if !is_leader(&client_1, 1).await? {
         client_1 = shutdown_remove_all_restart(client_1, 1, 1500).await?;
@@ -65,13 +57,7 @@ pub async fn test_self_healing(
         &client_2
     };
     // replication will take a few moments
-    let metrics = client_healed.metrics().await?;
-    log("METRICS of healed client before timeout");
-    debug(&metrics);
-    time::sleep(Duration::from_millis(1000)).await;
-    log("METRICS of healed client after timeout");
-    debug(&metrics);
-
+    time::sleep(Duration::from_millis(100)).await;
     check::is_client_db_healthy(client_healed).await?;
     log("Client has self-healed successfully");
 
