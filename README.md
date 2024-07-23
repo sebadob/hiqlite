@@ -82,13 +82,10 @@ in case of any errors or problems.
 
 #### TODO implement
 
-This list is by no means exhaustive, these are just the next big things
+This list is by no means exhaustive, these are just the next big things before a v0.1.0
 
 - consistent queries on leader
 - metrics / health endpoint or maybe even a simple health UI
 - proper documentation
 - more advanced examples
-
-#### TODO add to tests
-
-- migrations
+- a lot of code cleanup

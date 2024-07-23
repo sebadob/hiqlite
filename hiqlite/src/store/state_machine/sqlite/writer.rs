@@ -4,7 +4,7 @@ use crate::store::state_machine::sqlite::state_machine;
 use crate::store::state_machine::sqlite::state_machine::{
     Params, StateMachineData, StateMachineSqlite, StoredSnapshot,
 };
-use crate::{Error, Node, NodeId};
+use crate::{AppliedMigration, Error, Node, NodeId};
 use chrono::Utc;
 use openraft::{LogId, SnapshotMeta, StorageError, StorageIOError, StoredMembership};
 use rusqlite::backup::Progress;
@@ -540,13 +540,13 @@ fn last_applied_migration(
     migrations: &[Migration],
 ) -> Result<u32, Error> {
     let mut stmt = conn.prepare("SELECT * FROM _migrations")?;
-    let already_applied: Vec<Migration> = stmt
+    let already_applied: Vec<AppliedMigration> = stmt
         .query_map([], |row| {
-            Ok(Migration {
+            Ok(AppliedMigration {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                hash: row.get(2)?,
-                content: row.get(3)?,
+                ts: row.get(2)?,
+                hash: row.get(3)?,
             })
         })?
         .map(|r| r.expect("_migrations table corrupted"))

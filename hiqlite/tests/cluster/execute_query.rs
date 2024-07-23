@@ -39,23 +39,6 @@ pub async fn test_execute_query(
     client_2: &DbClient,
     client_3: &DbClient,
 ) -> Result<(), Error> {
-    log("Creating test table");
-    client_1
-        .execute(
-            r#"
-    CREATE TABLE test
-    (
-        id          INTEGER NOT NULL
-                     CONSTRAINT test_pk
-                         PRIMARY KEY,
-        ts          INTEGER NOT NULL,
-        description TEXT    NOT NULL
-    )
-    "#,
-            params!(),
-        )
-        .await?;
-
     log("Inserting test data");
 
     let data = TestData {

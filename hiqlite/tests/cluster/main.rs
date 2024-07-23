@@ -12,6 +12,7 @@ mod backup_restore;
 mod batch;
 mod check;
 mod execute_query;
+mod migration;
 mod self_heal;
 mod start;
 mod transaction;
@@ -43,7 +44,6 @@ async fn test_cluster() {
     }
 
     // TODO impl + test
-    // - migrations
     // - consistent queries on leader
 }
 
@@ -57,6 +57,10 @@ async fn exec_tests() -> Result<(), Error> {
 
     let metrics = client_1.metrics().await?;
     debug(&metrics);
+
+    log("Starting migration tests");
+    migration::test_migrations(&client_1, &client_2, &client_3).await?;
+    log("Migration tests finished");
 
     log("Starting data insertion and query tests");
     execute_query::test_execute_query(&client_1, &client_2, &client_3).await?;

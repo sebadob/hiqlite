@@ -216,15 +216,13 @@ impl LogStoreWriter {
 
                     ActionWrite::Shutdown => {
                         warn!("Raft logs store writer is being shut down");
-                        // db.flush_wal(true);
-                        // db.flush();
                         break;
                     }
                 }
             }
 
             db.flush_wal(true);
-            warn!("\n\nLogs Writer exiting!\n");
+            warn!("Logs Writer exiting!");
         });
 
         tx
