@@ -1,6 +1,8 @@
 use crate::start::build_config;
-use crate::{check, log, TEST_DATA_DIR};
+use crate::{check, debug, log, TEST_DATA_DIR};
+use axum::response::IntoResponse;
 use hiqlite::{start_node, DbClient, Error};
+use log::log;
 use std::time::Duration;
 use tokio::{fs, time};
 
@@ -35,6 +37,10 @@ pub async fn test_self_healing(
     check::is_client_db_healthy(&client_healed).await?;
     log("Client has self-healed successfully");
 
+    // wait for snapshot replication behind the scenes
+    // time::sleep(Duration::from_millis(5000)).await;
+
+    log("Test recovery from logs data loss on non-leader");
     let client_healed = if !is_leader(&client_1, 1).await? {
         client_1 = shutdown_remove_logs_restart(client_1, 1).await?;
         &client_1
@@ -42,19 +48,44 @@ pub async fn test_self_healing(
         client_2 = shutdown_remove_logs_restart(client_2, 2).await?;
         &client_2
     };
-    client_healed.is_healthy().await?;
+    // replication will take a few moments
+    time::sleep(Duration::from_millis(20)).await;
+    check::is_client_db_healthy(client_healed).await?;
     log("Client has self-healed successfully");
 
-    log("Check that we can recover from full volume loss");
+    // wait for snapshot replication behind the scenes
+    // time::sleep(Duration::from_millis(5000)).await;
+
+    log("Check recovery from full volume loss");
     let client_healed = if !is_leader(&client_1, 1).await? {
-        client_1 = shutdown_remove_all_restart(client_1, 1).await?;
+        client_1 = shutdown_remove_all_restart(client_1, 1, 1500).await?;
         &client_1
     } else {
-        client_2 = shutdown_remove_all_restart(client_2, 2).await?;
+        client_2 = shutdown_remove_all_restart(client_2, 2, 1500).await?;
         &client_2
     };
-    client_healed.is_healthy().await?;
+    // replication will take a few moments
+    let metrics = client_healed.metrics().await?;
+    log("METRICS of healed client before timeout");
+    debug(&metrics);
+    time::sleep(Duration::from_millis(1000)).await;
+    log("METRICS of healed client after timeout");
+    debug(&metrics);
+
+    check::is_client_db_healthy(client_healed).await?;
     log("Client has self-healed successfully");
+
+    // Client 1 is a bit special, as it assumes that it will be responsible for a very first
+    // start of a pristine cluster. We need to make sure that a lost volume for client 1 does work
+    // properly in a way, that it would not create its own node but join the existing cluster.
+    log("Check that we can recover from full volume loss");
+
+    // In most cases, client_1 is the leader at this point,
+    // so we will give the others enough time to vote a new leader.
+    client_1 = shutdown_remove_all_restart(client_1, 1, 1500).await?;
+    client_1.is_healthy().await?;
+    check::is_client_db_healthy(&client_1).await?;
+    log("Client has self-healed and re-joined successfully");
 
     time::sleep(Duration::from_secs(1)).await;
 
@@ -88,10 +119,14 @@ async fn shutdown_lock_sm_db_restart(client: DbClient, node_id: u64) -> Result<D
     Ok(client)
 }
 
-async fn shutdown_remove_all_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
+async fn shutdown_remove_all_restart(
+    client: DbClient,
+    node_id: u64,
+    millis_before_restart: u64,
+) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
-    time::sleep(Duration::from_millis(150)).await;
+    time::sleep(Duration::from_millis(millis_before_restart)).await;
 
     let folder = folder_base(node_id);
     log(format!("Deleting {}", folder));

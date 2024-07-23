@@ -123,6 +123,9 @@ async fn exec_tests() -> Result<(), Error> {
     backup_restore::test_db_is_healthy_after_restore(&client_2).await?;
     backup_restore::test_db_is_healthy_after_restore(&client_3).await?;
 
+    // we need to wait a bit until all backup nodes have created a new snapshot
+    time::sleep(Duration::from_millis(1000)).await;
+
     log("Start self-healing capabilities tests");
     test_self_healing(client_1, client_2, client_3).await?;
     log("Self-healing capabilities tests finished");

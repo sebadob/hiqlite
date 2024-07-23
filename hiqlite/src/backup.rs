@@ -1,23 +1,30 @@
+use crate::app_state::AppState;
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{
     PathBackups, PathDb, PathLockFile, PathSnapshots, StateMachineData, StateMachineSqlite,
 };
 use crate::{Error, NodeConfig};
+use openraft::error::Fatal;
 use std::env;
-use tokio::{fs, task};
-use tracing::{debug, info, warn};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::{fs, task, time};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Check if the env var `HIQLITE_BACKUP_RESTORE` is set and restores the given backup if so.
-pub(crate) async fn check_restore_apply(node_config: &NodeConfig) -> Result<(), Error> {
+/// Returns `Ok(true)` if backup has been applied.
+pub(crate) async fn check_restore_apply(node_config: &NodeConfig) -> Result<bool, Error> {
     if let Ok(name) = env::var("HIQLITE_BACKUP_RESTORE") {
         warn!(
             "Found HIQLITE_BACKUP_RESTORE={} - starting restore process",
             name
         );
         restore_backup(node_config, &name).await?;
+        Ok(true)
+    } else {
+        Ok(false)
     }
-    Ok(())
 }
 
 /// Apply the given backup from S3 storage.
@@ -94,6 +101,68 @@ async fn is_metadata_ok(path_db: String) -> Result<(), Error> {
     })
     .await??;
     Ok(())
+}
+
+/// If we applied a backup, it means we did a log-id rollover as well.
+/// In this case, if a remote node needs to recover from failure before we purge the very
+/// first log with id 1, it will not bother fetching a snapshot from remote, which it must
+/// do in case of a backup restore to not end up in an inconsistent state.
+/// We will take a snapshot as soon as we have a last log id > 1 and then purge
+/// immediately.
+pub fn restore_backup_cleanup(state: Arc<AppState>) {
+    task::spawn(restore_backup_cleanup_task(state));
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+async fn restore_backup_cleanup_task(state: Arc<AppState>) {
+    loop {
+        match state.raft.is_initialized().await {
+            Ok(res) => {
+                if res {
+                    break;
+                }
+            }
+            Err(err) => {
+                error!("{}", err);
+            }
+        }
+        debug!("Waiting for Raft init");
+        time::sleep(Duration::from_millis(500)).await;
+    }
+
+    let mut last_log = 0;
+    loop {
+        let metrics = state.raft.metrics().borrow().clone();
+        if let Some(last_applied) = metrics.last_applied {
+            if last_applied.index > 10 {
+                debug!("Found high enough last_applied log id");
+                last_log = last_applied.index;
+                break;
+            }
+        }
+        time::sleep(Duration::from_millis(500)).await;
+    }
+
+    let metrics = state.raft.metrics().borrow().clone();
+    info!("\n\n\nMetrics after having log it: {:?}\n\n", metrics);
+
+    debug!("Taking snapshot now");
+    while let Err(err) = state.raft.trigger().snapshot().await {
+        error!("\n\n\nError during snapshot creation: {}\n\n", err);
+        time::sleep(Duration::from_millis(500)).await;
+    }
+
+    debug!("Purging logs");
+    while let Err(err) = state.raft.trigger().purge_log(last_log).await {
+        error!("Error during logs purge: {}", err);
+        time::sleep(Duration::from_millis(500)).await;
+    }
+
+    // give the replication in the background a second to catch up before proceeding
+    // we don't care about a bit longer startup after backup
+    time::sleep(Duration::from_millis(3000)).await;
+
+    info!("restore_backup_cleanup_task finished successfully");
 }
 
 // pub async fn snapshot_after_restore(

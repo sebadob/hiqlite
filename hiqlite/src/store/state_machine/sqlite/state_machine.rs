@@ -527,7 +527,8 @@ impl StateMachineSqlite {
                     .expect("last_snapshot_path to always be Some when snapshot_id exists"),
             }))
         } else {
-            Ok(None)
+            self.read_current_snapshot_from_disk().await
+            // Ok(None)
         }
     }
 }
@@ -780,6 +781,9 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfigSqlite>>, StorageError<NodeId>> {
         let snap = self.get_current_snapshot_().await?;
+
+        info!("\n\n\nget_current_snapshot: {:?}\n\n", snap);
+
         match snap {
             None => Ok(None),
             Some(snap) => {

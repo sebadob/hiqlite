@@ -1,7 +1,9 @@
 use crate::app_state::AppState;
 use crate::network::management::LearnerReq;
 use crate::network::HEADER_NAME_SECRET;
-use crate::{Error, Node};
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
+use crate::{init, Error, Node};
+use openraft::Raft;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,38 +11,52 @@ use tokio::time;
 use tracing::{error, info};
 
 /// Initializes a fresh node 1, if it has not been set up yet.
-pub async fn init_pristine_node_1(state: &Arc<AppState>) -> Result<(), Error> {
+pub async fn init_pristine_node_1(
+    raft: &Raft<TypeConfigSqlite>,
+    this_node: u64,
+    nodes: &[Node],
+) -> Result<(), Error> {
     // TODO will probably be an issue if node 1 died and needs to join an existing cluster
     // TODO -> add remote lookup when the metrics endpoint is implemented
-    if state.id == 1 {
-        if is_initialized_timeout(state).await? {
+    if this_node == 1 {
+        let this_node = get_this_node(this_node, nodes);
+
+        if is_initialized_timeout(raft).await? {
             return Ok(());
         }
 
         let mut nodes_set = BTreeMap::new();
-        nodes_set.insert(
-            state.id,
-            Node {
-                id: state.id,
-                addr_raft: state.addr_raft.clone(),
-                addr_api: state.addr_api.clone(),
-            },
-        );
-        state.raft.initialize(nodes_set).await?;
+        nodes_set.insert(this_node.id, this_node);
+        raft.initialize(nodes_set).await?;
     }
 
     Ok(())
 }
 
+fn get_this_node(this_node: u64, nodes: &[Node]) -> Node {
+    let filtered = nodes
+        .iter()
+        .filter(|node| node.id == this_node)
+        .collect::<Vec<&Node>>();
+    let node = filtered
+        .first()
+        .expect("this node to always exist in all nodes")
+        .clone();
+    (*node).clone()
+}
+
 /// If this node is a non cluster member, it will try to become a learner and
 /// a voting member afterward.
 pub async fn become_cluster_member(
-    state: &Arc<AppState>,
-    nodes: Vec<Node>,
+    // state: &Arc<AppState>,
+    raft: &Raft<TypeConfigSqlite>,
+    this_node: u64,
+    nodes: &[Node],
     tls: bool,
     tls_no_verify: bool,
+    secret_api: &str,
 ) -> Result<(), Error> {
-    if is_initialized_timeout(state).await? {
+    if is_initialized_timeout(raft).await? {
         return Ok(());
     }
 
@@ -54,31 +70,37 @@ pub async fn become_cluster_member(
         .build()
         .unwrap();
     let scheme = if tls { "https" } else { "http" };
+
+    let this_node = get_this_node(this_node, nodes);
     let payload = bincode::serialize(&LearnerReq {
-        node_id: state.id,
-        addr_api: state.addr_api.clone(),
-        addr_raft: state.addr_raft.clone(),
+        node_id: this_node.id,
+        addr_api: this_node.addr_api,
+        addr_raft: this_node.addr_raft,
     })
     .unwrap();
 
     try_become(
-        state,
+        raft,
         &client,
         scheme,
         "add_learner",
         &payload,
+        this_node.id,
         &nodes,
+        secret_api,
         true,
     )
     .await?;
 
     try_become(
-        state,
+        raft,
         &client,
         scheme,
         "become_member",
         &payload,
+        this_node.id,
         &nodes,
+        secret_api,
         false,
     )
     .await?;
@@ -87,23 +109,26 @@ pub async fn become_cluster_member(
 }
 
 async fn try_become(
-    state: &Arc<AppState>,
+    // state: &Arc<AppState>,
+    raft: &Raft<TypeConfigSqlite>,
     client: &reqwest::Client,
     scheme: &str,
     suffix: &str,
     payload: &[u8],
+    this_node: u64,
     nodes: &[Node],
+    secret_api: &str,
     check_init: bool,
 ) -> Result<(), Error> {
     loop {
         time::sleep(Duration::from_secs(1)).await;
         // maybe we got initialized in the meantime
-        if check_init && state.raft.is_initialized().await? {
+        if check_init && raft.is_initialized().await? {
             return Ok(());
         }
 
         for node in nodes {
-            if node.id == state.id {
+            if node.id == this_node {
                 continue;
             }
 
@@ -112,7 +137,7 @@ async fn try_become(
 
             let res = client
                 .post(url)
-                .header(HEADER_NAME_SECRET, &state.secret_api)
+                .header(HEADER_NAME_SECRET, secret_api)
                 .body(payload.to_vec())
                 .send()
                 .await;
@@ -144,20 +169,40 @@ async fn try_become(
     }
 }
 
-async fn is_initialized_timeout(state: &AppState) -> Result<bool, Error> {
+// async fn is_initialized_timeout(state: &AppState) -> Result<bool, Error> {
+//     // Do not try to initialize already initialized nodes
+//     if state.raft.is_initialized().await? {
+//         return Ok(true);
+//     }
+//
+//     // If it is not initialized, wait long enough to make sure this
+//     // node is not joined again to an already existing cluster after data loss.
+//     let heartbeat = state.raft.config().heartbeat_interval;
+//     // We will wait for 5 heartbeats to make sure no other cluster is running
+//     time::sleep(Duration::from_millis(heartbeat * 5)).await;
+//
+//     // Make sure we are not initialized by now, otherwise go on
+//     if state.raft.is_initialized().await? {
+//         Ok(true)
+//     } else {
+//         Ok(false)
+//     }
+// }
+
+async fn is_initialized_timeout(raft: &Raft<TypeConfigSqlite>) -> Result<bool, Error> {
     // Do not try to initialize already initialized nodes
-    if state.raft.is_initialized().await? {
+    if raft.is_initialized().await? {
         return Ok(true);
     }
 
     // If it is not initialized, wait long enough to make sure this
     // node is not joined again to an already existing cluster after data loss.
-    let heartbeat = state.raft.config().heartbeat_interval;
+    let heartbeat = raft.config().heartbeat_interval;
     // We will wait for 5 heartbeats to make sure no other cluster is running
     time::sleep(Duration::from_millis(heartbeat * 5)).await;
 
     // Make sure we are not initialized by now, otherwise go on
-    if state.raft.is_initialized().await? {
+    if raft.is_initialized().await? {
         Ok(true)
     } else {
         Ok(false)

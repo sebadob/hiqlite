@@ -150,7 +150,8 @@ impl NodeConfig {
             replication_lag_threshold: 5000,
             snapshot_policy: SnapshotPolicy::LogsSinceLast(logs_until_snapshot),
             snapshot_max_chunk_size: 3 * 1024 * 1024,
-            max_in_snapshot_log_to_keep: 1000,
+            // be careful when adjusting this because of `backup::restore_backup_cleanup_task()`
+            max_in_snapshot_log_to_keep: 1,
             purge_batch_size: 1,
             enable_tick: true,
             enable_heartbeat: true,

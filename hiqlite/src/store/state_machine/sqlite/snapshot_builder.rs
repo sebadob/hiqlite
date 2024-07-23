@@ -6,7 +6,7 @@ use openraft::{
 };
 use tokio::sync::oneshot;
 use tokio::{fs, task};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -56,14 +56,16 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
         // cleanup can easily happen in the background
         task::spawn(snapshots_cleanup(path_snapshots, snapshot_id));
 
-        Ok(Snapshot {
+        let snapshot = Snapshot {
             meta: SnapshotMeta {
                 last_log_id: resp.meta.last_applied_log_id,
                 last_membership: resp.meta.last_membership,
                 snapshot_id: snapshot_id.to_string(),
             },
             snapshot: Box::new(snapshot),
-        })
+        };
+
+        Ok(snapshot)
     }
 }
 

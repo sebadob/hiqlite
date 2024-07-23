@@ -30,6 +30,7 @@ pub use rusqlite::Row;
 pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
+use crate::init::init_pristine_node_1;
 #[cfg(feature = "s3")]
 pub use config::EncKeysFrom;
 #[cfg(feature = "s3")]
@@ -104,7 +105,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     s3::init_enc_keys(&node_config.enc_keys_from)?;
 
     #[cfg(feature = "backup")]
-    backup::check_restore_apply(&node_config).await?;
+    let backup_applied = backup::check_restore_apply(&node_config).await?;
 
     let raft_config = Arc::new(node_config.config.validate().unwrap());
 
@@ -143,6 +144,8 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     .await
     .expect("Raft create failed");
 
+    init::init_pristine_node_1(&raft, node_config.node_id, &node_config.nodes).await?;
+
     let (api_addr, rpc_addr) = {
         let node = node_config
             .nodes
@@ -175,7 +178,10 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
         log_statements: node_config.log_statements,
     });
 
-    init::init_pristine_node_1(&state).await?;
+    #[cfg(feature = "backup")]
+    if backup_applied {
+        backup::restore_backup_cleanup(state.clone());
+    }
 
     // let compression_middleware = ServiceBuilder::new().layer(CompressionLayer::new());
 
@@ -260,13 +266,16 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     });
 
     init::become_cluster_member(
-        &state,
-        node_config.nodes,
+        &state.raft,
+        node_config.node_id,
+        &node_config.nodes,
         node_config.tls_raft.is_some(),
         node_config
             .tls_raft
+            .as_ref()
             .map(|c| c.danger_tls_no_verify)
             .unwrap_or(false),
+        &state.secret_api,
     )
     .await?;
 

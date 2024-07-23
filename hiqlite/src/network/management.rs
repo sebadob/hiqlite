@@ -8,6 +8,8 @@ use openraft::error::{CheckIsLeaderError, ForwardToLeader, RaftError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::time::Duration;
+use tokio::time;
 use tracing::{error, info};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -64,6 +66,84 @@ pub(crate) async fn add_learner(
         addr_raft,
         addr_api,
     };
+
+    // Check if the node is maybe already a member.
+    // If this is the case, it might do the request because it tries to recover from volume loss.
+    // -> remove the membership and re-add it as a new learner, so it can catch up again.
+    {
+        // hold this lock the whole time, even over await points, to never have race conditions here ...
+        let lock = state.raft_lock.lock().await;
+
+        let metrics = state.raft.metrics().borrow().clone();
+        let members = metrics.membership_config;
+        let is_member_already = members.nodes().any(|(id, _)| *id == node.id);
+
+        if is_member_already {
+            let new_voters = members
+                .voter_ids()
+                .filter(|id| *id != node.id)
+                .collect::<Vec<u64>>();
+
+            let new_members = members
+                .nodes()
+                .filter_map(|(id, _)| new_voters.contains(id).then_some(*id))
+                .collect::<Vec<u64>>();
+
+            // let new_learners = members
+            //     .nodes()
+            //     .filter_map(|(id, node)| {
+            //         (!new_voters.contains(id) && *id != node.id).then_some((*id, node.clone()))
+            //     })
+            //     .collect::<Vec<(u64, Node)>>();
+
+            info!(
+                r#"
+
+    Members old: {:?}
+
+    new_voters: {:?}
+
+    new_members: {:?}
+
+            "#,
+                members, new_voters, new_members
+            );
+
+            // TODO this is far from being a good approach, since it could fail in the middle,
+            // but the only solution I found so far...
+            let res = state.raft.change_membership(new_members, false).await;
+            match res {
+                Ok(resp) => {
+                    info!("Removed already existing member: {:?}", resp);
+
+                    time::sleep(Duration::from_millis(100)).await;
+
+                    info!("Adding removed member as learner");
+                    state.raft.add_learner(node.id, node, true).await?;
+
+                    info!("Membership changed successfully");
+
+                    let metrics = state.raft.metrics().borrow().clone();
+                    let members = metrics.membership_config;
+                    info!(
+                        r#"
+
+        New Membership after updates: {:?}
+
+                    "#,
+                        members
+                    );
+
+                    return fmt_ok(headers, resp);
+                }
+                Err(err) => {
+                    error!("Error adding node as learner: {:?}", err);
+                    return Err(Error::from(err));
+                }
+            }
+        }
+    }
+
     let res = state.raft.add_learner(node_id, node, true).await;
     match res {
         Ok(resp) => {
