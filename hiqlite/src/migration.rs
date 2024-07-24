@@ -1,4 +1,3 @@
-use rusqlite::Row;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -83,13 +82,13 @@ pub struct AppliedMigration {
     pub hash: String,
 }
 
-impl<'r> From<&'r Row<'r>> for AppliedMigration {
-    fn from(row: &'r Row<'r>) -> Self {
+impl<'r> From<crate::Row<'r>> for AppliedMigration {
+    fn from(mut row: crate::Row<'r>) -> Self {
         Self {
-            id: row.get_unwrap("id"),
-            name: row.get_unwrap("name"),
-            ts: row.get_unwrap("ts"),
-            hash: row.get_unwrap("hash"),
+            id: row.get::<i64>("id") as u32,
+            name: row.get("name"),
+            ts: row.get("ts"),
+            hash: row.get("hash"),
         }
     }
 }

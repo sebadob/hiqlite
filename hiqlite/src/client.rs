@@ -11,7 +11,7 @@ use crate::query::rows::RowOwned;
 use crate::store::logs::rocksdb::ActionWrite;
 use crate::store::state_machine::sqlite::state_machine::{Params, Query, QueryWrite};
 use crate::store::state_machine::sqlite::writer::WriterRequest;
-use crate::{query, NodeId, RowTyped};
+use crate::{query, NodeId};
 use crate::{tls, Error};
 use crate::{Node, Response};
 use openraft::RaftMetrics;
@@ -389,42 +389,42 @@ impl DbClient {
         }
     }
 
-    /// This is the most efficient and fastest way to query data from sqlite into a struct.
-    /// It is mandatory, that the struct implements `From<Row<'_>>` for this to work.
-    /// If you want a more comfortable and easier way and don't need the most efficiency and
-    /// speed, take a look at `.query_as()`.
-    pub async fn query_map<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
-    where
-        T: for<'r> From<&'r crate::Row<'r>> + Send + 'static,
-        S: Into<Cow<'static, str>>,
-    {
-        if let Some(state) = &self.state {
-            query::query_map(state, stmt, params).await
-        } else {
-            todo!("query_map for remote clients")
-        }
-    }
+    // /// This is the most efficient and fastest way to query data from sqlite into a struct.
+    // /// It is mandatory, that the struct implements `From<Row<'_>>` for this to work.
+    // /// If you want a more comfortable and easier way and don't need the most efficiency and
+    // /// speed, take a look at `.query_as()`.
+    // pub async fn query_map<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
+    // where
+    //     T: for<'r> From<&'r crate::Row<'r>> + Send + 'static,
+    //     S: Into<Cow<'static, str>>,
+    // {
+    //     if let Some(state) = &self.state {
+    //         query::query_map(state, stmt, params).await
+    //     } else {
+    //         todo!("query_map for remote clients")
+    //     }
+    // }
 
-    /// Works in the same way as `query_map()`, but returns only one result.
-    /// Errors if no rows are returned and ignores additional results if more than one row returned.
-    pub async fn query_map_one<T, S>(&self, stmt: S, params: Params) -> Result<T, Error>
-    where
-        T: for<'r> From<&'r crate::Row<'r>> + Send + 'static,
-        S: Into<Cow<'static, str>>,
-    {
-        if let Some(state) = &self.state {
-            query::query_map_one(state, stmt, params).await
-        } else {
-            todo!("query_map_one for remote clients")
-        }
-    }
+    // /// Works in the same way as `query_map()`, but returns only one result.
+    // /// Errors if no rows are returned and ignores additional results if more than one row returned.
+    // pub async fn query_map_one<T, S>(&self, stmt: S, params: Params) -> Result<T, Error>
+    // where
+    //     T: for<'r> From<&'r crate::Row<'r>> + Send + 'static,
+    //     S: Into<Cow<'static, str>>,
+    // {
+    //     if let Some(state) = &self.state {
+    //         query::query_map_one(state, stmt, params).await
+    //     } else {
+    //         todo!("query_map_one for remote clients")
+    //     }
+    // }
 
     pub async fn query_map_consistent<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
     where
-        T: for<'r> From<crate::RowTyped<'r>> + Send + 'static,
+        T: for<'r> From<crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
-        let rows: Vec<RowTyped> = self.query_consistent::<T, S>(stmt, params).await?;
+        let rows: Vec<crate::Row> = self.query_consistent::<T, S>(stmt, params).await?;
         let mut res: Vec<T> = Vec::with_capacity(rows.len());
         for row in rows {
             res.push(T::from(row))
@@ -436,7 +436,7 @@ impl DbClient {
         &self,
         stmt: S,
         params: Params,
-    ) -> Result<Vec<crate::RowTyped>, Error>
+    ) -> Result<Vec<crate::Row>, Error>
     where
         S: Into<Cow<'static, str>>,
     {
@@ -456,9 +456,9 @@ impl DbClient {
             }
         };
 
-        let mut res: Vec<RowTyped> = Vec::with_capacity(rows.len());
+        let mut res: Vec<crate::Row> = Vec::with_capacity(rows.len());
         for row in rows {
-            res.push(RowTyped::Owned(row))
+            res.push(crate::Row::Owned(row))
         }
         Ok(res)
     }
@@ -495,25 +495,31 @@ impl DbClient {
         }
     }
 
-    pub async fn query_map_typed<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
+    /// This is the most efficient and fastest way to query data from sqlite into a struct.
+    /// It is mandatory, that the struct implements `From<Row<'_>>` for this to work.
+    /// If you want a more comfortable and easier way and don't need the most efficiency and
+    /// speed, take a look at `.query_as()`.
+    pub async fn query_map<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
     where
-        T: for<'r> From<crate::RowTyped<'r>> + Send + 'static,
+        T: for<'r> From<crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.state {
-            query::query_map_typed(state, stmt, params).await
+            query::query_map(state, stmt, params).await
         } else {
             todo!("query_map for remote clients")
         }
     }
 
-    pub async fn query_map_one_typed<T, S>(&self, stmt: S, params: Params) -> Result<T, Error>
+    /// Works in the same way as `query_map()`, but returns only one result.
+    /// Errors if no rows are returned and ignores additional results if more than one row returned.
+    pub async fn query_map_one<T, S>(&self, stmt: S, params: Params) -> Result<T, Error>
     where
-        T: for<'r> From<crate::RowTyped<'r>> + Send + 'static,
+        T: for<'r> From<crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.state {
-            query::query_map_one_typed(state, stmt, params).await
+            query::query_map_one(state, stmt, params).await
         } else {
             todo!("query_map_one for remote clients")
         }

@@ -75,16 +75,12 @@ struct Entity {
 }
 
 // This impl is needed for the more efficient and faster `query_map()`
-impl<'r> From<&'r Row<'r>> for Entity {
-    fn from(row: &'r Row<'r>) -> Self {
+impl<'r> From<Row<'r>> for Entity {
+    fn from(mut row: Row<'r>) -> Self {
         Self {
-            // You can `.get()` either via index or via named parameter.
-            // Via index is a bit faster again, especially when many values are returned, but you
-            // need to be more careful when building your queries to always return values in the
-            // correct order.
-            id: row.get_unwrap("id"),
-            num: row.get_unwrap("num"),
-            description: row.get_unwrap("description"),
+            id: row.get("id"),
+            num: row.get("num"),
+            description: row.get("description"),
         }
     }
 }

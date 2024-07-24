@@ -13,29 +13,8 @@ pub struct TestData {
     pub description: String,
 }
 
-// the  From<&'r hiqlite::Row<'r>> is mandatory if we want to use the more efficient `query_map()`
-impl<'r> From<&'r hiqlite::Row<'r>> for TestData {
-    fn from(row: &'r hiqlite::Row<'r>) -> Self {
-        // the fastest but more error-prone method is to use column index
-        // with these, the order matters
-        Self {
-            id: row.get_unwrap(0),
-            ts: row.get_unwrap(1),
-            description: row.get_unwrap(2),
-        }
-
-        // you could also use the get by return column name, which is a
-        // bit more safe but at the same time a tiny bit less fast
-        // Self {
-        //     id: row.get_unwrap("id"),
-        //     ts: row.get_unwrap("ts"),
-        //     description: row.get_unwrap("description"),
-        // }
-    }
-}
-
-impl<'r> From<hiqlite::RowTyped<'r>> for TestData {
-    fn from(mut row: hiqlite::RowTyped<'r>) -> Self {
+impl<'r> From<hiqlite::Row<'r>> for TestData {
+    fn from(mut row: hiqlite::Row<'r>) -> Self {
         Self {
             id: row.get("id"),
             ts: row.get("ts"),
@@ -169,12 +148,6 @@ pub async fn test_execute_query(
 
     log("Query multiple rows with 'query_map()'");
     let res: Vec<TestData> = client_1.query_map("SELECT * FROM test", params!()).await?;
-    assert_eq!(res.len(), 2);
-
-    log("Query multiple rows with 'query_map_typed()'");
-    let res: Vec<TestData> = client_1
-        .query_map_typed("SELECT * FROM test", params!())
-        .await?;
     assert_eq!(res.len(), 2);
 
     log("Query consistent from all clients");

@@ -23,12 +23,11 @@ use tracing::info;
 
 pub use crate::client::DbClient;
 pub use crate::error::Error;
-pub use crate::query::rows::Row as RowTyped;
+pub use crate::query::rows::Row;
 pub use crate::store::state_machine::sqlite::state_machine::{Params, Response};
 pub use config::{NodeConfig, RaftConfig};
 pub use migration::AppliedMigration;
 pub use openraft::SnapshotPolicy;
-pub use rusqlite::Row;
 pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
