@@ -76,7 +76,7 @@ in case of any errors or problems.
 - simple `String` batch executes
 - `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
   This will end up behind a `serde` feature in the future which is not implemented yet.
-- `query_map()` for local reads for `structs` that implement `impl<'r> From<&'r hiqlite::Row<'r>>` which is the
+- `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
   faster method with more manual work
 
 ### TODOs
