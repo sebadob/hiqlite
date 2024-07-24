@@ -71,7 +71,10 @@ pub struct Migration {
     pub content: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Applied migrations to the database.
+///
+/// Can be retrieved with `.query_map("SELECT * FROM _migrations", params!())`
+#[derive(Debug, Clone)]
 pub struct AppliedMigration {
     pub id: u32,
     pub name: String,

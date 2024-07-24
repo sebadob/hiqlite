@@ -26,7 +26,7 @@ pub async fn test_migrations(
     client_3: &DbClient,
 ) -> Result<(), Error> {
     // TODO the should_panic annotation does not work in this context -> maybe create separate tests
-    // to catch these panic properly in the future, even though they do what they should when checking
+    // to catch these panics properly in the future, even though they do what they should when checking
     // manually
 
     // no leading integer index -> should panic

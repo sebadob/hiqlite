@@ -6,7 +6,7 @@ use crate::client_stream::{
 use crate::migration::{Migration, Migrations};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::network::management::LearnerReq;
-use crate::network::{api, RaftWriteResponse, HEADER_NAME_SECRET};
+use crate::network::{query, RaftWriteResponse, HEADER_NAME_SECRET};
 use crate::store::logs::rocksdb::ActionWrite;
 use crate::store::state_machine::sqlite::state_machine::{Params, Query, QueryWrite};
 use crate::store::state_machine::sqlite::writer::WriterRequest;
@@ -398,7 +398,7 @@ impl DbClient {
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.state {
-            api::query_map(state, stmt, params).await
+            query::query_map(state, stmt, params).await
         } else {
             todo!("query_map for remote clients")
         }
@@ -412,7 +412,7 @@ impl DbClient {
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.state {
-            api::query_map_one(state, stmt, params).await
+            query::query_map_one(state, stmt, params).await
         } else {
             todo!("query_map_one for remote clients")
         }
@@ -428,7 +428,7 @@ impl DbClient {
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.state {
-            api::query_as(state, stmt, params).await
+            query::query_as(state, stmt, params).await
         } else {
             todo!("query_as for remote clients")
         }
@@ -442,7 +442,7 @@ impl DbClient {
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.state {
-            api::query_as_one(state, stmt, params).await
+            query::query_as_one(state, stmt, params).await
         } else {
             todo!("query_as_one for remote clients")
         }

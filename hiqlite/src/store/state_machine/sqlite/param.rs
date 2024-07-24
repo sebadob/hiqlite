@@ -69,6 +69,7 @@ impl From<isize> for Param {
 impl From<uuid::Uuid> for Param {
     #[inline]
     fn from(id: uuid::Uuid) -> Param {
+        // TODO need to be converted to BE bytes for correct ordering -> feature flag
         Param::Blob(id.as_bytes().to_vec())
     }
 }

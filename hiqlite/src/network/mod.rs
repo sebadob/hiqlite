@@ -18,6 +18,7 @@ pub(crate) mod api;
 mod challenge_response;
 pub(crate) mod handshake;
 pub(crate) mod management;
+pub(crate) mod query;
 mod raft_client;
 pub(crate) mod raft_server;
 
