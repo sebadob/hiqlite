@@ -6,11 +6,11 @@ use crate::client_stream::{
 use crate::migration::{Migration, Migrations};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::network::management::LearnerReq;
-use crate::network::{query, RaftWriteResponse, HEADER_NAME_SECRET};
+use crate::network::{RaftWriteResponse, HEADER_NAME_SECRET};
 use crate::store::logs::rocksdb::ActionWrite;
 use crate::store::state_machine::sqlite::state_machine::{Params, Query, QueryWrite};
 use crate::store::state_machine::sqlite::writer::WriterRequest;
-use crate::NodeId;
+use crate::{query, NodeId};
 use crate::{tls, Error};
 use crate::{Node, Response};
 use openraft::RaftMetrics;

@@ -43,6 +43,7 @@ mod config;
 mod error;
 mod migration;
 mod network;
+mod query;
 mod store;
 mod tls;
 

@@ -1,0 +1,171 @@
+use crate::Error;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct RowsOwned {
+    pub(crate) rows: Vec<RowOwned>,
+}
+
+impl RowsOwned {
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+}
+
+impl IntoIterator for RowsOwned {
+    type Item = RowOwned;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.rows.into_iter()
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct RowOwned {
+    pub(crate) columns: Vec<ColumnOwned>,
+}
+
+impl RowOwned {
+    /// # Panics
+    /// If the type cannot be converted correctly
+    pub fn get<T: TryFrom<ValueOwned, Error = crate::Error>>(&mut self, idx: &str) -> T {
+        self.try_get(idx).unwrap()
+    }
+
+    /// TODO decide which version to use - this is with remove -> benchmark them!
+    pub fn try_get<T: TryFrom<ValueOwned, Error = crate::Error>>(
+        &mut self,
+        idx: &str,
+    ) -> Result<T, Error> {
+        for i in 0..self.columns.len() {
+            if self.columns[i].name == idx {
+                // swap_remove is fine because we don't allow access by raw integer index
+                return T::try_from(self.columns.swap_remove(i).value);
+            }
+        }
+
+        Err(Error::QueryParams(
+            format!("column '{}' not found", idx).into(),
+        ))
+    }
+
+    // TODO decide which version to use - this is with cloning -> benchmark them!
+    // pub fn try_get<T: TryFrom<ValueOwned, Error = crate::Error>>(
+    //     &mut self,
+    //     idx: &str,
+    // ) -> Result<T, Error> {
+    //     for col in &self.columns {
+    //         if col.name == idx {
+    //             return T::try_from(col.value.clone());
+    //         }
+    //     }
+    //
+    //     Err(Error::QueryParams(
+    //         format!("column '{}' not found", idx).into(),
+    //     ))
+    // }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColumnOwned {
+    pub(crate) name: String,
+    pub(crate) value: ValueOwned,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ValueOwned {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+impl TryFrom<ValueOwned> for i64 {
+    type Error = crate::Error;
+
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Integer(i) => Ok(i),
+            _ => Err(Error::Sqlite("Cannot convert into i64".into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for std::option::Option<i64> {
+    type Error = crate::Error;
+
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Null => Ok(None),
+            v => i64::try_from(v).map(|r| Some(r)),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for f64 {
+    type Error = Error;
+
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Real(r) => Ok(r),
+            _ => Err(Error::Sqlite("Cannot convert into f64".into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for std::option::Option<f64> {
+    type Error = crate::Error;
+
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Null => Ok(None),
+            v => f64::try_from(v).map(|r| Some(r)),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for String {
+    type Error = Error;
+
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Text(s) => Ok(s),
+            _ => Err(Error::Sqlite("Cannot convert into String".into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for std::option::Option<String> {
+    type Error = crate::Error;
+
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Null => Ok(None),
+            v => String::try_from(v).map(|r| Some(r)),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for Vec<u8> {
+    type Error = Error;
+
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Blob(b) => Ok(b),
+            _ => Err(Error::Sqlite("Cannot convert into Vec<u8>".into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for std::option::Option<Vec<u8>> {
+    type Error = crate::Error;
+
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Null => Ok(None),
+            v => Vec::try_from(v).map(|r| Some(r)),
+        }
+    }
+}
