@@ -91,3 +91,4 @@ This list is by no means exhaustive, these are just the next big things before a
 - a lot of code cleanup
 - K/V store / cache with TTLs
 - easy way to spawn database cron jobs that run on the leader only to avoid duplication
+- investigate possibilities of a EXECUTE + RETURNING through the Raft
