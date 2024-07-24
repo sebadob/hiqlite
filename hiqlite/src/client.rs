@@ -418,6 +418,30 @@ impl DbClient {
         }
     }
 
+    pub async fn query_map_typed<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
+    where
+        T: for<'r> From<crate::RowTyped<'r>> + Send + 'static,
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.state {
+            query::query_map_typed(state, stmt, params).await
+        } else {
+            todo!("query_map for remote clients")
+        }
+    }
+
+    pub async fn query_map_one_typed<T, S>(&self, stmt: S, params: Params) -> Result<T, Error>
+    where
+        T: for<'r> From<crate::RowTyped<'r>> + Send + 'static,
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.state {
+            query::query_map_one_typed(state, stmt, params).await
+        } else {
+            todo!("query_map_one for remote clients")
+        }
+    }
+
     /// Converts data returned from a sql query into a struct. This struct must derive
     /// serde::Deserialize. This is the easiest and most straight forward way of doing it, but not
     /// the fastest and most efficient one. If you want to optimize memory and speed, you should

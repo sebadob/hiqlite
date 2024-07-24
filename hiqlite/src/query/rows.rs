@@ -1,23 +1,45 @@
 use crate::Error;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub struct RowsOwned {
-    pub(crate) rows: Vec<RowOwned>,
+struct TestEntity {
+    pub id: i64,
+    pub name: String,
 }
 
-impl RowsOwned {
-    pub fn len(&self) -> usize {
-        self.rows.len()
+impl<'r> From<Row<'r>> for TestEntity {
+    fn from(mut row: Row<'r>) -> Self {
+        Self {
+            id: row.get("id"),
+            name: row.get("name"),
+        }
     }
 }
 
-impl IntoIterator for RowsOwned {
-    type Item = RowOwned;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+#[derive(Debug)]
+pub enum Row<'a> {
+    Borrowed(&'a rusqlite::Row<'a>),
+    Owned(RowOwned),
+}
 
-    fn into_iter(self) -> Self::IntoIter {
-        self.rows.into_iter()
+impl Row<'_> {
+    pub fn get<T>(&mut self, idx: &str) -> T
+    where
+        T: TryFrom<ValueOwned, Error = crate::Error> + rusqlite::types::FromSql,
+    {
+        match self {
+            Row::Borrowed(b) => b.get_unwrap(idx),
+            Row::Owned(o) => o.try_get(idx).unwrap(),
+        }
+    }
+
+    pub fn try_get<T>(&mut self, idx: &str) -> Result<T, Error>
+    where
+        T: TryFrom<ValueOwned, Error = crate::Error> + rusqlite::types::FromSql,
+    {
+        match self {
+            Self::Borrowed(r) => r.get(idx).map_err(Error::from),
+            Self::Owned(o) => o.try_get(idx),
+        }
     }
 }
 
@@ -49,26 +71,12 @@ impl RowOwned {
             format!("column '{}' not found", idx).into(),
         ))
     }
-
-    // TODO decide which version to use - this is with cloning -> benchmark them!
-    // pub fn try_get<T: TryFrom<ValueOwned, Error = crate::Error>>(
-    //     &mut self,
-    //     idx: &str,
-    // ) -> Result<T, Error> {
-    //     for col in &self.columns {
-    //         if col.name == idx {
-    //             return T::try_from(col.value.clone());
-    //         }
-    //     }
-    //
-    //     Err(Error::QueryParams(
-    //         format!("column '{}' not found", idx).into(),
-    //     ))
-    // }
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColumnOwned {
+    // TODO find a way to include all the column names only once at the very top level and
+    // somehow get a reference of them into a `From<_>` impl, probably with a new Trait.
     pub(crate) name: String,
     pub(crate) value: ValueOwned,
 }

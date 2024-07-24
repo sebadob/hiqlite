@@ -34,6 +34,16 @@ impl<'r> From<&'r hiqlite::Row<'r>> for TestData {
     }
 }
 
+impl<'r> From<hiqlite::RowTyped<'r>> for TestData {
+    fn from(mut row: hiqlite::RowTyped<'r>) -> Self {
+        Self {
+            id: row.get("id"),
+            ts: row.get("ts"),
+            description: row.get("description"),
+        }
+    }
+}
+
 pub async fn test_execute_query(
     client_1: &DbClient,
     client_2: &DbClient,
@@ -55,7 +65,7 @@ pub async fn test_execute_query(
     assert_eq!(rows_affected, 1);
 
     log("Making sure clients 2 and 3 can read the same data");
-    time::sleep(Duration::from_millis(20)).await;
+    time::sleep(Duration::from_millis(50)).await;
 
     let res: TestData = client_2
         .query_as_one("SELECT * FROM test WHERE id = $1", params!(1))
@@ -159,6 +169,12 @@ pub async fn test_execute_query(
 
     log("Query multiple rows with 'query_map()'");
     let res: Vec<TestData> = client_1.query_map("SELECT * FROM test", params!()).await?;
+    assert_eq!(res.len(), 2);
+
+    log("Query multiple rows with 'query_map_typed()'");
+    let res: Vec<TestData> = client_1
+        .query_map_typed("SELECT * FROM test", params!())
+        .await?;
     assert_eq!(res.len(), 2);
 
     Ok(())
