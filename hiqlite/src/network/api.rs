@@ -181,6 +181,7 @@ pub(crate) struct ApiStreamRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum ApiStreamRequestPayload {
     Execute(Query),
+    ExecuteReturning(Query),
     Transaction(Vec<Query>),
     QueryConsistent(Query),
     Batch(Cow<'static, str>),
@@ -197,6 +198,7 @@ pub(crate) struct ApiStreamResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum ApiStreamResponsePayload {
     Execute(Result<usize, Error>),
+    ExecuteReturning(Result<Vec<RowOwned>, Error>),
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
     QueryConsistent(Result<Vec<RowOwned>, Error>),
     Batch(Vec<Result<usize, Error>>),
@@ -372,6 +374,32 @@ async fn handle_socket_concurrent(
                                 Err(err) => ApiStreamResponse {
                                     request_id: req.request_id,
                                     result: Ok(ApiStreamResponsePayload::Execute(Err(
+                                        Error::from(err),
+                                    ))),
+                                },
+                            }
+                        }
+
+                        ApiStreamRequestPayload::ExecuteReturning(sql) => {
+                            match state
+                                .raft
+                                .client_write(QueryWrite::ExecuteReturning(sql))
+                                .await
+                            {
+                                Ok(resp) => {
+                                    let resp: crate::Response = resp.data;
+                                    let res = match resp {
+                                        crate::Response::ExecuteReturning(res) => res.result,
+                                        _ => unreachable!(),
+                                    };
+                                    ApiStreamResponse {
+                                        request_id: req.request_id,
+                                        result: Ok(ApiStreamResponsePayload::ExecuteReturning(res)),
+                                    }
+                                }
+                                Err(err) => ApiStreamResponse {
+                                    request_id: req.request_id,
+                                    result: Ok(ApiStreamResponsePayload::ExecuteReturning(Err(
                                         Error::from(err),
                                     ))),
                                 },

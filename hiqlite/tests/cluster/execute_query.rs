@@ -172,5 +172,39 @@ pub async fn test_execute_query(
     assert_eq!(res[0].ts, data.ts);
     assert_eq!(res[0].description, data.description);
 
+    log("Test Execute Returning RAW");
+    let data = TestData {
+        id: 7,
+        ts: Utc::now().timestamp(),
+        description: "Execute Returning Data".to_string(),
+    };
+    let mut rows = client_1
+        .execute_returning(
+            "INSERT INTO test VALUES ($1, $2, $3) RETURNING *",
+            params!(data.id, data.ts, data.description.clone()),
+        )
+        .await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get::<i64>("id"), data.id);
+    assert_eq!(rows[0].get::<i64>("ts"), data.ts);
+    assert_eq!(rows[0].get::<String>("description"), data.description);
+
+    log("Test Execute Returning Mapped");
+    let data = TestData {
+        id: 8,
+        ts: Utc::now().timestamp(),
+        description: "Execute Returning Data with mapping".to_string(),
+    };
+    let rows: Vec<TestData> = client_1
+        .execute_returning_map(
+            "INSERT INTO test VALUES ($1, $2, $3) RETURNING *",
+            params!(data.id, data.ts, data.description.clone()),
+        )
+        .await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, data.id);
+    assert_eq!(rows[0].ts, data.ts);
+    assert_eq!(rows[0].description, data.description);
+
     Ok(())
 }

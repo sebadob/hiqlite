@@ -71,6 +71,9 @@ in case of any errors or problems.
     - on a leader node, the client will not even bother with using networking
     - on a non-leader node, it will automatically switch over to a network connection so the request
       is forwarded and initiated on the current Raft leader
+- strongly consistent, replicated `execute` queries with returning statement through the Raft
+    - you can either get a raw handle to the custom `RowOwned` struct
+    - or you can map the `RETURNING` statement to an existing struct
 - consistent read / select queries on leader
 - transaction executes
 - simple `String` batch executes
@@ -91,4 +94,3 @@ This list is by no means exhaustive, these are just the next big things before a
 - a lot of code cleanup
 - K/V store / cache with TTLs
 - easy way to spawn database cron jobs that run on the leader only to avoid duplication
-- investigate possibilities of EXECUTE + RETURNING through the Raft

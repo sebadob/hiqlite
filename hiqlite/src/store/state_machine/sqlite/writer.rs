@@ -1,4 +1,5 @@
 use crate::migration::Migration;
+use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine;
 use crate::store::state_machine::sqlite::state_machine::{
@@ -34,6 +35,7 @@ pub enum WriterRequest {
 #[derive(Debug)]
 pub enum Query {
     Execute(SqlExecute),
+    ExecuteReturning(SqlExecuteReturning),
     Transaction(SqlTransaction),
     Batch(SqlBatch),
 }
@@ -44,6 +46,14 @@ pub struct SqlExecute {
     pub params: Params,
     pub last_applied_log_id: Option<LogId<NodeId>>,
     pub tx: oneshot::Sender<Result<usize, Error>>,
+}
+
+#[derive(Debug)]
+pub struct SqlExecuteReturning {
+    pub sql: Cow<'static, str>,
+    pub params: Params,
+    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub tx: oneshot::Sender<Result<Vec<RowOwned>, Error>>,
 }
 
 #[derive(Debug)]
@@ -128,7 +138,7 @@ pub fn spawn_writer(
         )
         .expect("_metadata table creation to always succeed");
 
-        loop {
+        'main: loop {
             let req = match rx.recv() {
                 Ok(r) => r,
                 Err(err) => {
@@ -183,6 +193,67 @@ pub fn spawn_writer(
                             }
 
                             stmt.raw_execute().map_err(Error::from)
+                        };
+
+                        q.tx.send(res).expect("oneshot tx to never be dropped");
+                    }
+
+                    Query::ExecuteReturning(q) => {
+                        sm_data.last_applied_log_id = q.last_applied_log_id;
+
+                        if log_statements {
+                            info!("Query::ExecuteReturning:\n{}\n{:?}", q.sql, q.params);
+                        }
+
+                        let res = {
+                            let mut stmt = match conn.prepare_cached(q.sql.as_ref()) {
+                                Ok(stmt) => stmt,
+                                Err(err) => {
+                                    error!("Preparing cached query {}: {:?}", q.sql, err);
+                                    q.tx.send(Err(Error::PrepareStatement(err.to_string().into())))
+                                        .expect("oneshot tx to never be dropped");
+                                    continue;
+                                }
+                            };
+
+                            let columns = match ColumnOwned::mapping_cols_from_stmt(stmt.columns())
+                            {
+                                Ok(c) => c,
+                                Err(err) => {
+                                    q.tx.send(Err(Error::PrepareStatement(err.to_string().into())))
+                                        .expect("oneshot tx to never be dropped");
+                                    continue;
+                                }
+                            };
+
+                            // let params_len = q.params.len();
+                            let mut params_err = None;
+                            let mut idx = 1;
+                            for param in q.params {
+                                if let Err(err) = stmt.raw_bind_parameter(idx, param.into_sql()) {
+                                    error!(
+                                        "Error binding param on position {} to query {}: {:?}",
+                                        idx, q.sql, err
+                                    );
+                                    params_err = Some(Error::QueryParams(err.to_string().into()));
+                                    break;
+                                }
+
+                                idx += 1;
+                            }
+
+                            if let Some(err) = params_err {
+                                q.tx.send(Err(err)).expect("oneshot tx to never be dropped");
+                                continue;
+                            }
+
+                            let mut rows = stmt.raw_query();
+                            let mut rows_owned = Vec::new();
+                            while let Ok(Some(row)) = rows.next() {
+                                rows_owned.push(RowOwned::from_row_column(row, &columns));
+                            }
+
+                            Ok(rows_owned)
                         };
 
                         q.tx.send(res).expect("oneshot tx to never be dropped");

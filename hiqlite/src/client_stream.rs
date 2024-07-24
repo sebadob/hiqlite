@@ -30,6 +30,7 @@ use tracing::{debug, error, info, warn};
 pub enum ClientStreamReq {
     // coming from the `DbClient`
     Execute(ClientExecutePayload),
+    ExecuteReturning(ClientExecutePayload),
     Transaction(ClientTransactionPayload),
     QueryConsistent(ClientQueryConsistentPayload),
     Batch(ClientBatchPayload),
@@ -186,6 +187,29 @@ async fn client_stream(
                     let req = ApiStreamRequest {
                         request_id: exec.request_id,
                         payload: ApiStreamRequestPayload::Execute(exec.sql),
+                    };
+
+                    match tx_write
+                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
+                        .await
+                    {
+                        Ok(_) => {
+                            in_flight.insert(exec.request_id, exec.ack);
+                        }
+                        Err(err) => {
+                            error!("Error sending request to writer: {}", err);
+                            let _ = exec
+                                .ack
+                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
+                            break;
+                        }
+                    }
+                }
+
+                ClientStreamReq::ExecuteReturning(exec) => {
+                    let req = ApiStreamRequest {
+                        request_id: exec.request_id,
+                        payload: ApiStreamRequestPayload::ExecuteReturning(exec.sql),
                     };
 
                     match tx_write
@@ -369,6 +393,11 @@ async fn client_stream(
             match req {
                 ClientStreamReq::Execute(_) => {
                     unreachable!("we should never receive ClientStreamReq::Execute from WS reader")
+                }
+                ClientStreamReq::ExecuteReturning(_) => {
+                    unreachable!(
+                        "we should never receive ClientStreamReq::ExecuteReturning from WS reader"
+                    )
                 }
                 ClientStreamReq::Transaction(_) => {
                     unreachable!(

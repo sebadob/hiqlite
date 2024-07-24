@@ -1,4 +1,5 @@
 use crate::Error;
+use rusqlite::Column;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
@@ -35,6 +36,31 @@ pub struct RowOwned {
 }
 
 impl RowOwned {
+    #[inline(always)]
+    pub(crate) fn from_row_column(row: &rusqlite::Row, columns: &[(String, String)]) -> Self {
+        let mut cols = Vec::with_capacity(columns.len());
+
+        for (i, (name, value)) in columns.iter().enumerate() {
+            let value = match value.as_str() {
+                "NULL" => ValueOwned::Null,
+                "INTEGER" => ValueOwned::Integer(row.get(i).unwrap()),
+                "REAL" => ValueOwned::Real(row.get(i).unwrap()),
+                "TEXT" => ValueOwned::Text(row.get(i).unwrap()),
+                "BLOB" => ValueOwned::Blob(row.get(i).unwrap()),
+                _ => unreachable!(),
+            };
+
+            cols.push(ColumnOwned {
+                name: name.clone(),
+                value,
+            })
+        }
+
+        Self { columns: cols }
+    }
+}
+
+impl RowOwned {
     /// # Panics
     /// If the type cannot be converted correctly
     pub fn get<T: TryFrom<ValueOwned, Error = crate::Error>>(&mut self, idx: &str) -> T {
@@ -65,6 +91,24 @@ pub struct ColumnOwned {
     // somehow get a reference of them into a `From<_>` impl, probably with a new Trait.
     pub(crate) name: String,
     pub(crate) value: ValueOwned,
+}
+
+impl ColumnOwned {
+    #[inline(always)]
+    pub(crate) fn mapping_cols_from_stmt(
+        columns: Vec<Column>,
+    ) -> Result<Vec<(String, String)>, Error> {
+        let mut cols = Vec::with_capacity(columns.len());
+        for col in columns {
+            if col.decl_type().is_none() {
+                return Err(Error::Sqlite(
+                    "cannot return expressions als column types".into(),
+                ));
+            }
+            cols.push((col.name().to_string(), col.decl_type().unwrap().to_string()));
+        }
+        Ok(cols)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

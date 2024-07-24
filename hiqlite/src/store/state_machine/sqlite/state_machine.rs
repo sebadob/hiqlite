@@ -1,4 +1,5 @@
 use crate::migration::Migration;
+use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::param::Param;
 use crate::store::state_machine::sqlite::snapshot_builder::SQLiteSnapshotBuilder;
 use crate::store::state_machine::sqlite::writer::{
@@ -38,6 +39,7 @@ pub struct PathLockFile(pub String);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueryWrite {
     Execute(Query),
+    ExecuteReturning(Query),
     Transaction(Vec<Query>),
     Batch(Cow<'static, str>),
     Migration(Vec<Migration>),
@@ -54,6 +56,7 @@ pub struct Query {
 pub enum Response {
     Empty,
     Execute(ResponseExecute),
+    ExecuteReturning(ResponseExecuteReturning),
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
     Batch(ResponseBatch),
     Migrate(Result<(), Error>),
@@ -63,6 +66,11 @@ pub enum Response {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResponseExecute {
     pub result: Result<usize, Error>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResponseExecuteReturning {
+    pub result: Result<Vec<RowOwned>, Error>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -579,6 +587,27 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                         .expect("to always get a response from sql writer")
                         .map_err(Error::from);
                     Response::Execute(ResponseExecute { result })
+                }
+
+                EntryPayload::Normal(QueryWrite::ExecuteReturning(Query { sql, params })) => {
+                    let (tx, rx) = oneshot::channel();
+                    let query = writer::Query::ExecuteReturning(writer::SqlExecuteReturning {
+                        sql,
+                        params,
+                        last_applied_log_id: log_id,
+                        tx,
+                    });
+
+                    self.write_tx
+                        .send_async(WriterRequest::Query(query))
+                        .await
+                        .expect("sql writer to always be listening");
+
+                    let result = rx
+                        .await
+                        .expect("to always get a response from sql writer")
+                        .map_err(Error::from);
+                    Response::ExecuteReturning(ResponseExecuteReturning { result })
                 }
 
                 EntryPayload::Normal(QueryWrite::Transaction(queries)) => {
