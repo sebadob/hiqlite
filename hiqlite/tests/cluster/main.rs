@@ -42,9 +42,6 @@ async fn test_cluster() {
             panic!("\n!!!\n{}\n!!!\n", err);
         }
     }
-
-    // TODO impl + test
-    // - consistent queries on leader
 }
 
 async fn exec_tests() -> Result<(), Error> {
