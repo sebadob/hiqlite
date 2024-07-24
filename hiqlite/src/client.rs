@@ -1,16 +1,17 @@
 use crate::app_state::AppState;
 use crate::client_stream::{
     ClientBackupPayload, ClientBatchPayload, ClientExecutePayload, ClientMigratePayload,
-    ClientStreamReq, ClientTransactionPayload,
+    ClientQueryConsistentPayload, ClientStreamReq, ClientTransactionPayload,
 };
 use crate::migration::{Migration, Migrations};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::network::management::LearnerReq;
 use crate::network::{RaftWriteResponse, HEADER_NAME_SECRET};
+use crate::query::rows::RowOwned;
 use crate::store::logs::rocksdb::ActionWrite;
 use crate::store::state_machine::sqlite::state_machine::{Params, Query, QueryWrite};
 use crate::store::state_machine::sqlite::writer::WriterRequest;
-use crate::{query, NodeId};
+use crate::{query, NodeId, RowTyped};
 use crate::{tls, Error};
 use crate::{Node, Response};
 use openraft::RaftMetrics;
@@ -415,6 +416,82 @@ impl DbClient {
             query::query_map_one(state, stmt, params).await
         } else {
             todo!("query_map_one for remote clients")
+        }
+    }
+
+    pub async fn query_map_consistent<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
+    where
+        T: for<'r> From<crate::RowTyped<'r>> + Send + 'static,
+        S: Into<Cow<'static, str>>,
+    {
+        let rows: Vec<RowTyped> = self.query_consistent::<T, S>(stmt, params).await?;
+        let mut res: Vec<T> = Vec::with_capacity(rows.len());
+        for row in rows {
+            res.push(T::from(row))
+        }
+        Ok(res)
+    }
+
+    pub async fn query_consistent<T, S>(
+        &self,
+        stmt: S,
+        params: Params,
+    ) -> Result<Vec<crate::RowTyped>, Error>
+    where
+        S: Into<Cow<'static, str>>,
+    {
+        let query = Query {
+            sql: stmt.into(),
+            params,
+        };
+
+        let rows = match self.query_consistent_req(query.clone()).await {
+            Ok(res) => res,
+            Err(err) => {
+                if self.was_leader_update_error(&err).await {
+                    self.query_consistent_req(query).await?
+                } else {
+                    return Err(err);
+                }
+            }
+        };
+
+        let mut res: Vec<RowTyped> = Vec::with_capacity(rows.len());
+        for row in rows {
+            res.push(RowTyped::Owned(row))
+        }
+        Ok(res)
+    }
+
+    async fn query_consistent_req(&self, query: Query) -> Result<Vec<RowOwned>, Error> {
+        if let Some(state) = self.is_this_local_leader().await {
+            query::query_consistent_local(
+                &state.raft,
+                state.log_statements,
+                state.read_pool.clone(),
+                query.sql,
+                query.params,
+            )
+            .await
+        } else {
+            let (ack, rx) = oneshot::channel();
+            self.tx_client
+                .send_async(ClientStreamReq::QueryConsistent(
+                    ClientQueryConsistentPayload {
+                        request_id: self.new_request_id(),
+                        ack,
+                        query,
+                    },
+                ))
+                .await
+                .expect("Client Stream Manager to always be running");
+            let res = rx
+                .await
+                .expect("To always receive an answer from Client Stream Manager")?;
+            match res {
+                ApiStreamResponsePayload::QueryConsistent(res) => res,
+                _ => unreachable!(),
+            }
         }
     }
 

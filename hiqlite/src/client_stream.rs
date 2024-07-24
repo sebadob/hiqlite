@@ -31,6 +31,7 @@ pub enum ClientStreamReq {
     // coming from the `DbClient`
     Execute(ClientExecutePayload),
     Transaction(ClientTransactionPayload),
+    QueryConsistent(ClientQueryConsistentPayload),
     Batch(ClientBatchPayload),
     Migrate(ClientMigratePayload),
     Backup(ClientBackupPayload),
@@ -55,6 +56,13 @@ pub struct ClientExecutePayload {
 pub struct ClientTransactionPayload {
     pub request_id: usize,
     pub queries: Vec<Query>,
+    pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
+}
+
+#[derive(Debug)]
+pub struct ClientQueryConsistentPayload {
+    pub request_id: usize,
+    pub query: Query,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
@@ -220,6 +228,29 @@ async fn client_stream(
                     }
                 }
 
+                ClientStreamReq::QueryConsistent(query) => {
+                    let req = ApiStreamRequest {
+                        request_id: query.request_id,
+                        payload: ApiStreamRequestPayload::QueryConsistent(query.query),
+                    };
+
+                    match tx_write
+                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
+                        .await
+                    {
+                        Ok(_) => {
+                            in_flight.insert(query.request_id, query.ack);
+                        }
+                        Err(err) => {
+                            error!("Error sending txn request to writer: {}", err);
+                            let _ = query
+                                .ack
+                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
+                            break;
+                        }
+                    }
+                }
+
                 ClientStreamReq::Batch(batch) => {
                     let req = ApiStreamRequest {
                         request_id: batch.request_id,
@@ -342,6 +373,11 @@ async fn client_stream(
                 ClientStreamReq::Transaction(_) => {
                     unreachable!(
                         "we should never receive ClientStreamReq::Transaction from WS reader"
+                    )
+                }
+                ClientStreamReq::QueryConsistent(_) => {
+                    unreachable!(
+                        "we should never receive ClientStreamReq::QueryConsistent from WS reader"
                     )
                 }
                 ClientStreamReq::Batch(_) => {

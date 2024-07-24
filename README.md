@@ -71,6 +71,7 @@ in case of any errors or problems.
     - on a leader node, the client will not even bother with using networking
     - on a non-leader node, it will automatically switch over to a network connection so the request
       is forwarded and initiated on the current Raft leader
+- consistent read / select queries on leader
 - transaction executes
 - simple `String` batch executes
 - `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
@@ -84,7 +85,6 @@ in case of any errors or problems.
 
 This list is by no means exhaustive, these are just the next big things before a v0.1.0
 
-- consistent queries on leader
 - metrics / health endpoint or maybe even a simple health UI
 - proper documentation
 - more advanced examples

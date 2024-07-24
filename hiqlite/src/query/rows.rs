@@ -1,20 +1,6 @@
 use crate::Error;
 use serde::{Deserialize, Serialize};
 
-struct TestEntity {
-    pub id: i64,
-    pub name: String,
-}
-
-impl<'r> From<Row<'r>> for TestEntity {
-    fn from(mut row: Row<'r>) -> Self {
-        Self {
-            id: row.get("id"),
-            name: row.get("name"),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum Row<'a> {
     Borrowed(&'a rusqlite::Row<'a>),
@@ -107,7 +93,7 @@ impl TryFrom<ValueOwned> for std::option::Option<i64> {
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
-            v => i64::try_from(v).map(|r| Some(r)),
+            v => i64::try_from(v).map(Some),
         }
     }
 }
@@ -129,7 +115,7 @@ impl TryFrom<ValueOwned> for std::option::Option<f64> {
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
-            v => f64::try_from(v).map(|r| Some(r)),
+            v => f64::try_from(v).map(Some),
         }
     }
 }
@@ -151,7 +137,7 @@ impl TryFrom<ValueOwned> for std::option::Option<String> {
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
-            v => String::try_from(v).map(|r| Some(r)),
+            v => String::try_from(v).map(Some),
         }
     }
 }
@@ -173,7 +159,7 @@ impl TryFrom<ValueOwned> for std::option::Option<Vec<u8>> {
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
-            v => Vec::try_from(v).map(|r| Some(r)),
+            v => Vec::try_from(v).map(Some),
         }
     }
 }

@@ -1,6 +1,8 @@
 use crate::migration::Migration;
 use crate::network::handshake::HandshakeSecret;
 use crate::network::{fmt_ok, get_payload, validate_secret, AppStateExt, Error};
+use crate::query::query_consistent;
+use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
 use axum::body;
 use axum::http::HeaderMap;
@@ -180,6 +182,7 @@ pub(crate) struct ApiStreamRequest {
 pub(crate) enum ApiStreamRequestPayload {
     Execute(Query),
     Transaction(Vec<Query>),
+    QueryConsistent(Query),
     Batch(Cow<'static, str>),
     Migrate(Vec<Migration>),
     Backup,
@@ -195,13 +198,14 @@ pub(crate) struct ApiStreamResponse {
 pub(crate) enum ApiStreamResponsePayload {
     Execute(Result<usize, Error>),
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
+    QueryConsistent(Result<Vec<RowOwned>, Error>),
     Batch(Vec<Result<usize, Error>>),
     Migrate(Result<(), Error>),
     Backup(Result<(), Error>),
 }
 
 #[derive(Debug)]
-enum WsWriteMsg {
+pub(crate) enum WsWriteMsg {
     Payload(ApiStreamResponse),
     Break,
 }
@@ -339,121 +343,149 @@ async fn handle_socket_concurrent(
         let state = state.clone();
         let tx_write = tx_write.clone();
         task::spawn(async move {
-            let res = match req.payload {
-                ApiStreamRequestPayload::Execute(sql) => {
-                    match state.raft.client_write(QueryWrite::Execute(sql)).await {
-                        Ok(resp) => {
-                            let resp: crate::Response = resp.data;
-                            let res = match resp {
-                                crate::Response::Execute(res) => res.result,
-                                _ => unreachable!(),
-                            };
-                            ApiStreamResponse {
-                                request_id: req.request_id,
-                                result: Ok(ApiStreamResponsePayload::Execute(res)),
-                            }
-                        }
-                        Err(err) => ApiStreamResponse {
-                            request_id: req.request_id,
-                            result: Ok(ApiStreamResponsePayload::Execute(Err(Error::from(err)))),
-                        },
-                    }
+            match req.payload {
+                ApiStreamRequestPayload::QueryConsistent(Query { sql, params }) => {
+                    task::spawn(query_consistent(
+                        state,
+                        sql,
+                        params,
+                        req.request_id,
+                        tx_write,
+                    ));
                 }
 
-                ApiStreamRequestPayload::Transaction(queries) => {
-                    match state
-                        .raft
-                        .client_write(QueryWrite::Transaction(queries))
-                        .await
-                    {
-                        Ok(resp) => {
-                            let resp: crate::Response = resp.data;
-                            let res = match resp {
-                                crate::Response::Transaction(res) => res,
-                                _ => unreachable!(),
-                            };
-                            ApiStreamResponse {
-                                request_id: req.request_id,
-                                result: Ok(ApiStreamResponsePayload::Transaction(res)),
+                payload => {
+                    let res = match payload {
+                        ApiStreamRequestPayload::Execute(sql) => {
+                            match state.raft.client_write(QueryWrite::Execute(sql)).await {
+                                Ok(resp) => {
+                                    let resp: crate::Response = resp.data;
+                                    let res = match resp {
+                                        crate::Response::Execute(res) => res.result,
+                                        _ => unreachable!(),
+                                    };
+                                    ApiStreamResponse {
+                                        request_id: req.request_id,
+                                        result: Ok(ApiStreamResponsePayload::Execute(res)),
+                                    }
+                                }
+                                Err(err) => ApiStreamResponse {
+                                    request_id: req.request_id,
+                                    result: Ok(ApiStreamResponsePayload::Execute(Err(
+                                        Error::from(err),
+                                    ))),
+                                },
                             }
                         }
-                        Err(err) => ApiStreamResponse {
-                            request_id: req.request_id,
-                            result: Ok(ApiStreamResponsePayload::Execute(Err(Error::from(err)))),
-                        },
-                    }
-                }
 
-                ApiStreamRequestPayload::Batch(sql) => {
-                    match state.raft.client_write(QueryWrite::Batch(sql)).await {
-                        Ok(resp) => {
-                            let resp: crate::Response = resp.data;
-                            let res = match resp {
-                                crate::Response::Batch(res) => res,
-                                _ => unreachable!(),
-                            };
-                            ApiStreamResponse {
-                                request_id: req.request_id,
-                                result: Ok(ApiStreamResponsePayload::Batch(res.result)),
+                        ApiStreamRequestPayload::Transaction(queries) => {
+                            match state
+                                .raft
+                                .client_write(QueryWrite::Transaction(queries))
+                                .await
+                            {
+                                Ok(resp) => {
+                                    let resp: crate::Response = resp.data;
+                                    let res = match resp {
+                                        crate::Response::Transaction(res) => res,
+                                        _ => unreachable!(),
+                                    };
+                                    ApiStreamResponse {
+                                        request_id: req.request_id,
+                                        result: Ok(ApiStreamResponsePayload::Transaction(res)),
+                                    }
+                                }
+                                Err(err) => ApiStreamResponse {
+                                    request_id: req.request_id,
+                                    result: Ok(ApiStreamResponsePayload::Execute(Err(
+                                        Error::from(err),
+                                    ))),
+                                },
                             }
                         }
-                        Err(err) => ApiStreamResponse {
-                            request_id: req.request_id,
-                            result: Ok(ApiStreamResponsePayload::Execute(Err(Error::from(err)))),
-                        },
-                    }
-                }
 
-                ApiStreamRequestPayload::Migrate(migrations) => {
-                    match state
-                        .raft
-                        .client_write(QueryWrite::Migration(migrations))
-                        .await
-                    {
-                        Ok(resp) => {
-                            let resp: crate::Response = resp.data;
-                            let res = match resp {
-                                crate::Response::Migrate(res) => res,
-                                _ => unreachable!(),
-                            };
-                            ApiStreamResponse {
-                                request_id: req.request_id,
-                                result: Ok(ApiStreamResponsePayload::Migrate(res)),
+                        ApiStreamRequestPayload::QueryConsistent(_) => {
+                            unreachable!("has been handled separately")
+                        }
+
+                        ApiStreamRequestPayload::Batch(sql) => {
+                            match state.raft.client_write(QueryWrite::Batch(sql)).await {
+                                Ok(resp) => {
+                                    let resp: crate::Response = resp.data;
+                                    let res = match resp {
+                                        crate::Response::Batch(res) => res,
+                                        _ => unreachable!(),
+                                    };
+                                    ApiStreamResponse {
+                                        request_id: req.request_id,
+                                        result: Ok(ApiStreamResponsePayload::Batch(res.result)),
+                                    }
+                                }
+                                Err(err) => ApiStreamResponse {
+                                    request_id: req.request_id,
+                                    result: Ok(ApiStreamResponsePayload::Execute(Err(
+                                        Error::from(err),
+                                    ))),
+                                },
                             }
                         }
-                        Err(err) => ApiStreamResponse {
-                            request_id: req.request_id,
-                            result: Ok(ApiStreamResponsePayload::Execute(Err(Error::from(err)))),
-                        },
-                    }
-                }
 
-                ApiStreamRequestPayload::Backup => {
-                    match state.raft.client_write(QueryWrite::Backup).await {
-                        Ok(resp) => {
-                            let resp: crate::Response = resp.data;
-                            let res = match resp {
-                                crate::Response::Backup(res) => res,
-                                _ => unreachable!(),
-                            };
-                            ApiStreamResponse {
-                                request_id: req.request_id,
-                                result: Ok(ApiStreamResponsePayload::Backup(res)),
+                        ApiStreamRequestPayload::Migrate(migrations) => {
+                            match state
+                                .raft
+                                .client_write(QueryWrite::Migration(migrations))
+                                .await
+                            {
+                                Ok(resp) => {
+                                    let resp: crate::Response = resp.data;
+                                    let res = match resp {
+                                        crate::Response::Migrate(res) => res,
+                                        _ => unreachable!(),
+                                    };
+                                    ApiStreamResponse {
+                                        request_id: req.request_id,
+                                        result: Ok(ApiStreamResponsePayload::Migrate(res)),
+                                    }
+                                }
+                                Err(err) => ApiStreamResponse {
+                                    request_id: req.request_id,
+                                    result: Ok(ApiStreamResponsePayload::Execute(Err(
+                                        Error::from(err),
+                                    ))),
+                                },
                             }
                         }
-                        Err(err) => ApiStreamResponse {
-                            request_id: req.request_id,
-                            result: Ok(ApiStreamResponsePayload::Backup(Err(Error::from(err)))),
-                        },
+
+                        ApiStreamRequestPayload::Backup => {
+                            match state.raft.client_write(QueryWrite::Backup).await {
+                                Ok(resp) => {
+                                    let resp: crate::Response = resp.data;
+                                    let res = match resp {
+                                        crate::Response::Backup(res) => res,
+                                        _ => unreachable!(),
+                                    };
+                                    ApiStreamResponse {
+                                        request_id: req.request_id,
+                                        result: Ok(ApiStreamResponsePayload::Backup(res)),
+                                    }
+                                }
+                                Err(err) => ApiStreamResponse {
+                                    request_id: req.request_id,
+                                    result: Ok(ApiStreamResponsePayload::Backup(Err(Error::from(
+                                        err,
+                                    )))),
+                                },
+                            }
+                        }
+                    };
+
+                    if let Err(err) = tx_write.send_async(WsWriteMsg::Payload(res)).await {
+                        panic!(
+                            "Error sending payload to tx_write - this should never happen: {}",
+                            err
+                        );
                     }
                 }
-            };
-
-            if let Err(err) = tx_write.send_async(WsWriteMsg::Payload(res)).await {
-                panic!(
-                    "Error sending payload to tx_write - this should never happen: {}",
-                    err
-                );
             }
         });
     }

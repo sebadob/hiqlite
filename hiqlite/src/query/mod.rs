@@ -1,16 +1,120 @@
 use crate::app_state::AppState;
+use crate::network::api::{ApiStreamResponse, ApiStreamResponsePayload, WsWriteMsg};
+use crate::network::AppStateExt;
+use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
+use crate::store::state_machine::sqlite::state_machine::SqlitePool;
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::{Error, Params};
+use openraft::Raft;
 use serde::de::DeserializeOwned;
 use std::borrow::Cow;
 use std::sync::Arc;
 use tokio::task;
-use tracing::info;
+use tracing::{error, info};
 
 pub mod rows;
 
 // TODO
 // - query_optional
 // - query_consistent
+
+pub(crate) async fn query_consistent<S>(
+    state: AppStateExt,
+    stmt: S,
+    params: Params,
+    request_id: usize,
+    tx_ws_writer: flume::Sender<WsWriteMsg>,
+) where
+    S: Into<Cow<'static, str>>,
+{
+    let res = query_consistent_local(
+        &state.raft,
+        state.log_statements,
+        state.read_pool.clone(),
+        stmt,
+        params,
+    )
+    .await;
+
+    if let Err(err) = tx_ws_writer
+        .send_async(WsWriteMsg::Payload(ApiStreamResponse {
+            request_id,
+            result: Ok(ApiStreamResponsePayload::QueryConsistent(res)),
+        }))
+        .await
+    {
+        error!("{}", err);
+    }
+}
+
+pub(crate) async fn query_consistent_local<S>(
+    raft: &Raft<TypeConfigSqlite>,
+    log_statements: bool,
+    read_pool: Arc<SqlitePool>,
+    stmt: S,
+    params: Params,
+) -> Result<Vec<RowOwned>, Error>
+where
+    S: Into<Cow<'static, str>>,
+{
+    let stmt: Cow<'static, str> = stmt.into();
+    if log_statements {
+        info!("query_consistent:\n{}\n{:?}", stmt, params)
+    }
+
+    let conn = read_pool.get().await?;
+    let _ = raft.ensure_linearizable().await?;
+
+    task::spawn_blocking(move || {
+        let mut stmt = conn.prepare_cached(stmt.as_ref())?;
+
+        let cols = stmt.columns();
+        let mut columns = Vec::with_capacity(cols.len());
+        for col in cols {
+            if col.decl_type().is_none() {
+                return Err(Error::Sqlite(
+                    "cannot return expressions als column types".into(),
+                ));
+            }
+            columns.push((col.name().to_string(), col.decl_type().unwrap().to_string()));
+        }
+        let columns_len = columns.len();
+
+        let mut idx = 1;
+        for param in params {
+            stmt.raw_bind_parameter(idx, param.into_sql())?;
+            idx += 1;
+        }
+
+        let mut rows = stmt.raw_query();
+        let mut rows_owned = Vec::new();
+
+        while let Ok(Some(row)) = rows.next() {
+            let mut cols = Vec::with_capacity(columns_len);
+
+            for (i, (name, value)) in columns.iter().enumerate() {
+                let value = match value.as_str() {
+                    "NULL" => ValueOwned::Null,
+                    "INTEGER" => ValueOwned::Integer(row.get(i).unwrap()),
+                    "REAL" => ValueOwned::Real(row.get(i).unwrap()),
+                    "TEXT" => ValueOwned::Text(row.get(i).unwrap()),
+                    "BLOB" => ValueOwned::Blob(row.get(i).unwrap()),
+                    _ => unreachable!(),
+                };
+
+                cols.push(ColumnOwned {
+                    name: name.clone(),
+                    value,
+                })
+            }
+
+            rows_owned.push(RowOwned { columns: cols });
+        }
+
+        Ok::<Vec<RowOwned>, Error>(rows_owned)
+    })
+    .await?
+}
 
 pub(crate) async fn query_map<T, S>(
     state: &Arc<AppState>,
