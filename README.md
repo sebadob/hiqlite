@@ -93,5 +93,6 @@ This list is by no means exhaustive, these are just the next big things before a
 - easy way to spawn database cron jobs that run on the leader only to avoid duplication
 - impl parsers for the `NodeConfig` to read from env or toml file
 - K/V store / cache with TTLs
+- possibility to register an automatic shutdown handle with the `DbClient`
 - proper documentation
 - more advanced examples

@@ -21,7 +21,7 @@ use tokio::sync::watch;
 use tokio::task;
 use tracing::info;
 
-pub use crate::client::DbClient;
+pub use crate::db_client::DbClient;
 pub use crate::error::Error;
 pub use crate::query::rows::Row;
 pub use crate::store::state_machine::sqlite::state_machine::{Params, Response};
@@ -37,10 +37,11 @@ pub use config::EncKeysFrom;
 pub use s3::S3Config;
 
 mod app_state;
-mod client;
 mod client_stream;
 mod config;
+mod db_client;
 mod error;
+mod init;
 mod migration;
 mod network;
 mod query;
@@ -49,7 +50,6 @@ mod tls;
 
 #[cfg(feature = "backup")]
 mod backup;
-mod init;
 #[cfg(feature = "s3")]
 mod s3;
 
