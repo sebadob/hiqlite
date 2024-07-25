@@ -53,13 +53,13 @@ create-end-entity-tls:
 
 # prints out the currently set version
 version:
-    #!/usr/hiqlite_server/env bash
+    #!/usr/bin/env bash
     echo "v$TAG"
 
 
 # clippy lint + check with minimal versions from nightly
 check:
-    #!/usr/hiqlite_server/env bash
+    #!/usr/bin/env bash
     set -euxo pipefail
     clear
     cargo update
@@ -67,9 +67,37 @@ check:
     cargo minimal-versions check
 
 
+# checks all combinations of features
+check-features:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    clear
+
+    cargo check --no-default-features
+
+    #sqlite = []
+    #cache = []
+    #auto-heal = []
+    #auto-heal-logs = ["openraft/loosen-follower-log-revert"]
+    #backup = ["s3"]
+    #s3 = ["backup", "dep:cryptr"]
+
+    cargo check --no-default-features --features sqlite
+    # auto-heal should only apply to sqlite
+    cargo check --no-default-features --features auto-heal
+    cargo check --no-default-features --features sqlite,auto-heal
+    # backup / s3 should only apply to sqlite
+    cargo check --no-default-features --features backup
+    cargo check --no-default-features --features sqlite,backup
+    cargo check --no-default-features --features sqlite,auto-heal,backup
+
+    cargo check --no-default-features --features cache
+    cargo check --no-default-features --features sqlite,cache
+
+
 # runs the full set of tests
 test:
-    #!/usr/hiqlite_server/env bash
+    #!/usr/bin/env bash
     set -euxo pipefail
     clear
     cargo test
@@ -77,14 +105,14 @@ test:
 
 # builds the code
 build:
-    #!/usr/hiqlite_server/env bash
+    #!/usr/bin/env bash
     set -euxo pipefail
     cargo build
 
 
 # builds the code in --release mode
 build-release:
-    #!/usr/hiqlite_server/env bash
+    #!/usr/bin/env bash
     set -euxo pipefail
     cargo build --release
 
@@ -105,7 +133,7 @@ verify: check test build msrv-verify
 
 # makes sure everything is fine
 verfiy-is-clean: verify
-    #!/usr/hiqlite_server/env bash
+    #!/usr/bin/env bash
     set -euxo pipefail
 
     # make sure everything has been committed
@@ -116,7 +144,7 @@ verfiy-is-clean: verify
 
 # sets a new git tag and pushes it
 release: verfiy-is-clean
-    #!/usr/hiqlite_server/env bash
+    #!/usr/bin/env bash
     set -euxo pipefail
 
     # make sure git is clean
@@ -128,13 +156,13 @@ release: verfiy-is-clean
 
 # dry-run publishing the latest version
 publish-dry: verfiy-is-clean
-    #!/usr/hiqlite_server/env bash
+    #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish --dry-run
 
 
 # publishes the current version to cargo.io
 publish: verfiy-is-clean
-    #!/usr/hiqlite_server/env bash
+    #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish
