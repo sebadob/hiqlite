@@ -72,8 +72,17 @@ pub(crate) async fn add_learner(
         let _lock = helpers::lock_raft(&state, &raft_type).await;
 
         let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+        //
+        // if raft_type == RaftType::Cache {
+        //     info!("\n\n\nMetrics before member check:\n{:?}\n\n");
+        // }
+
         let members = metrics.membership_config;
         let is_member_already = members.nodes().any(|(id, _)| *id == node.id);
+        //
+        // if raft_type == RaftType::Cache {
+        //     info!("\n\n\nmembers {}:\n{:?}\n\n", is_member_already, members);
+        // }
 
         if is_member_already {
             let new_voters = members

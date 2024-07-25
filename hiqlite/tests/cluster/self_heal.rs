@@ -56,8 +56,8 @@ pub async fn test_self_healing(
         client_2 = shutdown_remove_all_restart(client_2, 2).await?;
         &client_2
     };
-    // replication will take a few moments
-    time::sleep(Duration::from_millis(100)).await;
+    // full replication will take a few moments
+    time::sleep(Duration::from_millis(250)).await;
     check::is_client_db_healthy(client_healed).await?;
     log("Client has self-healed successfully");
 
@@ -89,7 +89,7 @@ pub async fn test_self_healing(
 async fn shutdown_lock_sm_db_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
-    time::sleep(Duration::from_millis(2000)).await;
+    time::sleep(Duration::from_millis(150)).await;
 
     let path_lock_file = format!("{}/lock", folder_state_machine(node_id));
     log(format!(
@@ -108,7 +108,7 @@ async fn shutdown_lock_sm_db_restart(client: DbClient, node_id: u64) -> Result<D
 async fn shutdown_remove_all_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
-    time::sleep(Duration::from_millis(2000)).await;
+    time::sleep(Duration::from_millis(1500)).await;
 
     let folder = folder_base(node_id);
     log(format!("Deleting {}", folder));
@@ -124,7 +124,7 @@ async fn shutdown_remove_all_restart(client: DbClient, node_id: u64) -> Result<D
 async fn shutdown_remove_sm_db_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
-    time::sleep(Duration::from_millis(2000)).await;
+    time::sleep(Duration::from_millis(200)).await;
 
     let folder_sm_db = format!("{}/db", folder_state_machine(node_id));
     log(format!("Deleting {}", folder_sm_db));
@@ -140,7 +140,7 @@ async fn shutdown_remove_sm_db_restart(client: DbClient, node_id: u64) -> Result
 async fn shutdown_remove_logs_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
-    time::sleep(Duration::from_millis(2000)).await;
+    time::sleep(Duration::from_millis(250)).await;
 
     let folder_logs = folder_logs(node_id);
     log(format!("Deleting {}", folder_logs));

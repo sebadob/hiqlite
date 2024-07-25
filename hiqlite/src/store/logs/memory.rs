@@ -75,8 +75,8 @@ impl RaftLogReader<TypeConfigKV> for LogStoreMemory {
             return Ok(Vec::default());
         }
 
-        let mut res = Vec::with_capacity((end + 1 - start) as usize);
-        let lock = self.logs.write().await;
+        let mut res = Vec::with_capacity((end - start) as usize);
+        let lock = self.logs.read().await;
 
         for (_, entry) in lock.range(start..=end) {
             res.push((*entry).clone());
@@ -103,24 +103,26 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
             None
         };
 
+        // tracing::info!("\n\n\nget_log_state: {:?}\n\n", last_log_id);
+
         Ok(LogState {
             last_purged_log_id,
             last_log_id,
         })
     }
 
-    async fn save_committed(
-        &mut self,
-        committed: Option<LogId<NodeId>>,
-    ) -> Result<(), StorageError<NodeId>> {
-        let mut lock = self.data.lock().await;
-        lock.commited = committed;
-        Ok(())
-    }
+    // async fn save_committed(
+    //     &mut self,
+    //     committed: Option<LogId<NodeId>>,
+    // ) -> Result<(), StorageError<NodeId>> {
+    //     let mut lock = self.data.lock().await;
+    //     lock.commited = committed;
+    //     Ok(())
+    // }
 
-    async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
-        Ok(self.data.lock().await.commited)
-    }
+    // async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
+    //     Ok(self.data.lock().await.commited)
+    // }
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn save_vote(&mut self, vote: &Vote<NodeId>) -> Result<(), StorageError<NodeId>> {
@@ -143,18 +145,19 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
         I: IntoIterator<Item = Entry<TypeConfigKV>> + Send,
         I::IntoIter: Send,
     {
-        let mut lock = self.logs.write().await;
+        let mut logs = self.logs.write().await;
+        let mut data = self.data.lock().await;
+
         let mut last_log_id = None;
         for entry in entries {
             last_log_id = Some(entry.log_id);
-            lock.insert(entry.log_id.index, entry);
+            logs.insert(entry.log_id.index, entry);
         }
 
         if let Some(id) = last_log_id {
-            let mut lock = self.data.lock().await;
-            lock.last_log_id = Some(id.index);
-            lock.last_leader_id = Some(id.leader_id.node_id);
-            lock.last_term = Some(id.leader_id.term);
+            data.last_log_id = Some(id.index);
+            data.last_leader_id = Some(id.leader_id.node_id);
+            data.last_term = Some(id.leader_id.term);
         }
 
         callback.log_io_completed(Ok(()));

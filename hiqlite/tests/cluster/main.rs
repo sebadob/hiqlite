@@ -76,9 +76,12 @@ async fn exec_tests() -> Result<(), Error> {
     batch::test_batch(&client_1, &client_2, &client_3).await?;
     log("Batch tests finished");
 
-    log("Test cache operations");
-    cache::test_cache(&client_1, &client_2, &client_3).await?;
-    log("Cache operations finished");
+    #[cfg(feature = "cache")]
+    {
+        log("Test cache operations");
+        cache::test_cache(&client_1, &client_2, &client_3).await?;
+        log("Cache operations finished");
+    }
 
     log("Test shutdown and restart");
     client_1.shutdown().await?;

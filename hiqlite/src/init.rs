@@ -157,11 +157,12 @@ async fn should_node_1_skip_init(
                         }
                     } else {
                         let body = resp.bytes().await?;
-                        if let Ok(Error::Config(err)) = bincode::deserialize::<Error>(body.as_ref())
-                        {
-                            error!("{}", err);
-                            skip_nodes.push(node.id);
-                        }
+                        let err: Error = serde_json::from_slice(&body).unwrap();
+                        // if let Ok(Error::Config(err)) = bincode::deserialize::<Error>(body.as_ref())
+                        // {
+                        error!("{}", err);
+                        skip_nodes.push(node.id);
+                        // }
                     }
                 }
                 Err(err) => {
