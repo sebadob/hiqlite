@@ -17,6 +17,9 @@ mod self_heal;
 mod start;
 mod transaction;
 
+#[cfg(feature = "cache")]
+mod cache;
+
 pub const TEST_DATA_DIR: &str = "tests/data_test";
 
 #[tokio::test(flavor = "multi_thread")]
@@ -72,6 +75,13 @@ async fn exec_tests() -> Result<(), Error> {
     log("Starting batch tests");
     batch::test_batch(&client_1, &client_2, &client_3).await?;
     log("Batch tests finished");
+
+    #[cfg(feature = "cache")]
+    {
+        log("Test cache operations");
+        cache::test_cache(&client_1, &client_2, &client_3).await?;
+        log("Cache operations finished");
+    }
 
     log("Test shutdown and restart");
     client_1.shutdown().await?;
