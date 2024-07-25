@@ -13,12 +13,6 @@ pub async fn test_self_healing(
     check::is_client_db_healthy(&client_2).await?;
     check::is_client_db_healthy(&client_3).await?;
 
-    // NOTE: When we do these restarts too fast during testing while the `cache` feature
-    // is enabled, we can produce an error where a cache instance that has been a leader
-    // before is up so fast again, that the others still consider it the leader, because
-    // no heartbeat was missed. This can only happen inside these tests though and not
-    // in real life.
-
     log("Test recovery in case of state machine crash on non-leader");
     let client_healed = if !is_leader(&client_1, 1).await? {
         client_1 = shutdown_lock_sm_db_restart(client_1, 1).await?;

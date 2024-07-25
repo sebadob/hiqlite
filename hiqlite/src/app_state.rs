@@ -40,7 +40,7 @@ impl RaftType {
 pub struct AppState {
     pub id: NodeId,
     pub addr_api: String,
-    pub addr_raft: String,
+    // pub addr_raft: String,
     pub raft_db: StateRaftDB,
     #[cfg(feature = "cache")]
     pub raft_cache: StateRaftCache,

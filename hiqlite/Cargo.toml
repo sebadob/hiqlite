@@ -17,14 +17,13 @@ all-features = true
 
 [features]
 #default = []
-default = ["auto-heal", "auto-heal-logs", "backup", "sqlite"]
+default = ["auto-heal", "backup", "sqlite"]
 #default = ["auto-heal", "backup", "cache", "sqlite"]
 
 auto-heal = []
-# this is usually only needed for cache instances, when they restart and sync from the others
 auto-heal-logs = ["openraft/loosen-follower-log-revert"]
 backup = ["s3"]
-cache = []
+cache = ["auto-heal-logs"]
 io-uring = ["rocksdb/io-uring"]
 jemalloc = ["rocksdb/jemalloc"]
 s3 = ["backup", "dep:cryptr"]

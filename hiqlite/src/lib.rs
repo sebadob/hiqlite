@@ -195,7 +195,8 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     let state = Arc::new(AppState {
         id: node_config.node_id,
         addr_api: api_addr.clone(),
-        addr_raft: rpc_addr.clone(),
+        // addr_raft: rpc_addr.clone(),
+        #[cfg(feature = "sqlite")]
         raft_db,
         #[cfg(feature = "cache")]
         raft_cache,
@@ -259,7 +260,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
                     "/membership/:raft_type",
                     get(management::get_membership).post(management::post_membership),
                 )
-                .route("/init", post(management::init))
+                // .route("/init", post(management::init))
                 .route("/metrics", get(management::metrics)),
         )
         // TODO

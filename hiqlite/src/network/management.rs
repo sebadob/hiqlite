@@ -8,7 +8,6 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use openraft::error::{CheckIsLeaderError, ForwardToLeader, RaftError};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio::time;
@@ -33,7 +32,7 @@ pub(crate) async fn add_learner(
         return Err(Error::Error("Raft is not initialized".into()));
     }
 
-    if let Some(leader_id) = state.raft_db.raft.current_leader().await {
+    if let Some(leader_id) = helpers::get_raft_leader(&state, &raft_type).await {
         if leader_id != state.id {
             let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
             let members = metrics.membership_config;
@@ -70,12 +69,7 @@ pub(crate) async fn add_learner(
     // -> remove the membership and re-add it as a new learner, so it can catch up again.
     {
         // hold this lock the whole time, even over await points, to never have race conditions here ...
-        let _lock = match raft_type {
-            #[cfg(feature = "sqlite")]
-            RaftType::Sqlite => state.raft_db.lock.lock().await,
-            #[cfg(feature = "cache")]
-            RaftType::Cache => state.raft_cache.lock.lock().await,
-        };
+        let _lock = helpers::lock_raft(&state, &raft_type).await;
 
         let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
         let members = metrics.membership_config;
@@ -165,12 +159,7 @@ pub(crate) async fn become_member(
     info!("Node membership request: {:?}\n", payload);
 
     // we want to hold the lock until we finished to not end up with race conditions
-    let _lock = match raft_type {
-        #[cfg(feature = "sqlite")]
-        RaftType::Sqlite => state.raft_db.lock.lock().await,
-        #[cfg(feature = "cache")]
-        RaftType::Cache => state.raft_cache.lock.lock().await,
-    };
+    let _lock = helpers::lock_raft(&state, &raft_type).await;
 
     let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
     let members = metrics.membership_config;
@@ -205,7 +194,7 @@ pub(crate) async fn get_membership(
         return Err(Error::Config("Raft node has not been initialized".into()));
     }
 
-    let metrics = state.raft_db.raft.metrics().borrow().clone();
+    let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
     let members = metrics.membership_config;
     fmt_ok(headers, members.membership())
 }
@@ -226,23 +215,23 @@ pub(crate) async fn post_membership(
     fmt_ok(headers, ())
 }
 
-/// Initialize a single-node cluster.
-pub(crate) async fn init(state: AppStateExt, headers: HeaderMap) -> Result<(), Error> {
-    validate_secret(&state, &headers)?;
-
-    let mut nodes = BTreeMap::new();
-    let node = Node {
-        id: state.id,
-        addr_api: state.addr_api.clone(),
-        addr_raft: state.addr_raft.clone(),
-    };
-
-    nodes.insert(state.id, node);
-    match state.raft_db.raft.initialize(nodes).await {
-        Ok(_) => Ok(()),
-        Err(err) => Err(Error::from(err)),
-    }
-}
+// /// Initialize a single-node cluster.
+// pub(crate) async fn init(state: AppStateExt, headers: HeaderMap) -> Result<(), Error> {
+//     validate_secret(&state, &headers)?;
+//
+//     let mut nodes = BTreeMap::new();
+//     let node = Node {
+//         id: state.id,
+//         addr_api: state.addr_api.clone(),
+//         addr_raft: state.addr_raft.clone(),
+//     };
+//
+//     nodes.insert(state.id, node);
+//     match state.raft_db.raft.initialize(nodes).await {
+//         Ok(_) => Ok(()),
+//         Err(err) => Err(Error::from(err)),
+//     }
+// }
 
 /// Get the latest metrics of the cluster
 pub(crate) async fn metrics(state: AppStateExt, headers: HeaderMap) -> Result<Response, Error> {
