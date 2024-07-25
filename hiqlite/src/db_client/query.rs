@@ -8,6 +8,16 @@ use std::borrow::Cow;
 use tokio::sync::oneshot;
 
 impl DbClient {
+    /// Execute a consistent query. This query will run on the leader node only and pause Raft
+    /// replication at a point, where all "current" logs have been applied to at least a quorum
+    /// of all nodes. This means whatever result this query returns, at least hals of the nodes + 1
+    /// will have the exact same result and it will be the same even if you would end up in a
+    /// network segmentation and loose half of your data directly afterward.
+    ///
+    /// This query is very expensive compared to the other ones. It needs network roud-trips, pauses
+    /// the raft and allocates a lot more memory, because it is working with owned data rather than
+    /// with borrowed local one for quick mapping.
+    /// You should only use it, if you really need to.
     pub async fn query_map_consistent<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
     where
         T: for<'r> From<crate::Row<'r>> + Send + 'static,
@@ -21,6 +31,16 @@ impl DbClient {
         Ok(res)
     }
 
+    /// Execute a consistent query. This query will run on the leader node only and pause Raft
+    /// replication at a point, where all "current" logs have been applied to at least a quorum
+    /// of all nodes. This means whatever result this query returns, at least hals of the nodes + 1
+    /// will have the exact same result and it will be the same even if you would end up in a
+    /// network segmentation and loose half of your data directly afterward.
+    ///
+    /// This query is very expensive compared to the other ones. It needs network roud-trips, pauses
+    /// the raft and allocates a lot more memory, because it is working with owned data rather than
+    /// with borrowed local one for quick mapping.
+    /// You should only use it, if you really need to.
     pub async fn query_consistent<S>(
         &self,
         stmt: S,

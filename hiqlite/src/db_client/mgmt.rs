@@ -66,9 +66,7 @@ impl DbClient {
 
     pub async fn wait_until_healthy(&self) {
         while let Err(err) = self.is_healthy().await {
-            let metrics = self.metrics().await.unwrap();
-            error!("\nWaiting for cluster to become healthy: {}", err);
-            error!("{:?}\n", metrics);
+            error!("Waiting for cluster to become healthy: {}", err);
             time::sleep(Duration::from_millis(1000)).await;
         }
     }

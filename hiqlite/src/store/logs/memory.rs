@@ -1,3 +1,4 @@
+use crate::store::state_machine::memory::TypeConfigKV;
 use crate::store::StorageResult;
 use crate::NodeId;
 use openraft::storage::LogFlushed;
@@ -19,14 +20,6 @@ use tokio::sync::{oneshot, Mutex};
 use tokio::time::Instant;
 use tokio::{fs, task};
 
-// TODO This module has not been optimized at all so far
-// it would only make sense to keep it if we add an in-memory KV store or cache, otherwise
-// probably get rid of it -> in-memory sqlite is always a worse option than on-disk with WAL
-// because of blocking and busy errors
-
-// TODO can we define the config at runtime for more diversity?
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
-
 #[derive(Debug, Clone)]
 struct LogData {
     last_term: Option<u64>,
@@ -40,7 +33,7 @@ struct LogData {
 
 #[derive(Debug, Clone)]
 pub struct LogStore {
-    logs: Arc<Mutex<BTreeMap<u64, Entry<TypeConfigSqlite>>>>,
+    logs: Arc<Mutex<BTreeMap<u64, Entry<TypeConfigKV>>>>,
     data: Arc<Mutex<LogData>>,
 }
 
@@ -63,11 +56,11 @@ impl LogStore {
     }
 }
 
-impl RaftLogReader<TypeConfigSqlite> for LogStore {
+impl RaftLogReader<TypeConfigKV> for LogStore {
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
         range: RB,
-    ) -> StorageResult<Vec<Entry<TypeConfigSqlite>>> {
+    ) -> StorageResult<Vec<Entry<TypeConfigKV>>> {
         let start = match range.start_bound() {
             Bound::Included(i) => *i,
             Bound::Excluded(i) => *i + 1,
@@ -93,10 +86,10 @@ impl RaftLogReader<TypeConfigSqlite> for LogStore {
     }
 }
 
-impl RaftLogStorage<TypeConfigSqlite> for LogStore {
+impl RaftLogStorage<TypeConfigKV> for LogStore {
     type LogReader = Self;
 
-    async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfigSqlite>> {
+    async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfigKV>> {
         let lock = self.data.lock().await;
 
         let last_purged_log_id = lock.last_purged;
@@ -144,10 +137,10 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStore {
     async fn append<I>(
         &mut self,
         entries: I,
-        callback: LogFlushed<TypeConfigSqlite>,
+        callback: LogFlushed<TypeConfigKV>,
     ) -> StorageResult<()>
     where
-        I: IntoIterator<Item = Entry<TypeConfigSqlite>> + Send,
+        I: IntoIterator<Item = Entry<TypeConfigKV>> + Send,
         I::IntoIter: Send,
     {
         let mut lock = self.logs.lock().await;
