@@ -32,12 +32,12 @@ struct LogData {
 }
 
 #[derive(Debug, Clone)]
-pub struct LogStore {
+pub struct LogStoreMemory {
     logs: Arc<RwLock<BTreeMap<u64, Entry<TypeConfigKV>>>>,
     data: Arc<Mutex<LogData>>,
 }
 
-impl LogStore {
+impl LogStoreMemory {
     pub fn new() -> Self {
         let logs = Arc::new(RwLock::new(BTreeMap::new()));
         let data = LogData {
@@ -56,7 +56,7 @@ impl LogStore {
     }
 }
 
-impl RaftLogReader<TypeConfigKV> for LogStore {
+impl RaftLogReader<TypeConfigKV> for LogStoreMemory {
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
         range: RB,
@@ -86,7 +86,7 @@ impl RaftLogReader<TypeConfigKV> for LogStore {
     }
 }
 
-impl RaftLogStorage<TypeConfigKV> for LogStore {
+impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
     type LogReader = Self;
 
     async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfigKV>> {

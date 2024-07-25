@@ -41,6 +41,7 @@ impl DbClient {
         self.send_with_retry("/cluster/membership", Some(req)).await
     }
 
+    // TODO different fn's for db / cache ?
     pub async fn metrics(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
         if let Some(state) = &self.state {
             let metrics = state.raft_db.raft.metrics().borrow().clone();
@@ -52,6 +53,7 @@ impl DbClient {
     }
 
     /// Check the Raft health state
+    /// TODO different fn's for db / cache ?
     pub async fn is_healthy(&self) -> Result<(), Error> {
         let metrics = self.metrics().await?;
         metrics.running_state?;
@@ -64,6 +66,7 @@ impl DbClient {
         }
     }
 
+    /// TODO different fn's for db / cache ?
     pub async fn wait_until_healthy(&self) {
         while let Err(err) = self.is_healthy().await {
             error!("Waiting for cluster to become healthy: {}", err);
@@ -81,11 +84,6 @@ impl DbClient {
                 Ok(_) => {
                     let _ = state
                         .raft_db
-                        .logs_writer
-                        .send_async(ActionWrite::Shutdown)
-                        .await;
-                    let _ = state
-                        .raft_cache
                         .logs_writer
                         .send_async(ActionWrite::Shutdown)
                         .await;

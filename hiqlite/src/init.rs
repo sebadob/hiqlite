@@ -1,6 +1,5 @@
 use crate::network::management::LearnerReq;
 use crate::network::HEADER_NAME_SECRET;
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::{Error, Node, NodeId};
 use openraft::{Membership, Raft};
 use std::collections::BTreeMap;
@@ -8,8 +7,15 @@ use std::time::Duration;
 use tokio::time;
 use tracing::{debug, error, info, warn};
 
+#[cfg(feature = "sqlite")]
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
+
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::TypeConfigKV;
+
 /// Initializes a fresh node 1, if it has not been set up yet.
-pub async fn init_pristine_node_1(
+#[cfg(feature = "sqlite")]
+pub async fn init_pristine_node_1_db(
     raft: &Raft<TypeConfigSqlite>,
     this_node: u64,
     nodes: &[Node],
@@ -22,7 +28,40 @@ pub async fn init_pristine_node_1(
     if this_node == 1 {
         let this_node = get_this_node(this_node, nodes);
 
-        if is_initialized_timeout(raft).await? {
+        if is_initialized_timeout_sqlite(raft).await? {
+            return Ok(());
+        }
+
+        if should_node_1_skip_init(nodes, secret_api, tls, tls_no_verify).await? {
+            warn!("node 1 should skip its own init - found existing cluster on remotes");
+            return Ok(());
+        }
+
+        let mut nodes_set = BTreeMap::new();
+        nodes_set.insert(this_node.id, this_node);
+        raft.initialize(nodes_set).await?;
+    }
+
+    Ok(())
+}
+
+// TODO this duplication is not pretty but getting the types correct is pretty hard
+/// Initializes a fresh node 1, if it has not been set up yet.
+#[cfg(feature = "cache")]
+pub async fn init_pristine_node_1_cache(
+    raft: &Raft<TypeConfigKV>,
+    this_node: u64,
+    nodes: &[Node],
+    secret_api: &str,
+    tls: bool,
+    tls_no_verify: bool,
+) -> Result<(), Error> {
+    // TODO will probably be an issue if node 1 died and needs to join an existing cluster
+    // TODO -> add remote lookup when the metrics endpoint is implemented
+    if this_node == 1 {
+        let this_node = get_this_node(this_node, nodes);
+
+        if is_initialized_timeout_kv(raft).await? {
             return Ok(());
         }
 
@@ -147,7 +186,7 @@ pub async fn become_cluster_member(
     tls_no_verify: bool,
     secret_api: &str,
 ) -> Result<(), Error> {
-    if is_initialized_timeout(raft).await? {
+    if is_initialized_timeout_sqlite(raft).await? {
         return Ok(());
     }
 
@@ -261,27 +300,29 @@ async fn try_become(
     }
 }
 
-// async fn is_initialized_timeout(state: &AppState) -> Result<bool, Error> {
-//     // Do not try to initialize already initialized nodes
-//     if state.raft_db.raft_db.raft.is_initialized().await? {
-//         return Ok(true);
-//     }
-//
-//     // If it is not initialized, wait long enough to make sure this
-//     // node is not joined again to an already existing cluster after data loss.
-//     let heartbeat = state.raft_db.raft_db.raft.config().heartbeat_interval;
-//     // We will wait for 5 heartbeats to make sure no other cluster is running
-//     time::sleep(Duration::from_millis(heartbeat * 5)).await;
-//
-//     // Make sure we are not initialized by now, otherwise go on
-//     if state.raft_db.raft_db.raft.is_initialized().await? {
-//         Ok(true)
-//     } else {
-//         Ok(false)
-//     }
-// }
+#[cfg(feature = "sqlite")]
+async fn is_initialized_timeout_sqlite(raft: &Raft<TypeConfigSqlite>) -> Result<bool, Error> {
+    // Do not try to initialize already initialized nodes
+    if raft.is_initialized().await? {
+        return Ok(true);
+    }
 
-async fn is_initialized_timeout(raft: &Raft<TypeConfigSqlite>) -> Result<bool, Error> {
+    // If it is not initialized, wait long enough to make sure this
+    // node is not joined again to an already existing cluster after data loss.
+    let heartbeat = raft.config().heartbeat_interval;
+    // We will wait for 5 heartbeats to make sure no other cluster is running
+    time::sleep(Duration::from_millis(heartbeat * 5)).await;
+
+    // Make sure we are not initialized by now, otherwise go on
+    if raft.is_initialized().await? {
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[cfg(feature = "cache")]
+async fn is_initialized_timeout_kv(raft: &Raft<TypeConfigKV>) -> Result<bool, Error> {
     // Do not try to initialize already initialized nodes
     if raft.is_initialized().await? {
         return Ok(true);

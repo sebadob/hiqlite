@@ -173,7 +173,8 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
 
     #[cfg(feature = "sqlite")]
     let raft_db = store::start_raft_db(node_config.clone(), raft_config.clone()).await?;
-    let raft_cache = store::start_raft_cache(node_config.clone(), raft_config.clone()).await?;
+    #[cfg(feature = "cache")]
+    let raft_cache = store::start_raft_cache(node_config.clone(), raft_config).await?;
 
     let (api_addr, rpc_addr) = {
         let node = node_config
@@ -195,9 +196,10 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
         addr_api: api_addr.clone(),
         addr_raft: rpc_addr.clone(),
         raft_db,
+        #[cfg(feature = "cache")]
         raft_cache,
-        raft_lock: Arc::new(Default::default()),
-        config: raft_config,
+        raft_lock: Default::default(),
+        // config: raft_config,
         secret_api: node_config.secret_api,
         secret_raft: node_config.secret_raft,
         client_buffers,
@@ -213,7 +215,8 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     let (tx_shutdown, rx_shutdown) = watch::channel(false);
 
     let router_internal = Router::new()
-        .route("/stream", get(raft_server::stream))
+        .route("/stream/db", get(raft_server::stream))
+        .route("/stream/cache", get(raft_server::stream))
         .route("/ping", get(api::ping))
         // .layer(compression_middleware.clone().into_inner())
         .with_state(state.clone());

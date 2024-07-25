@@ -1,5 +1,9 @@
 #![allow(unused)]
 
+use crate::network::NetworkStreaming;
+use crate::store::state_machine::sqlite::state_machine::SqlitePool;
+use crate::store::state_machine::sqlite::writer::WriterRequest;
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::{init, Error, NodeConfig, NodeId, RaftConfig};
 use openraft::storage::RaftLogStorage;
 use openraft::{Raft, StorageError};
@@ -8,11 +12,16 @@ use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::sync::Arc;
 
-use crate::app_state::{StateRaftCache, StateRaftDB};
-use crate::network::NetworkStreaming;
-use crate::store::state_machine::sqlite::state_machine::SqlitePool;
-use crate::store::state_machine::sqlite::writer::WriterRequest;
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
+#[cfg(feature = "cache")]
+use crate::app_state::StateRaftCache;
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::state_machine::StateMachineMemory;
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::TypeConfigKV;
+
+#[cfg(feature = "sqlite")]
+use crate::app_state::StateRaftDB;
+#[cfg(feature = "sqlite")]
 use state_machine::sqlite::state_machine::StateMachineSqlite;
 
 // pub mod state_machine_memory;
@@ -21,12 +30,12 @@ pub mod state_machine;
 
 pub type StorageResult<T> = Result<T, StorageError<NodeId>>;
 
+#[cfg(feature = "sqlite")]
 pub(crate) async fn start_raft_db(
     node_config: NodeConfig,
     raft_config: Arc<RaftConfig>,
 ) -> Result<StateRaftDB, Error> {
     let log_store = logs::rocksdb::LogStoreRocksdb::new(&node_config.data_dir).await;
-
     let state_machine_store = StateMachineSqlite::new(
         &node_config.data_dir,
         &node_config.filename_db,
@@ -61,7 +70,7 @@ pub(crate) async fn start_raft_db(
     .await
     .expect("Raft create failed");
 
-    init::init_pristine_node_1(
+    init::init_pristine_node_1_db(
         &raft,
         node_config.node_id,
         &node_config.nodes,
@@ -84,34 +93,45 @@ pub(crate) async fn start_raft_db(
     })
 }
 
+#[cfg(feature = "cache")]
 pub(crate) async fn start_raft_cache(
     node_config: NodeConfig,
     raft_config: Arc<RaftConfig>,
 ) -> Result<StateRaftCache, Error> {
-    todo!()
-}
+    let log_store = logs::memory::LogStoreMemory::new();
+    let state_machine_store = StateMachineMemory::new().await.unwrap();
 
-pub(crate) async fn new_storage(
-    node_id: NodeId,
-    db_path: &str,
-    filename_db: &str,
-    log_statements: bool,
-    #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::S3Config>>,
-) -> (logs::rocksdb::LogStoreRocksdb, StateMachineSqlite) {
-    let log_store = logs::rocksdb::LogStoreRocksdb::new(db_path).await;
+    let network = NetworkStreaming {
+        node_id: node_config.node_id,
+        tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
+        secret_raft: node_config.secret_raft.as_bytes().to_vec(),
+    };
 
-    let sm_store = StateMachineSqlite::new(
-        db_path,
-        filename_db,
-        node_id,
-        log_statements,
-        #[cfg(feature = "s3")]
-        s3_config,
+    let raft = openraft::Raft::new(
+        node_config.node_id,
+        raft_config.clone(),
+        network,
+        log_store,
+        state_machine_store,
     )
     .await
-    .unwrap();
+    .expect("Raft create failed");
 
-    (log_store, sm_store)
+    init::init_pristine_node_1_cache(
+        &raft,
+        node_config.node_id,
+        &node_config.nodes,
+        &node_config.secret_api,
+        node_config.tls_api.is_some(),
+        node_config
+            .tls_api
+            .as_ref()
+            .map(|c| c.danger_tls_no_verify)
+            .unwrap_or(false),
+    )
+    .await?;
+
+    Ok(StateRaftCache { raft })
 }
 
 #[cfg(feature = "sqlite")]

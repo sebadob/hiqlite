@@ -1,7 +1,5 @@
 use crate::network::handshake::HandshakeSecret;
 use crate::network::raft_server::{RaftStreamRequest, RaftStreamResponse};
-use crate::store::state_machine::memory::TypeConfigKV;
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::{tls, NodeId};
 use crate::{Error, Node};
 use bytes::Bytes;
@@ -33,6 +31,12 @@ use tokio::task::JoinHandle;
 use tokio::{task, time};
 use tracing::{error, info, warn};
 
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::TypeConfigKV;
+
+#[cfg(feature = "sqlite")]
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
+
 struct SpawnExecutor;
 
 impl<Fut> hyper::rt::Executor<Fut> for SpawnExecutor
@@ -51,6 +55,34 @@ pub struct NetworkStreaming {
     pub secret_raft: Vec<u8>,
 }
 
+#[cfg(feature = "cache")]
+impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
+    type Network = NetworkConnectionStreaming;
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
+        info!("Building new Raft client with target {}", node);
+
+        let (sender, rx) = flume::unbounded();
+
+        let handle = task::spawn(Self::ws_handler(
+            self.node_id,
+            "/stream/cache",
+            node.clone(),
+            self.tls_config.clone(),
+            self.secret_raft.clone(),
+            rx,
+        ));
+
+        NetworkConnectionStreaming {
+            node: node.clone(),
+            sender,
+            handle,
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
 impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
     type Network = NetworkConnectionStreaming;
 
@@ -62,6 +94,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
 
         let handle = task::spawn(Self::ws_handler(
             self.node_id,
+            "/stream/db",
             node.clone(),
             self.tls_config.clone(),
             self.secret_raft.clone(),
@@ -80,6 +113,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
 impl NetworkStreaming {
     async fn ws_handler<Err>(
         this_node: NodeId,
+        path: &'static str,
         node: Node,
         tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: Vec<u8>,
@@ -90,8 +124,14 @@ impl NetworkStreaming {
     ) where
         Err: std::error::Error + 'static + Clone,
     {
-        let mut ws =
-            Self::try_connect(this_node, &node.addr_raft, tls_config.clone(), &secret).await;
+        let mut ws = Self::try_connect(
+            this_node,
+            &node.addr_raft,
+            path,
+            tls_config.clone(),
+            &secret,
+        )
+        .await;
         let mut req: Option<RaftStreamRequest> = None;
         let mut ack: Option<
             oneshot::Sender<Result<RaftStreamResponse, RPCError<NodeId, Node, Err>>>,
@@ -102,8 +142,14 @@ impl NetworkStreaming {
             while ws.is_none() {
                 info!("WsHandler trying to connect to {}", node.addr_raft);
                 time::sleep(Duration::from_secs(1)).await;
-                ws = Self::try_connect(this_node, &node.addr_raft, tls_config.clone(), &secret)
-                    .await;
+                ws = Self::try_connect(
+                    this_node,
+                    &node.addr_raft,
+                    path,
+                    tls_config.clone(),
+                    &secret,
+                )
+                .await;
 
                 // openraft does cancel these requests internally when
                 // they take longer than the configured heartbeat
@@ -181,13 +227,14 @@ impl NetworkStreaming {
     async fn try_connect(
         node_id: NodeId,
         addr: &str,
+        path: &str,
         tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: &[u8],
     ) -> Option<WebSocket<TokioIo<Upgraded>>> {
         let uri = if tls_config.is_some() {
-            format!("https://{}/stream", addr)
+            format!("https://{}{}", addr, path)
         } else {
-            format!("http://{}/stream", addr)
+            format!("http://{}{}", addr, path)
         };
 
         let req = Request::builder()
@@ -295,6 +342,7 @@ impl NetworkConnectionStreaming {
     }
 }
 
+#[cfg(feature = "sqlite")]
 #[allow(clippy::blocks_in_conditions)]
 impl RaftNetwork<TypeConfigSqlite> for NetworkConnectionStreaming {
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
@@ -349,6 +397,7 @@ impl RaftNetwork<TypeConfigSqlite> for NetworkConnectionStreaming {
     }
 }
 
+#[cfg(feature = "cache")]
 #[allow(clippy::blocks_in_conditions)]
 impl RaftNetwork<TypeConfigKV> for NetworkConnectionStreaming {
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]

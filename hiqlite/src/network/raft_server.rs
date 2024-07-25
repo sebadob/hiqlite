@@ -1,6 +1,5 @@
 use crate::network::handshake::HandshakeSecret;
 use crate::network::{AppStateExt, Error};
-use crate::store::state_machine::memory::TypeConfigKV;
 use axum::response::IntoResponse;
 use fastwebsockets::{upgrade, Frame, OpCode, Payload};
 use openraft::raft::VoteRequest;
@@ -9,16 +8,25 @@ use openraft::raft::{InstallSnapshotRequest, InstallSnapshotResponse, VoteRespon
 use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
 
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::TypeConfigKV;
+#[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RaftStreamRequest {
+    #[cfg(feature = "sqlite")]
     AppendDB(AppendEntriesRequest<TypeConfigSqlite>),
+    #[cfg(feature = "sqlite")]
     VoteDB(VoteRequest<u64>),
+    #[cfg(feature = "sqlite")]
     SnapshotDB(InstallSnapshotRequest<TypeConfigSqlite>),
 
+    #[cfg(feature = "cache")]
     AppendCache(AppendEntriesRequest<TypeConfigKV>),
+    #[cfg(feature = "cache")]
     VoteCache(VoteRequest<u64>),
+    #[cfg(feature = "cache")]
     SnapshotCache(InstallSnapshotRequest<TypeConfigKV>),
 }
 
@@ -98,6 +106,7 @@ async fn handle_socket(
             OpCode::Binary => {
                 let bytes = frame.payload.to_vec();
                 match RaftStreamRequest::from(bytes) {
+                    #[cfg(feature = "sqlite")]
                     RaftStreamRequest::AppendDB(req) => {
                         match state.raft_db.raft.append_entries(req).await {
                             Ok(res) => {
@@ -113,6 +122,7 @@ async fn handle_socket(
                         }
                     }
 
+                    #[cfg(feature = "sqlite")]
                     RaftStreamRequest::VoteDB(req) => match state.raft_db.raft.vote(req).await {
                         Ok(res) => {
                             ws.write_frame(RaftStreamResponse::Vote(res).as_payload())
@@ -126,6 +136,7 @@ async fn handle_socket(
                         }
                     },
 
+                    #[cfg(feature = "sqlite")]
                     RaftStreamRequest::SnapshotDB(req) => {
                         match state.raft_db.raft.install_snapshot(req).await {
                             Ok(res) => {
@@ -141,6 +152,7 @@ async fn handle_socket(
                         }
                     }
 
+                    #[cfg(feature = "cache")]
                     RaftStreamRequest::AppendCache(req) => {
                         match state.raft_cache.raft.append_entries(req).await {
                             Ok(res) => {
@@ -156,6 +168,7 @@ async fn handle_socket(
                         }
                     }
 
+                    #[cfg(feature = "cache")]
                     RaftStreamRequest::VoteCache(req) => {
                         match state.raft_cache.raft.vote(req).await {
                             Ok(res) => {
@@ -171,6 +184,7 @@ async fn handle_socket(
                         }
                     }
 
+                    #[cfg(feature = "cache")]
                     RaftStreamRequest::SnapshotCache(req) => {
                         match state.raft_cache.raft.install_snapshot(req).await {
                             Ok(res) => {

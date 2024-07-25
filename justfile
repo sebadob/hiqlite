@@ -67,32 +67,26 @@ check:
     cargo minimal-versions check
 
 
-# checks all combinations of features
-check-features check="check":
+# checks all combinations of features with clippy
+clippy-features:
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
 
-    cargo check --no-default-features
+    cargo clippy
+    cargo clippy --no-default-features
 
-    #sqlite = []
-    #cache = []
-    #auto-heal = []
-    #auto-heal-logs = ["openraft/loosen-follower-log-revert"]
-    #backup = ["s3"]
-    #s3 = ["backup", "dep:cryptr"]
-
-    cargo {{check}} --no-default-features --features sqlite
+    cargo clippy --no-default-features --features sqlite
     # auto-heal should only apply to sqlite
-    cargo {{check}} --no-default-features --features auto-heal
-    cargo {{check}} --no-default-features --features sqlite,auto-heal
+    cargo clippy --no-default-features --features auto-heal
+    cargo clippy --no-default-features --features sqlite,auto-heal
     # backup / s3 should only apply to sqlite
-    cargo {{check}} --no-default-features --features backup
-    cargo {{check}} --no-default-features --features sqlite,backup
-    cargo {{check}} --no-default-features --features sqlite,auto-heal,backup
+    cargo clippy --no-default-features --features backup
+    cargo clippy --no-default-features --features sqlite,backup
+    cargo clippy --no-default-features --features sqlite,auto-heal,backup
 
-    cargo {{check}} --no-default-features --features cache
-    cargo {{check}} --no-default-features --features sqlite,cache
+    cargo clippy --no-default-features --features cache
+    cargo clippy --no-default-features --features sqlite,cache
 
 
 # runs the full set of tests

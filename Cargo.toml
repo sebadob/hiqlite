@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "hiqlite",
-    #    "hiqlite_server",
+    #"hiqlite_server",
     "examples/*",
 ]
 
