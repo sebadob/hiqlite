@@ -15,22 +15,16 @@ repository = "https://github.com/sebadob/hiqlite"
 all-features = true
 
 [features]
-# currently for ease of use, just everything is enabled by default until the first release
-default = ["auto-heal", "backup", "s3", "sqlite"]
-#default = ["auto-heal", "auto-heal-logs", "backup", "s3", "sqlite"]
+default = ["auto-heal", "backup", "cache", "sqlite"]
 
-sqlite = []
+sqlite = ["dep:deadpool", "dep:rusqlite", "dep:serde_rusqlite"]
 cache = []
-
 auto-heal = []
 auto-heal-logs = ["openraft/loosen-follower-log-revert"]
 backup = ["s3"]
-
 s3 = ["backup", "dep:cryptr"]
-
 io-uring = ["rocksdb/io-uring"]
 jemalloc = ["rocksdb/jemalloc"]
-
 webpki-roots = ["reqwest/rustls-tls-webpki-roots"]
 
 [dependencies]
@@ -41,7 +35,7 @@ byteorder.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 cryptr = { workspace = true, optional = true }
-deadpool.workspace = true
+deadpool = { workspace = true, optional = true }
 fastwebsockets.workspace = true
 flume.workspace = true
 getrandom.workspace = true
@@ -50,21 +44,26 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 openraft.workspace = true
+# TODO feature gate or completely remove for now
 redb.workspace = true
 reqwest.workspace = true
 rocksdb.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, optional = true }
 rust-embed.workspace = true
+# TODO do we need a tls feature?
 rustls.workspace = true
 serde.workspace = true
+# TODO feature to make this available or simply always pull it in?
 serde_json.workspace = true
-serde_rusqlite.workspace = true
+serde_rusqlite = { workspace = true, optional = true }
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+# TODO can we feature gate here? probably a `tls` would need to pull these in then
+# -> if not, try to use system trust store in TLS config builder?
 webpki-roots.workspace = true
 
 # make minimal versions happy

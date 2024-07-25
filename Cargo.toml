@@ -36,6 +36,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "http2", "json", "rustls-tls"
 ] }
 rocksdb = { version = "0.22.0", default-features = true, features = ["snappy"] }
+# serde_rusqlite prevents from upgrading in v0.35
 rusqlite = { version = "0.31", features = ["backup", "bundled", "column_decltype"] }
 rust-embed = { version = "8.5.0", features = ["compression"] }
 rustls = { version = "0.23.5", features = ["ring"] }
