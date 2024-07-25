@@ -37,6 +37,5 @@ pub async fn test_cache(
     let res: Result<String, Error> = client_3.get(key).await;
     assert!(res.is_err());
 
-    assert_eq!(1, 2);
     Ok(())
 }

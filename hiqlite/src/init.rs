@@ -25,8 +25,6 @@ pub async fn init_pristine_node_1_db(
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
-    // TODO will probably be an issue if node 1 died and needs to join an existing cluster
-    // TODO -> add remote lookup when the metrics endpoint is implemented
     if this_node == 1 {
         let this_node = get_this_node(this_node, nodes);
 
@@ -34,7 +32,8 @@ pub async fn init_pristine_node_1_db(
             return Ok(());
         }
 
-        if should_node_1_skip_init(nodes, secret_api, tls, tls_no_verify).await? {
+        if should_node_1_skip_init(&RaftType::Sqlite, nodes, secret_api, tls, tls_no_verify).await?
+        {
             warn!("node 1 should skip its own init - found existing cluster on remotes");
             return Ok(());
         }
@@ -58,16 +57,12 @@ pub async fn init_pristine_node_1_cache(
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
-    // TODO will probably be an issue if node 1 died and needs to join an existing cluster
-    // TODO -> add remote lookup when the metrics endpoint is implemented
     if this_node == 1 {
         let this_node = get_this_node(this_node, nodes);
 
-        if is_initialized_timeout_kv(raft).await? {
-            return Ok(());
-        }
+        // in case of cache raft, a node will never be initialized after start up
 
-        if should_node_1_skip_init(nodes, secret_api, tls, tls_no_verify).await? {
+        if should_node_1_skip_init(&RaftType::Cache, nodes, secret_api, tls, tls_no_verify).await? {
             warn!("node 1 should skip its own init - found existing cluster on remotes");
             return Ok(());
         }
@@ -93,6 +88,7 @@ fn get_this_node(this_node: u64, nodes: &[Node]) -> Node {
 }
 
 async fn should_node_1_skip_init(
+    raft_type: &RaftType,
     nodes: &[Node],
     secret_api: &str,
     tls: bool,
@@ -116,7 +112,12 @@ async fn should_node_1_skip_init(
                 continue;
             }
 
-            let url = format!("{}://{}/cluster/membership", scheme, node.addr_api);
+            let url = format!(
+                "{}://{}/cluster/membership/{}",
+                scheme,
+                node.addr_api,
+                raft_type.as_str()
+            );
             debug!("checking membership via {}", url);
 
             let res = client
@@ -264,9 +265,9 @@ async fn try_become(
         }
 
         for node in nodes {
-            if node.id == this_node {
-                continue;
-            }
+            // if node.id == this_node {
+            //     continue;
+            // }
 
             let url = format!(
                 "{}://{}/cluster/{}/{}",
@@ -278,29 +279,36 @@ async fn try_become(
             debug!("Sending request to {}", url);
 
             let res = client
-                .post(url)
+                .post(&url)
                 .header(HEADER_NAME_SECRET, secret_api)
                 .body(payload.to_vec())
                 .send()
                 .await;
 
+            // info!("\n\nresponse {:?}\n\n", res);
+
             match res {
                 Ok(resp) => {
                     if resp.status().is_success() {
-                        debug!("Becoming was successful");
+                        debug!("becoming a member has been successful");
                         return Ok(());
                     } else {
                         let body = resp.bytes().await?;
-                        if let Ok(err) = bincode::deserialize::<Error>(&body) {
-                            if let Some((id, _)) = err.is_forward_to_leader() {
-                                if id.is_none() {
-                                    info!("Vote in progress, stepping back");
-                                    time::sleep(Duration::from_secs(1)).await;
-                                }
-                            } else {
-                                error!("Becoming error: {}", err);
-                            }
-                        }
+                        let err: Error = serde_json::from_slice(&body).unwrap();
+                        // error!("\n\nNode {} -> {}\n\n{:?}\n\n", this_node, url, err);
+                        // if let Some((id, _)) = err.is_forward_to_leader() {
+                        //     if id.is_none() {
+                        //         info!("Vote in progress, stepping back");
+                        //         time::sleep(Duration::from_secs(1)).await;
+                        //     }
+                        // } else {
+                        error!(
+                            "Node {} become '{}' member on remote ({}): {}",
+                            this_node,
+                            raft_type.as_str(),
+                            url,
+                            err
+                        );
                     }
                 }
                 Err(err) => {
@@ -322,7 +330,7 @@ async fn is_initialized_timeout(
 
     // If it is not initialized, wait long enough to make sure this
     // node is not joined again to an already existing cluster after data loss.
-    time::sleep(Duration::from_secs(3)).await;
+    time::sleep(Duration::from_secs(1)).await;
 
     // Make sure we are not initialized by now, otherwise go on
     if helpers::is_raft_initialized(state, raft_type).await? {
@@ -355,26 +363,26 @@ async fn is_initialized_timeout_sqlite(raft: &Raft<TypeConfigSqlite>) -> Result<
     }
 }
 
-#[cfg(feature = "cache")]
-async fn is_initialized_timeout_kv(raft: &Raft<TypeConfigKV>) -> Result<bool, Error> {
-    // Do not try to initialize already initialized nodes
-    if raft.is_initialized().await? {
-        return Ok(true);
-    }
-
-    // If it is not initialized, wait long enough to make sure this
-    // node is not joined again to an already existing cluster after data loss.
-    let heartbeat = raft.config().heartbeat_interval;
-    // We will wait for 5 heartbeats to make sure no other cluster is running
-    time::sleep(Duration::from_millis(heartbeat * 5)).await;
-
-    // Make sure we are not initialized by now, otherwise go on
-    if raft.is_initialized().await? {
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
+// #[cfg(feature = "cache")]
+// async fn is_initialized_timeout_kv(raft: &Raft<TypeConfigKV>) -> Result<bool, Error> {
+//     // Do not try to initialize already initialized nodes
+//     if raft.is_initialized().await? {
+//         return Ok(true);
+//     }
+//
+//     // If it is not initialized, wait long enough to make sure this
+//     // node is not joined again to an already existing cluster after data loss.
+//     let heartbeat = raft.config().heartbeat_interval;
+//     // We will wait for 5 heartbeats to make sure no other cluster is running
+//     time::sleep(Duration::from_millis(heartbeat * 5)).await;
+//
+//     // Make sure we are not initialized by now, otherwise go on
+//     if raft.is_initialized().await? {
+//         Ok(true)
+//     } else {
+//         Ok(false)
+//     }
+// }
 
 // async fn wait_for_nodes_online(state: &AppState, nodes: &[Node], tls: bool, tls_no_verify: bool) {
 //     let scheme = if tls { "https" } else { "http" };

@@ -87,6 +87,7 @@ pub(crate) async fn start_raft_db(
 
     Ok(StateRaftDB {
         raft,
+        lock: Default::default(),
         logs_writer,
         sql_writer,
         read_pool,
@@ -134,9 +135,14 @@ pub(crate) async fn start_raft_cache(
     )
     .await?;
 
-    Ok(StateRaftCache { raft, kv_store })
+    Ok(StateRaftCache {
+        raft,
+        lock: Default::default(),
+        kv_store,
+    })
 }
 
+// TODO get rid of it - duplication
 #[cfg(feature = "sqlite")]
 pub(crate) fn connect_sqlite(
     path: Option<&str>,

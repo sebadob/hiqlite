@@ -23,7 +23,7 @@ use tokio::{fs, task};
 #[derive(Debug, Clone)]
 struct LogData {
     last_term: Option<u64>,
-    last_node_id: Option<u64>,
+    last_leader_id: Option<u64>,
     last_log_id: Option<u64>,
 
     last_purged: Option<LogId<u64>>,
@@ -42,7 +42,7 @@ impl LogStoreMemory {
         let logs = Arc::new(RwLock::new(BTreeMap::new()));
         let data = LogData {
             last_term: None,
-            last_node_id: None,
+            last_leader_id: None,
             last_log_id: None,
             last_purged: None,
             commited: None,
@@ -96,7 +96,7 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
 
         let last_log_id = if let Some(log_id) = lock.last_log_id {
             let term = lock.last_term.unwrap();
-            let node_id = lock.last_node_id.unwrap();
+            let node_id = lock.last_leader_id.unwrap();
             let leader_id = CommittedLeaderId::new(term, node_id);
             Some(LogId::new(leader_id, log_id))
         } else {
@@ -153,7 +153,7 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
         if let Some(id) = last_log_id {
             let mut lock = self.data.lock().await;
             lock.last_log_id = Some(id.index);
-            lock.last_node_id = Some(id.leader_id.node_id);
+            lock.last_leader_id = Some(id.leader_id.node_id);
             lock.last_term = Some(id.leader_id.term);
         }
 

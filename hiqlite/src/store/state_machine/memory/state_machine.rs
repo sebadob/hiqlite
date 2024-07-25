@@ -131,7 +131,7 @@ impl RaftStateMachine<TypeConfigKV> for StateMachineMemory {
                     CacheRequest::Put { key, value } => {
                         // resp_value = Some(value.clone());
                         // let mut lock = self.kvs.write().await;
-                        lock.insert(key.into(), value.into());
+                        lock.insert(key.into(), value);
                         CacheResponse::Ok
                     }
 

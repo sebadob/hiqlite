@@ -199,7 +199,6 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
         raft_db,
         #[cfg(feature = "cache")]
         raft_cache,
-        raft_lock: Default::default(),
         // config: raft_config,
         secret_api: node_config.secret_api,
         secret_raft: node_config.secret_raft,
@@ -257,7 +256,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
                 .route("/add_learner/:raft_type", post(management::add_learner))
                 .route("/become_member/:raft_type", post(management::become_member))
                 .route(
-                    "/membership",
+                    "/membership/:raft_type",
                     get(management::get_membership).post(management::post_membership),
                 )
                 .route("/init", post(management::init))

@@ -35,7 +35,7 @@ pub(crate) async fn add_learner(
 
     if let Some(leader_id) = state.raft_db.raft.current_leader().await {
         if leader_id != state.id {
-            let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
+            let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
             let members = metrics.membership_config;
             let leader = members
                 .nodes()
@@ -70,9 +70,14 @@ pub(crate) async fn add_learner(
     // -> remove the membership and re-add it as a new learner, so it can catch up again.
     {
         // hold this lock the whole time, even over await points, to never have race conditions here ...
-        let _lock = state.raft_lock.lock().await;
+        let _lock = match raft_type {
+            #[cfg(feature = "sqlite")]
+            RaftType::Sqlite => state.raft_db.lock.lock().await,
+            #[cfg(feature = "cache")]
+            RaftType::Cache => state.raft_cache.lock.lock().await,
+        };
 
-        let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
+        let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
         let members = metrics.membership_config;
         let is_member_already = members.nodes().any(|(id, _)| *id == node.id);
 
@@ -112,7 +117,7 @@ pub(crate) async fn add_learner(
 
                     info!("Membership changed successfully");
 
-                    let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
+                    let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
                     let members = metrics.membership_config;
                     info!(
                         r#"
@@ -160,9 +165,14 @@ pub(crate) async fn become_member(
     info!("Node membership request: {:?}\n", payload);
 
     // we want to hold the lock until we finished to not end up with race conditions
-    let _lock = state.raft_lock.lock().await;
+    let _lock = match raft_type {
+        #[cfg(feature = "sqlite")]
+        RaftType::Sqlite => state.raft_db.lock.lock().await,
+        #[cfg(feature = "cache")]
+        RaftType::Cache => state.raft_cache.lock.lock().await,
+    };
 
-    let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
+    let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
     let members = metrics.membership_config;
 
     let mut nodes_set = BTreeSet::new();
@@ -187,10 +197,11 @@ pub(crate) async fn become_member(
 pub(crate) async fn get_membership(
     state: AppStateExt,
     headers: HeaderMap,
+    Path(raft_type): Path<RaftType>,
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    if !state.raft_db.raft.is_initialized().await? {
+    if !helpers::is_raft_initialized(&state, &raft_type).await? {
         return Err(Error::Config("Raft node has not been initialized".into()));
     }
 
@@ -203,16 +214,16 @@ pub(crate) async fn get_membership(
 pub(crate) async fn post_membership(
     state: AppStateExt,
     headers: HeaderMap,
+    Path(raft_type): Path<RaftType>,
     body: body::Bytes,
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
     let payload = get_payload::<BTreeSet<NodeId>>(&headers, body)?;
+    helpers::change_membership(&state, &raft_type, payload, false).await?;
+
     // retain false removes current cluster members if they do not appear in the new list
-    fmt_ok(
-        headers,
-        state.raft_db.raft.change_membership(payload, false).await?,
-    )
+    fmt_ok(headers, ())
 }
 
 /// Initialize a single-node cluster.

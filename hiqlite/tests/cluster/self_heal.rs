@@ -13,6 +13,12 @@ pub async fn test_self_healing(
     check::is_client_db_healthy(&client_2).await?;
     check::is_client_db_healthy(&client_3).await?;
 
+    // NOTE: When we do these restarts too fast during testing while the `cache` feature
+    // is enabled, we can produce an error where a cache instance that has been a leader
+    // before is up so fast again, that the others still consider it the leader, because
+    // no heartbeat was missed. This can only happen inside these tests though and not
+    // in real life.
+
     log("Test recovery in case of state machine crash on non-leader");
     let client_healed = if !is_leader(&client_1, 1).await? {
         client_1 = shutdown_lock_sm_db_restart(client_1, 1).await?;
@@ -50,10 +56,10 @@ pub async fn test_self_healing(
 
     log("Check recovery from full volume loss");
     let client_healed = if !is_leader(&client_1, 1).await? {
-        client_1 = shutdown_remove_all_restart(client_1, 1, 1500).await?;
+        client_1 = shutdown_remove_all_restart(client_1, 1).await?;
         &client_1
     } else {
-        client_2 = shutdown_remove_all_restart(client_2, 2, 1500).await?;
+        client_2 = shutdown_remove_all_restart(client_2, 2).await?;
         &client_2
     };
     // replication will take a few moments
@@ -68,7 +74,7 @@ pub async fn test_self_healing(
 
     // In most cases, client_1 is the leader at this point,
     // so we will give the others enough time to vote a new leader.
-    client_1 = shutdown_remove_all_restart(client_1, 1, 1500).await?;
+    client_1 = shutdown_remove_all_restart(client_1, 1).await?;
     client_1.is_healthy().await?;
     check::is_client_db_healthy(&client_1).await?;
     log("Client has self-healed and re-joined successfully");
@@ -89,7 +95,7 @@ pub async fn test_self_healing(
 async fn shutdown_lock_sm_db_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
-    time::sleep(Duration::from_millis(150)).await;
+    time::sleep(Duration::from_millis(2000)).await;
 
     let path_lock_file = format!("{}/lock", folder_state_machine(node_id));
     log(format!(
@@ -105,14 +111,10 @@ async fn shutdown_lock_sm_db_restart(client: DbClient, node_id: u64) -> Result<D
     Ok(client)
 }
 
-async fn shutdown_remove_all_restart(
-    client: DbClient,
-    node_id: u64,
-    millis_before_restart: u64,
-) -> Result<DbClient, Error> {
+async fn shutdown_remove_all_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
-    time::sleep(Duration::from_millis(millis_before_restart)).await;
+    time::sleep(Duration::from_millis(2000)).await;
 
     let folder = folder_base(node_id);
     log(format!("Deleting {}", folder));
@@ -128,7 +130,7 @@ async fn shutdown_remove_all_restart(
 async fn shutdown_remove_sm_db_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
-    time::sleep(Duration::from_millis(150)).await;
+    time::sleep(Duration::from_millis(2000)).await;
 
     let folder_sm_db = format!("{}/db", folder_state_machine(node_id));
     log(format!("Deleting {}", folder_sm_db));
@@ -144,7 +146,7 @@ async fn shutdown_remove_sm_db_restart(client: DbClient, node_id: u64) -> Result
 async fn shutdown_remove_logs_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
-    time::sleep(Duration::from_millis(250)).await;
+    time::sleep(Duration::from_millis(2000)).await;
 
     let folder_logs = folder_logs(node_id);
     log(format!("Deleting {}", folder_logs));

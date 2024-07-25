@@ -18,14 +18,18 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RaftType {
+    #[cfg(feature = "sqlite")]
     Sqlite,
+    #[cfg(feature = "cache")]
     Cache,
 }
 
 impl RaftType {
     pub fn as_str(&self) -> &str {
         match self {
+            #[cfg(feature = "sqlite")]
             RaftType::Sqlite => "sqlite",
+            #[cfg(feature = "cache")]
             RaftType::Cache => "cache",
         }
     }
@@ -41,7 +45,7 @@ pub struct AppState {
     #[cfg(feature = "cache")]
     pub raft_cache: StateRaftCache,
     // Helper to avoid race conditions with multiple self-managed membership requests
-    pub raft_lock: Mutex<()>,
+    // pub raft_lock: Mutex<()>,
     pub secret_raft: String,
     pub secret_api: String,
     // TODO this should become dynamic at some point to make dynamic cluster changes possible in the future
@@ -51,6 +55,7 @@ pub struct AppState {
 
 pub struct StateRaftDB {
     pub raft: openraft::Raft<TypeConfigSqlite>,
+    pub lock: Mutex<()>,
     pub logs_writer: flume::Sender<logs::rocksdb::ActionWrite>,
     pub sql_writer: flume::Sender<WriterRequest>,
     pub read_pool: Arc<SqlitePool>,
@@ -60,5 +65,6 @@ pub struct StateRaftDB {
 #[cfg(feature = "cache")]
 pub struct StateRaftCache {
     pub raft: openraft::Raft<TypeConfigKV>,
+    pub lock: Mutex<()>,
     pub kv_store: KvStore,
 }
