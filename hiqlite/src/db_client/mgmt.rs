@@ -1,4 +1,4 @@
-use crate::client_stream::ClientStreamReq;
+use crate::db_client::stream::ClientStreamReq;
 use crate::network::management::LearnerReq;
 use crate::network::{RaftWriteResponse, HEADER_NAME_SECRET};
 use crate::store::logs::rocksdb::ActionWrite;

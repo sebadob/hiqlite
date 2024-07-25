@@ -1,4 +1,4 @@
-use crate::client_stream::{ClientExecutePayload, ClientStreamReq};
+use crate::db_client::stream::{ClientExecutePayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};

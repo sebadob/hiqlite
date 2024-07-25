@@ -1,4 +1,4 @@
-use crate::client_stream::{ClientMigratePayload, ClientStreamReq};
+use crate::db_client::stream::{ClientMigratePayload, ClientStreamReq};
 use crate::migration::{Migration, Migrations};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::sqlite::state_machine::QueryWrite;

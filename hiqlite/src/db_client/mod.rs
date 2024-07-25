@@ -1,9 +1,9 @@
 use crate::app_state::AppState;
-use crate::client_stream::ClientStreamReq;
 use crate::NodeId;
 use reqwest::Client;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use stream::ClientStreamReq;
 use tokio::sync::{watch, RwLock};
 
 mod backup;
@@ -14,6 +14,7 @@ mod helpers;
 mod mgmt;
 mod migrate;
 mod query;
+mod stream;
 mod transaction;
 
 /// Database client

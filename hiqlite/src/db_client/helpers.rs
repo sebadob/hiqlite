@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::client_stream::ClientStreamReq;
+use crate::db_client::stream::ClientStreamReq;
 use crate::network::HEADER_NAME_SECRET;
 use crate::{DbClient, Error};
 use serde::{Deserialize, Serialize};

@@ -37,7 +37,6 @@ pub use config::EncKeysFrom;
 pub use s3::S3Config;
 
 mod app_state;
-mod client_stream;
 mod config;
 mod db_client;
 mod error;
