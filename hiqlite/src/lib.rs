@@ -49,7 +49,6 @@ mod tls;
 
 #[cfg(feature = "backup")]
 mod backup;
-
 mod init;
 #[cfg(feature = "s3")]
 mod s3;

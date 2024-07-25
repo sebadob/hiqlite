@@ -1,6 +1,7 @@
 use crate::self_heal::test_self_healing;
 use hiqlite::Error;
 use std::fmt::{Debug, Display};
+use std::sync::Arc;
 use std::time::Duration;
 use std::{env, process};
 use tokio::{fs, time};

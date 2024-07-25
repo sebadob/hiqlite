@@ -716,7 +716,7 @@ impl DbClient {
     // #[must_use]
     /// Perform a graceful shutdown for this Raft node.
     /// Works on local clients only and can't shut down remote nodes.
-    pub async fn shutdown(self) -> Result<(), Error> {
+    pub async fn shutdown(&self) -> Result<(), Error> {
         if let Some(state) = &self.state {
             let (tx, rx) = oneshot::channel();
             match state.raft.shutdown().await {
@@ -733,7 +733,7 @@ impl DbClient {
 
                     let _ = self.tx_client.send_async(ClientStreamReq::Shutdown).await;
 
-                    if let Some(tx) = self.tx_shutdown {
+                    if let Some(tx) = &self.tx_shutdown {
                         tx.send(true).unwrap();
                     }
                     Ok(())
