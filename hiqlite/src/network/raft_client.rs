@@ -1,5 +1,6 @@
 use crate::network::handshake::HandshakeSecret;
 use crate::network::raft_server::{RaftStreamRequest, RaftStreamResponse};
+use crate::store::state_machine::memory::TypeConfigKV;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::{tls, NodeId};
 use crate::{Error, Node};
@@ -302,7 +303,7 @@ impl RaftNetwork<TypeConfigSqlite> for NetworkConnectionStreaming {
         req: AppendEntriesRequest<TypeConfigSqlite>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        let resp = self.send(RaftStreamRequest::Append(req)).await?;
+        let resp = self.send(RaftStreamRequest::AppendDB(req)).await?;
         match resp {
             RaftStreamResponse::Append(res) => Ok(res),
             RaftStreamResponse::Error(Error::RaftError(err)) => {
@@ -321,7 +322,7 @@ impl RaftNetwork<TypeConfigSqlite> for NetworkConnectionStreaming {
         InstallSnapshotResponse<NodeId>,
         RPCError<NodeId, Node, RaftError<NodeId, InstallSnapshotError>>,
     > {
-        let resp = self.send(RaftStreamRequest::Snapshot(req)).await?;
+        let resp = self.send(RaftStreamRequest::SnapshotDB(req)).await?;
         match resp {
             RaftStreamResponse::Snapshot(res) => Ok(res),
             RaftStreamResponse::Error(Error::SnapshotError(err)) => {
@@ -337,7 +338,61 @@ impl RaftNetwork<TypeConfigSqlite> for NetworkConnectionStreaming {
         req: VoteRequest<NodeId>,
         _option: RPCOption,
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        let resp = self.send(RaftStreamRequest::Vote(req)).await?;
+        let resp = self.send(RaftStreamRequest::VoteDB(req)).await?;
+        match resp {
+            RaftStreamResponse::Vote(res) => Ok(res),
+            RaftStreamResponse::Error(Error::RaftError(err)) => {
+                Err(RPCError::RemoteError(RemoteError::new(self.node.id, err)))
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[allow(clippy::blocks_in_conditions)]
+impl RaftNetwork<TypeConfigKV> for NetworkConnectionStreaming {
+    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
+    async fn append_entries(
+        &mut self,
+        req: AppendEntriesRequest<TypeConfigKV>,
+        _option: RPCOption,
+    ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
+        let resp = self.send(RaftStreamRequest::AppendCache(req)).await?;
+        match resp {
+            RaftStreamResponse::Append(res) => Ok(res),
+            RaftStreamResponse::Error(Error::RaftError(err)) => {
+                Err(RPCError::RemoteError(RemoteError::new(self.node.id, err)))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
+    async fn install_snapshot(
+        &mut self,
+        req: InstallSnapshotRequest<TypeConfigKV>,
+        _option: RPCOption,
+    ) -> Result<
+        InstallSnapshotResponse<NodeId>,
+        RPCError<NodeId, Node, RaftError<NodeId, InstallSnapshotError>>,
+    > {
+        let resp = self.send(RaftStreamRequest::SnapshotCache(req)).await?;
+        match resp {
+            RaftStreamResponse::Snapshot(res) => Ok(res),
+            RaftStreamResponse::Error(Error::SnapshotError(err)) => {
+                Err(RPCError::RemoteError(RemoteError::new(self.node.id, err)))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
+    async fn vote(
+        &mut self,
+        req: VoteRequest<NodeId>,
+        _option: RPCOption,
+    ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
+        let resp = self.send(RaftStreamRequest::VoteCache(req)).await?;
         match resp {
             RaftStreamResponse::Vote(res) => Ok(res),
             RaftStreamResponse::Error(Error::RaftError(err)) => {

@@ -1,5 +1,6 @@
 use crate::network::handshake::HandshakeSecret;
 use crate::network::{AppStateExt, Error};
+use crate::store::state_machine::memory::TypeConfigKV;
 use axum::response::IntoResponse;
 use fastwebsockets::{upgrade, Frame, OpCode, Payload};
 use openraft::raft::VoteRequest;
@@ -12,9 +13,13 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RaftStreamRequest {
-    Append(AppendEntriesRequest<TypeConfigSqlite>),
-    Vote(VoteRequest<u64>),
-    Snapshot(InstallSnapshotRequest<TypeConfigSqlite>),
+    AppendDB(AppendEntriesRequest<TypeConfigSqlite>),
+    VoteDB(VoteRequest<u64>),
+    SnapshotDB(InstallSnapshotRequest<TypeConfigSqlite>),
+
+    AppendCache(AppendEntriesRequest<TypeConfigKV>),
+    VoteCache(VoteRequest<u64>),
+    SnapshotCache(InstallSnapshotRequest<TypeConfigKV>),
 }
 
 impl From<&[u8]> for RaftStreamRequest {
@@ -93,20 +98,22 @@ async fn handle_socket(
             OpCode::Binary => {
                 let bytes = frame.payload.to_vec();
                 match RaftStreamRequest::from(bytes) {
-                    RaftStreamRequest::Append(req) => match state.raft.append_entries(req).await {
-                        Ok(res) => {
-                            ws.write_frame(RaftStreamResponse::Append(res).as_payload())
+                    RaftStreamRequest::AppendDB(req) => {
+                        match state.raft.append_entries(req).await {
+                            Ok(res) => {
+                                ws.write_frame(RaftStreamResponse::Append(res).as_payload())
+                                    .await?;
+                            }
+                            Err(err) => {
+                                ws.write_frame(
+                                    RaftStreamResponse::Error(Error::from(err)).as_payload(),
+                                )
                                 .await?;
+                            }
                         }
-                        Err(err) => {
-                            ws.write_frame(
-                                RaftStreamResponse::Error(Error::from(err)).as_payload(),
-                            )
-                            .await?;
-                        }
-                    },
+                    }
 
-                    RaftStreamRequest::Vote(req) => match state.raft.vote(req).await {
+                    RaftStreamRequest::VoteDB(req) => match state.raft.vote(req).await {
                         Ok(res) => {
                             ws.write_frame(RaftStreamResponse::Vote(res).as_payload())
                                 .await?;
@@ -119,7 +126,7 @@ async fn handle_socket(
                         }
                     },
 
-                    RaftStreamRequest::Snapshot(req) => {
+                    RaftStreamRequest::SnapshotDB(req) => {
                         match state.raft.install_snapshot(req).await {
                             Ok(res) => {
                                 ws.write_frame(RaftStreamResponse::Snapshot(res).as_payload())
@@ -132,6 +139,18 @@ async fn handle_socket(
                                 .await?;
                             }
                         }
+                    }
+
+                    RaftStreamRequest::AppendCache(req) => {
+                        todo!()
+                    }
+
+                    RaftStreamRequest::VoteCache(req) => {
+                        todo!()
+                    }
+
+                    RaftStreamRequest::SnapshotCache(req) => {
+                        todo!()
                     }
                 }
             }

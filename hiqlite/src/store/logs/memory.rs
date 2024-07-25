@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, Bound, VecDeque};
 use std::fmt::Debug;
 use std::ops::{Deref, RangeBounds};
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::time::Instant;
 use tokio::{fs, task};
 
@@ -33,13 +33,13 @@ struct LogData {
 
 #[derive(Debug, Clone)]
 pub struct LogStore {
-    logs: Arc<Mutex<BTreeMap<u64, Entry<TypeConfigKV>>>>,
+    logs: Arc<RwLock<BTreeMap<u64, Entry<TypeConfigKV>>>>,
     data: Arc<Mutex<LogData>>,
 }
 
 impl LogStore {
     pub fn new() -> Self {
-        let logs = Arc::new(Mutex::new(BTreeMap::new()));
+        let logs = Arc::new(RwLock::new(BTreeMap::new()));
         let data = LogData {
             last_term: None,
             last_node_id: None,
@@ -76,7 +76,7 @@ impl RaftLogReader<TypeConfigKV> for LogStore {
         }
 
         let mut res = Vec::with_capacity((end + 1 - start) as usize);
-        let lock = self.logs.lock().await;
+        let lock = self.logs.write().await;
 
         for (_, entry) in lock.range(start..=end) {
             res.push(entry.clone());
@@ -143,7 +143,7 @@ impl RaftLogStorage<TypeConfigKV> for LogStore {
         I: IntoIterator<Item = Entry<TypeConfigKV>> + Send,
         I::IntoIter: Send,
     {
-        let mut lock = self.logs.lock().await;
+        let mut lock = self.logs.write().await;
         let mut last_log_id = None;
         for entry in entries {
             last_log_id = Some(entry.log_id);
@@ -164,16 +164,14 @@ impl RaftLogStorage<TypeConfigKV> for LogStore {
 
     #[tracing::instrument(level = "debug", skip(self))]
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> StorageResult<()> {
-        tracing::debug!("delete_log: [{:?}, +oo)", log_id);
-        let mut lock = self.logs.lock().await;
+        let mut lock = self.logs.write().await;
         lock.retain(|id, _| id >= &log_id.index);
         Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
     async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
-        tracing::debug!("delete_log: [0, {:?}]", log_id);
-        let mut lock = self.logs.lock().await;
+        let mut lock = self.logs.write().await;
         lock.retain(|id, _| *id <= log_id.index + 1);
         Ok(())
     }
