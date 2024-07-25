@@ -36,7 +36,8 @@ pub struct DbClient {
     client: Arc<Client>,
     tx_client: flume::Sender<ClientStreamReq>,
     tls_config: Option<Arc<rustls::ClientConfig>>,
-    api_secret: String,
+    // Only remote clients will have `Some(_)` here -> makes the client cheaper to clone
+    api_secret: Option<String>,
     request_id: Arc<AtomicUsize>,
     tx_shutdown: Option<watch::Sender<bool>>,
 }
@@ -61,7 +62,6 @@ impl DbClient {
             leader.clone(),
         );
 
-        let api_secret = state.secret_api.clone();
         Self {
             state: Some(state),
             leader,
@@ -76,7 +76,7 @@ impl DbClient {
             ),
             tx_client,
             tls_config,
-            api_secret,
+            api_secret: None,
             request_id: Arc::new(AtomicUsize::new(0)),
             tx_shutdown: Some(tx_shutdown),
         }
@@ -119,7 +119,7 @@ impl DbClient {
             ),
             tx_client,
             tls_config,
-            api_secret,
+            api_secret: Some(api_secret),
             request_id: Arc::new(AtomicUsize::new(0)),
             tx_shutdown: None,
         }
@@ -652,12 +652,21 @@ impl DbClient {
     //     Ok(res)
     // }
 
+    #[inline]
+    fn api_secret(&self) -> &str {
+        if let Some(st) = &self.state {
+            st.secret_api.as_str()
+        } else {
+            self.api_secret.as_ref().unwrap()
+        }
+    }
+
     pub async fn init(&self) -> Result<(), Error> {
         let url = self.build_addr("/cluster/init").await;
         let res = self
             .client
             .post(url)
-            .header(HEADER_NAME_SECRET, &self.api_secret)
+            .header(HEADER_NAME_SECRET, self.api_secret())
             .send()
             .await
             .unwrap();
@@ -776,7 +785,7 @@ impl DbClient {
             } else {
                 self.client.get(url)
             }
-            .header(HEADER_NAME_SECRET, &self.api_secret)
+            .header(HEADER_NAME_SECRET, self.api_secret())
             .send()
             .await?;
             debug!("request status: {}", res.status());

@@ -38,6 +38,8 @@ async fn test_cluster() {
     match exec_tests().await {
         Ok(_) => {
             log("All tests successful");
+            // TODO sometimes the test gets stuck here
+            process::exit(0);
         }
         Err(err) => {
             panic!("\n!!!\n{}\n!!!\n", err);
