@@ -2,19 +2,20 @@ use crate::db_client::stream::{ClientKVPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
 use crate::{DbClient, Error};
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use tokio::sync::oneshot;
 
 impl DbClient {
-    pub async fn get<S>(&self, key: S) -> Result<Vec<u8>, Error>
+    pub async fn get<S, V>(&self, key: S) -> Result<V, Error>
     where
         S: AsRef<str>,
-        // S: Into<String>,
+        V: for<'a> Deserialize<'a>,
     {
         if let Some(state) = &self.state {
             let lock = state.raft_cache.kv_store.read().await;
             if let Some(value) = lock.get(key.as_ref()) {
-                return Ok(value.clone());
+                return Ok(bincode::deserialize(value).unwrap());
             }
         } else {
             todo!("CacheGet for remote clients")
@@ -22,14 +23,14 @@ impl DbClient {
         Err(Error::Cache("no value found".into()))
     }
 
-    pub async fn put<K, V>(&self, key: K, value: V) -> Result<(), Error>
+    pub async fn put<K, V>(&self, key: K, value: &V) -> Result<(), Error>
     where
         K: Into<Cow<'static, str>>,
-        V: Into<Cow<'static, [u8]>>,
+        V: Serialize,
     {
         self.cache_req_retry(CacheRequest::Put {
             key: key.into(),
-            value: value.into(),
+            value: bincode::serialize(value).unwrap(),
         })
         .await
     }

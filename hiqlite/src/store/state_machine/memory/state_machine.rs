@@ -26,7 +26,7 @@ type SnapshotData = Cursor<Vec<u8>>;
 pub enum CacheRequest {
     Put {
         key: Cow<'static, str>,
-        value: Cow<'static, [u8]>,
+        value: Vec<u8>,
     },
     Delete {
         key: Cow<'static, str>,
