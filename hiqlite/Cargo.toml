@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# TODO add `cache` here when its working
 categories = ["database"]
 keywords = ["database", "sql", "sqlite", "raft"]
 description = "Hiqlite - highly-available, embeddable, raft-based SQLite"
@@ -19,14 +20,14 @@ all-features = true
 default = ["auto-heal", "backup", "sqlite"]
 #default = ["auto-heal", "backup", "cache", "sqlite"]
 
-sqlite = ["dep:deadpool", "dep:rusqlite", "dep:serde_rusqlite"]
-cache = []
 auto-heal = []
 auto-heal-logs = ["openraft/loosen-follower-log-revert"]
 backup = ["s3"]
-s3 = ["backup", "dep:cryptr"]
+cache = []
 io-uring = ["rocksdb/io-uring"]
 jemalloc = ["rocksdb/jemalloc"]
+s3 = ["backup", "dep:cryptr"]
+sqlite = ["dep:deadpool", "dep:rusqlite", "dep:serde_rusqlite"]
 webpki-roots = ["reqwest/rustls-tls-webpki-roots"]
 
 [dependencies]

@@ -79,7 +79,7 @@ impl RaftLogReader<TypeConfigKV> for LogStoreMemory {
         let lock = self.logs.write().await;
 
         for (_, entry) in lock.range(start..=end) {
-            res.push(entry.clone());
+            res.push((*entry).clone());
         }
 
         Ok(res)

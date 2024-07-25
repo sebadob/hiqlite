@@ -2,14 +2,34 @@ use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::SqlitePool;
 use crate::store::state_machine::sqlite::writer::WriterRequest;
 use crate::NodeId;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[cfg(feature = "cache")]
+use crate::store::state_machine::memory::state_machine::KvStore;
+#[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
+
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
+
+#[derive(Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RaftType {
+    Sqlite,
+    Cache,
+}
+
+impl RaftType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            RaftType::Sqlite => "sqlite",
+            RaftType::Cache => "cache",
+        }
+    }
+}
 
 // Representation of an application state. This struct can be shared around to share
 // instances of raft, store and more.
@@ -40,7 +60,5 @@ pub struct StateRaftDB {
 #[cfg(feature = "cache")]
 pub struct StateRaftCache {
     pub raft: openraft::Raft<TypeConfigKV>,
-    // pub logs_writer: flume::Sender<logs::memory::ActionWrite>,
-    // TODO how to implement reader here? probably expose the inner map?
-    // pub read_pool: Arc<SqlitePool>,
+    pub kv_store: KvStore,
 }

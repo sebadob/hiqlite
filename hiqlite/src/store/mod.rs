@@ -19,6 +19,7 @@ use crate::store::state_machine::memory::state_machine::StateMachineMemory;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
 
+use crate::app_state::AppState;
 #[cfg(feature = "sqlite")]
 use crate::app_state::StateRaftDB;
 #[cfg(feature = "sqlite")]
@@ -107,6 +108,8 @@ pub(crate) async fn start_raft_cache(
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
     };
 
+    let kv_store = state_machine_store.kvs.clone();
+
     let raft = openraft::Raft::new(
         node_config.node_id,
         raft_config.clone(),
@@ -131,7 +134,7 @@ pub(crate) async fn start_raft_cache(
     )
     .await?;
 
-    Ok(StateRaftCache { raft })
+    Ok(StateRaftCache { raft, kv_store })
 }
 
 #[cfg(feature = "sqlite")]

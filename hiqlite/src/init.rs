@@ -1,8 +1,10 @@
+use crate::app_state::{AppState, RaftType};
 use crate::network::management::LearnerReq;
 use crate::network::HEADER_NAME_SECRET;
-use crate::{Error, Node, NodeId};
+use crate::{helpers, Error, Node, NodeId};
 use openraft::{Membership, Raft};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
 use tracing::{debug, error, info, warn};
@@ -178,15 +180,15 @@ async fn should_node_1_skip_init(
 /// If this node is a non cluster member, it will try to become a learner and
 /// a voting member afterward.
 pub async fn become_cluster_member(
-    // state: &Arc<AppState>,
-    raft: &Raft<TypeConfigSqlite>,
+    state: &Arc<AppState>,
+    raft_type: &RaftType,
     this_node: u64,
     nodes: &[Node],
     tls: bool,
     tls_no_verify: bool,
     secret_api: &str,
 ) -> Result<(), Error> {
-    if is_initialized_timeout_sqlite(raft).await? {
+    if is_initialized_timeout(state, raft_type).await? {
         return Ok(());
     }
 
@@ -210,7 +212,8 @@ pub async fn become_cluster_member(
     .unwrap();
 
     try_become(
-        raft,
+        state,
+        raft_type,
         &client,
         scheme,
         "add_learner",
@@ -223,7 +226,8 @@ pub async fn become_cluster_member(
     .await?;
 
     try_become(
-        raft,
+        state,
+        raft_type,
         &client,
         scheme,
         "become_member",
@@ -240,8 +244,9 @@ pub async fn become_cluster_member(
 
 #[allow(clippy::too_many_arguments)]
 async fn try_become(
-    // state: &Arc<AppState>,
-    raft: &Raft<TypeConfigSqlite>,
+    state: &Arc<AppState>,
+    raft_type: &RaftType,
+    // raft: &Raft<TypeConfigSqlite>,
     client: &reqwest::Client,
     scheme: &str,
     suffix: &str,
@@ -254,7 +259,7 @@ async fn try_become(
     loop {
         time::sleep(Duration::from_secs(1)).await;
         // maybe we got initialized in the meantime
-        if check_init && raft.is_initialized().await? {
+        if check_init && helpers::is_raft_initialized(state, raft_type).await? {
             return Ok(());
         }
 
@@ -263,7 +268,13 @@ async fn try_become(
                 continue;
             }
 
-            let url = format!("{}://{}/cluster/{}", scheme, node.addr_api, suffix);
+            let url = format!(
+                "{}://{}/cluster/{}/{}",
+                scheme,
+                node.addr_api,
+                suffix,
+                raft_type.as_str()
+            );
             debug!("Sending request to {}", url);
 
             let res = client
@@ -299,6 +310,29 @@ async fn try_become(
         }
     }
 }
+
+async fn is_initialized_timeout(
+    state: &Arc<AppState>,
+    raft_type: &RaftType,
+) -> Result<bool, Error> {
+    // Do not try to initialize already initialized nodes
+    if helpers::is_raft_initialized(state, raft_type).await? {
+        return Ok(true);
+    }
+
+    // If it is not initialized, wait long enough to make sure this
+    // node is not joined again to an already existing cluster after data loss.
+    time::sleep(Duration::from_secs(3)).await;
+
+    // Make sure we are not initialized by now, otherwise go on
+    if helpers::is_raft_initialized(state, raft_type).await? {
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+// TODO get rid of the duplication here and make it prettier -> figure out generic types properly
 
 #[cfg(feature = "sqlite")]
 async fn is_initialized_timeout_sqlite(raft: &Raft<TypeConfigSqlite>) -> Result<bool, Error> {

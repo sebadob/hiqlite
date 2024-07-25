@@ -19,6 +19,8 @@ pub enum Error {
     BadRequest(Cow<'static, str>),
     #[error("Bincode: {0}")]
     Bincode(String),
+    #[error("Cache: {0}")]
+    Cache(Cow<'static, str>),
     #[error("CheckIsLeaderError: {0}")]
     CheckIsLeaderError(RaftError<u64, CheckIsLeaderError<u64, Node>>),
     #[error("ClientWriteError: {0}")]
@@ -89,6 +91,7 @@ impl IntoResponse for Error {
         let status = match &self {
             Error::BadRequest(_) => StatusCode::BAD_REQUEST,
             Error::Bincode(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::Cache(_) => StatusCode::BAD_REQUEST,
             Error::CheckIsLeaderError(_) => StatusCode::CONFLICT,
             Error::LeaderChange(_) => StatusCode::CONFLICT,
             Error::QueryParams(_) => StatusCode::BAD_REQUEST,

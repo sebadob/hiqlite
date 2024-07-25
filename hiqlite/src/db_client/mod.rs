@@ -17,6 +17,9 @@ mod query;
 mod stream;
 mod transaction;
 
+#[cfg(feature = "cache")]
+mod cache;
+
 /// Database client
 #[derive(Clone)]
 pub struct DbClient {
@@ -25,7 +28,7 @@ pub struct DbClient {
     pub(crate) client: Arc<Client>,
     pub(crate) tx_client: flume::Sender<ClientStreamReq>,
     pub(crate) tls_config: Option<Arc<rustls::ClientConfig>>,
-    // Only remote clients will have `Some(_)` here -> makes the client cheaper to clone
+    // Only remote clients will have `Some(_)` here -> local ones have the state
     pub(crate) api_secret: Option<String>,
     pub(crate) request_id: Arc<AtomicUsize>,
     pub(crate) tx_shutdown: Option<watch::Sender<bool>>,

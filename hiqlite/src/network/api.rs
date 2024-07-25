@@ -3,7 +3,7 @@ use crate::network::handshake::HandshakeSecret;
 use crate::network::{fmt_ok, get_payload, validate_secret, AppStateExt, Error};
 use crate::query::query_consistent;
 use crate::query::rows::RowOwned;
-use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
+
 use axum::body;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
@@ -13,6 +13,12 @@ use std::borrow::Cow;
 use std::ops::Deref;
 use tokio::task;
 use tracing::{error, info, warn};
+
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
+
+#[cfg(feature = "sqlite")]
+use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
 
 // pub(crate) async fn write(
 //     state: AppStateExt,
@@ -185,6 +191,7 @@ pub(crate) struct ApiStreamRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum ApiStreamRequestPayload {
+    // sqlite
     Execute(Query),
     ExecuteReturning(Query),
     Transaction(Vec<Query>),
@@ -192,12 +199,15 @@ pub(crate) enum ApiStreamRequestPayload {
     Batch(Cow<'static, str>),
     Migrate(Vec<Migration>),
     Backup,
+
+    #[cfg(feature = "cache")]
+    KV(CacheRequest),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ApiStreamResponse {
     pub(crate) request_id: usize,
-    pub(crate) result: Result<ApiStreamResponsePayload, Error>,
+    pub(crate) result: ApiStreamResponsePayload,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -209,6 +219,8 @@ pub(crate) enum ApiStreamResponsePayload {
     Batch(Vec<Result<usize, Error>>),
     Migrate(Result<(), Error>),
     Backup(Result<(), Error>),
+    #[cfg(feature = "cache")]
+    KV(CacheResponse),
 }
 
 #[derive(Debug)]
@@ -378,13 +390,13 @@ async fn handle_socket_concurrent(
                                     };
                                     ApiStreamResponse {
                                         request_id: req.request_id,
-                                        result: Ok(ApiStreamResponsePayload::Execute(res)),
+                                        result: ApiStreamResponsePayload::Execute(res),
                                     }
                                 }
                                 Err(err) => ApiStreamResponse {
                                     request_id: req.request_id,
-                                    result: Ok(ApiStreamResponsePayload::Execute(Err(
-                                        Error::from(err),
+                                    result: ApiStreamResponsePayload::Execute(Err(Error::from(
+                                        err,
                                     ))),
                                 },
                             }
@@ -405,14 +417,14 @@ async fn handle_socket_concurrent(
                                     };
                                     ApiStreamResponse {
                                         request_id: req.request_id,
-                                        result: Ok(ApiStreamResponsePayload::ExecuteReturning(res)),
+                                        result: ApiStreamResponsePayload::ExecuteReturning(res),
                                     }
                                 }
                                 Err(err) => ApiStreamResponse {
                                     request_id: req.request_id,
-                                    result: Ok(ApiStreamResponsePayload::ExecuteReturning(Err(
+                                    result: ApiStreamResponsePayload::ExecuteReturning(Err(
                                         Error::from(err),
-                                    ))),
+                                    )),
                                 },
                             }
                         }
@@ -432,13 +444,13 @@ async fn handle_socket_concurrent(
                                     };
                                     ApiStreamResponse {
                                         request_id: req.request_id,
-                                        result: Ok(ApiStreamResponsePayload::Transaction(res)),
+                                        result: ApiStreamResponsePayload::Transaction(res),
                                     }
                                 }
                                 Err(err) => ApiStreamResponse {
                                     request_id: req.request_id,
-                                    result: Ok(ApiStreamResponsePayload::Execute(Err(
-                                        Error::from(err),
+                                    result: ApiStreamResponsePayload::Execute(Err(Error::from(
+                                        err,
                                     ))),
                                 },
                             }
@@ -463,13 +475,13 @@ async fn handle_socket_concurrent(
                                     };
                                     ApiStreamResponse {
                                         request_id: req.request_id,
-                                        result: Ok(ApiStreamResponsePayload::Batch(res.result)),
+                                        result: ApiStreamResponsePayload::Batch(res.result),
                                     }
                                 }
                                 Err(err) => ApiStreamResponse {
                                     request_id: req.request_id,
-                                    result: Ok(ApiStreamResponsePayload::Execute(Err(
-                                        Error::from(err),
+                                    result: ApiStreamResponsePayload::Execute(Err(Error::from(
+                                        err,
                                     ))),
                                 },
                             }
@@ -490,13 +502,13 @@ async fn handle_socket_concurrent(
                                     };
                                     ApiStreamResponse {
                                         request_id: req.request_id,
-                                        result: Ok(ApiStreamResponsePayload::Migrate(res)),
+                                        result: ApiStreamResponsePayload::Migrate(res),
                                     }
                                 }
                                 Err(err) => ApiStreamResponse {
                                     request_id: req.request_id,
-                                    result: Ok(ApiStreamResponsePayload::Execute(Err(
-                                        Error::from(err),
+                                    result: ApiStreamResponsePayload::Execute(Err(Error::from(
+                                        err,
                                     ))),
                                 },
                             }
@@ -512,14 +524,29 @@ async fn handle_socket_concurrent(
                                     };
                                     ApiStreamResponse {
                                         request_id: req.request_id,
-                                        result: Ok(ApiStreamResponsePayload::Backup(res)),
+                                        result: ApiStreamResponsePayload::Backup(res),
                                     }
                                 }
                                 Err(err) => ApiStreamResponse {
                                     request_id: req.request_id,
-                                    result: Ok(ApiStreamResponsePayload::Backup(Err(Error::from(
-                                        err,
-                                    )))),
+                                    result: ApiStreamResponsePayload::Backup(Err(Error::from(err))),
+                                },
+                            }
+                        }
+
+                        #[cfg(feature = "cache")]
+                        ApiStreamRequestPayload::KV(cache_req) => {
+                            match state.raft_cache.raft.client_write(cache_req).await {
+                                Ok(resp) => {
+                                    let resp: CacheResponse = resp.data;
+                                    ApiStreamResponse {
+                                        request_id: req.request_id,
+                                        result: ApiStreamResponsePayload::KV(resp),
+                                    }
+                                }
+                                Err(err) => ApiStreamResponse {
+                                    request_id: req.request_id,
+                                    result: ApiStreamResponsePayload::Backup(Err(Error::from(err))),
                                 },
                             }
                         }

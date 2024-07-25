@@ -26,6 +26,9 @@ use tokio::task::JoinHandle;
 use tokio::{select, task, time};
 use tracing::{debug, error, info, warn};
 
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::state_machine::CacheRequest;
+
 #[derive(Debug)]
 pub enum ClientStreamReq {
     // coming from the `DbClient`
@@ -37,6 +40,9 @@ pub enum ClientStreamReq {
     Migrate(ClientMigratePayload),
     Backup(ClientBackupPayload),
     Shutdown,
+
+    #[cfg(feature = "cache")]
+    KV(ClientKVPayload),
 
     // coming from the WebSocket reader
     StreamResponse(ApiStreamResponse),
@@ -84,6 +90,14 @@ pub struct ClientMigratePayload {
 #[derive(Debug)]
 pub struct ClientBackupPayload {
     pub request_id: usize,
+    pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
+}
+
+#[cfg(feature = "cache")]
+#[derive(Debug)]
+pub struct ClientKVPayload {
+    pub request_id: usize,
+    pub cache_req: CacheRequest,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
@@ -343,6 +357,33 @@ async fn client_stream(
                     }
                 }
 
+                #[cfg(feature = "cache")]
+                ClientStreamReq::KV(ClientKVPayload {
+                    request_id,
+                    cache_req,
+                    ack,
+                }) => {
+                    let req = ApiStreamRequest {
+                        request_id,
+                        payload: ApiStreamRequestPayload::KV(cache_req),
+                    };
+
+                    match tx_write
+                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
+                        .await
+                    {
+                        Ok(_) => {
+                            in_flight.insert(req.request_id, ack);
+                        }
+                        Err(err) => {
+                            error!("Error sending txn request to writer: {}", err);
+                            let _ = ack
+                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
+                            break;
+                        }
+                    }
+                }
+
                 ClientStreamReq::LeaderChange((node_id, node)) => {
                     // ignore result just in case the writer has already exited anyway
                     let _ = tx_write.send_async(WritePayload::Close).await;
@@ -418,6 +459,10 @@ async fn client_stream(
                 ClientStreamReq::Backup(_) => {
                     unreachable!("we should never receive ClientStreamReq::Backup from WS reader")
                 }
+                #[cfg(feature = "cache")]
+                ClientStreamReq::KV(_) => {
+                    unreachable!("we should never receive ClientStreamReq::KV from WS reader")
+                }
                 ClientStreamReq::Shutdown => {
                     unreachable!("we should never receive ClientStreamReq::Shutdown from WS reader")
                 }
@@ -462,7 +507,7 @@ async fn try_forward_response(
                     None => {
                         error!("client ack for ApiStreamResponse missing");
                     }
-                    Some(ack) => match ack.send(response.result) {
+                    Some(ack) => match ack.send(Ok(response.result)) {
                         Ok(_) => {
                             debug!("ApiStreamResponse sent to client from in_flight_buf");
                         }
@@ -476,7 +521,7 @@ async fn try_forward_response(
             }
         }
 
-        Some(ack) => match ack.send(response.result) {
+        Some(ack) => match ack.send(Ok(response.result)) {
             Ok(_) => {
                 debug!("ApiStreamResponse sent to client");
             }

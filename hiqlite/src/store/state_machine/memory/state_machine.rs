@@ -17,23 +17,26 @@ use tokio::fs;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+pub(crate) type KvStore = Arc<RwLock<BTreeMap<String, Vec<u8>>>>;
+
 type Entry = openraft::Entry<TypeConfigKV>;
 type SnapshotData = Cursor<Vec<u8>>;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CacheRequest {
     Put {
         key: Cow<'static, str>,
-        value: Cow<'static, str>,
+        value: Cow<'static, [u8]>,
     },
     Delete {
         key: Cow<'static, str>,
     },
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct CacheResponse {
-    pub value: Option<Cow<'static, str>>,
+#[derive(Debug, Serialize, Deserialize)]
+pub enum CacheResponse {
+    Empty,
+    Ok,
 }
 
 /// This is a full in-memory state machine acting as a cache.
@@ -41,12 +44,11 @@ pub struct CacheResponse {
 /// down. If just a single node is restarting, it will re-sync in-memory data from other members.
 #[derive(Debug, Clone)]
 pub struct StateMachineMemory {
-    // data: StateMachineData,
     last_applied_log_id: Option<LogId<NodeId>>,
     last_membership: StoredMembership<NodeId, Node>,
 
     /// TODO should be converted to a concurrent map if we keep this
-    kvs: Arc<RwLock<BTreeMap<String, String>>>,
+    pub(crate) kvs: KvStore,
 
     snapshot_idx: Uuid,
     snapshot: Option<Snapshot<TypeConfigKV>>,
@@ -123,28 +125,29 @@ impl RaftStateMachine<TypeConfigKV> for StateMachineMemory {
         for entry in entries {
             self.last_applied_log_id = Some(entry.log_id);
 
-            let mut resp_value = None;
-
-            match entry.payload {
-                EntryPayload::Blank => {}
+            let resp_value = match entry.payload {
+                EntryPayload::Blank => CacheResponse::Empty,
                 EntryPayload::Normal(req) => match req {
                     CacheRequest::Put { key, value } => {
-                        resp_value = Some(value.clone());
+                        // resp_value = Some(value.clone());
                         // let mut lock = self.kvs.write().await;
                         lock.insert(key.into(), value.into());
+                        CacheResponse::Ok
                     }
 
                     CacheRequest::Delete { key } => {
                         // let mut lock = self.kvs.write().await;
                         lock.remove(key.as_ref());
+                        CacheResponse::Ok
                     }
                 },
                 EntryPayload::Membership(mem) => {
                     self.last_membership = StoredMembership::new(Some(entry.log_id), mem);
+                    CacheResponse::Empty
                 }
-            }
+            };
 
-            replies.push(CacheResponse { value: resp_value });
+            replies.push(resp_value);
         }
         Ok(replies)
     }
@@ -165,7 +168,7 @@ impl RaftStateMachine<TypeConfigKV> for StateMachineMemory {
         meta: &SnapshotMeta<NodeId, Node>,
         snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
-        let kvs: BTreeMap<String, String> = bincode::deserialize(snapshot.get_ref())
+        let kvs: BTreeMap<String, Vec<u8>> = bincode::deserialize(snapshot.get_ref())
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
 
         self.last_applied_log_id = meta.last_log_id;

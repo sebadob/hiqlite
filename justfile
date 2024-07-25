@@ -94,7 +94,7 @@ test:
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
-    cargo test
+    cargo test --features cache
 
 
 # builds the code

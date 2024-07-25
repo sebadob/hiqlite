@@ -3,7 +3,7 @@
 #![doc = include_str!("../../README.md")]
 #![forbid(unsafe_code)]
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, RaftType};
 use crate::network::raft_server;
 use crate::network::{api, management};
 use axum::routing::{get, post};
@@ -38,6 +38,7 @@ mod app_state;
 mod config;
 mod db_client;
 mod error;
+mod helpers;
 mod init;
 mod migration;
 mod network;
@@ -253,8 +254,8 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
         .nest(
             "/cluster",
             Router::new()
-                .route("/add_learner", post(management::add_learner))
-                .route("/become_member", post(management::become_member))
+                .route("/add_learner/:raft_type", post(management::add_learner))
+                .route("/become_member/:raft_type", post(management::become_member))
                 .route(
                     "/membership",
                     get(management::get_membership).post(management::post_membership),
@@ -262,8 +263,11 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
                 .route("/init", post(management::init))
                 .route("/metrics", get(management::metrics)),
         )
+        // TODO
         .route("/execute", post(api::execute))
+        // TODO
         .route("/query", post(api::query))
+        // TODO
         .route("/query/consistent", post(api::query))
         .route("/stream", get(api::stream))
         .route("/ping", get(api::ping))
@@ -298,7 +302,8 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
 
     #[cfg(feature = "sqlite")]
     init::become_cluster_member(
-        &state.raft_db.raft,
+        &state,
+        &RaftType::Sqlite,
         node_config.node_id,
         &node_config.nodes,
         tls_raft,
@@ -307,16 +312,17 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     )
     .await?;
 
-    // #[cfg(feature = "cache")]
-    // init::become_cluster_member(
-    //     &state.raft_db.raft_cache.raft,
-    //     node_config.node_id,
-    //     &node_config.nodes,
-    //     tls_raft,
-    //     tls_no_verify,
-    //     &state.secret_api,
-    // )
-    // .await?;
+    #[cfg(feature = "cache")]
+    init::become_cluster_member(
+        &state,
+        &RaftType::Cache,
+        node_config.node_id,
+        &node_config.nodes,
+        tls_raft,
+        tls_no_verify,
+        &state.secret_api,
+    )
+    .await?;
 
     let client = DbClient::new_local(state, tls_api_client_config, tx_shutdown);
 

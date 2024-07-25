@@ -46,6 +46,9 @@ impl DbClient {
     }
 
     /// Create a remote client
+    ///
+    /// TODO remote-only clients are not fully implemented yet, they will panic for certain
+    /// operations!
     pub fn new(
         node_id: NodeId,
         leader_id: NodeId,

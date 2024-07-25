@@ -38,7 +38,7 @@ pub(crate) async fn query_consistent<S>(
     if let Err(err) = tx_ws_writer
         .send_async(WsWriteMsg::Payload(ApiStreamResponse {
             request_id,
-            result: Ok(ApiStreamResponsePayload::QueryConsistent(res)),
+            result: ApiStreamResponsePayload::QueryConsistent(res),
         }))
         .await
     {
