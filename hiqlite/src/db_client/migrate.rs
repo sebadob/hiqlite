@@ -25,6 +25,7 @@ impl DbClient {
     async fn migrate_execute(&self, migrations: Vec<Migration>) -> Result<(), Error> {
         if let Some(state) = self.is_this_local_leader().await {
             let res = state
+                .raft_db
                 .raft
                 .client_write(QueryWrite::Migration(migrations))
                 .await?;

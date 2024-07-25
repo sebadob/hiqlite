@@ -35,7 +35,11 @@ impl DbClient {
     #[inline(always)]
     async fn execute_req(&self, sql: Query) -> Result<usize, Error> {
         if let Some(state) = self.is_this_local_leader().await {
-            let res = state.raft.client_write(QueryWrite::Execute(sql)).await?;
+            let res = state
+                .raft_db
+                .raft
+                .client_write(QueryWrite::Execute(sql))
+                .await?;
             let resp: Response = res.data;
             match resp {
                 Response::Execute(res) => res.result,
@@ -109,6 +113,7 @@ impl DbClient {
     async fn execute_returning_req(&self, sql: Query) -> Result<Vec<RowOwned>, Error> {
         if let Some(state) = self.is_this_local_leader().await {
             let res = state
+                .raft_db
                 .raft
                 .client_write(QueryWrite::ExecuteReturning(sql))
                 .await?;

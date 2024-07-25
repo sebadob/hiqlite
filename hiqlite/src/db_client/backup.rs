@@ -22,7 +22,7 @@ impl DbClient {
     #[cold]
     async fn backup_execute(&self) -> Result<(), Error> {
         if let Some(state) = self.is_this_local_leader().await {
-            let res = state.raft.client_write(QueryWrite::Backup).await?;
+            let res = state.raft_db.raft.client_write(QueryWrite::Backup).await?;
             let resp: Response = res.data;
             match resp {
                 Response::Backup(res) => res,

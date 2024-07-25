@@ -263,18 +263,18 @@ async fn try_become(
 
 // async fn is_initialized_timeout(state: &AppState) -> Result<bool, Error> {
 //     // Do not try to initialize already initialized nodes
-//     if state.raft.is_initialized().await? {
+//     if state.raft_db.raft_db.raft.is_initialized().await? {
 //         return Ok(true);
 //     }
 //
 //     // If it is not initialized, wait long enough to make sure this
 //     // node is not joined again to an already existing cluster after data loss.
-//     let heartbeat = state.raft.config().heartbeat_interval;
+//     let heartbeat = state.raft_db.raft_db.raft.config().heartbeat_interval;
 //     // We will wait for 5 heartbeats to make sure no other cluster is running
 //     time::sleep(Duration::from_millis(heartbeat * 5)).await;
 //
 //     // Make sure we are not initialized by now, otherwise go on
-//     if state.raft.is_initialized().await? {
+//     if state.raft_db.raft_db.raft.is_initialized().await? {
 //         Ok(true)
 //     } else {
 //         Ok(false)

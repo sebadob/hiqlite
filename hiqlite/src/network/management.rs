@@ -31,13 +31,13 @@ pub(crate) async fn add_learner(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    if !state.raft.is_initialized().await? {
+    if !state.raft_db.raft.is_initialized().await? {
         return Err(Error::Error("Raft is not initialized".into()));
     }
 
-    if let Some(leader_id) = state.raft.current_leader().await {
+    if let Some(leader_id) = state.raft_db.raft.current_leader().await {
         if leader_id != state.id {
-            let metrics = state.raft.metrics().borrow().clone();
+            let metrics = state.raft_db.raft.metrics().borrow().clone();
             let members = metrics.membership_config;
             let leader = members
                 .nodes()
@@ -79,7 +79,7 @@ pub(crate) async fn add_learner(
         // hold this lock the whole time, even over await points, to never have race conditions here ...
         let _lock = state.raft_lock.lock().await;
 
-        let metrics = state.raft.metrics().borrow().clone();
+        let metrics = state.raft_db.raft.metrics().borrow().clone();
         let members = metrics.membership_config;
         let is_member_already = members.nodes().any(|(id, _)| *id == node.id);
 
@@ -116,7 +116,11 @@ pub(crate) async fn add_learner(
 
             // TODO this is far from being a good approach, since it could fail in the middle,
             // but the only solution I found so far...
-            let res = state.raft.change_membership(new_members, false).await;
+            let res = state
+                .raft_db
+                .raft
+                .change_membership(new_members, false)
+                .await;
             match res {
                 Ok(resp) => {
                     info!("Removed already existing member: {:?}", resp);
@@ -124,11 +128,11 @@ pub(crate) async fn add_learner(
                     time::sleep(Duration::from_millis(100)).await;
 
                     info!("Adding removed member as learner");
-                    state.raft.add_learner(node.id, node, true).await?;
+                    state.raft_db.raft.add_learner(node.id, node, true).await?;
 
                     info!("Membership changed successfully");
 
-                    let metrics = state.raft.metrics().borrow().clone();
+                    let metrics = state.raft_db.raft.metrics().borrow().clone();
                     let members = metrics.membership_config;
                     info!(
                         r#"
@@ -149,7 +153,7 @@ pub(crate) async fn add_learner(
         }
     }
 
-    let res = state.raft.add_learner(node_id, node, true).await;
+    let res = state.raft_db.raft.add_learner(node_id, node, true).await;
     match res {
         Ok(resp) => {
             info!("Added node as learner: {:?}", resp);
@@ -176,7 +180,7 @@ pub(crate) async fn become_member(
     // we want to hold the lock until we finished to not end up with race conditions
     let _lock = state.raft_lock.lock().await;
 
-    let metrics = state.raft.metrics().borrow().clone();
+    let metrics = state.raft_db.raft.metrics().borrow().clone();
     let members = metrics.membership_config;
 
     let mut nodes_set = BTreeSet::new();
@@ -185,7 +189,7 @@ pub(crate) async fn become_member(
     }
     nodes_set.insert(payload.id);
 
-    let res = state.raft.change_membership(nodes_set, true).await;
+    let res = state.raft_db.raft.change_membership(nodes_set, true).await;
     match res {
         Ok(resp) => {
             info!("Added node as member: {:?}", resp);
@@ -204,11 +208,11 @@ pub(crate) async fn get_membership(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    if !state.raft.is_initialized().await? {
+    if !state.raft_db.raft.is_initialized().await? {
         return Err(Error::Config("Raft node has not been initialized".into()));
     }
 
-    let metrics = state.raft.metrics().borrow().clone();
+    let metrics = state.raft_db.raft.metrics().borrow().clone();
     let members = metrics.membership_config;
     fmt_ok(headers, members.membership())
 }
@@ -223,7 +227,10 @@ pub(crate) async fn post_membership(
 
     let payload = get_payload::<BTreeSet<NodeId>>(&headers, body)?;
     // retain false removes current cluster members if they do not appear in the new list
-    fmt_ok(headers, state.raft.change_membership(payload, false).await?)
+    fmt_ok(
+        headers,
+        state.raft_db.raft.change_membership(payload, false).await?,
+    )
 }
 
 /// Initialize a single-node cluster.
@@ -238,7 +245,7 @@ pub(crate) async fn init(state: AppStateExt, headers: HeaderMap) -> Result<(), E
     };
 
     nodes.insert(state.id, node);
-    match state.raft.initialize(nodes).await {
+    match state.raft_db.raft.initialize(nodes).await {
         Ok(_) => Ok(()),
         Err(err) => Err(Error::from(err)),
     }
@@ -248,6 +255,6 @@ pub(crate) async fn init(state: AppStateExt, headers: HeaderMap) -> Result<(), E
 pub(crate) async fn metrics(state: AppStateExt, headers: HeaderMap) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    let metrics = state.raft.metrics().borrow().clone();
+    let metrics = state.raft_db.raft.metrics().borrow().clone();
     fmt_ok(headers, &metrics)
 }

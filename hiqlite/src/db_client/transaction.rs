@@ -36,6 +36,7 @@ impl DbClient {
     async fn txn_execute(&self, queries: Vec<Query>) -> Result<Vec<Result<usize, Error>>, Error> {
         if let Some(state) = self.is_this_local_leader().await {
             let res = state
+                .raft_db
                 .raft
                 .client_write(QueryWrite::Transaction(queries))
                 .await?;

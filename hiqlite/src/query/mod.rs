@@ -27,9 +27,9 @@ pub(crate) async fn query_consistent<S>(
     S: Into<Cow<'static, str>>,
 {
     let res = query_consistent_local(
-        &state.raft,
-        state.log_statements,
-        state.read_pool.clone(),
+        &state.raft_db.raft,
+        state.raft_db.log_statements,
+        state.raft_db.read_pool.clone(),
         stmt,
         params,
     )
@@ -95,11 +95,11 @@ where
     S: Into<Cow<'static, str>>,
 {
     let stmt: Cow<'static, str> = stmt.into();
-    if state.log_statements {
+    if state.raft_db.log_statements {
         info!("query_map_typed:\n{}\n{:?}", stmt, params)
     }
 
-    let conn = state.read_pool.get().await?;
+    let conn = state.raft_db.read_pool.get().await?;
     task::spawn_blocking(move || {
         let mut stmt = conn.prepare_cached(stmt.as_ref())?;
 
@@ -146,11 +146,11 @@ where
     S: Into<Cow<'static, str>>,
 {
     let stmt: Cow<'static, str> = stmt.into();
-    if state.log_statements {
+    if state.raft_db.log_statements {
         info!("query_as:\n{}\n{:?}", stmt, params)
     }
 
-    let conn = state.read_pool.get().await?;
+    let conn = state.raft_db.read_pool.get().await?;
     task::spawn_blocking(move || {
         let mut stmt = conn.prepare_cached(stmt.as_ref())?;
 

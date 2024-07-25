@@ -1,16 +1,18 @@
 #![allow(unused)]
 
-use crate::{Error, NodeId};
+use crate::{init, Error, NodeConfig, NodeId, RaftConfig};
 use openraft::storage::RaftLogStorage;
-use openraft::StorageError;
+use openraft::{Raft, StorageError};
 use rusqlite::OpenFlags;
 use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::sync::Arc;
-// in-memory
-// use crate::store::state_machine_memory::StateMachineStore;
 
-// sqlite
+use crate::app_state::{StateRaftCache, StateRaftDB};
+use crate::network::NetworkStreaming;
+use crate::store::state_machine::sqlite::state_machine::SqlitePool;
+use crate::store::state_machine::sqlite::writer::WriterRequest;
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use state_machine::sqlite::state_machine::StateMachineSqlite;
 
 // pub mod state_machine_memory;
@@ -19,55 +21,84 @@ pub mod state_machine;
 
 pub type StorageResult<T> = Result<T, StorageError<NodeId>>;
 
-// REDB
-// pub(crate) async fn new_storage(
-//     db_path: Cow<'static, str>,
-//     filename_db: Cow<'static, str>,
-//     mode: NodeMode,
-// ) -> (logs::LogStore, StateMachineStore) {
-//     let log_store = logs::LogStore::new(db_path.as_ref()).await;
-//
-//     // let sm_store = state_machine_rocksdb::build_state_machine(db_path).await;
-//     let memory_sqlite = mode != NodeMode::Disk;
-//     let sm_store = StateMachineStore::new(db_path, filename_db, memory_sqlite)
-//         .await
-//         .unwrap();
-//     (log_store, sm_store)
-// }
+pub(crate) async fn start_raft_db(
+    node_config: NodeConfig,
+    raft_config: Arc<RaftConfig>,
+) -> Result<StateRaftDB, Error> {
+    let log_store = logs::rocksdb::LogStoreRocksdb::new(&node_config.data_dir).await;
 
-// IN MEMORY
-// TODO take optional in_memory value to be able to start multiple rafts in the end
-// pub(crate) async fn new_storage(
-//     db_path: &str,
-//     filename_db: Option<&str>,
-// ) -> (logs_memory::LogStore, StateMachineStore) {
-//     // let log_store = LogStore::new(db_path).await;
-//     let log_store = logs_memory::LogStore::new();
-//
-//     // let sm_store = state_machine_rocksdb::build_state_machine(db_path).await;
-//     let sm_store = StateMachineStore::new(db_path, filename_db).await.unwrap();
-//     (log_store, sm_store)
-// }
+    let state_machine_store = StateMachineSqlite::new(
+        &node_config.data_dir,
+        &node_config.filename_db,
+        node_config.node_id,
+        node_config.log_statements,
+        #[cfg(feature = "s3")]
+        node_config.s3_config.map(Arc::new),
+    )
+    .await
+    .unwrap();
 
-// ROCKSDB
+    let logs_writer = log_store.tx_writer.clone();
+    let sql_writer = state_machine_store.write_tx.clone();
+    let read_pool = state_machine_store.read_pool.clone();
+
+    // Create the network layer that will connect and communicate the raft instances and
+    // will be used in conjunction with the store created above.
+    let network = NetworkStreaming {
+        node_id: node_config.node_id,
+        tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
+        secret_raft: node_config.secret_raft.as_bytes().to_vec(),
+    };
+
+    // Create a local raft instance.
+    let raft = openraft::Raft::new(
+        node_config.node_id,
+        raft_config.clone(),
+        network,
+        log_store,
+        state_machine_store,
+    )
+    .await
+    .expect("Raft create failed");
+
+    init::init_pristine_node_1(
+        &raft,
+        node_config.node_id,
+        &node_config.nodes,
+        &node_config.secret_api,
+        node_config.tls_api.is_some(),
+        node_config
+            .tls_api
+            .as_ref()
+            .map(|c| c.danger_tls_no_verify)
+            .unwrap_or(false),
+    )
+    .await?;
+
+    Ok(StateRaftDB {
+        raft,
+        logs_writer,
+        sql_writer,
+        read_pool,
+        log_statements: node_config.log_statements,
+    })
+}
+
+pub(crate) async fn start_raft_cache(
+    node_config: NodeConfig,
+    raft_config: Arc<RaftConfig>,
+) -> Result<StateRaftCache, Error> {
+    todo!()
+}
+
 pub(crate) async fn new_storage(
     node_id: NodeId,
-    db_path: Cow<'static, str>,
-    filename_db: Cow<'static, str>,
+    db_path: &str,
+    filename_db: &str,
     log_statements: bool,
-    // mode: NodeMode,
-    // ) -> (T, StateMachineStore)
-    // where
-    //     T: RaftLogStorage<TypeConfigSqlite>,
-    // {
     #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::S3Config>>,
 ) -> (logs::rocksdb::LogStoreRocksdb, StateMachineSqlite) {
-    // let log_store: T = match mode {
-    //     NodeMode::Disk | NodeMode::Memory => logs_rocks::LogStore::new(&db_path).await,
-    //     NodeMode::Ephemeral => logs_memory::LogStore::new(),
-    // };
-
-    let log_store = logs::rocksdb::LogStoreRocksdb::new(&db_path).await;
+    let log_store = logs::rocksdb::LogStoreRocksdb::new(db_path).await;
 
     let sm_store = StateMachineSqlite::new(
         db_path,
@@ -82,31 +113,6 @@ pub(crate) async fn new_storage(
 
     (log_store, sm_store)
 }
-
-// async fn log_store<LS>(db_path: Cow<'static, str>, mode: NodeMode) -> LS
-// where
-//     LS: RaftLogStorage<TypeConfigSqlite>,
-// {
-//     match mode {
-//         NodeMode::Disk | NodeMode::Memory => logs_rocks::LogStore::new(&db_path).await,
-//         NodeMode::Ephemeral => logs_memory::LogStore::new(),
-//     }
-// }
-
-// SQLITE
-// pub(crate) async fn new_storage(
-//     db_path: &str,
-//     filename_db: Option<&str>,
-// ) -> (logs_sqlite::LogStore, StateMachineStore) {
-//     // let log_store = LogStore::new(db_path).await;
-//     let log_store = logs_sqlite::LogStore::new(db_path, filename_db)
-//         .await
-//         .unwrap();
-//
-//     // let sm_store = state_machine_rocksdb::build_state_machine(db_path).await;
-//     let sm_store = StateMachineStore::new(db_path, filename_db).await.unwrap();
-//     (log_store, sm_store)
-// }
 
 #[cfg(feature = "sqlite")]
 pub(crate) fn connect_sqlite(

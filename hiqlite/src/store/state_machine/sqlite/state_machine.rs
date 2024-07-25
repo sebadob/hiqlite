@@ -137,22 +137,22 @@ impl Drop for StateMachineSqlite {
 
 impl StateMachineSqlite {
     pub(crate) async fn new(
-        data_dir: Cow<'static, str>,
-        filename_db: Cow<'static, str>,
+        data_dir: &str,
+        filename_db: &str,
         this_node: NodeId,
         log_statements: bool,
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::S3Config>>,
     ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
         // IMPORTANT: Do NOT change the order of the db exists check!
         // DB recovery will fail otherwise!
-        let mut db_exists = Self::db_exists(&data_dir, &filename_db).await;
+        let mut db_exists = Self::db_exists(data_dir, filename_db).await;
 
         let (
             PathDb(path_db),
             PathBackups(path_backups),
             PathSnapshots(path_snapshots),
             PathLockFile(path_lock_file),
-        ) = Self::build_folders(data_dir.as_ref(), true).await;
+        ) = Self::build_folders(data_dir, true).await;
 
         Self::check_set_lock_file(&path_lock_file, &path_db, &mut db_exists).await;
 
@@ -164,7 +164,7 @@ impl StateMachineSqlite {
             })?;
         let write_tx = writer::spawn_writer(conn, path_lock_file.clone(), log_statements);
 
-        let read_pool = Self::connect_read_pool(path_db.as_ref(), filename_db.as_ref())
+        let read_pool = Self::connect_read_pool(path_db.as_ref(), filename_db)
             .await
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::read(&err),

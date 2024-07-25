@@ -75,9 +75,9 @@ impl DbClient {
     async fn query_consistent_req(&self, query: Query) -> Result<Vec<RowOwned>, Error> {
         if let Some(state) = self.is_this_local_leader().await {
             query::query_consistent_local(
-                &state.raft,
-                state.log_statements,
-                state.read_pool.clone(),
+                &state.raft_db.raft,
+                state.raft_db.log_statements,
+                state.raft_db.read_pool.clone(),
                 query.sql,
                 query.params,
             )

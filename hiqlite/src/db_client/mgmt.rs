@@ -43,7 +43,7 @@ impl DbClient {
 
     pub async fn metrics(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
         if let Some(state) = &self.state {
-            let metrics = state.raft.metrics().borrow().clone();
+            let metrics = state.raft_db.raft.metrics().borrow().clone();
             Ok(metrics)
         } else {
             self.send_with_retry("/cluster/metrics", None::<String>.as_ref())
@@ -77,11 +77,21 @@ impl DbClient {
     pub async fn shutdown(&self) -> Result<(), Error> {
         if let Some(state) = &self.state {
             let (tx, rx) = oneshot::channel();
-            match state.raft.shutdown().await {
+            match state.raft_db.raft.shutdown().await {
                 Ok(_) => {
-                    let _ = state.logs_writer.send_async(ActionWrite::Shutdown).await;
+                    let _ = state
+                        .raft_db
+                        .logs_writer
+                        .send_async(ActionWrite::Shutdown)
+                        .await;
+                    let _ = state
+                        .raft_cache
+                        .logs_writer
+                        .send_async(ActionWrite::Shutdown)
+                        .await;
 
                     state
+                        .raft_db
                         .sql_writer
                         .send_async(WriterRequest::Shutdown(tx))
                         .await

@@ -19,13 +19,18 @@ all-features = true
 default = ["auto-heal", "backup", "s3", "sqlite"]
 #default = ["auto-heal", "auto-heal-logs", "backup", "s3", "sqlite"]
 
+sqlite = []
+cache = []
+
 auto-heal = []
 auto-heal-logs = ["openraft/loosen-follower-log-revert"]
 backup = ["s3"]
-sqlite = []
+
+s3 = ["backup", "dep:cryptr"]
+
 io-uring = ["rocksdb/io-uring"]
 jemalloc = ["rocksdb/jemalloc"]
-s3 = ["backup", "dep:cryptr"]
+
 webpki-roots = ["reqwest/rustls-tls-webpki-roots"]
 
 [dependencies]

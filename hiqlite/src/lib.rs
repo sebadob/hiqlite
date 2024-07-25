@@ -5,9 +5,7 @@
 
 use crate::app_state::AppState;
 use crate::network::raft_server;
-use crate::network::NetworkStreaming;
 use crate::network::{api, management};
-use crate::store::new_storage;
 use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
@@ -100,62 +98,82 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
             .expect("default CryptoProvider installation to succeed");
     }
 
+    let tls_api_client_config = node_config.tls_api.clone().map(|c| c.client_config());
+    let tls_raft = node_config.tls_raft.is_some();
+    let tls_no_verify = node_config
+        .tls_raft
+        .as_ref()
+        .map(|c| c.danger_tls_no_verify)
+        .unwrap_or(false);
+
+    // #[cfg(feature = "s3")]
+    // s3::init_enc_keys(&node_config.enc_keys_from)?;
+    //
+    // #[cfg(feature = "backup")]
+    // let backup_applied = backup::check_restore_apply(&node_config).await?;
+    //
+    // let raft_config = Arc::new(node_config.config.validate().unwrap());
+    //
+    // // let (log_store, state_machine_store) =
+    // //     new_storage(&node_config.data_dir, node_config.filename_db.as_deref()).await;
+    // let (log_store, state_machine_store) = new_storage(
+    //     node_config.node_id,
+    //     node_config.data_dir,
+    //     node_config.filename_db,
+    //     node_config.log_statements,
+    //     #[cfg(feature = "s3")]
+    //     node_config.s3_config.map(Arc::new),
+    // )
+    // .await;
+    //
+    // let logs_writer = log_store.tx_writer.clone();
+    // let sql_writer = state_machine_store.write_tx.clone();
+    // let sql_reader = state_machine_store.read_pool.clone();
+    //
+    // // Create the network layer that will connect and communicate the raft instances and
+    // // will be used in conjunction with the store created above.
+    // let network = NetworkStreaming {
+    //     node_id: node_config.node_id,
+    //     tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
+    //     secret_raft: node_config.secret_raft.as_bytes().to_vec(),
+    // };
+    //
+    // // Create a local raft instance.
+    // let raft = openraft::Raft::new(
+    //     node_config.node_id,
+    //     raft_config.clone(),
+    //     network,
+    //     log_store,
+    //     state_machine_store,
+    // )
+    // .await
+    // .expect("Raft create failed");
+    //
+    // init::init_pristine_node_1(
+    //     &raft,
+    //     node_config.node_id,
+    //     &node_config.nodes,
+    //     &node_config.secret_api,
+    //     node_config.tls_api.is_some(),
+    //     node_config
+    //         .tls_api
+    //         .as_ref()
+    //         .map(|c| c.danger_tls_no_verify)
+    //         .unwrap_or(false),
+    // )
+    // .await?;
+
     #[cfg(feature = "s3")]
     s3::init_enc_keys(&node_config.enc_keys_from)?;
 
-    #[cfg(feature = "backup")]
+    #[cfg(all(feature = "backup", feature = "sqlite"))]
     let backup_applied = backup::check_restore_apply(&node_config).await?;
 
-    let raft_config = Arc::new(node_config.config.validate().unwrap());
+    let raft_config = Arc::new(node_config.config.clone().validate().unwrap());
 
-    // let (log_store, state_machine_store) =
-    //     new_storage(&node_config.data_dir, node_config.filename_db.as_deref()).await;
-    let (log_store, state_machine_store) = new_storage(
-        node_config.node_id,
-        node_config.data_dir,
-        node_config.filename_db,
-        node_config.log_statements,
-        #[cfg(feature = "s3")]
-        node_config.s3_config.map(Arc::new),
-    )
-    .await;
-
-    let logs_writer = log_store.tx_writer.clone();
-    let sql_writer = state_machine_store.write_tx.clone();
-    let sql_reader = state_machine_store.read_pool.clone();
-
-    // Create the network layer that will connect and communicate the raft instances and
-    // will be used in conjunction with the store created above.
-    let network = NetworkStreaming {
-        node_id: node_config.node_id,
-        tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
-        secret_raft: node_config.secret_raft.as_bytes().to_vec(),
-    };
-
-    // Create a local raft instance.
-    let raft = openraft::Raft::new(
-        node_config.node_id,
-        raft_config.clone(),
-        network,
-        log_store,
-        state_machine_store,
-    )
-    .await
-    .expect("Raft create failed");
-
-    init::init_pristine_node_1(
-        &raft,
-        node_config.node_id,
-        &node_config.nodes,
-        &node_config.secret_api,
-        node_config.tls_api.is_some(),
-        node_config
-            .tls_api
-            .as_ref()
-            .map(|c| c.danger_tls_no_verify)
-            .unwrap_or(false),
-    )
-    .await?;
+    #[cfg(feature = "sqlite")]
+    let raft_db = store::start_raft_db(node_config.clone(), raft_config.clone()).await?;
+    let raft_cache = store::start_raft_cache(node_config.clone(), raft_config.clone()).await?;
 
     let (api_addr, rpc_addr) = {
         let node = node_config
@@ -176,20 +194,16 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
         id: node_config.node_id,
         addr_api: api_addr.clone(),
         addr_raft: rpc_addr.clone(),
-        raft,
+        raft_db,
+        raft_cache,
         raft_lock: Arc::new(Default::default()),
-        read_pool: sql_reader,
-        sql_writer,
-        logs_writer,
-        // kv_store,
         config: raft_config,
         secret_api: node_config.secret_api,
         secret_raft: node_config.secret_raft,
         client_buffers,
-        log_statements: node_config.log_statements,
     });
 
-    #[cfg(feature = "backup")]
+    #[cfg(all(feature = "backup", feature = "sqlite"))]
     if backup_applied {
         backup::restore_backup_cleanup(state.clone());
     }
@@ -279,25 +293,29 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
         }
     });
 
+    #[cfg(feature = "sqlite")]
     init::become_cluster_member(
-        &state.raft,
+        &state.raft_db.raft,
         node_config.node_id,
         &node_config.nodes,
-        node_config.tls_raft.is_some(),
-        node_config
-            .tls_raft
-            .as_ref()
-            .map(|c| c.danger_tls_no_verify)
-            .unwrap_or(false),
+        tls_raft,
+        tls_no_verify,
         &state.secret_api,
     )
     .await?;
 
-    let client = DbClient::new_local(
-        state,
-        node_config.tls_api.map(|c| c.client_config()),
-        tx_shutdown,
-    );
+    // #[cfg(feature = "cache")]
+    // init::become_cluster_member(
+    //     &state.raft_db.raft_cache.raft,
+    //     node_config.node_id,
+    //     &node_config.nodes,
+    //     tls_raft,
+    //     tls_no_verify,
+    //     &state.secret_api,
+    // )
+    // .await?;
+
+    let client = DbClient::new_local(state, tls_api_client_config, tx_shutdown);
 
     Ok(client)
 }

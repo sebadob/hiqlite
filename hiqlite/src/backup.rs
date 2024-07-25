@@ -113,9 +113,10 @@ pub fn restore_backup_cleanup(state: Arc<AppState>) {
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
+#[cfg(feature = "backup")]
 async fn restore_backup_cleanup_task(state: Arc<AppState>) {
     loop {
-        match state.raft.is_initialized().await {
+        match state.raft_db.raft.is_initialized().await {
             Ok(res) => {
                 if res {
                     break;
@@ -131,7 +132,7 @@ async fn restore_backup_cleanup_task(state: Arc<AppState>) {
 
     let last_log;
     loop {
-        let metrics = state.raft.metrics().borrow().clone();
+        let metrics = state.raft_db.raft.metrics().borrow().clone();
         if let Some(last_applied) = metrics.last_applied {
             if last_applied.index > 10 {
                 debug!("Found high enough last_applied log id");
@@ -142,17 +143,15 @@ async fn restore_backup_cleanup_task(state: Arc<AppState>) {
         time::sleep(Duration::from_millis(500)).await;
     }
 
-    let metrics = state.raft.metrics().borrow().clone();
-    info!("\n\n\nMetrics after having log it: {:?}\n\n", metrics);
+    // let metrics = state.raft_db.raft.metrics().borrow().clone();
 
     debug!("Taking snapshot now");
-    while let Err(err) = state.raft.trigger().snapshot().await {
-        error!("\n\n\nError during snapshot creation: {}\n\n", err);
+    while let Err(_err) = state.raft_db.raft.trigger().snapshot().await {
         time::sleep(Duration::from_millis(500)).await;
     }
 
     debug!("Purging logs");
-    while let Err(err) = state.raft.trigger().purge_log(last_log).await {
+    while let Err(err) = state.raft_db.raft.trigger().purge_log(last_log).await {
         error!("Error during logs purge: {}", err);
         time::sleep(Duration::from_millis(500)).await;
     }

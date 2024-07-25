@@ -68,7 +68,7 @@ check:
 
 
 # checks all combinations of features
-check-features:
+check-features check="check":
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
@@ -82,17 +82,17 @@ check-features:
     #backup = ["s3"]
     #s3 = ["backup", "dep:cryptr"]
 
-    cargo check --no-default-features --features sqlite
+    cargo {{check}} --no-default-features --features sqlite
     # auto-heal should only apply to sqlite
-    cargo check --no-default-features --features auto-heal
-    cargo check --no-default-features --features sqlite,auto-heal
+    cargo {{check}} --no-default-features --features auto-heal
+    cargo {{check}} --no-default-features --features sqlite,auto-heal
     # backup / s3 should only apply to sqlite
-    cargo check --no-default-features --features backup
-    cargo check --no-default-features --features sqlite,backup
-    cargo check --no-default-features --features sqlite,auto-heal,backup
+    cargo {{check}} --no-default-features --features backup
+    cargo {{check}} --no-default-features --features sqlite,backup
+    cargo {{check}} --no-default-features --features sqlite,auto-heal,backup
 
-    cargo check --no-default-features --features cache
-    cargo check --no-default-features --features sqlite,cache
+    cargo {{check}} --no-default-features --features cache
+    cargo {{check}} --no-default-features --features sqlite,cache
 
 
 # runs the full set of tests

@@ -29,7 +29,11 @@ impl DbClient {
         sql: Cow<'static, str>,
     ) -> Result<Vec<Result<usize, Error>>, Error> {
         if let Some(state) = self.is_this_local_leader().await {
-            let res = state.raft.client_write(QueryWrite::Batch(sql)).await?;
+            let res = state
+                .raft_db
+                .raft
+                .client_write(QueryWrite::Batch(sql))
+                .await?;
             let resp: Response = res.data;
             match resp {
                 Response::Batch(res) => Ok(res.result),

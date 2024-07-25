@@ -20,7 +20,7 @@ use tracing::{error, info, warn};
 //     body: body::Bytes,
 // ) -> Result<Response, ApiError> {
 //     let payload = get_payload::<Sql>(&headers, body)?;
-//     fmt_ok(headers, state.raft.client_write(payload).await?)
+//     fmt_ok(headers, state.raft_db.raft_db.raft.client_write(payload).await?)
 // }
 
 // pub(crate) async fn read(
@@ -68,7 +68,7 @@ use tracing::{error, info, warn};
 //     state: &Arc<AppState>,
 //     _key: &str,
 // ) -> Result<Option<String>, ApiError> {
-//     let _ = state.raft.ensure_linearizable().await?;
+//     let _ = state.raft_db.raft_db.raft.ensure_linearizable().await?;
 //     // TODO put behind feature flag?
 //     Err(ApiError::Error(
 //         "read consistent not implemented for Sqlite".into(),
@@ -88,7 +88,12 @@ pub(crate) async fn execute(
     validate_secret(&state, &headers)?;
 
     let payload = get_payload::<Query>(&headers, body)?;
-    match state.raft.client_write(QueryWrite::Execute(payload)).await {
+    match state
+        .raft_db
+        .raft
+        .client_write(QueryWrite::Execute(payload))
+        .await
+    {
         Ok(resp) => {
             let resp: crate::Response = resp.data;
             let res = match resp {
@@ -359,7 +364,12 @@ async fn handle_socket_concurrent(
                 payload => {
                     let res = match payload {
                         ApiStreamRequestPayload::Execute(sql) => {
-                            match state.raft.client_write(QueryWrite::Execute(sql)).await {
+                            match state
+                                .raft_db
+                                .raft
+                                .client_write(QueryWrite::Execute(sql))
+                                .await
+                            {
                                 Ok(resp) => {
                                     let resp: crate::Response = resp.data;
                                     let res = match resp {
@@ -382,6 +392,7 @@ async fn handle_socket_concurrent(
 
                         ApiStreamRequestPayload::ExecuteReturning(sql) => {
                             match state
+                                .raft_db
                                 .raft
                                 .client_write(QueryWrite::ExecuteReturning(sql))
                                 .await
@@ -408,6 +419,7 @@ async fn handle_socket_concurrent(
 
                         ApiStreamRequestPayload::Transaction(queries) => {
                             match state
+                                .raft_db
                                 .raft
                                 .client_write(QueryWrite::Transaction(queries))
                                 .await
@@ -437,7 +449,12 @@ async fn handle_socket_concurrent(
                         }
 
                         ApiStreamRequestPayload::Batch(sql) => {
-                            match state.raft.client_write(QueryWrite::Batch(sql)).await {
+                            match state
+                                .raft_db
+                                .raft
+                                .client_write(QueryWrite::Batch(sql))
+                                .await
+                            {
                                 Ok(resp) => {
                                     let resp: crate::Response = resp.data;
                                     let res = match resp {
@@ -460,6 +477,7 @@ async fn handle_socket_concurrent(
 
                         ApiStreamRequestPayload::Migrate(migrations) => {
                             match state
+                                .raft_db
                                 .raft
                                 .client_write(QueryWrite::Migration(migrations))
                                 .await
@@ -485,7 +503,7 @@ async fn handle_socket_concurrent(
                         }
 
                         ApiStreamRequestPayload::Backup => {
-                            match state.raft.client_write(QueryWrite::Backup).await {
+                            match state.raft_db.raft.client_write(QueryWrite::Backup).await {
                                 Ok(resp) => {
                                     let resp: crate::Response = resp.data;
                                     let res = match resp {
