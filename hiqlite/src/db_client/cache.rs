@@ -7,14 +7,14 @@ use std::borrow::Cow;
 use tokio::sync::oneshot;
 
 impl DbClient {
-    pub async fn get<S, V>(&self, key: S) -> Result<V, Error>
+    pub async fn get<K, V>(&self, key: K) -> Result<V, Error>
     where
-        S: AsRef<str>,
+        K: AsRef<str>,
         V: for<'a> Deserialize<'a>,
     {
         if let Some(state) = &self.state {
-            let lock = state.raft_cache.kv_store.read().await;
-            if let Some(value) = lock.get(key.as_ref()) {
+            let lock = state.raft_cache.kv_store.data.read().await;
+            if let Some(value) = lock.kvs.get(key.as_ref()) {
                 return Ok(bincode::deserialize(value).unwrap());
             }
         } else {

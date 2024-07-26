@@ -47,7 +47,7 @@ pub async fn test_self_healing(
         &client_2
     };
     // replication will take a few moments
-    time::sleep(Duration::from_millis(20)).await;
+    time::sleep(Duration::from_millis(200)).await;
     check::is_client_db_healthy(client_healed).await?;
     log("Client has self-healed successfully");
 

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::state_machine::KvStore;
+use crate::store::state_machine::memory::state_machine::StateMachineMemory;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
 
@@ -66,5 +66,5 @@ pub struct StateRaftDB {
 pub struct StateRaftCache {
     pub raft: openraft::Raft<TypeConfigKV>,
     pub lock: Mutex<()>,
-    pub kv_store: KvStore,
+    pub kv_store: Arc<StateMachineMemory>,
 }

@@ -101,7 +101,7 @@ pub(crate) async fn start_raft_cache(
     raft_config: Arc<RaftConfig>,
 ) -> Result<StateRaftCache, Error> {
     let log_store = logs::memory::LogStoreMemory::new();
-    let state_machine_store = StateMachineMemory::new().await.unwrap();
+    let state_machine_store = Arc::new(StateMachineMemory::new().await.unwrap());
 
     let network = NetworkStreaming {
         node_id: node_config.node_id,
@@ -109,7 +109,7 @@ pub(crate) async fn start_raft_cache(
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
     };
 
-    let kv_store = state_machine_store.kvs.clone();
+    let kv_store = state_machine_store.clone();
 
     let raft = openraft::Raft::new(
         node_config.node_id,

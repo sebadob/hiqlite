@@ -12,12 +12,13 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io::Cursor;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
-pub(crate) type KvStore = Arc<RwLock<BTreeMap<String, Vec<u8>>>>;
+// pub(crate) type KvStore = Arc<RwLock<BTreeMap<String, Vec<u8>>>>;
 
 type Entry = openraft::Entry<TypeConfigKV>;
 type SnapshotData = Cursor<Vec<u8>>;
@@ -39,43 +40,57 @@ pub enum CacheResponse {
     Ok,
 }
 
+#[derive(Debug, Default)]
+pub struct StateMachineData {
+    last_applied_log_id: Option<LogId<NodeId>>,
+    last_membership: StoredMembership<NodeId, Node>,
+    /// TODO should be converted to a concurrent map if we keep this
+    pub(crate) kvs: BTreeMap<String, Vec<u8>>,
+}
+
 /// This is a full in-memory state machine acting as a cache.
 /// It does not persist anything at all and losses its data when the whole Raft is being shut
 /// down. If just a single node is restarting, it will re-sync in-memory data from other members.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default)]
 pub struct StateMachineMemory {
-    last_applied_log_id: Option<LogId<NodeId>>,
-    last_membership: StoredMembership<NodeId, Node>,
-
-    /// TODO should be converted to a concurrent map if we keep this
-    pub(crate) kvs: KvStore,
-
-    snapshot_idx: Uuid,
-    snapshot: Option<Snapshot<TypeConfigKV>>,
+    pub(crate) data: Arc<RwLock<StateMachineData>>,
+    snapshot_idx: AtomicU64,
+    snapshot: Mutex<Option<Snapshot<TypeConfigKV>>>,
 }
 
-impl RaftSnapshotBuilder<TypeConfigKV> for StateMachineMemory {
+impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfigKV>, StorageError<NodeId>> {
         let (last_log_id, last_membership, kv_bytes) = {
-            let kvs = self.kvs.read().await;
-            let kv_bytes = bincode::serialize(&*kvs)
+            let data = self.data.read().await;
+            let kv_bytes = bincode::serialize(&data.kvs)
                 .map_err(|err| StorageIOError::read_state_machine(&err))?;
 
-            let last_applied_log = self.last_applied_log_id;
-            let last_membership = self.last_membership.clone();
+            let last_applied_log = data.last_applied_log_id.clone();
+            let last_membership = data.last_membership.clone();
 
             (last_applied_log, last_membership, kv_bytes)
+        };
+
+        let snapshot_idx = self.snapshot_idx.fetch_add(1, Ordering::Relaxed) + 1;
+        let snapshot_id = if let Some(last) = last_log_id {
+            format!("{}-{}-{}", last.leader_id, last.index, snapshot_idx)
+        } else {
+            format!("--{}", snapshot_idx)
         };
 
         let snapshot = Snapshot {
             meta: SnapshotMeta {
                 last_log_id,
                 last_membership,
-                snapshot_id: self.snapshot_idx.to_string(),
+                snapshot_id,
             },
             snapshot: Box::new(Cursor::new(kv_bytes)),
         };
-        self.snapshot = Some(snapshot.clone());
+
+        {
+            let mut current_snapshot = self.snapshot.lock().await;
+            *current_snapshot = Some(snapshot.clone());
+        }
 
         Ok(snapshot)
     }
@@ -83,13 +98,14 @@ impl RaftSnapshotBuilder<TypeConfigKV> for StateMachineMemory {
 
 impl StateMachineMemory {
     pub(crate) async fn new() -> Result<Self, StorageError<NodeId>> {
-        let mut sm = Self {
-            last_applied_log_id: None,
-            last_membership: Default::default(),
-            kvs: Arc::new(Default::default()),
-            snapshot_idx: Uuid::default(),
-            snapshot: None,
-        };
+        let mut sm = Self::default();
+        // let mut sm = Self {
+        //     last_applied_log_id: None,
+        //     last_membership: Default::default(),
+        //     kvs: Arc::new(Default::default()),
+        //     snapshot_idx: Uuid::default(),
+        //     snapshot: None,
+        // };
 
         // TODO maybe persist snapshots in a temp file on disk to save memory?
 
@@ -101,13 +117,14 @@ impl StateMachineMemory {
     }
 }
 
-impl RaftStateMachine<TypeConfigKV> for StateMachineMemory {
+impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     type SnapshotBuilder = Self;
 
     async fn applied_state(
         &mut self,
     ) -> Result<(Option<LogId<NodeId>>, StoredMembership<NodeId, Node>), StorageError<NodeId>> {
-        Ok((self.last_applied_log_id, self.last_membership.clone()))
+        let data = self.data.read().await;
+        Ok((data.last_applied_log_id, data.last_membership.clone()))
     }
 
     async fn apply<I>(&mut self, entries: I) -> Result<Vec<CacheResponse>, StorageError<NodeId>>
@@ -120,10 +137,10 @@ impl RaftStateMachine<TypeConfigKV> for StateMachineMemory {
 
         // TODO if this takes `&mut self`, can we assume that there will be no reads in between?
         // TODO -> we could take the lock only once at the start and be much faster with everything!
-        let mut lock = self.kvs.write().await;
+        let mut data = self.data.write().await;
 
         for entry in entries {
-            self.last_applied_log_id = Some(entry.log_id);
+            data.last_applied_log_id = Some(entry.log_id);
 
             let resp_value = match entry.payload {
                 EntryPayload::Blank => CacheResponse::Empty,
@@ -131,18 +148,18 @@ impl RaftStateMachine<TypeConfigKV> for StateMachineMemory {
                     CacheRequest::Put { key, value } => {
                         // resp_value = Some(value.clone());
                         // let mut lock = self.kvs.write().await;
-                        lock.insert(key.into(), value);
+                        data.kvs.insert(key.into(), value);
                         CacheResponse::Ok
                     }
 
                     CacheRequest::Delete { key } => {
                         // let mut lock = self.kvs.write().await;
-                        lock.remove(key.as_ref());
+                        data.kvs.remove(key.as_ref());
                         CacheResponse::Ok
                     }
                 },
                 EntryPayload::Membership(mem) => {
-                    self.last_membership = StoredMembership::new(Some(entry.log_id), mem);
+                    data.last_membership = StoredMembership::new(Some(entry.log_id), mem);
                     CacheResponse::Empty
                 }
             };
@@ -153,7 +170,6 @@ impl RaftStateMachine<TypeConfigKV> for StateMachineMemory {
     }
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
-        self.snapshot_idx = Uuid::now_v7();
         self.clone()
     }
 
@@ -171,12 +187,10 @@ impl RaftStateMachine<TypeConfigKV> for StateMachineMemory {
         let kvs: BTreeMap<String, Vec<u8>> = bincode::deserialize(snapshot.get_ref())
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
 
-        self.last_applied_log_id = meta.last_log_id;
-        self.last_membership = meta.last_membership.clone();
-        let mut lock = self.kvs.write().await;
-        *lock = kvs;
-
-        // self.persist_snapshot(new_snapshot, *snapshot)?;
+        let mut data = self.data.write().await;
+        data.last_applied_log_id = meta.last_log_id;
+        data.last_membership = meta.last_membership.clone();
+        data.kvs = kvs;
 
         Ok(())
     }
@@ -184,6 +198,6 @@ impl RaftStateMachine<TypeConfigKV> for StateMachineMemory {
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfigKV>>, StorageError<NodeId>> {
-        Ok(self.snapshot.clone())
+        Ok(self.snapshot.lock().await.clone())
     }
 }

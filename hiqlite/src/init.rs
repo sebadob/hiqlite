@@ -299,11 +299,11 @@ async fn try_become(
                 .send()
                 .await;
 
-            tracing::info!(
-                "\n\ntry_become {} response: {:?}\n\n",
-                raft_type.as_str(),
-                res
-            );
+            // tracing::info!(
+            //     "\n\ntry_become {} response: {:?}\n\n",
+            //     raft_type.as_str(),
+            //     res
+            // );
 
             match res {
                 Ok(resp) => {
