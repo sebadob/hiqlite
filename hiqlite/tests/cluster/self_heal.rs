@@ -24,8 +24,8 @@ pub async fn test_self_healing(
     check::is_client_db_healthy(&client_healed).await?;
     log("Client has self-healed successfully");
 
-    crate::debug(&client_3.metrics_db().await?);
-    crate::debug(&client_3.metrics_cache().await?);
+    // crate::debug(&client_3.metrics_db().await?);
+    // crate::debug(&client_3.metrics_cache().await?);
 
     log("Test recovery from state machine data loss on non-leader");
     let client_healed = if !is_leader(&client_1, 1).await? {
@@ -51,6 +51,7 @@ pub async fn test_self_healing(
     check::is_client_db_healthy(client_healed).await?;
     log("Client has self-healed successfully");
 
+    // TODO this test fails with `cache` enabled -> a valid update can never set matching to None
     log("Check recovery from full volume loss");
     let client_healed = if !is_leader(&client_1, 1).await? {
         client_1 = shutdown_remove_all_restart(client_1, 1).await?;
@@ -59,8 +60,8 @@ pub async fn test_self_healing(
         client_2 = shutdown_remove_all_restart(client_2, 2).await?;
         &client_2
     };
-    // full replication will take a few moments
-    time::sleep(Duration::from_millis(250)).await;
+    // full replication will take a few moments, vote takes a bit longer sometimes
+    time::sleep(Duration::from_millis(500)).await;
     check::is_client_db_healthy(client_healed).await?;
     log("Client has self-healed successfully");
 
@@ -72,7 +73,10 @@ pub async fn test_self_healing(
     // In most cases, client_1 is the leader at this point,
     // so we will give the others enough time to vote a new leader.
     client_1 = shutdown_remove_all_restart(client_1, 1).await?;
-    client_1.is_healthy().await?;
+    // full replication will take a few moments, vote takes a bit longer sometimes
+    log("Waiting for cluster to become healthy again");
+    client_1.wait_until_healthy().await;
+
     check::is_client_db_healthy(&client_1).await?;
     log("Client has self-healed and re-joined successfully");
 
@@ -111,7 +115,7 @@ async fn shutdown_lock_sm_db_restart(client: DbClient, node_id: u64) -> Result<D
 async fn shutdown_remove_all_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
-    time::sleep(Duration::from_millis(1500)).await;
+    time::sleep(Duration::from_millis(2000)).await;
 
     let folder = folder_base(node_id);
     log(format!("Deleting {}", folder));

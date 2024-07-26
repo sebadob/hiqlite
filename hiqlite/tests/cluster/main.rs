@@ -57,24 +57,29 @@ async fn exec_tests() -> Result<(), Error> {
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
     log("Cluster is healthy");
 
-    let metrics = client_1.metrics_db().await?;
-    debug(&metrics);
+    #[cfg(feature = "sqlite")]
+    debug(&client_1.metrics_db().await?);
+    #[cfg(feature = "cache")]
+    debug(&client_1.metrics_cache().await?);
 
-    log("Starting migration tests");
-    migration::test_migrations(&client_1, &client_2, &client_3).await?;
-    log("Migration tests finished");
+    #[cfg(feature = "sqlite")]
+    {
+        log("Starting migration tests");
+        migration::test_migrations(&client_1, &client_2, &client_3).await?;
+        log("Migration tests finished");
 
-    log("Starting data insertion and query tests");
-    execute_query::test_execute_query(&client_1, &client_2, &client_3).await?;
-    log("Basic query tests finished");
+        log("Starting data insertion and query tests");
+        execute_query::test_execute_query(&client_1, &client_2, &client_3).await?;
+        log("Basic query tests finished");
 
-    log("Starting Transaction tests");
-    transaction::test_transactions(&client_1, &client_2, &client_3).await?;
-    log("Transaction tests finished");
+        log("Starting Transaction tests");
+        transaction::test_transactions(&client_1, &client_2, &client_3).await?;
+        log("Transaction tests finished");
 
-    log("Starting batch tests");
-    batch::test_batch(&client_1, &client_2, &client_3).await?;
-    log("Batch tests finished");
+        log("Starting batch tests");
+        batch::test_batch(&client_1, &client_2, &client_3).await?;
+        log("Batch tests finished");
+    }
 
     #[cfg(feature = "cache")]
     {

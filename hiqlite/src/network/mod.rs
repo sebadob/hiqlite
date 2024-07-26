@@ -1,12 +1,10 @@
 use crate::app_state::AppState;
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::Error;
 use axum::http::header::{ACCEPT, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::{body, Json};
 use openraft::error::{ClientWriteError, InitializeError, InstallSnapshotError, RaftError};
-use openraft::raft::ClientWriteResponse;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -22,7 +20,7 @@ mod raft_client;
 pub(crate) mod raft_server;
 
 pub(crate) type AppStateExt = axum::extract::State<Arc<AppState>>;
-pub(crate) type RaftWriteResponse = ClientWriteResponse<TypeConfigSqlite>;
+// pub(crate) type RaftWriteResponse = ClientWriteResponse<TypeConfigSqlite>;
 pub(crate) type RaftInitError = RaftError<u64, InitializeError<u64, crate::Node>>;
 pub(crate) type RaftSnapshotError = RaftError<u64, InstallSnapshotError>;
 pub(crate) type RaftWriteError = RaftError<u64, ClientWriteError<u64, crate::Node>>;

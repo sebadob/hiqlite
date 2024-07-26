@@ -182,22 +182,22 @@ async fn should_node_1_skip_init(
 /// If this node is a non cluster member, it will try to become a learner and
 /// a voting member afterward.
 pub async fn become_cluster_member(
-    state: &Arc<AppState>,
+    state: Arc<AppState>,
     raft_type: &RaftType,
     this_node: u64,
     nodes: &[Node],
     tls: bool,
     tls_no_verify: bool,
-    secret_api: &str,
 ) -> Result<(), Error> {
     tracing::info!("\n\nbecome_cluster_member {}\n\n", raft_type.as_str());
 
-    if is_initialized_timeout(state, raft_type).await? {
+    if is_initialized_timeout(&state, raft_type).await? {
         tracing::info!(
             "\n\nbecome_cluster_member {} is initialized\n\n",
             raft_type.as_str()
         );
         return Ok(());
+    // }
     } else {
         tracing::info!(
             "\n\nbecome_cluster_member {} is NOT initialized\n\n",
@@ -225,7 +225,7 @@ pub async fn become_cluster_member(
     .unwrap();
 
     try_become(
-        state,
+        &state,
         raft_type,
         &client,
         scheme,
@@ -233,13 +233,12 @@ pub async fn become_cluster_member(
         &payload,
         this_node.id,
         nodes,
-        secret_api,
         true,
     )
     .await?;
 
     try_become(
-        state,
+        &state,
         raft_type,
         &client,
         scheme,
@@ -247,7 +246,6 @@ pub async fn become_cluster_member(
         &payload,
         this_node.id,
         nodes,
-        secret_api,
         false,
     )
     .await?;
@@ -266,7 +264,6 @@ async fn try_become(
     payload: &[u8],
     this_node: u64,
     nodes: &[Node],
-    secret_api: &str,
     check_init: bool,
 ) -> Result<(), Error> {
     loop {
@@ -294,7 +291,7 @@ async fn try_become(
 
             let res = client
                 .post(&url)
-                .header(HEADER_NAME_SECRET, secret_api)
+                .header(HEADER_NAME_SECRET, &state.secret_api)
                 .body(payload.to_vec())
                 .send()
                 .await;
@@ -308,11 +305,7 @@ async fn try_become(
             match res {
                 Ok(resp) => {
                     if resp.status().is_success() {
-                        tracing::info!(
-                            "\n\ntry_become {} successful: {:?}\n\n",
-                            raft_type.as_str(),
-                            resp
-                        );
+                        tracing::info!("\n\ntry_become {} successful\n\n", raft_type.as_str());
                         debug!("becoming a member has been successful");
                         return Ok(());
                     } else {

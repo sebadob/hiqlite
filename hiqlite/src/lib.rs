@@ -301,28 +301,44 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     });
 
     #[cfg(feature = "sqlite")]
-    init::become_cluster_member(
-        &state,
-        &RaftType::Sqlite,
-        node_config.node_id,
-        &node_config.nodes,
-        tls_raft,
-        tls_no_verify,
-        &state.secret_api,
-    )
-    .await?;
+    let member_db = {
+        let st = state.clone();
+        let nodes = node_config.nodes.clone();
+
+        task::spawn(async move {
+            init::become_cluster_member(
+                st,
+                &RaftType::Sqlite,
+                node_config.node_id,
+                &nodes,
+                tls_raft,
+                tls_no_verify,
+            )
+            .await
+        })
+    };
 
     #[cfg(feature = "cache")]
-    init::become_cluster_member(
-        &state,
-        &RaftType::Cache,
-        node_config.node_id,
-        &node_config.nodes,
-        tls_raft,
-        tls_no_verify,
-        &state.secret_api,
-    )
-    .await?;
+    let member_cache = {
+        let st = state.clone();
+        let nodes = node_config.nodes.clone();
+        task::spawn(async move {
+            init::become_cluster_member(
+                st,
+                &RaftType::Cache,
+                node_config.node_id,
+                &nodes,
+                tls_raft,
+                tls_no_verify,
+            )
+            .await
+        })
+    };
+
+    #[cfg(feature = "sqlite")]
+    member_db.await??;
+    #[cfg(feature = "cache")]
+    member_cache.await??;
 
     let client = DbClient::new_local(state, tls_api_client_config, tx_shutdown);
 

@@ -1,47 +1,45 @@
 use crate::db_client::stream::ClientStreamReq;
-use crate::network::management::LearnerReq;
-use crate::network::{RaftWriteResponse, HEADER_NAME_SECRET};
 use crate::store::logs::rocksdb::ActionWrite;
 use crate::store::state_machine::sqlite::writer::WriterRequest;
 use crate::{DbClient, Error, Node, NodeId};
 use openraft::RaftMetrics;
-use std::collections::BTreeSet;
+use std::clone::Clone;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time;
 use tracing::error;
 
 impl DbClient {
-    pub async fn init(&self) -> Result<(), Error> {
-        let url = self.build_addr("/cluster/init").await;
-        let res = self
-            .client
-            .post(url)
-            .header(HEADER_NAME_SECRET, self.api_secret())
-            .send()
-            .await
-            .unwrap();
+    // pub async fn init(&self) -> Result<(), Error> {
+    //     let url = self.build_addr("/cluster/init").await;
+    //     let res = self
+    //         .client
+    //         .post(url)
+    //         .header(HEADER_NAME_SECRET, self.api_secret())
+    //         .send()
+    //         .await
+    //         .unwrap();
+    //
+    //     if res.status().is_success() {
+    //         Ok(())
+    //     } else {
+    //         Err(res.json().await.unwrap())
+    //     }
+    // }
 
-        if res.status().is_success() {
-            Ok(())
-        } else {
-            Err(res.json().await.unwrap())
-        }
-    }
+    // pub async fn add_learner(&self, req: LearnerReq) -> Result<RaftWriteResponse, Error> {
+    //     self.send_with_retry("/cluster/add_learner", Some(&req))
+    //         .await
+    // }
 
-    pub async fn add_learner(&self, req: LearnerReq) -> Result<RaftWriteResponse, Error> {
-        self.send_with_retry("/cluster/add_learner", Some(&req))
-            .await
-    }
+    // pub async fn change_membership(
+    //     &self,
+    //     req: &BTreeSet<NodeId>,
+    // ) -> Result<RaftWriteResponse, Error> {
+    //     self.send_with_retry("/cluster/membership", Some(req)).await
+    // }
 
-    pub async fn change_membership(
-        &self,
-        req: &BTreeSet<NodeId>,
-    ) -> Result<RaftWriteResponse, Error> {
-        self.send_with_retry("/cluster/membership", Some(req)).await
-    }
-
-    // TODO different fn's for db / cache ?
+    #[cfg(feature = "sqlite")]
     pub async fn metrics_db(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
         if let Some(state) = &self.state {
             let metrics = state.raft_db.raft.metrics().borrow().clone();
@@ -52,6 +50,7 @@ impl DbClient {
         }
     }
 
+    #[cfg(feature = "cache")]
     pub async fn metrics_cache(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
         if let Some(state) = &self.state {
             let metrics = state.raft_cache.raft.metrics().borrow().clone();

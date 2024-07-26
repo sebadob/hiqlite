@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
+use tracing::info;
 use uuid::Uuid;
 
 // pub(crate) type KvStore = Arc<RwLock<BTreeMap<String, Vec<u8>>>>;
@@ -91,6 +92,8 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             let mut current_snapshot = self.snapshot.lock().await;
             *current_snapshot = Some(snapshot.clone());
         }
+
+        info!("\n\n\nbuild snapshot: {:?}\n\n", snapshot);
 
         Ok(snapshot)
     }

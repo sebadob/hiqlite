@@ -1,9 +1,5 @@
 use crate::{log, TEST_DATA_DIR};
-use cryptr::stream::s3::{
-    AccessKeyId, AccessKeySecret, Bucket, BucketOptions, Credentials, Region,
-};
-use hiqlite::{start_node, DbClient, EncKeysFrom, Error, Node, NodeConfig, S3Config};
-use std::env;
+use hiqlite::{start_node, DbClient, Error, Node, NodeConfig};
 use std::time::Duration;
 use tokio::{fs, task, time};
 
@@ -52,8 +48,16 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         _ => unreachable!(),
     };
 
+    #[cfg(feature = "s3")]
     let s3_config = {
+        use cryptr::stream::s3::{
+            AccessKeyId, AccessKeySecret, Bucket, BucketOptions, Credentials, Region,
+        };
+        use hiqlite::S3Config;
+        use std::env;
+
         dotenvy::dotenv().ok();
+
         if let Ok(url) = env::var("S3_URL") {
             // we assume that all values exist when we can read the url successfully
 
@@ -95,7 +99,9 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         tls_api: None,
         secret_raft: "asdasdasdasdasdasd".to_string(),
         secret_api: "qweqweqweqweqweqwe".to_string(),
-        enc_keys_from: EncKeysFrom::Env,
+        #[cfg(feature = "s3")]
+        enc_keys_from: hiqlite::EncKeysFrom::Env,
+        #[cfg(feature = "s3")]
         s3_config,
     }
 }
