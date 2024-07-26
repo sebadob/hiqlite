@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::{fs, task, time};
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
+
+pub const BACKUP_DB_NAME: &str = "restore.sqlite";
 
 /// Check if the env var `HIQLITE_BACKUP_RESTORE` is set and restores the given backup if so.
 /// Returns `Ok(true)` if backup has been applied.
@@ -44,7 +45,7 @@ pub async fn restore_backup(node_config: &NodeConfig, backup_name: &str) -> Resu
 
     info!("Starting database restore from backup {}", backup_name);
 
-    let path_base = StateMachineSqlite::path_base(&node_config.data_dir);
+    // let path_base = StateMachineSqlite::path_base(&node_config.data_dir);
     let (
         PathDb(path_db),
         PathBackups(path_backups),
@@ -53,7 +54,8 @@ pub async fn restore_backup(node_config: &NodeConfig, backup_name: &str) -> Resu
     ) = StateMachineSqlite::build_folders(&node_config.data_dir, false).await;
     let path_logs = logs::logs_dir(&node_config.data_dir);
 
-    let path_backup_s3 = format!("{}/restore.sqlite", path_base);
+    fs::create_dir_all(&path_backups).await?;
+    let path_backup_s3 = format!("{}/{}", path_backups, BACKUP_DB_NAME);
     s3_config.pull(backup_name, &path_backup_s3).await?;
 
     is_metadata_ok(path_backup_s3.clone()).await?;
@@ -61,26 +63,22 @@ pub async fn restore_backup(node_config: &NodeConfig, backup_name: &str) -> Resu
 
     debug!("Removing old data");
     let _ = fs::remove_dir_all(&path_db).await;
-    let _ = fs::remove_dir_all(&path_backups).await;
+    // let _ = fs::remove_dir_all(&path_backups).await;
     let _ = fs::remove_dir_all(&path_snapshots).await;
     let _ = fs::remove_dir_all(&path_lock_file).await;
     let _ = fs::remove_dir_all(&path_logs).await;
 
-    // we re-use the snapshot logic during the creation of a new
-    // state machine to our advantage here
-    fs::create_dir_all(&path_snapshots).await?;
-    let snapshot_id = Uuid::now_v7();
-    let path_db_full = format!("{}/{}", path_snapshots, snapshot_id);
-    debug!(
-        "Copy Database backup in place from {} to {}",
-        path_backup_s3, path_db_full
-    );
-    let bytes = fs::copy(&path_backup_s3, path_db_full).await?;
-    assert!(bytes > 0);
-    info!("Database backup copied {} bytes", bytes);
+    // fs::create_dir_all(&path_snapshots).await?;
+    // debug!(
+    //     "Copy Database backup in place from {} to {}",
+    //     path_backup_s3, path_db_full
+    // );
+    // let bytes = fs::copy(&path_backup_s3, path_db_full).await?;
+    // assert!(bytes > 0);
+    // info!("Database backup copied {} bytes", bytes);
 
-    debug!("Removing database temp file {}", path_backup_s3);
-    fs::remove_file(&path_backup_s3).await?;
+    // debug!("Removing database temp file {}", path_backup_s3);
+    // fs::remove_file(&path_backup_s3).await?;
 
     Ok(())
 }

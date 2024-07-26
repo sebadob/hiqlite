@@ -1,3 +1,4 @@
+use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
 use crate::store::state_machine::sqlite::writer::{SnapshotRequest, WriterRequest};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::{Node, NodeId};
@@ -13,6 +14,8 @@ use uuid::Uuid;
 pub struct SQLiteSnapshotBuilder {
     // pub last_applied_log_id: Option<LogId<NodeId>>,
     // pub last_membership: StoredMembership<NodeId, Node>,
+    #[cfg(feature = "backup")]
+    pub path_backups: String,
     pub path_snapshots: String,
     pub write_tx: flume::Sender<WriterRequest>,
 }
@@ -53,8 +56,15 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
         })?;
 
         let path_snapshots = self.path_snapshots.clone();
+        #[cfg(feature = "backup")]
+        let path_backups = self.path_backups.clone();
         // cleanup can easily happen in the background
-        task::spawn(snapshots_cleanup(path_snapshots, snapshot_id));
+        task::spawn(snapshots_cleanup(
+            path_snapshots,
+            #[cfg(feature = "backup")]
+            path_backups,
+            snapshot_id,
+        ));
 
         let snapshot = Snapshot {
             meta: SnapshotMeta {
@@ -71,6 +81,7 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
 
 async fn snapshots_cleanup(
     path_snapshots: String,
+    #[cfg(feature = "backup")] path_backups: String,
     keep_id: Uuid,
 ) -> Result<(), StorageError<NodeId>> {
     let mut list = tokio::fs::read_dir(&path_snapshots)
@@ -98,6 +109,13 @@ async fn snapshots_cleanup(
         if name != keep_id {
             deletes.push(name.to_string());
         }
+    }
+
+    #[cfg(feature = "backup")]
+    {
+        debug!("Cleaning up possibly existing old backup restore files");
+        let restore_path = format!("{}/{}", path_backups, crate::backup::BACKUP_DB_NAME);
+        let _ = fs::remove_file(&restore_path).await;
     }
 
     for file_name in deletes {

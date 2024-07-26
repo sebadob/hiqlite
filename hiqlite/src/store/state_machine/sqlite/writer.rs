@@ -21,14 +21,15 @@ use uuid::Uuid;
 
 #[derive(Debug)]
 pub enum WriterRequest {
-    SnapshotApply((String, oneshot::Sender<StateMachineData>)),
     Query(Query),
     Migrate(Migrate),
     Snapshot(SnapshotRequest),
+    SnapshotApply((String, oneshot::Sender<StateMachineData>)),
     MetadataPersist(MetaPersistRequest),
     MetadataRead(oneshot::Sender<StateMachineData>),
     MetadataMembership(MetaMembershipRequest),
     Backup(BackupRequest),
+    // BackupApply(BackupApplyRequest),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -111,6 +112,12 @@ pub struct BackupRequest {
     pub last_applied_log_id: Option<LogId<NodeId>>,
     pub ack: oneshot::Sender<Result<(), Error>>,
 }
+
+// #[derive(Debug)]
+// pub struct BackupApplyRequest {
+//     pub src: String,
+//     pub ack: oneshot::Sender<Result<(), Error>>,
+// }
 
 pub fn spawn_writer(
     mut conn: rusqlite::Connection,

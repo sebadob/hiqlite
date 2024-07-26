@@ -198,6 +198,7 @@ pub(crate) enum ApiStreamRequestPayload {
     QueryConsistent(Query),
     Batch(Cow<'static, str>),
     Migrate(Vec<Migration>),
+    #[cfg(feature = "backup")]
     Backup,
 
     #[cfg(feature = "cache")]
@@ -218,9 +219,10 @@ pub(crate) enum ApiStreamResponsePayload {
     QueryConsistent(Result<Vec<RowOwned>, Error>),
     Batch(Vec<Result<usize, Error>>),
     Migrate(Result<(), Error>),
+    #[cfg(feature = "backup")]
     Backup(Result<(), Error>),
     #[cfg(feature = "cache")]
-    KV(CacheResponse),
+    KV(Result<CacheResponse, Error>),
 }
 
 #[derive(Debug)]
@@ -514,6 +516,7 @@ async fn handle_socket_concurrent(
                             }
                         }
 
+                        #[cfg(feature = "backup")]
                         ApiStreamRequestPayload::Backup => {
                             match state.raft_db.raft.client_write(QueryWrite::Backup).await {
                                 Ok(resp) => {
@@ -541,12 +544,12 @@ async fn handle_socket_concurrent(
                                     let resp: CacheResponse = resp.data;
                                     ApiStreamResponse {
                                         request_id: req.request_id,
-                                        result: ApiStreamResponsePayload::KV(resp),
+                                        result: ApiStreamResponsePayload::KV(Ok(resp)),
                                     }
                                 }
                                 Err(err) => ApiStreamResponse {
                                     request_id: req.request_id,
-                                    result: ApiStreamResponsePayload::Backup(Err(Error::from(err))),
+                                    result: ApiStreamResponsePayload::KV(Err(Error::from(err))),
                                 },
                             }
                         }

@@ -6,7 +6,6 @@ use std::sync::Arc;
 use stream::ClientStreamReq;
 use tokio::sync::{watch, RwLock};
 
-mod backup;
 mod batch;
 mod create;
 mod execute;
@@ -17,6 +16,8 @@ mod query;
 mod stream;
 mod transaction;
 
+#[cfg(feature = "backup")]
+mod backup;
 #[cfg(feature = "cache")]
 mod cache;
 

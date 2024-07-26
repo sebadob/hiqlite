@@ -38,6 +38,7 @@ pub enum ClientStreamReq {
     QueryConsistent(ClientQueryConsistentPayload),
     Batch(ClientBatchPayload),
     Migrate(ClientMigratePayload),
+    #[cfg(feature = "backup")]
     Backup(ClientBackupPayload),
     Shutdown,
 
@@ -87,6 +88,7 @@ pub struct ClientMigratePayload {
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
+#[cfg(feature = "backup")]
 #[derive(Debug)]
 pub struct ClientBackupPayload {
     pub request_id: usize,
@@ -335,6 +337,7 @@ async fn client_stream(
                     }
                 }
 
+                #[cfg(feature = "backup")]
                 ClientStreamReq::Backup(ClientBackupPayload { request_id, ack }) => {
                     let req = ApiStreamRequest {
                         request_id,
@@ -456,6 +459,7 @@ async fn client_stream(
                 ClientStreamReq::Migrate(_) => {
                     unreachable!("we should never receive ClientStreamReq::Migrate from WS reader")
                 }
+                #[cfg(feature = "backup")]
                 ClientStreamReq::Backup(_) => {
                     unreachable!("we should never receive ClientStreamReq::Backup from WS reader")
                 }

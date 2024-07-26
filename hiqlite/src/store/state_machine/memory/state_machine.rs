@@ -66,7 +66,7 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             let kv_bytes = bincode::serialize(&data.kvs)
                 .map_err(|err| StorageIOError::read_state_machine(&err))?;
 
-            let last_applied_log = data.last_applied_log_id.clone();
+            let last_applied_log = data.last_applied_log_id;
             let last_membership = data.last_membership.clone();
 
             (last_applied_log, last_membership, kv_bytes)

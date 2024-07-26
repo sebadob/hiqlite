@@ -16,6 +16,7 @@ use openraft::{
 use rusqlite::{OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::clone::Clone;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -43,6 +44,7 @@ pub enum QueryWrite {
     Transaction(Vec<Query>),
     Batch(Cow<'static, str>),
     Migration(Vec<Migration>),
+    #[cfg(feature = "backup")]
     Backup,
 }
 
@@ -98,6 +100,7 @@ pub struct StateMachineSqlite {
 
     this_node: NodeId,
     path_snapshots: String,
+    #[cfg(feature = "backup")]
     path_backups: String,
     path_lock_file: String,
 
@@ -204,6 +207,7 @@ impl StateMachineSqlite {
             data: state_machine_data,
             this_node,
             path_snapshots,
+            #[cfg(feature = "backup")]
             path_backups,
             path_lock_file,
             #[cfg(feature = "s3")]
@@ -216,7 +220,12 @@ impl StateMachineSqlite {
             if let Some(snapshot) = slf.read_current_snapshot_from_disk().await? {
                 // needed in case we lost the DB for some reason but still have a snapshot
                 // on disk we can re-use
-                slf.update_state_machine_(snapshot).await?;
+                slf.update_state_machine_(snapshot.path).await?;
+            } else {
+                #[cfg(feature = "backup")]
+                if let Some(restore_file_path) = slf.backup_restore_file().await {
+                    slf.update_state_machine_(restore_file_path).await?;
+                }
             }
         }
 
@@ -408,11 +417,11 @@ impl StateMachineSqlite {
 
     async fn update_state_machine_(
         &mut self,
-        snapshot: StoredSnapshot,
+        snapshot_path: String,
     ) -> Result<(), StorageError<NodeId>> {
         let (tx, rx) = oneshot::channel();
         self.write_tx
-            .send_async(WriterRequest::SnapshotApply((snapshot.path, tx)))
+            .send_async(WriterRequest::SnapshotApply((snapshot_path, tx)))
             .await
             .expect("SQLite Writer rx to always be listening");
 
@@ -524,6 +533,15 @@ impl StateMachineSqlite {
         Ok(Some(snapshot))
     }
 
+    #[cfg(feature = "backup")]
+    async fn backup_restore_file(&self) -> Option<String> {
+        let restore_path = format!("{}/{}", self.path_backups, crate::backup::BACKUP_DB_NAME);
+        match fs::File::open(&restore_path).await {
+            Ok(_) => Some(restore_path),
+            Err(_) => None,
+        }
+    }
+
     async fn get_current_snapshot_(&mut self) -> StorageResult<Option<StoredSnapshot>> {
         if let Some(snapshot_id) = self.data.last_snapshot_id.clone() {
             Ok(Some(StoredSnapshot {
@@ -539,17 +557,16 @@ impl StateMachineSqlite {
                     .expect("last_snapshot_path to always be Some when snapshot_id exists"),
             }))
         } else {
-            if let Some(snapshot) = self.read_current_snapshot_from_disk().await? {
-                info!(
-                    "\n\nsnapshot from disk: {:?}\nwith local meta: {:?}\n\n",
-                    snapshot, self.data
-                );
-                Ok(Some(snapshot))
-            } else {
-                Ok(None)
-            }
-
-            // Ok(None)
+            self.read_current_snapshot_from_disk().await
+            // if let Some(snapshot) = self.read_current_snapshot_from_disk().await? {
+            //     info!(
+            //         "\n\nsnapshot from disk: {:?}\nwith local meta: {:?}\n\n",
+            //         snapshot, self.data
+            //     );
+            //     Ok(Some(snapshot))
+            // } else {
+            //     Ok(None)
+            // }
         }
     }
 }
@@ -669,6 +686,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     Response::Batch(ResponseBatch { result })
                 }
 
+                #[cfg(feature = "backup")]
                 EntryPayload::Normal(QueryWrite::Backup) => {
                     let (ack, rx) = oneshot::channel();
                     let req = WriterRequest::Backup(writer::BackupRequest {
@@ -735,8 +753,12 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
+        // TODO clean up possibly existing restore files inside snapshot builder upon success
+
         SQLiteSnapshotBuilder {
             // last_membership: self.data.last_membership.clone(),
+            #[cfg(feature = "backup")]
+            path_backups: self.path_backups.clone(),
             path_snapshots: self.path_snapshots.clone(),
             write_tx: self.write_tx.clone(),
         }
@@ -809,11 +831,9 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
             source: StorageIOError::write(&err),
         })?;
 
-        self.update_state_machine_(StoredSnapshot {
-            meta: meta.clone(),
-            path: tar,
-        })
-        .await?;
+        self.update_state_machine_(tar).await?;
+
+        // TODO cleanup of possibly existing backup restore files
 
         Ok(())
     }
