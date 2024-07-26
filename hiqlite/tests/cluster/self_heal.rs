@@ -24,6 +24,9 @@ pub async fn test_self_healing(
     check::is_client_db_healthy(&client_healed).await?;
     log("Client has self-healed successfully");
 
+    crate::debug(&client_3.metrics_db().await?);
+    crate::debug(&client_3.metrics_cache().await?);
+
     log("Test recovery from state machine data loss on non-leader");
     let client_healed = if !is_leader(&client_1, 1).await? {
         client_1 = shutdown_remove_sm_db_restart(client_1, 1).await?;
@@ -154,7 +157,7 @@ async fn shutdown_remove_logs_restart(client: DbClient, node_id: u64) -> Result<
 }
 
 async fn is_leader(client: &DbClient, node_id: u64) -> Result<bool, Error> {
-    if let Some(leader) = client.metrics().await?.current_leader {
+    if let Some(leader) = client.metrics_db().await?.current_leader {
         Ok(leader == node_id)
     } else {
         Err(Error::LeaderChange("No leader exists right now".into()))

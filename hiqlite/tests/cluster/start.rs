@@ -128,7 +128,7 @@ pub async fn wait_for_healthy_cluster(
         }
     }
 
-    let metrics = client_1.metrics().await?;
+    let metrics = client_1.metrics_db().await?;
     assert!(metrics.running_state.is_ok());
 
     let node_count = metrics.membership_config.membership().nodes().count();

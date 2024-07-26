@@ -42,9 +42,19 @@ impl DbClient {
     }
 
     // TODO different fn's for db / cache ?
-    pub async fn metrics(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
+    pub async fn metrics_db(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
         if let Some(state) = &self.state {
             let metrics = state.raft_db.raft.metrics().borrow().clone();
+            Ok(metrics)
+        } else {
+            self.send_with_retry("/cluster/metrics", None::<String>.as_ref())
+                .await
+        }
+    }
+
+    pub async fn metrics_cache(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
+        if let Some(state) = &self.state {
+            let metrics = state.raft_cache.raft.metrics().borrow().clone();
             Ok(metrics)
         } else {
             self.send_with_retry("/cluster/metrics", None::<String>.as_ref())
@@ -55,7 +65,7 @@ impl DbClient {
     /// Check the Raft health state
     /// TODO different fn's for db / cache ?
     pub async fn is_healthy(&self) -> Result<(), Error> {
-        let metrics = self.metrics().await?;
+        let metrics = self.metrics_db().await?;
         metrics.running_state?;
         if metrics.current_leader.is_some() {
             Ok(())
@@ -79,14 +89,18 @@ impl DbClient {
     /// Works on local clients only and can't shut down remote nodes.
     pub async fn shutdown(&self) -> Result<(), Error> {
         if let Some(state) = &self.state {
-            let (tx, rx) = oneshot::channel();
+            #[cfg(feature = "cache")]
+            match state.raft_cache.raft.shutdown().await {
+                Ok(_) => {}
+                Err(err) => {
+                    return Err(Error::Error(err.to_string().into()));
+                }
+            }
+
+            #[cfg(feature = "sqlite")]
             match state.raft_db.raft.shutdown().await {
                 Ok(_) => {
-                    let _ = state
-                        .raft_db
-                        .logs_writer
-                        .send_async(ActionWrite::Shutdown)
-                        .await;
+                    let (tx, rx) = oneshot::channel();
 
                     state
                         .raft_db
@@ -95,17 +109,28 @@ impl DbClient {
                         .await
                         .expect("SQL writer to always be running");
 
+                    let _ = state
+                        .raft_db
+                        .logs_writer
+                        .send_async(ActionWrite::Shutdown)
+                        .await;
+
                     rx.await.expect("To always get an answer from SQL writer");
-
-                    let _ = self.tx_client.send_async(ClientStreamReq::Shutdown).await;
-
-                    if let Some(tx) = &self.tx_shutdown {
-                        tx.send(true).unwrap();
-                    }
-                    Ok(())
                 }
-                Err(err) => Err(Error::Error(err.to_string().into())),
+                Err(err) => {
+                    return Err(Error::Error(err.to_string().into()));
+                }
             }
+
+            let _ = self.tx_client.send_async(ClientStreamReq::Shutdown).await;
+
+            if let Some(tx) = &self.tx_shutdown {
+                tx.send(true).unwrap();
+            }
+
+            time::sleep(Duration::from_millis(200)).await;
+
+            Ok(())
         } else {
             Err(Error::Error(
                 "Shutdown for remote Raft clients is not yet implemented".into(),

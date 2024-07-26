@@ -61,7 +61,7 @@ impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
-        info!("Building new Raft client with target {}", node);
+        info!("Building new Raft Cache client with target {}", node);
 
         let (sender, rx) = flume::unbounded();
 
@@ -88,7 +88,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
-        info!("Building new Raft client with target {}", node);
+        info!("Building new Raft DB client with target {}", node);
 
         let (sender, rx) = flume::unbounded();
 
@@ -353,7 +353,7 @@ impl RaftNetwork<TypeConfigSqlite> for NetworkConnectionStreaming {
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
         let resp = self.send(RaftStreamRequest::AppendDB(req)).await?;
         match resp {
-            RaftStreamResponse::Append(res) => Ok(res),
+            RaftStreamResponse::AppendDB(res) => Ok(res),
             RaftStreamResponse::Error(Error::RaftError(err)) => {
                 Err(RPCError::RemoteError(RemoteError::new(self.node.id, err)))
             }
@@ -372,7 +372,7 @@ impl RaftNetwork<TypeConfigSqlite> for NetworkConnectionStreaming {
     > {
         let resp = self.send(RaftStreamRequest::SnapshotDB(req)).await?;
         match resp {
-            RaftStreamResponse::Snapshot(res) => Ok(res),
+            RaftStreamResponse::SnapshotDB(res) => Ok(res),
             RaftStreamResponse::Error(Error::SnapshotError(err)) => {
                 Err(RPCError::RemoteError(RemoteError::new(self.node.id, err)))
             }
@@ -388,7 +388,7 @@ impl RaftNetwork<TypeConfigSqlite> for NetworkConnectionStreaming {
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
         let resp = self.send(RaftStreamRequest::VoteDB(req)).await?;
         match resp {
-            RaftStreamResponse::Vote(res) => Ok(res),
+            RaftStreamResponse::VoteDB(res) => Ok(res),
             RaftStreamResponse::Error(Error::RaftError(err)) => {
                 Err(RPCError::RemoteError(RemoteError::new(self.node.id, err)))
             }
@@ -408,7 +408,7 @@ impl RaftNetwork<TypeConfigKV> for NetworkConnectionStreaming {
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
         let resp = self.send(RaftStreamRequest::AppendCache(req)).await?;
         match resp {
-            RaftStreamResponse::Append(res) => Ok(res),
+            RaftStreamResponse::AppendCache(res) => Ok(res),
             RaftStreamResponse::Error(Error::RaftError(err)) => {
                 Err(RPCError::RemoteError(RemoteError::new(self.node.id, err)))
             }
@@ -427,7 +427,7 @@ impl RaftNetwork<TypeConfigKV> for NetworkConnectionStreaming {
     > {
         let resp = self.send(RaftStreamRequest::SnapshotCache(req)).await?;
         match resp {
-            RaftStreamResponse::Snapshot(res) => Ok(res),
+            RaftStreamResponse::SnapshotCache(res) => Ok(res),
             RaftStreamResponse::Error(Error::SnapshotError(err)) => {
                 Err(RPCError::RemoteError(RemoteError::new(self.node.id, err)))
             }
@@ -443,7 +443,7 @@ impl RaftNetwork<TypeConfigKV> for NetworkConnectionStreaming {
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
         let resp = self.send(RaftStreamRequest::VoteCache(req)).await?;
         match resp {
-            RaftStreamResponse::Vote(res) => Ok(res),
+            RaftStreamResponse::VoteCache(res) => Ok(res),
             RaftStreamResponse::Error(Error::RaftError(err)) => {
                 Err(RPCError::RemoteError(RemoteError::new(self.node.id, err)))
             }

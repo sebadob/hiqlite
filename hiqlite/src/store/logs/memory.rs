@@ -4,13 +4,13 @@ use crate::NodeId;
 use openraft::storage::LogFlushed;
 use openraft::storage::LogState;
 use openraft::storage::RaftLogStorage;
-use openraft::LogId;
 use openraft::OptionalSend;
 use openraft::RaftLogReader;
 use openraft::StorageError;
 use openraft::StorageIOError;
 use openraft::Vote;
 use openraft::{CommittedLeaderId, Entry};
+use openraft::{LeaderId, LogId};
 use redb::{Database, ReadableTable, TableDefinition};
 use std::collections::{BTreeMap, Bound, VecDeque};
 use std::fmt::Debug;
@@ -22,12 +22,9 @@ use tokio::{fs, task};
 
 #[derive(Debug, Clone)]
 struct LogData {
-    last_term: Option<u64>,
-    last_leader_id: Option<u64>,
-    last_log_id: Option<u64>,
-
+    last_log_id: Option<LogId<u64>>,
     last_purged: Option<LogId<u64>>,
-    commited: Option<LogId<NodeId>>,
+    // commited: Option<LogId<NodeId>>,
     vote: Option<Vote<NodeId>>,
 }
 
@@ -41,11 +38,9 @@ impl LogStoreMemory {
     pub fn new() -> Self {
         let logs = Arc::new(RwLock::new(BTreeMap::new()));
         let data = LogData {
-            last_term: None,
-            last_leader_id: None,
             last_log_id: None,
             last_purged: None,
-            commited: None,
+            // commited: None,
             vote: None,
         };
 
@@ -93,17 +88,7 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
         let lock = self.data.lock().await;
 
         let last_purged_log_id = lock.last_purged;
-
-        let last_log_id = if let Some(log_id) = lock.last_log_id {
-            let term = lock.last_term.unwrap();
-            let node_id = lock.last_leader_id.unwrap();
-            let leader_id = CommittedLeaderId::new(term, node_id);
-            Some(LogId::new(leader_id, log_id))
-        } else {
-            None
-        };
-
-        // tracing::info!("\n\n\nget_log_state: {:?}\n\n", last_log_id);
+        let last_log_id = lock.last_log_id;
 
         Ok(LogState {
             last_purged_log_id,
@@ -119,7 +104,7 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
     //     lock.commited = committed;
     //     Ok(())
     // }
-
+    //
     // async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
     //     Ok(self.data.lock().await.commited)
     // }
@@ -145,19 +130,20 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
         I: IntoIterator<Item = Entry<TypeConfigKV>> + Send,
         I::IntoIter: Send,
     {
-        let mut logs = self.logs.write().await;
-        let mut data = self.data.lock().await;
+        {
+            let mut logs = self.logs.write().await;
+            let mut data = self.data.lock().await;
 
-        let mut last_log_id = None;
-        for entry in entries {
-            last_log_id = Some(entry.log_id);
-            logs.insert(entry.log_id.index, entry);
-        }
+            let mut last_log_id = None;
+            for entry in entries {
+                last_log_id = Some(entry.log_id);
+                logs.insert(entry.log_id.index, entry);
+            }
 
-        if let Some(id) = last_log_id {
-            data.last_log_id = Some(id.index);
-            data.last_leader_id = Some(id.leader_id.node_id);
-            data.last_term = Some(id.leader_id.term);
+            if let Some(id) = last_log_id {
+                data.last_log_id = Some(id);
+                // data.commited = Some(id);
+            }
         }
 
         callback.log_io_completed(Ok(()));

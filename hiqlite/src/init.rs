@@ -34,7 +34,7 @@ pub async fn init_pristine_node_1_db(
 
         if should_node_1_skip_init(&RaftType::Sqlite, nodes, secret_api, tls, tls_no_verify).await?
         {
-            warn!("node 1 should skip its own init - found existing cluster on remotes");
+            warn!("node 1 (DB) should skip its own init - found existing cluster on remotes");
             return Ok(());
         }
 
@@ -63,7 +63,7 @@ pub async fn init_pristine_node_1_cache(
         // in case of cache raft, a node will never be initialized after start up
 
         if should_node_1_skip_init(&RaftType::Cache, nodes, secret_api, tls, tls_no_verify).await? {
-            warn!("node 1 should skip its own init - found existing cluster on remotes");
+            warn!("node 1 (cache) should skip its own init - found existing cluster on remotes");
             return Ok(());
         }
 
@@ -190,8 +190,19 @@ pub async fn become_cluster_member(
     tls_no_verify: bool,
     secret_api: &str,
 ) -> Result<(), Error> {
+    tracing::info!("\n\nbecome_cluster_member {}\n\n", raft_type.as_str());
+
     if is_initialized_timeout(state, raft_type).await? {
+        tracing::info!(
+            "\n\nbecome_cluster_member {} is initialized\n\n",
+            raft_type.as_str()
+        );
         return Ok(());
+    } else {
+        tracing::info!(
+            "\n\nbecome_cluster_member {} is NOT initialized\n\n",
+            raft_type.as_str()
+        );
     }
 
     // If this node is neither node 1 nor initialized, we always want to reach
@@ -266,9 +277,9 @@ async fn try_become(
         }
 
         for node in nodes {
-            // if node.id == this_node {
-            //     continue;
-            // }
+            if node.id == this_node {
+                continue;
+            }
 
             let url = format!(
                 "{}://{}/cluster/{}/{}",
@@ -279,6 +290,8 @@ async fn try_become(
             );
             debug!("Sending request to {}", url);
 
+            tracing::info!("\n\ntry_become {}: {}\n\n", raft_type.as_str(), url);
+
             let res = client
                 .post(&url)
                 .header(HEADER_NAME_SECRET, secret_api)
@@ -286,11 +299,20 @@ async fn try_become(
                 .send()
                 .await;
 
-            // info!("\n\nresponse {:?}\n\n", res);
+            tracing::info!(
+                "\n\ntry_become {} response: {:?}\n\n",
+                raft_type.as_str(),
+                res
+            );
 
             match res {
                 Ok(resp) => {
                     if resp.status().is_success() {
+                        tracing::info!(
+                            "\n\ntry_become {} successful: {:?}\n\n",
+                            raft_type.as_str(),
+                            resp
+                        );
                         debug!("becoming a member has been successful");
                         return Ok(());
                     } else {

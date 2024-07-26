@@ -69,20 +69,20 @@ pub(crate) async fn add_learner(
     // -> remove the membership and re-add it as a new learner, so it can catch up again.
     {
         // hold this lock the whole time, even over await points, to never have race conditions here ...
-        let _lock = helpers::lock_raft(&state, &raft_type).await;
+        let lock = helpers::lock_raft(&state, &raft_type).await;
 
         let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-        //
-        // if raft_type == RaftType::Cache {
-        //     info!("\n\n\nMetrics before member check:\n{:?}\n\n");
-        // }
+
+        if raft_type == RaftType::Cache {
+            info!("\n\n\nMetrics before member check:\n{:?}\n\n", metrics);
+        }
 
         let members = metrics.membership_config;
         let is_member_already = members.nodes().any(|(id, _)| *id == node.id);
-        //
-        // if raft_type == RaftType::Cache {
-        //     info!("\n\n\nmembers {}:\n{:?}\n\n", is_member_already, members);
-        // }
+
+        if raft_type == RaftType::Cache {
+            info!("\n\n\nmembers {}:\n{:?}\n\n", is_member_already, members);
+        }
 
         if is_member_already {
             let new_voters = members
@@ -98,21 +98,26 @@ pub(crate) async fn add_learner(
             info!(
                 r#"
 
-    Members old: {:?}
-    new_voters:  {:?}
-    new_members: {:?}
+            Members old: {:?}
+            new_voters:  {:?}
+            new_members: {:?}
 
-            "#,
+                    "#,
                 members, new_voters, new_members
             );
 
             let res = helpers::change_membership(&state, &raft_type, new_members, false).await;
             match res {
                 Ok(_) => {
+                    drop(lock);
                     info!("Removed already existing member");
 
-                    // TODO do we need this timeout? probably not -> more testing
-                    time::sleep(Duration::from_millis(100)).await;
+                    let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+                    if raft_type == RaftType::Cache {
+                        info!("\n\n\nMetrics after removal:\n{:?}\n\n", metrics);
+                    }
+
+                    time::sleep(Duration::from_millis(200)).await;
 
                     info!("Adding removed member as learner");
                     helpers::add_new_learner(&state, &raft_type, node).await?;

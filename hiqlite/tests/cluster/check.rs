@@ -1,5 +1,5 @@
-use crate::debug;
 use crate::execute_query::TestData;
+use crate::{cache, debug};
 use hiqlite::{params, DbClient, Error, Param};
 
 pub async fn is_client_db_healthy(client: &DbClient) -> Result<(), Error> {
@@ -12,9 +12,6 @@ pub async fn is_client_db_healthy(client: &DbClient) -> Result<(), Error> {
     client.batch("SELECT 1;").await?;
 
     // make sure our before inserted data exists
-    // let data: Vec<TestData> = client
-    //     .query_map("SELECT * FROM test WHERE id >= $1", params!(11))
-    //     .await?;
     let data: Result<Vec<TestData>, Error> = client
         .query_map("SELECT * FROM test WHERE id >= $1", params!(11))
         .await;
@@ -28,6 +25,12 @@ pub async fn is_client_db_healthy(client: &DbClient) -> Result<(), Error> {
     assert_eq!(data[3].id, 21);
     assert_eq!(data[4].id, 22);
     assert_eq!(data[5].id, 23);
+
+    #[cfg(feature = "cache")]
+    {
+        let v: String = client.get(cache::KEY).await?;
+        assert_eq!(&v, cache::VALUE);
+    }
 
     Ok(())
 }
