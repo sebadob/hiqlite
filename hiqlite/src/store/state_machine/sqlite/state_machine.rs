@@ -499,6 +499,10 @@ impl StateMachineSqlite {
             source: StorageIOError::write(&err),
         })??;
 
+        // TODO if the metadata is none, we should probably remove the file completely and trigger
+        // the creation of a new one -> this might happen if we restore a backup as snapshot
+        // TODO other solution, do not re-use the snapshot mechanism to restore backups
+
         let snapshot_id = id.to_string();
 
         if let Some(path) = metadata.last_snapshot_path {
@@ -520,7 +524,7 @@ impl StateMachineSqlite {
         Ok(Some(snapshot))
     }
 
-    async fn get_current_snapshot_(&self) -> StorageResult<Option<StoredSnapshot>> {
+    async fn get_current_snapshot_(&mut self) -> StorageResult<Option<StoredSnapshot>> {
         if let Some(snapshot_id) = self.data.last_snapshot_id.clone() {
             Ok(Some(StoredSnapshot {
                 meta: SnapshotMeta {
@@ -535,7 +539,16 @@ impl StateMachineSqlite {
                     .expect("last_snapshot_path to always be Some when snapshot_id exists"),
             }))
         } else {
-            self.read_current_snapshot_from_disk().await
+            if let Some(snapshot) = self.read_current_snapshot_from_disk().await? {
+                info!(
+                    "\n\nsnapshot from disk: {:?}\nwith local meta: {:?}\n\n",
+                    snapshot, self.data
+                );
+                Ok(Some(snapshot))
+            } else {
+                Ok(None)
+            }
+
             // Ok(None)
         }
     }
@@ -818,6 +831,12 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     .map_err(|err| StorageError::IO {
                         source: StorageIOError::read(&err),
                     })?;
+
+                info!(
+                    "\n\nget_current_snapshot in db get_curr_snapshot: {:?}\n\n",
+                    snap.meta
+                );
+
                 Ok(Some(Snapshot {
                     meta: snap.meta,
                     snapshot: Box::new(file),

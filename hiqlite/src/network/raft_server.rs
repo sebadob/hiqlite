@@ -6,7 +6,7 @@ use openraft::raft::VoteRequest;
 use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse};
 use openraft::raft::{InstallSnapshotRequest, InstallSnapshotResponse, VoteResponse};
 use serde::{Deserialize, Serialize};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
@@ -149,6 +149,11 @@ async fn handle_socket(
 
                     #[cfg(feature = "sqlite")]
                     RaftStreamRequest::SnapshotDB(req) => {
+                        info!(
+                            "\n\ninstall db snapshot req in raft server: {:?} / {:?}\n\n",
+                            req.vote, req.meta
+                        );
+
                         match state.raft_db.raft.install_snapshot(req).await {
                             Ok(res) => {
                                 ws.write_frame(RaftStreamResponse::SnapshotDB(res).as_payload())
@@ -197,6 +202,11 @@ async fn handle_socket(
 
                     #[cfg(feature = "cache")]
                     RaftStreamRequest::SnapshotCache(req) => {
+                        info!(
+                            "\n\ninstall cache snapshot req in raft server: {:?} / {:?}\n\n",
+                            req.vote, req.meta
+                        );
+
                         match state.raft_cache.raft.install_snapshot(req).await {
                             Ok(res) => {
                                 ws.write_frame(RaftStreamResponse::SnapshotCache(res).as_payload())
