@@ -110,6 +110,7 @@ pub(crate) async fn start_raft_cache(
     };
 
     let tx_kv = state_machine_store.tx_kv.clone();
+    let rx_notify = state_machine_store.rx_notify.clone();
 
     let raft = openraft::Raft::new(
         node_config.node_id,
@@ -139,6 +140,7 @@ pub(crate) async fn start_raft_cache(
         raft,
         lock: Default::default(),
         tx_kv,
+        rx_notify,
     })
 }
 

@@ -20,6 +20,8 @@ mod transaction;
 mod backup;
 #[cfg(feature = "cache")]
 mod cache;
+#[cfg(feature = "cache")]
+mod listen_notify;
 
 /// Database client
 #[derive(Clone)]
@@ -33,4 +35,6 @@ pub struct DbClient {
     pub(crate) api_secret: Option<String>,
     pub(crate) request_id: Arc<AtomicUsize>,
     pub(crate) tx_shutdown: Option<watch::Sender<bool>>,
+    #[cfg(feature = "cache")]
+    pub(crate) app_start: i64,
 }

@@ -21,6 +21,8 @@ pub enum Error {
     Bincode(String),
     #[error("Cache: {0}")]
     Cache(Cow<'static, str>),
+    #[error("Channel: {0}")]
+    Channel(String),
     #[error("CheckIsLeaderError: {0}")]
     CheckIsLeaderError(RaftError<u64, CheckIsLeaderError<u64, Node>>),
     #[error("ClientWriteError: {0}")]
@@ -92,6 +94,7 @@ impl IntoResponse for Error {
             Error::BadRequest(_) => StatusCode::BAD_REQUEST,
             Error::Bincode(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Cache(_) => StatusCode::BAD_REQUEST,
+            Error::Channel(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::CheckIsLeaderError(_) => StatusCode::CONFLICT,
             Error::LeaderChange(_) => StatusCode::CONFLICT,
             Error::QueryParams(_) => StatusCode::BAD_REQUEST,
@@ -237,5 +240,12 @@ impl From<JoinError> for Error {
     fn from(value: JoinError) -> Self {
         error!("JoinError: {}", value);
         Self::Error(value.to_string().into())
+    }
+}
+
+impl From<flume::RecvError> for Error {
+    fn from(value: flume::RecvError) -> Self {
+        error!("flume::RecvError: {}", value);
+        Self::Channel(value.to_string())
     }
 }

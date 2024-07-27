@@ -62,7 +62,6 @@ in case of any errors or problems.
     - complete loss of the logs storage (rocksdb)
     - complete loss of the whole volume itself
 - automatic database migrations
-- in additional to SQLite - in-memory K/V store with optional independent TTL per entry
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
 - fully encrypted backups to s3 (
@@ -82,6 +81,8 @@ in case of any errors or problems.
   This will end up behind a `serde` feature in the future which is not implemented yet.
 - `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
   faster method with more manual work
+- in addition to SQLite - in-memory K/V store with optional independent TTL per entry
+- listen / notify to send real-time messages through the Raft
 
 ### TODOs
 
@@ -89,7 +90,6 @@ in case of any errors or problems.
 
 This list is by no means exhaustive, these are just the next big things before a v0.1.0
 
-- listen / notify
 - metrics / health endpoint or maybe even a simple health UI
 - impl parsers for the `NodeConfig` to read from env or toml file
 - possibility to register an automatic shutdown handle with the `DbClient`

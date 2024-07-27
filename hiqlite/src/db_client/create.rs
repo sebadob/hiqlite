@@ -42,6 +42,8 @@ impl DbClient {
             api_secret: None,
             request_id: Arc::new(AtomicUsize::new(0)),
             tx_shutdown: Some(tx_shutdown),
+            #[cfg(feature = "cache")]
+            app_start: chrono::Utc::now().timestamp_micros(),
         }
     }
 
@@ -88,6 +90,8 @@ impl DbClient {
             api_secret: Some(api_secret),
             request_id: Arc::new(AtomicUsize::new(0)),
             tx_shutdown: None,
+            #[cfg(feature = "cache")]
+            app_start: chrono::Utc::now().timestamp_micros(),
         }
     }
 }

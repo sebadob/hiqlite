@@ -19,6 +19,8 @@ mod transaction;
 
 #[cfg(feature = "cache")]
 mod cache;
+#[cfg(feature = "cache")]
+mod listen_notify;
 
 pub const TEST_DATA_DIR: &str = "tests/data_test";
 
@@ -86,6 +88,10 @@ async fn exec_tests() -> Result<(), Error> {
         log("Test cache operations");
         cache::test_cache(&client_1, &client_2, &client_3).await?;
         log("Cache operations finished");
+
+        log("Test listen / notify");
+        listen_notify::test_listen_notify(&client_1, &client_2, &client_3).await?;
+        log("listen / notify finished");
     }
 
     log("Test shutdown and restart");

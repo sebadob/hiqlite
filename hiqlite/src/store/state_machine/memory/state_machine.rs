@@ -35,6 +35,7 @@ pub enum CacheRequest {
     Delete {
         key: Cow<'static, str>,
     },
+    Notify((i64, Vec<u8>)),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -57,8 +58,12 @@ pub struct StateMachineMemory {
     data: RwLock<StateMachineData>,
     snapshot_idx: AtomicU64,
     snapshot: Mutex<Option<Snapshot<TypeConfigKV>>>,
+
     pub(crate) tx_kv: flume::Sender<CacheRequestHandler>,
     tx_ttl: flume::Sender<(i64, String)>,
+
+    tx_notify: flume::Sender<(i64, Vec<u8>)>,
+    pub(crate) rx_notify: flume::Receiver<(i64, Vec<u8>)>,
 }
 
 impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
@@ -112,12 +117,16 @@ impl StateMachineMemory {
         let tx_kv = kv_handler::spawn();
         let tx_ttl = cache_ttl_handler::spawn(tx_kv.clone());
 
+        let (tx_notify, rx_notify) = flume::unbounded();
+
         Ok(Self {
             data: Default::default(),
             snapshot_idx: AtomicU64::new(0),
             snapshot: Default::default(),
             tx_kv,
             tx_ttl,
+            tx_notify,
+            rx_notify,
         })
     }
 }
@@ -151,6 +160,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
             // we are using sync sends -> unbounded channels
             let resp_value = match entry.payload {
                 EntryPayload::Blank => CacheResponse::Empty,
+
                 EntryPayload::Normal(req) => match req {
                     CacheRequest::Put {
                         key,
@@ -179,7 +189,16 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         // data.kvs.remove(key.as_ref());
                         CacheResponse::Ok
                     }
+
+                    CacheRequest::Notify(payload) => {
+                        self.tx_notify
+                            .send(payload)
+                            // this channel can never be closed - we have both sides
+                            .unwrap();
+                        CacheResponse::Ok
+                    }
                 },
+
                 EntryPayload::Membership(mem) => {
                     data.last_membership = StoredMembership::new(Some(entry.log_id), mem);
                     CacheResponse::Empty
