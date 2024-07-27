@@ -31,6 +31,9 @@ pub enum Error {
     Config(Cow<'static, str>),
     #[error("Connect: {0}")]
     Connect(String),
+    #[cfg(feature = "s3")]
+    #[error("Cryptr: {0}")]
+    Cryptr(String),
     #[error("Error: {0}")]
     Error(Cow<'static, str>),
     #[error("InitializeError: {0}")]
@@ -96,6 +99,7 @@ impl IntoResponse for Error {
             Error::Cache(_) => StatusCode::BAD_REQUEST,
             Error::Channel(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::CheckIsLeaderError(_) => StatusCode::CONFLICT,
+            Error::Cryptr(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::LeaderChange(_) => StatusCode::CONFLICT,
             Error::QueryParams(_) => StatusCode::BAD_REQUEST,
             Error::PrepareStatement(_) => StatusCode::BAD_REQUEST,
@@ -247,5 +251,13 @@ impl From<flume::RecvError> for Error {
     fn from(value: flume::RecvError) -> Self {
         error!("flume::RecvError: {}", value);
         Self::Channel(value.to_string())
+    }
+}
+
+#[cfg(feature = "s3")]
+impl From<cryptr::CryptrError> for Error {
+    fn from(value: cryptr::CryptrError) -> Self {
+        error!("cryptr::CryptrError: {}", value);
+        Self::Cryptr(value.to_string())
     }
 }

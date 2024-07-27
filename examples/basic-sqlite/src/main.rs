@@ -13,7 +13,7 @@ struct Migrations;
 
 #[derive(Debug, Clone, Parser)]
 #[clap(author, version, about, long_about = None)]
-enum CliArgs {
+enum Args {
     /// Start one of the 3 test nodes
     Server(Server),
     /// Start the test with just a single node - works in the same way
@@ -93,15 +93,15 @@ async fn main() -> Result<(), Error> {
         .with_env_filter(EnvFilter::from("info"))
         .init();
 
-    match CliArgs::parse() {
-        CliArgs::Server(args) => {
+    match Args::parse() {
+        Args::Server(args) => {
             if args.node_id < 1 || args.node_id > 3 {
                 Err(Error::Config("Node ID must be 1-3".into()))
             } else {
                 server(Some(args)).await
             }
         }
-        CliArgs::Single => server(None).await,
+        Args::Single => server(None).await,
     }
 }
 

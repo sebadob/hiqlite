@@ -1,10 +1,10 @@
+use crate::s3::S3Config;
+use crate::tls::ServerTlsConfig;
 use crate::{Error, Node, NodeId};
 use openraft::SnapshotPolicy;
 use std::borrow::Cow;
 use std::env;
 
-use crate::s3::S3Config;
-use crate::tls::ServerTlsConfig;
 pub use openraft::Config as RaftConfig;
 
 #[cfg(feature = "s3")]
@@ -218,6 +218,26 @@ impl NodeConfig {
     }
 }
 
+impl From<&str> for Node {
+    fn from(s: &str) -> Self {
+        let (id, rest) = s
+            .trim()
+            .split_once(' ')
+            .expect("invalid format for HQL_NODES");
+        let (addr_raft, addr_api) = rest.split_once(' ').expect("invalid format for HQL_NODES");
+
+        let id = id
+            .parse::<u64>()
+            .expect("Cannot parse Node ID from HQL_NODES to u64");
+
+        Self {
+            id,
+            addr_raft: addr_raft.trim().to_string(),
+            addr_api: addr_api.trim().to_string(),
+        }
+    }
+}
+
 impl Node {
     fn all_from_env() -> Vec<Self> {
         let mut res = Vec::new();
@@ -225,25 +245,9 @@ impl Node {
         let value = env::var("HQL_NODES").expect("HQL_NODES does not exist");
 
         for line in value.lines() {
-            if line.is_empty() {
-                continue;
+            if !line.is_empty() {
+                res.push(Self::from(line))
             }
-
-            let (id, rest) = line
-                .trim()
-                .split_once(' ')
-                .expect("invalid format for HQL_NODES");
-            let (addr_raft, addr_api) = rest.split_once(' ').expect("invalid format for HQL_NODES");
-
-            let id = id
-                .parse::<u64>()
-                .expect("Cannot parse Node ID from HQL_NODES to u64");
-
-            res.push(Self {
-                id,
-                addr_raft: addr_raft.trim().to_string(),
-                addr_api: addr_api.trim().to_string(),
-            })
         }
 
         res

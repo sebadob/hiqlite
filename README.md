@@ -86,7 +86,9 @@ in case of any errors or problems.
 
 ### TODOs before v0.1.0
 
+- make the `hiqlite_server` work and make it possible to spin up an instance for testing
 - metrics / health endpoint or maybe even a simple health UI
 - a lot of code cleanup
 - proper documentation
 - more examples
+- default auto-backup task
