@@ -4,15 +4,11 @@ use crate::store::state_machine::sqlite::state_machine::{
     PathBackups, PathDb, PathLockFile, PathSnapshots, QueryWrite, StateMachineData,
     StateMachineSqlite,
 };
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
-use crate::{Error, Node, NodeConfig};
-use openraft::error::{ClientWriteError, RaftError};
-use openraft::raft::ClientWriteResponse;
+use crate::{Error, NodeConfig};
 use std::env;
-use std::os::linux::raw::stat;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::{Instant, Interval};
+use tokio::time::Instant;
 use tokio::{fs, task, time};
 use tracing::{debug, error, info, warn};
 

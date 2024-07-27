@@ -1,6 +1,5 @@
 use crate::config::EncKeysFrom;
 use crate::Error;
-use cryptr::stream::s3::*;
 use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter};
 use tracing::warn;
 

@@ -3,7 +3,6 @@ use crate::network::handshake::HandshakeSecret;
 use crate::network::{fmt_ok, get_payload, validate_secret, AppStateExt, Error};
 use crate::query::query_consistent;
 use crate::query::rows::RowOwned;
-
 use axum::body;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
@@ -199,7 +198,7 @@ pub(crate) enum ApiStreamRequestPayload {
     Batch(Cow<'static, str>),
     Migrate(Vec<Migration>),
     #[cfg(feature = "backup")]
-    Backup,
+    Backup(crate::NodeId),
 
     #[cfg(feature = "cache")]
     KV(CacheRequest),
@@ -517,8 +516,13 @@ async fn handle_socket_concurrent(
                         }
 
                         #[cfg(feature = "backup")]
-                        ApiStreamRequestPayload::Backup => {
-                            match state.raft_db.raft.client_write(QueryWrite::Backup).await {
+                        ApiStreamRequestPayload::Backup(node_id) => {
+                            match state
+                                .raft_db
+                                .raft
+                                .client_write(QueryWrite::Backup(node_id))
+                                .await
+                            {
                                 Ok(resp) => {
                                     let resp: crate::Response = resp.data;
                                     let res = match resp {

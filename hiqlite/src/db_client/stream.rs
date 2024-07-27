@@ -92,6 +92,7 @@ pub struct ClientMigratePayload {
 #[derive(Debug)]
 pub struct ClientBackupPayload {
     pub request_id: usize,
+    pub node_id: NodeId,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
@@ -338,10 +339,14 @@ async fn client_stream(
                 }
 
                 #[cfg(feature = "backup")]
-                ClientStreamReq::Backup(ClientBackupPayload { request_id, ack }) => {
+                ClientStreamReq::Backup(ClientBackupPayload {
+                    request_id,
+                    node_id,
+                    ack,
+                }) => {
                     let req = ApiStreamRequest {
                         request_id,
-                        payload: ApiStreamRequestPayload::Backup,
+                        payload: ApiStreamRequestPayload::Backup(node_id),
                     };
 
                     match tx_write

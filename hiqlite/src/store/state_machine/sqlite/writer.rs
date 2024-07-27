@@ -31,6 +31,7 @@ pub enum WriterRequest {
     Backup(BackupRequest),
     // BackupApply(BackupApplyRequest),
     Shutdown(oneshot::Sender<()>),
+    #[allow(clippy::upper_case_acronyms)]
     RTT(RTTRequest),
 }
 
@@ -128,6 +129,7 @@ pub struct RTTRequest {
 
 pub fn spawn_writer(
     mut conn: rusqlite::Connection,
+    this_node: NodeId,
     path_lock_file: String,
     log_statements: bool,
 ) -> flume::Sender<WriterRequest> {
@@ -474,20 +476,22 @@ pub fn spawn_writer(
                 WriterRequest::Backup(req) => {
                     sm_data.last_applied_log_id = req.last_applied_log_id;
 
-                    match create_backup(
-                        &conn,
-                        req.node_id,
-                        req.target_folder,
-                        #[cfg(feature = "s3")]
-                        req.s3_config,
-                    ) {
-                        Ok(meta) => req.ack.send(Ok(())),
-                        Err(err) => {
-                            error!("Error creating backup: {:?}", err);
-                            req.ack.send(Err(err))
+                    if this_node == req.node_id {
+                        match create_backup(
+                            &conn,
+                            req.node_id,
+                            req.target_folder,
+                            #[cfg(feature = "s3")]
+                            req.s3_config,
+                        ) {
+                            Ok(meta) => req.ack.send(Ok(())),
+                            Err(err) => {
+                                error!("Error creating backup: {:?}", err);
+                                req.ack.send(Err(err))
+                            }
                         }
+                        .expect("snapshot listener to always exists");
                     }
-                    .expect("snapshot listener to always exists");
                 }
 
                 WriterRequest::RTT(req) => {

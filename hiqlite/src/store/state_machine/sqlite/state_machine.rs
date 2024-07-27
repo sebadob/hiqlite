@@ -45,7 +45,8 @@ pub enum QueryWrite {
     Batch(Cow<'static, str>),
     Migration(Vec<Migration>),
     #[cfg(feature = "backup")]
-    Backup,
+    Backup(NodeId),
+    #[allow(clippy::upper_case_acronyms)]
     RTT,
 }
 
@@ -167,7 +168,8 @@ impl StateMachineSqlite {
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write(&err),
             })?;
-        let write_tx = writer::spawn_writer(conn, path_lock_file.clone(), log_statements);
+        let write_tx =
+            writer::spawn_writer(conn, this_node, path_lock_file.clone(), log_statements);
 
         let read_pool = Self::connect_read_pool(path_db.as_ref(), filename_db)
             .await
@@ -681,10 +683,10 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                 }
 
                 #[cfg(feature = "backup")]
-                EntryPayload::Normal(QueryWrite::Backup) => {
+                EntryPayload::Normal(QueryWrite::Backup(node_id)) => {
                     let (ack, rx) = oneshot::channel();
                     let req = WriterRequest::Backup(writer::BackupRequest {
-                        node_id: self.this_node,
+                        node_id,
                         target_folder: self.path_backups.clone(),
                         #[cfg(feature = "s3")]
                         s3_config: self.s3_config.clone(),
