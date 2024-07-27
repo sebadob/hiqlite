@@ -46,6 +46,7 @@ pub enum QueryWrite {
     Migration(Vec<Migration>),
     #[cfg(feature = "backup")]
     Backup,
+    RTT,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +64,7 @@ pub enum Response {
     Batch(ResponseBatch),
     Migrate(Result<(), Error>),
     Backup(Result<(), Error>),
+    RTT,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -105,7 +107,7 @@ pub struct StateMachineSqlite {
     path_lock_file: String,
 
     #[cfg(feature = "s3")]
-    s3_config: Option<Arc<crate::S3Config>>,
+    s3_config: Option<Arc<crate::s3::S3Config>>,
 
     pub read_pool: Arc<SqlitePool>,
     pub(crate) write_tx: flume::Sender<WriterRequest>,
@@ -144,7 +146,7 @@ impl StateMachineSqlite {
         filename_db: &str,
         this_node: NodeId,
         log_statements: bool,
-        #[cfg(feature = "s3")] s3_config: Option<Arc<crate::S3Config>>,
+        #[cfg(feature = "s3")] s3_config: Option<Arc<crate::s3::S3Config>>,
     ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
         // IMPORTANT: Do NOT change the order of the db exists check!
         // DB recovery will fail otherwise!
@@ -558,15 +560,7 @@ impl StateMachineSqlite {
             }))
         } else {
             self.read_current_snapshot_from_disk().await
-            // if let Some(snapshot) = self.read_current_snapshot_from_disk().await? {
-            //     info!(
-            //         "\n\nsnapshot from disk: {:?}\nwith local meta: {:?}\n\n",
-            //         snapshot, self.data
-            //     );
-            //     Ok(Some(snapshot))
-            // } else {
-            //     Ok(None)
-            // }
+            // Ok(None)
         }
     }
 }
@@ -722,6 +716,22 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
 
                     let result = rx.await.expect("to always get a response from sql writer");
                     Response::Migrate(result)
+                }
+
+                EntryPayload::Normal(QueryWrite::RTT) => {
+                    let (ack, rx) = oneshot::channel();
+                    let req = WriterRequest::RTT(writer::RTTRequest {
+                        last_applied_log_id: log_id,
+                        ack,
+                    });
+
+                    self.write_tx
+                        .send_async(req)
+                        .await
+                        .expect("sql writer to always be listening");
+
+                    rx.await.expect("to always get a response from sql writer");
+                    Response::RTT
                 }
 
                 EntryPayload::Membership(mem) => {

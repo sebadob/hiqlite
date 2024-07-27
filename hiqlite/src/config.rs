@@ -45,7 +45,7 @@ pub struct NodeConfig {
     pub enc_keys_from: EncKeysFrom,
     /// If an `S3Config` is given, it will be used to push backups to the S3 bucket.
     #[cfg(feature = "s3")]
-    pub s3_config: Option<crate::S3Config>,
+    pub s3_config: Option<crate::s3::S3Config>,
 }
 
 impl Default for NodeConfig {

@@ -31,6 +31,7 @@ pub enum WriterRequest {
     Backup(BackupRequest),
     // BackupApply(BackupApplyRequest),
     Shutdown(oneshot::Sender<()>),
+    RTT(RTTRequest),
 }
 
 #[derive(Debug)]
@@ -108,9 +109,15 @@ pub struct BackupRequest {
     pub node_id: NodeId,
     pub target_folder: String,
     #[cfg(feature = "s3")]
-    pub s3_config: Option<std::sync::Arc<crate::S3Config>>,
+    pub s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
     pub last_applied_log_id: Option<LogId<NodeId>>,
     pub ack: oneshot::Sender<Result<(), Error>>,
+}
+
+#[derive(Debug)]
+pub struct RTTRequest {
+    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub ack: oneshot::Sender<()>,
 }
 
 // #[derive(Debug)]
@@ -482,6 +489,11 @@ pub fn spawn_writer(
                     }
                     .expect("snapshot listener to always exists");
                 }
+
+                WriterRequest::RTT(req) => {
+                    sm_data.last_applied_log_id = req.last_applied_log_id;
+                    req.ack.send(()).unwrap();
+                }
             }
         }
 
@@ -519,7 +531,7 @@ fn create_backup(
     conn: &rusqlite::Connection,
     node_id: NodeId,
     target_folder: String,
-    #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::S3Config>>,
+    #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
 ) -> Result<(), Error> {
     // TODO
     // - build target db file name with node id and timestamp

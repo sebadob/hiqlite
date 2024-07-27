@@ -30,9 +30,7 @@ pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
 #[cfg(feature = "s3")]
-pub use config::EncKeysFrom;
-#[cfg(feature = "s3")]
-pub use s3::S3Config;
+pub use crate::config::EncKeysFrom;
 
 mod app_state;
 mod config;
@@ -49,7 +47,7 @@ mod tls;
 #[cfg(feature = "backup")]
 mod backup;
 #[cfg(feature = "s3")]
-mod s3;
+pub mod s3;
 
 type NodeId = u64;
 
@@ -195,23 +193,19 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     let state = Arc::new(AppState {
         id: node_config.node_id,
         addr_api: api_addr.clone(),
-        // addr_raft: rpc_addr.clone(),
         #[cfg(feature = "sqlite")]
         raft_db,
         #[cfg(feature = "cache")]
         raft_cache,
-        // config: raft_config,
         secret_api: node_config.secret_api,
         secret_raft: node_config.secret_raft,
         client_buffers,
     });
 
-    #[cfg(all(feature = "backup", feature = "sqlite"))]
-    if backup_applied {
-        backup::restore_backup_cleanup(state.clone());
-    }
-
-    // let compression_middleware = ServiceBuilder::new().layer(CompressionLayer::new());
+    // #[cfg(all(feature = "backup", feature = "sqlite"))]
+    // if backup_applied {
+    //     backup::restore_backup_cleanup(state.clone());
+    // }
 
     let (tx_shutdown, rx_shutdown) = watch::channel(false);
 
@@ -339,6 +333,11 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     member_db.await??;
     #[cfg(feature = "cache")]
     member_cache.await??;
+
+    #[cfg(all(feature = "backup", feature = "sqlite"))]
+    if backup_applied {
+        backup::restore_backup_cleanup(state.clone(), node_config.nodes.len());
+    }
 
     let client = DbClient::new_local(state, tls_api_client_config, tx_shutdown);
 
