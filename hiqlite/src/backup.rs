@@ -16,17 +16,20 @@ pub const BACKUP_DB_NAME: &str = "restore.sqlite";
 
 /// Check if the env var `HIQLITE_BACKUP_RESTORE` is set and restores the given backup if so.
 /// Returns `Ok(true)` if backup has been applied.
+/// This will only run if the current node ID is `1`.
 pub(crate) async fn check_restore_apply(node_config: &NodeConfig) -> Result<bool, Error> {
-    if let Ok(name) = env::var("HIQLITE_BACKUP_RESTORE") {
-        warn!(
-            "Found HIQLITE_BACKUP_RESTORE={} - starting restore process",
-            name
-        );
-        restore_backup(node_config, &name).await?;
-        Ok(true)
-    } else {
-        Ok(false)
+    if node_config.node_id == 1 {
+        if let Ok(name) = env::var("HIQLITE_BACKUP_RESTORE") {
+            warn!(
+                "Found HIQLITE_BACKUP_RESTORE={} - starting restore process",
+                name
+            );
+            restore_backup(node_config, &name).await?;
+            return Ok(true);
+        }
     }
+
+    Ok(false)
 }
 
 /// Apply the given backup from S3 storage.

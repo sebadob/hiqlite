@@ -190,7 +190,6 @@ pub(crate) struct ApiStreamRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum ApiStreamRequestPayload {
-    // sqlite
     Execute(Query),
     ExecuteReturning(Query),
     Transaction(Vec<Query>),
