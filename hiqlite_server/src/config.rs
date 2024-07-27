@@ -23,7 +23,7 @@ pub fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
 
 pub async fn generate() -> Result<(), Error> {
     let path = default_config_dir();
-    let _ = fs::create_dir_all(&path).await?;
+    fs::create_dir_all(&path).await?;
 
     let path_file = default_config_file_path();
     if fs::File::open(&path_file).await.is_ok() {
