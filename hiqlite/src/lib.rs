@@ -109,7 +109,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     s3::init_enc_keys(&node_config.enc_keys_from)?;
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
-    let backup_applied = backup::check_restore_apply(&node_config).await?;
+    let backup_applied = backup::restore_backup_start(&node_config).await?;
 
     let raft_config = Arc::new(node_config.config.clone().validate().unwrap());
 
@@ -147,7 +147,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     if backup_applied {
-        backup::restore_backup_cleanup(state.clone(), node_config.nodes.len());
+        backup::restore_backup_finish(state.clone()).await;
     }
 
     let (tx_shutdown, rx_shutdown) = watch::channel(false);

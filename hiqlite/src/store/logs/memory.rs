@@ -161,7 +161,7 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
     #[tracing::instrument(level = "debug", skip(self))]
     async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
         let mut lock = self.logs.write().await;
-        lock.retain(|id, _| *id <= log_id.index + 1);
+        lock.retain(|id, _| *id <= log_id.index);
         Ok(())
     }
 

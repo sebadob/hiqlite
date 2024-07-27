@@ -53,7 +53,7 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         use cryptr::stream::s3::{
             AccessKeyId, AccessKeySecret, Bucket, BucketOptions, Credentials, Region,
         };
-        use hiqlite::S3Config;
+        use hiqlite::s3::S3Config;
         use std::env;
 
         dotenvy::dotenv().ok();

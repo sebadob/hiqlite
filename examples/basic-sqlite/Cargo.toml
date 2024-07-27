@@ -3,11 +3,8 @@ name = "basic-sqlite"
 version = "0.1.0"
 edition = "2021"
 
-#[[example]]
-#name = "basic-sqlite"
-
 [dependencies]
-hiqlite = { path = "../../hiqlite", default-features = false, features = ["auto-heal", "auto-heal-logs", "sqlite"] }
+hiqlite = { path = "../../hiqlite" }
 
 clap = { version = "4.1.11", features = ["derive", "env"] }
 rust-embed = { version = "8.5.0", features = ["compression"] }

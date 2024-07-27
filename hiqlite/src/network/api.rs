@@ -215,7 +215,7 @@ pub(crate) enum ApiStreamResponsePayload {
     ExecuteReturning(Result<Vec<RowOwned>, Error>),
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
     QueryConsistent(Result<Vec<RowOwned>, Error>),
-    Batch(Vec<Result<usize, Error>>),
+    Batch(Result<Vec<Result<usize, Error>>, Error>),
     Migrate(Result<(), Error>),
     #[cfg(feature = "backup")]
     Backup(Result<(), Error>),
@@ -475,14 +475,12 @@ async fn handle_socket_concurrent(
                                     };
                                     ApiStreamResponse {
                                         request_id: req.request_id,
-                                        result: ApiStreamResponsePayload::Batch(res.result),
+                                        result: ApiStreamResponsePayload::Batch(Ok(res.result)),
                                     }
                                 }
                                 Err(err) => ApiStreamResponse {
                                     request_id: req.request_id,
-                                    result: ApiStreamResponsePayload::Execute(Err(Error::from(
-                                        err,
-                                    ))),
+                                    result: ApiStreamResponsePayload::Batch(Err(Error::from(err))),
                                 },
                             }
                         }

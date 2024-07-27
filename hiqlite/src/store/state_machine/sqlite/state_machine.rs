@@ -94,7 +94,7 @@ pub struct StateMachineData {
     pub last_applied_log_id: Option<LogId<NodeId>>,
     pub last_membership: StoredMembership<NodeId, Node>,
     pub last_snapshot_id: Option<String>,
-    pub last_snapshot_path: Option<String>,
+    // pub last_snapshot_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -221,15 +221,8 @@ impl StateMachineSqlite {
         };
 
         if !db_exists {
-            if let Some(snapshot) = slf.read_current_snapshot_from_disk().await? {
-                // needed in case we lost the DB for some reason but still have a snapshot
-                // on disk we can re-use
+            if let Some(snapshot) = slf.read_current_snapshot().await? {
                 slf.update_state_machine_(snapshot.path).await?;
-            } else {
-                #[cfg(feature = "backup")]
-                if let Some(restore_file_path) = slf.backup_restore_file().await {
-                    slf.update_state_machine_(restore_file_path).await?;
-                }
             }
         }
 
@@ -434,7 +427,7 @@ impl StateMachineSqlite {
         Ok(())
     }
 
-    async fn read_current_snapshot_from_disk(&self) -> StorageResult<Option<StoredSnapshot>> {
+    async fn read_current_snapshot(&mut self) -> StorageResult<Option<StoredSnapshot>> {
         let mut list = tokio::fs::read_dir(&self.path_snapshots)
             .await
             .map_err(|err| StorageError::IO {
@@ -488,13 +481,14 @@ impl StateMachineSqlite {
                 source: StorageIOError::write(&err),
             })?;
 
+        // let path_snapshot_clone = path_snapshot.clone();
         let metadata = task::spawn_blocking(move || {
             let mut stmt = conn
                 .prepare("SELECT data FROM _metadata WHERE key = 'meta'")
                 .map_err(|err| StorageError::IO {
                     source: StorageIOError::write(&err),
                 })?;
-            let metadata = stmt
+            let mut metadata = stmt
                 .query_row((), |row| {
                     let meta_bytes: Vec<u8> = row.get(0)?;
                     let metadata: StateMachineData =
@@ -512,18 +506,12 @@ impl StateMachineSqlite {
             source: StorageIOError::write(&err),
         })??;
 
-        // TODO if the metadata is none, we should probably remove the file completely and trigger
-        // the creation of a new one -> this might happen if we restore a backup as snapshot
-        // TODO other solution, do not re-use the snapshot mechanism to restore backups
-
         let snapshot_id = id.to_string();
 
-        if let Some(path) = metadata.last_snapshot_path {
-            assert_eq!(path, path_snapshot)
-        }
-        if let Some(id) = metadata.last_snapshot_id {
-            assert_eq!(id, snapshot_id)
-        }
+        assert_eq!(
+            Some(snapshot_id.as_str()),
+            metadata.last_snapshot_id.as_deref()
+        );
 
         let meta = SnapshotMeta {
             last_log_id: metadata.last_applied_log_id,
@@ -534,36 +522,8 @@ impl StateMachineSqlite {
             meta,
             path: path_snapshot,
         };
+
         Ok(Some(snapshot))
-    }
-
-    #[cfg(feature = "backup")]
-    async fn backup_restore_file(&self) -> Option<String> {
-        let restore_path = format!("{}/{}", self.path_backups, crate::backup::BACKUP_DB_NAME);
-        match fs::File::open(&restore_path).await {
-            Ok(_) => Some(restore_path),
-            Err(_) => None,
-        }
-    }
-
-    async fn get_current_snapshot_(&mut self) -> StorageResult<Option<StoredSnapshot>> {
-        if let Some(snapshot_id) = self.data.last_snapshot_id.clone() {
-            Ok(Some(StoredSnapshot {
-                meta: SnapshotMeta {
-                    last_log_id: self.data.last_applied_log_id,
-                    last_membership: self.data.last_membership.clone(),
-                    snapshot_id,
-                },
-                path: self
-                    .data
-                    .last_snapshot_path
-                    .clone()
-                    .expect("last_snapshot_path to always be Some when snapshot_id exists"),
-            }))
-        } else {
-            self.read_current_snapshot_from_disk().await
-            // Ok(None)
-        }
     }
 }
 
@@ -768,7 +728,6 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         // TODO clean up possibly existing restore files inside snapshot builder upon success
 
         SQLiteSnapshotBuilder {
-            // last_membership: self.data.last_membership.clone(),
             #[cfg(feature = "backup")]
             path_backups: self.path_backups.clone(),
             path_snapshots: self.path_snapshots.clone(),
@@ -795,44 +754,8 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     async fn install_snapshot(
         &mut self,
         meta: &SnapshotMeta<NodeId, Node>,
-        // tokio file handle
-        // TODO at this step, it should always be the `/temp` file -> make 100% sure
         _snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
-        // TODO extract file path from snapshot data
-        // let new_snapshot = StoredSnapshot {
-        //     meta: meta.clone(),
-        //     // path: ,
-        // };
-
-        // self.update_state_machine_(new_snapshot.clone()).await?;
-
-        // self.persist_snapshot(new_snapshot, snapshot)?;
-
-        // fs::create_dir_all(&self.path_snapshots)
-        //     .await
-        //     .map_err(|err| StorageError::IO {
-        //         source: StorageIOError::write(&err),
-        //     })?;
-
-        // let path_meta = format!("{}/meta", path_new);;
-        // let meta_bytes = bincode::serialize(&snapshot.meta).unwrap();
-        // fs::write(path_meta, meta_bytes).await.map_err(|err| StorageError::IO { source: StorageIOError::read(&err) })?;
-
-        // let (ack, rx) = oneshot::channel();
-        // let src = format!("{}/temp", self.path_snapshots);
-        // self.write_tx
-        //     .send_async(WriterRequest::SnapshotApply(src, ack))
-        //     .await
-        //     .map_err(|err| StorageError::IO {
-        //         source: StorageIOError::write(&err),
-        //     })?;
-        //
-        // self.data = rx
-        //     .await
-        //     .expect("to always get a response from Snapshot Install");
-
-        // // TODO fix src path
         let src = format!("{}/temp", self.path_snapshots);
         let tar = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
         fs::copy(&src, &tar).await.map_err(|err| StorageError::IO {
@@ -854,8 +777,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfigSqlite>>, StorageError<NodeId>> {
-        let snap = self.get_current_snapshot_().await?;
-        match snap {
+        match self.read_current_snapshot().await? {
             None => Ok(None),
             Some(snap) => {
                 let file = fs::File::open(&snap.path)
@@ -863,11 +785,6 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     .map_err(|err| StorageError::IO {
                         source: StorageIOError::read(&err),
                     })?;
-
-                info!(
-                    "\n\nget_current_snapshot in db get_curr_snapshot: {:?}\n\n",
-                    snap.meta
-                );
 
                 Ok(Some(Snapshot {
                     meta: snap.meta,

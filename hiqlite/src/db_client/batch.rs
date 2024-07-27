@@ -53,7 +53,7 @@ impl DbClient {
                 .await
                 .expect("To always receive an answer from Client Stream Manager")?;
             match res {
-                ApiStreamResponsePayload::Batch(res) => Ok(res),
+                ApiStreamResponsePayload::Batch(res) => res,
                 _ => unreachable!(),
             }
         }

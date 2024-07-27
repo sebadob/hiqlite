@@ -477,21 +477,20 @@ pub fn spawn_writer(
                     sm_data.last_applied_log_id = req.last_applied_log_id;
 
                     if this_node == req.node_id {
-                        match create_backup(
+                        if let Err(err) = create_backup(
                             &conn,
                             req.node_id,
                             req.target_folder,
                             #[cfg(feature = "s3")]
                             req.s3_config,
                         ) {
-                            Ok(meta) => req.ack.send(Ok(())),
-                            Err(err) => {
-                                error!("Error creating backup: {:?}", err);
-                                req.ack.send(Err(err))
-                            }
+                            error!("Error creating backup: {:?}", err);
+                            req.ack.send(Err(err));
+                            continue;
                         }
-                        .expect("snapshot listener to always exists");
                     }
+
+                    req.ack.send(Ok(()));
                 }
 
                 WriterRequest::RTT(req) => {
@@ -518,7 +517,6 @@ fn create_snapshot(
         last_applied_log_id,
         last_membership,
         last_snapshot_id: Some(snapshot_id.to_string()),
-        last_snapshot_path: Some(path.clone()),
     };
 
     let meta_bytes = bincode::serialize(&metadata).unwrap();
