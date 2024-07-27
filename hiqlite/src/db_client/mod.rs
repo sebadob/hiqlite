@@ -22,6 +22,8 @@ mod backup;
 mod cache;
 #[cfg(feature = "cache")]
 mod listen_notify;
+#[cfg(feature = "shutdown-handle")]
+mod shutdown_handle;
 
 /// Database client
 #[derive(Clone)]

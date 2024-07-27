@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info};
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
@@ -34,7 +34,7 @@ pub async fn init_pristine_node_1_db(
 
         if should_node_1_skip_init(&RaftType::Sqlite, nodes, secret_api, tls, tls_no_verify).await?
         {
-            warn!("node 1 (DB) should skip its own init - found existing cluster on remotes");
+            info!("node 1 (DB) should skip its own init - found existing cluster on remotes");
             return Ok(());
         }
 
@@ -63,7 +63,7 @@ pub async fn init_pristine_node_1_cache(
         // in case of cache raft, a node will never be initialized after start up
 
         if should_node_1_skip_init(&RaftType::Cache, nodes, secret_api, tls, tls_no_verify).await? {
-            warn!("node 1 (cache) should skip its own init - found existing cluster on remotes");
+            info!("node 1 (cache) should skip its own init - found existing cluster on remotes");
             return Ok(());
         }
 
@@ -94,6 +94,10 @@ async fn should_node_1_skip_init(
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<bool, Error> {
+    if nodes.len() < 2 {
+        return Ok(false);
+    }
+
     let client = reqwest::Client::builder()
         .http2_prior_knowledge()
         .danger_accept_invalid_certs(tls_no_verify)
@@ -189,20 +193,8 @@ pub async fn become_cluster_member(
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
-    tracing::info!("\n\nbecome_cluster_member {}\n\n", raft_type.as_str());
-
     if is_initialized_timeout(&state, raft_type).await? {
-        tracing::info!(
-            "\n\nbecome_cluster_member {} is initialized\n\n",
-            raft_type.as_str()
-        );
         return Ok(());
-    // }
-    } else {
-        tracing::info!(
-            "\n\nbecome_cluster_member {} is NOT initialized\n\n",
-            raft_type.as_str()
-        );
     }
 
     // If this node is neither node 1 nor initialized, we always want to reach
@@ -287,8 +279,6 @@ async fn try_become(
             );
             debug!("Sending request to {}", url);
 
-            tracing::info!("\n\ntry_become {}: {}\n\n", raft_type.as_str(), url);
-
             let res = client
                 .post(&url)
                 .header(HEADER_NAME_SECRET, &state.secret_api)
@@ -296,28 +286,14 @@ async fn try_become(
                 .send()
                 .await;
 
-            // tracing::info!(
-            //     "\n\ntry_become {} response: {:?}\n\n",
-            //     raft_type.as_str(),
-            //     res
-            // );
-
             match res {
                 Ok(resp) => {
                     if resp.status().is_success() {
-                        tracing::info!("\n\ntry_become {} successful\n\n", raft_type.as_str());
                         debug!("becoming a member has been successful");
                         return Ok(());
                     } else {
                         let body = resp.bytes().await?;
                         let err: Error = serde_json::from_slice(&body).unwrap();
-                        // error!("\n\nNode {} -> {}\n\n{:?}\n\n", this_node, url, err);
-                        // if let Some((id, _)) = err.is_forward_to_leader() {
-                        //     if id.is_none() {
-                        //         info!("Vote in progress, stepping back");
-                        //         time::sleep(Duration::from_secs(1)).await;
-                        //     }
-                        // } else {
                         error!(
                             "Node {} become '{}' member on remote ({}): {}",
                             this_node,
@@ -378,55 +354,3 @@ async fn is_initialized_timeout_sqlite(raft: &Raft<TypeConfigSqlite>) -> Result<
         Ok(false)
     }
 }
-
-// #[cfg(feature = "cache")]
-// async fn is_initialized_timeout_kv(raft: &Raft<TypeConfigKV>) -> Result<bool, Error> {
-//     // Do not try to initialize already initialized nodes
-//     if raft.is_initialized().await? {
-//         return Ok(true);
-//     }
-//
-//     // If it is not initialized, wait long enough to make sure this
-//     // node is not joined again to an already existing cluster after data loss.
-//     let heartbeat = raft.config().heartbeat_interval;
-//     // We will wait for 5 heartbeats to make sure no other cluster is running
-//     time::sleep(Duration::from_millis(heartbeat * 5)).await;
-//
-//     // Make sure we are not initialized by now, otherwise go on
-//     if raft.is_initialized().await? {
-//         Ok(true)
-//     } else {
-//         Ok(false)
-//     }
-// }
-
-// async fn wait_for_nodes_online(state: &AppState, nodes: &[Node], tls: bool, tls_no_verify: bool) {
-//     let scheme = if tls { "https" } else { "http" };
-//     let remotes = nodes
-//         .iter()
-//         .filter_map(|node| {
-//             (node.id != state.id).then_some(format!("{}://{}/ping", scheme, node.addr_raft))
-//         })
-//         .collect::<Vec<String>>();
-//     let mut remotes_online = 0;
-//
-//     let client = reqwest::Client::builder()
-//         .danger_accept_invalid_certs(tls_no_verify)
-//         .http2_prior_knowledge()
-//         .build()
-//         .unwrap();
-//     while remotes_online != remotes.len() {
-//         info!("Waiting for remote nodes {:?} to become reachable", remotes);
-//
-//         remotes_online = 0;
-//         time::sleep(Duration::from_secs(1)).await;
-//
-//         for node in &remotes {
-//             if client.get(node).send().await.is_ok() {
-//                 remotes_online += 1;
-//             }
-//         }
-//     }
-//
-//     info!("All remote nodes are reachable");
-// }

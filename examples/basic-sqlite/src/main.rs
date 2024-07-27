@@ -66,7 +66,7 @@ fn node_config(node_id: u64, nodes: Vec<Node>) -> Result<NodeConfig, Error> {
 }
 
 /// Matches our test table for this example.
-/// serde derive's are needed if you want to use the `query_as()` fn.
+/// serde derives are needed if you want to use the `query_as()` fn.
 #[derive(Debug, Serialize, Deserialize)]
 struct Entity {
     pub id: String,
@@ -122,15 +122,16 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
 
     // Start the Raft node itself and get a client
     // the auto_init setting will initialize the Raft cluster automatically and adds
-    // all given Nodes as members, as sonn as they are all up and running
+    // all given Nodes as members, as soon as they are all up and running
 
     // for simplicity, we will only do the inserts in this example on node 1,
     // the others will go to sleep
     let is_node_1 = config.node_id == 1;
 
     let client = start_node(config).await?;
+    let mut shutdown_handle = client.shutdown_handle()?;
 
-    // give the client some time to initliaze everything
+    // give the client some time to initialize everything
     time::sleep(Duration::from_secs(3)).await;
 
     if is_node_1 {
@@ -143,23 +144,6 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
 
         log("Apply our database migrations");
         client.migrate::<Migrations>().await?;
-
-        // log("Our test table is automatically created via `./migrations/V1__init.sql`");
-        // client
-        //     .execute(
-        //         r#"
-        // CREATE TABLE IF NOT EXISTS test
-        // (
-        //     id          TEXT    NOT NULL
-        //         CONSTRAINT test_pk
-        //             PRIMARY KEY,
-        //     num         INTEGER NOT NULL,
-        //     description TEXT
-        // )
-        // "#,
-        //         params!(),
-        //     )
-        //     .await?;
 
         log("Make sure table is empty from older example runs");
         client.execute("DELETE FROM test", params!()).await?;
@@ -224,7 +208,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
         // might be used to them. You don't create a transactions and pass it around in your code,
         // but instead you can provide as many queries as you like. This is kind of like batching, but
         // everything inside a single transaction and each query is prepared and cached, which makes it
-        // fast ans safe against SQL injection.
+        // fast and safe against SQL injection.
         // If you can make use of this, use it! It is really fast!
 
         log("Testing multiple executes in a transaction");
@@ -265,29 +249,33 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
             )
             .await?;
 
-        // we will receive a Vec with all the results again, just like for the transactio above
+        // we will receive a Vec with all the results again, just like for the transaction above
         let rows_affected = results.remove(0)?;
         assert_eq!(rows_affected, 3);
 
         let rows_affected = results.remove(0)?;
         assert_eq!(rows_affected, 1);
 
-        time::sleep(Duration::from_secs(3)).await;
-
-        // This is very important:
-        // You MUST do a graceful shtudown when your application exits. This will make sure all
-        // lock files are cleaned up and will make your next start faster. If the node starts up
-        // without cleanup lock files, it will delete the DB and re-create it from the latest
-        // snapshot + logs to really make sure it is 100% consistent.
-        // You can set features for `hiqlite` which enable auto-healing (without it will panic on
-        // start), but you should always try to do a shutdown.
-        // Starting an optional automatic shutdown handler is on the TODO, but not yet implemented.
-        log("Shutting down client now");
-        client.shutdown().await?;
-    } else {
-        log("Going to sleep - inserts from node 1 only in this example");
-        time::sleep(Duration::from_secs(u64::MAX)).await;
+        log("All tests successful");
+        log("You can exit with CTRL + C now and the shutdown handler will clean up");
     }
+
+    // This is very important:
+    // You MUST do a graceful shutdown when your application exits. This will make sure all
+    // lock files are cleaned up and will make your next start faster. If the node starts up
+    // without cleanup lock files, it will delete the DB and re-create it from the latest
+    // snapshot + logs to really make sure it is 100% consistent.
+    // You can set features for `hiqlite` which enable auto-healing (without it will panic on
+    // start), but you should always try to do a shutdown.
+    //
+    // You have 2 options:
+    // - register an automatic shutdown handle with the DbClient like shown above
+    // - trigger the shutdown manually at the end of your application
+    //   This makes sense when you already have structures implemented that catch shutdown signals,
+    //   for instance if you `.await` and API being terminated.
+    //   Then oyu can do a `client.shutdown().await?`
+
+    shutdown_handle.wait().await?;
 
     Ok(())
 }
@@ -302,7 +290,5 @@ fn debug<S: Debug>(s: &S) {
 }
 
 async fn cleanup(path: &str) {
-    // To keep this example simple and because we can't auto-register a shutdownhandler yet
-    // we will simply cleanup the data folder with each startup.
     let _ = fs::remove_dir_all(path).await;
 }

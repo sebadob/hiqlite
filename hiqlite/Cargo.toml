@@ -16,9 +16,8 @@ repository = "https://github.com/sebadob/hiqlite"
 all-features = true
 
 [features]
-#default = []
-default = ["auto-heal", "backup", "sqlite"]
-#default = ["auto-heal", "backup", "cache", "sqlite"]
+#default = ["auto-heal", "backup", "sqlite"]
+default = ["auto-heal", "backup", "sqlite", "shutdown-handle"]
 
 auto-heal = []
 backup = ["s3"]
@@ -28,6 +27,7 @@ cache = ["openraft/loosen-follower-log-revert"]
 io-uring = ["rocksdb/io-uring"]
 jemalloc = ["rocksdb/jemalloc"]
 s3 = ["backup", "dep:cryptr"]
+shutdown-handle = ["dep:ctrlc"]
 sqlite = ["dep:deadpool", "dep:rusqlite", "dep:serde_rusqlite"]
 webpki-roots = ["reqwest/rustls-tls-webpki-roots"]
 
@@ -39,6 +39,7 @@ byteorder.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 cryptr = { workspace = true, optional = true }
+ctrlc = { workspace = true, optional = true }
 deadpool = { workspace = true, optional = true }
 dotenvy.workspace = true
 fastwebsockets.workspace = true

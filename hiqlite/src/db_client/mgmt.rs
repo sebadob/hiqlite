@@ -1,11 +1,13 @@
+use crate::app_state::AppState;
 use crate::db_client::stream::ClientStreamReq;
 use crate::store::logs::rocksdb::ActionWrite;
 use crate::store::state_machine::sqlite::writer::WriterRequest;
 use crate::{DbClient, Error, Node, NodeId};
 use openraft::RaftMetrics;
 use std::clone::Clone;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::time;
 use tracing::error;
 
@@ -88,52 +90,60 @@ impl DbClient {
     /// Works on local clients only and can't shut down remote nodes.
     pub async fn shutdown(&self) -> Result<(), Error> {
         if let Some(state) = &self.state {
-            #[cfg(feature = "cache")]
-            match state.raft_cache.raft.shutdown().await {
-                Ok(_) => {}
-                Err(err) => {
-                    return Err(Error::Error(err.to_string().into()));
-                }
-            }
-
-            #[cfg(feature = "sqlite")]
-            match state.raft_db.raft.shutdown().await {
-                Ok(_) => {
-                    let (tx, rx) = oneshot::channel();
-
-                    state
-                        .raft_db
-                        .sql_writer
-                        .send_async(WriterRequest::Shutdown(tx))
-                        .await
-                        .expect("SQL writer to always be running");
-
-                    let _ = state
-                        .raft_db
-                        .logs_writer
-                        .send_async(ActionWrite::Shutdown)
-                        .await;
-
-                    rx.await.expect("To always get an answer from SQL writer");
-                }
-                Err(err) => {
-                    return Err(Error::Error(err.to_string().into()));
-                }
-            }
-
-            let _ = self.tx_client.send_async(ClientStreamReq::Shutdown).await;
-
-            if let Some(tx) = &self.tx_shutdown {
-                tx.send(true).unwrap();
-            }
-
-            time::sleep(Duration::from_millis(200)).await;
-
-            Ok(())
+            Self::shutdown_execute(state, &self.tx_client, &self.tx_shutdown).await
         } else {
             Err(Error::Error(
                 "Shutdown for remote Raft clients is not yet implemented".into(),
             ))
         }
+    }
+
+    pub(crate) async fn shutdown_execute(
+        state: &Arc<AppState>,
+        tx_client: &flume::Sender<ClientStreamReq>,
+        tx_shutdown: &Option<watch::Sender<bool>>,
+    ) -> Result<(), Error> {
+        #[cfg(feature = "cache")]
+        match state.raft_cache.raft.shutdown().await {
+            Ok(_) => {}
+            Err(err) => {
+                return Err(Error::Error(err.to_string().into()));
+            }
+        }
+
+        #[cfg(feature = "sqlite")]
+        match state.raft_db.raft.shutdown().await {
+            Ok(_) => {
+                let (tx, rx) = oneshot::channel();
+
+                state
+                    .raft_db
+                    .sql_writer
+                    .send_async(WriterRequest::Shutdown(tx))
+                    .await
+                    .expect("SQL writer to always be running");
+
+                let _ = state
+                    .raft_db
+                    .logs_writer
+                    .send_async(ActionWrite::Shutdown)
+                    .await;
+
+                rx.await.expect("To always get an answer from SQL writer");
+            }
+            Err(err) => {
+                return Err(Error::Error(err.to_string().into()));
+            }
+        }
+
+        let _ = tx_client.send_async(ClientStreamReq::Shutdown).await;
+
+        if let Some(tx) = tx_shutdown {
+            tx.send(true).unwrap();
+        }
+
+        time::sleep(Duration::from_millis(200)).await;
+
+        Ok(())
     }
 }

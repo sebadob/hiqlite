@@ -84,11 +84,7 @@ in case of any errors or problems.
 - in addition to SQLite - in-memory K/V store with optional independent TTL per entry
 - listen / notify to send real-time messages through the Raft
 
-### TODOs
-
-#### TODO implement
-
-This list is by no means exhaustive, these are just the next big things before a v0.1.0
+### TODOs before v0.1.0
 
 - metrics / health endpoint or maybe even a simple health UI
 - possibility to register an automatic shutdown handle with the `DbClient`

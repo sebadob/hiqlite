@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hiqlite = { path = "../../hiqlite" }
+hiqlite = { path = "../../hiqlite", features = ["shutdown-handle"] }
 
 clap = { version = "4.1.11", features = ["derive", "env"] }
 rust-embed = { version = "8.5.0", features = ["compression"] }
