@@ -43,6 +43,10 @@ pub async fn test_cache(
     let value = "some expiring value".to_string();
     client_1.put(key, &value, Some(1)).await?;
 
+    let key_long = "key long exp";
+    let value_long = "some other expiring value".to_string();
+    client_1.put(key_long, &value_long, Some(3)).await?;
+
     // make sure it is still there for the next second
     time::sleep(Duration::from_millis(500)).await;
     let v: String = client_1.get(key).await?.unwrap();
@@ -59,6 +63,24 @@ pub async fn test_cache(
     let v: Option<String> = client_2.get(key).await?;
     assert!(v.is_none());
     let v: Option<String> = client_3.get(key).await?;
+    assert!(v.is_none());
+
+    // the 3-second value should still be there
+    time::sleep(Duration::from_millis(1500)).await;
+    let v: String = client_1.get(key_long).await?.unwrap();
+    assert_eq!(v, value_long);
+    let v: String = client_2.get(key_long).await?.unwrap();
+    assert_eq!(v, value_long);
+    let v: String = client_3.get(key_long).await?.unwrap();
+    assert_eq!(v, value_long);
+
+    // make sure the 3-second value is gone as well
+    time::sleep(Duration::from_millis(3100 - 500 - 600 - 1500)).await;
+    let v: Option<String> = client_1.get(key_long).await?;
+    assert!(v.is_none());
+    let v: Option<String> = client_2.get(key_long).await?;
+    assert!(v.is_none());
+    let v: Option<String> = client_3.get(key_long).await?;
     assert!(v.is_none());
 
     insert_test_value_cache(client_1).await?;
