@@ -23,6 +23,7 @@ chrono = { version = "0.4.38", default-features = false, features = ["std", "clo
 clap = { version = "4.1.11", features = ["derive", "env"] }
 cryptr = { version = "0.5.1", features = ["s3"] }
 deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }
+dotenvy = "0.15.7"
 fastwebsockets = { version = "0.8.0", features = ["upgrade", "with_axum", "unstable-split"] }
 flume = "0.11.0"
 getrandom = { version = "0.2.15", features = ["std"] }

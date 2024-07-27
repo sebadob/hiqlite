@@ -1,6 +1,7 @@
 use crate::config::EncKeysFrom;
 use crate::Error;
 use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter};
+use std::env;
 use tracing::warn;
 
 pub use cryptr::stream::s3::*;
@@ -37,6 +38,33 @@ impl S3Config {
             .map_err(|err| Error::S3(err.to_string()))?;
 
         Ok(Self { bucket })
+    }
+
+    pub fn try_from_env() -> Option<Self> {
+        if let Ok(url) = env::var("HQL_S3_URL") {
+            // we assume that all values exist when we can read the url successfully
+
+            let url = reqwest::Url::parse(&url).expect("Cannot parse HQL_S3_URL as URL");
+            let bucket_name = env::var("HQL_S3_BUCKET").expect("HQL_S3_BUCKET not found");
+            let region = Region(env::var("HQL_S3_REGION").expect("HQL_S3_REGION not found"));
+            let access_key_id = AccessKeyId(env::var("HQL_S3_KEY").expect("HQL_S3_KEY not found"));
+            let access_key_secret =
+                AccessKeySecret(env::var("HQL_S3_SECRET").expect("HQL_S3_SECRET not found"));
+            let credentials = Credentials {
+                access_key_id,
+                access_key_secret,
+            };
+            let options = Some(BucketOptions {
+                path_style: true,
+                list_objects_v2: true,
+            });
+
+            let bucket = Bucket::new(url, bucket_name, region, credentials, options).unwrap();
+
+            Some(S3Config { bucket })
+        } else {
+            None
+        }
     }
 
     pub(crate) async fn push(&self, path: &str, object: &str) -> Result<(), Error> {

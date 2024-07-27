@@ -51,13 +51,13 @@ fn node_config(node_id: u64, nodes: Vec<Node>) -> Result<NodeConfig, Error> {
         node_id,
         nodes,
         Some(ServerTlsConfig {
-            key: "../../tls/key.pem",
-            cert: "../../tls/cert-chain.pem",
+            key: "../../tls/key.pem".into(),
+            cert: "../../tls/cert-chain.pem".into(),
             danger_tls_no_verify: true,
         }),
         Some(ServerTlsConfig {
-            key: "../../tls/key.pem",
-            cert: "../../tls/cert-chain.pem",
+            key: "../../tls/key.pem".into(),
+            cert: "../../tls/cert-chain.pem".into(),
             danger_tls_no_verify: true,
         }),
         "SuperSecureRaftSecret".to_string(),

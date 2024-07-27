@@ -27,7 +27,7 @@ replication, need a special file system, or are running as a server.
 
 I don't think that running SQLite as a server is a good solution. Yes, it is very resource friendly and it may
 be a good solution when you are heavily resource constrained, but you loose its biggest strength when doing this: having
-all you data local, which makes reads super fast without network latency.  
+all you data local, which makes reads superfast without network latency.  
 Hiqlite builds on top of `rusqlite` and provides an async wrapper around it to make it easy usable with `tokio`. For the
 Raft logic, it builds on top of`openraft` while providing its own storage and network implementations.
 
@@ -39,7 +39,7 @@ the same time, it comes with the benefit that you don't have to manage an additi
 configure and more importantly maintain. And embedded SQLite will bring database updates basically for free when you
 build a new version.
 
-When configured correctly, SQLite offers really good performance and can handle most workloads these days. In very
+When configured correctly, SQLite offers very good performance and can handle most workloads these days. In very
 first benchmarks that I did to find out if the project makes sense in the first place, I got up to 24.5k single
 inserts / s on a cheap consumer grade M2 SSD. These tests were done on localhost with 3 different processes, but still
 with real networking in between them. On another machine with older SATA SSDs it reached up to 16.5k inserts / s.
@@ -91,7 +91,6 @@ in case of any errors or problems.
 This list is by no means exhaustive, these are just the next big things before a v0.1.0
 
 - metrics / health endpoint or maybe even a simple health UI
-- impl parsers for the `NodeConfig` to read from env or toml file
 - possibility to register an automatic shutdown handle with the `DbClient`
 - a lot of code cleanup
 - proper documentation

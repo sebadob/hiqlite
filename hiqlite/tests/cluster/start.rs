@@ -48,50 +48,13 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         _ => unreachable!(),
     };
 
-    #[cfg(feature = "s3")]
-    let s3_config = {
-        use cryptr::stream::s3::{
-            AccessKeyId, AccessKeySecret, Bucket, BucketOptions, Credentials, Region,
-        };
-        use hiqlite::s3::S3Config;
-        use std::env;
-
-        dotenvy::dotenv().ok();
-
-        if let Ok(url) = env::var("S3_URL") {
-            // we assume that all values exist when we can read the url successfully
-
-            let url = reqwest::Url::parse(&url).unwrap();
-            let bucket_name = env::var("S3_BUCKET").unwrap();
-            let region = Region(env::var("S3_REGION").unwrap());
-            let access_key_id = AccessKeyId(env::var("S3_KEY").unwrap());
-            let access_key_secret = AccessKeySecret(env::var("S3_SECRET").unwrap());
-            let credentials = Credentials {
-                access_key_id,
-                access_key_secret,
-            };
-            let options = Some(BucketOptions {
-                path_style: true,
-                list_objects_v2: true,
-            });
-
-            let bucket = Bucket::new(url, bucket_name, region, credentials, options).unwrap();
-
-            log("S3 env vars found");
-            Some(S3Config { bucket })
-        } else {
-            log("No S3 env vars found - will skip S3 tests");
-            None
-        }
-    };
-
     NodeConfig {
         node_id,
         nodes,
         data_dir,
         filename_db: "hiqlite".into(),
         log_statements: true,
-        config: NodeConfig::raft_config(1000),
+        raft_config: NodeConfig::default_raft_config(1000),
         // TODO currently we can't test with TLS, because this depends on `axum_server`.
         // This does not support graceful shutdown, which we need for testing from
         // a single process
@@ -102,7 +65,7 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         #[cfg(feature = "s3")]
         enc_keys_from: hiqlite::EncKeysFrom::Env,
         #[cfg(feature = "s3")]
-        s3_config,
+        s3_config: hiqlite::s3::S3Config::try_from_env(),
     }
 }
 

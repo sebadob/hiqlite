@@ -111,7 +111,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     let backup_applied = backup::restore_backup_start(&node_config).await?;
 
-    let raft_config = Arc::new(node_config.config.clone().validate().unwrap());
+    let raft_config = Arc::new(node_config.raft_config.clone().validate().unwrap());
 
     #[cfg(feature = "sqlite")]
     let raft_db = store::start_raft_db(node_config.clone(), raft_config.clone()).await?;
