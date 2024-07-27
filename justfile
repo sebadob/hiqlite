@@ -88,6 +88,8 @@ clippy-features:
     cargo clippy --no-default-features --features cache
     cargo clippy --no-default-features --features sqlite,cache
 
+    cargo clippy --no-default-features --features shutdown-handle
+
 
 # runs the full set of tests
 test:

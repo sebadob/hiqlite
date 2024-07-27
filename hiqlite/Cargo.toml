@@ -16,8 +16,7 @@ repository = "https://github.com/sebadob/hiqlite"
 all-features = true
 
 [features]
-#default = ["auto-heal", "backup", "sqlite"]
-default = ["auto-heal", "backup", "sqlite", "shutdown-handle"]
+default = ["auto-heal", "backup", "sqlite"]
 
 auto-heal = []
 backup = ["s3"]
