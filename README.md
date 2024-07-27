@@ -62,6 +62,7 @@ in case of any errors or problems.
     - complete loss of the logs storage (rocksdb)
     - complete loss of the whole volume itself
 - automatic database migrations
+- in additional to SQLite - in-memory K/V store with optional independent TTL per entry
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
 - fully encrypted backups to s3 (
@@ -88,7 +89,6 @@ in case of any errors or problems.
 
 This list is by no means exhaustive, these are just the next big things before a v0.1.0
 
-- K/V store / cache with TTLs
 - listen / notify
 - metrics / health endpoint or maybe even a simple health UI
 - impl parsers for the `NodeConfig` to read from env or toml file

@@ -1,10 +1,14 @@
 use crate::{log, TEST_DATA_DIR};
 use hiqlite::{params, DbClient, Error, Param};
-use tokio::fs;
+use std::time::Duration;
+use tokio::{fs, time};
 
 pub async fn test_backup(client_1: &DbClient) -> Result<(), Error> {
     log("Creating backup request via client_1");
     client_1.backup().await?;
+
+    // these test backups are tiny and very quick -> async background task
+    time::sleep(Duration::from_millis(50)).await;
 
     log("Find backup DB");
 
@@ -24,32 +28,6 @@ pub async fn test_backup(client_1: &DbClient) -> Result<(), Error> {
         })
         .unwrap();
     assert_eq!(res, 1);
-
-    // log("Check backups for node 2 and 3");
-    //
-    // // node 2
-    // let path = find_backup_file(2).await;
-    // assert!(path.contains("/backup_node_2_"));
-    // let conn_bkp = rusqlite::Connection::open(path).unwrap();
-    // let res = conn_bkp
-    //     .query_row("SELECT 1", [], |row| {
-    //         let i: i64 = row.get(0)?;
-    //         Ok(i)
-    //     })
-    //     .unwrap();
-    // assert_eq!(res, 1);
-
-    // // node 3
-    // let path = find_backup_file(3).await;
-    // assert!(path.contains("/backup_node_3_"));
-    // let conn_bkp = rusqlite::Connection::open(path).unwrap();
-    // let res = conn_bkp
-    //     .query_row("SELECT 1", [], |row| {
-    //         let i: i64 = row.get(0)?;
-    //         Ok(i)
-    //     })
-    //     .unwrap();
-    // assert_eq!(res, 1);
 
     Ok(())
 }

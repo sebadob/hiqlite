@@ -1,29 +1,39 @@
 use crate::db_client::stream::{ClientKVPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
+use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
 use crate::{DbClient, Error};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use tokio::sync::oneshot;
 
 impl DbClient {
-    pub async fn get<K, V>(&self, key: K) -> Result<V, Error>
+    pub async fn get<K, V>(&self, key: K) -> Result<Option<V>, Error>
     where
-        K: AsRef<str>,
+        K: Into<String>,
         V: for<'a> Deserialize<'a>,
     {
         if let Some(state) = &self.state {
-            let lock = state.raft_cache.kv_store.data.read().await;
-            if let Some(value) = lock.kvs.get(key.as_ref()) {
-                return Ok(bincode::deserialize(value).unwrap());
-            }
+            let (ack, rx) = oneshot::channel();
+            state
+                .raft_cache
+                .tx_kv
+                .send(CacheRequestHandler::Get((key.into(), ack)))
+                .expect("kv handler to always be running");
+            let value = rx
+                .await
+                .expect("to always get an answer from the kv handler");
+            Ok(value.map(|b| bincode::deserialize(&b).unwrap()))
         } else {
             todo!("CacheGet for remote clients")
         }
-        Err(Error::Cache("no value found".into()))
+        // Err(Error::Cache("no value found".into()))
     }
 
-    pub async fn put<K, V>(&self, key: K, value: &V) -> Result<(), Error>
+    /// `Put` a value into the cache.
+    /// The optional `ttl` is the lifetime of the value in seconds from *now* on.
+    pub async fn put<K, V>(&self, key: K, value: &V, ttl: Option<i64>) -> Result<(), Error>
     where
         K: Into<Cow<'static, str>>,
         V: Serialize,
@@ -31,6 +41,7 @@ impl DbClient {
         self.cache_req_retry(CacheRequest::Put {
             key: key.into(),
             value: bincode::serialize(value).unwrap(),
+            expires: ttl.map(|seconds| Utc::now().timestamp().saturating_add(seconds)),
         })
         .await
     }

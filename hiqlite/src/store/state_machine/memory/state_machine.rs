@@ -1,4 +1,5 @@
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
+use crate::store::state_machine::memory::{cache_ttl_handler, kv_handler, TypeConfigKV};
 use crate::store::StorageResult;
 use crate::{Node, NodeId};
 use openraft::storage::RaftStateMachine;
@@ -15,7 +16,7 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::info;
 use uuid::Uuid;
 
@@ -29,6 +30,7 @@ pub enum CacheRequest {
     Put {
         key: Cow<'static, str>,
         value: Vec<u8>,
+        expires: Option<i64>,
     },
     Delete {
         key: Cow<'static, str>,
@@ -45,26 +47,34 @@ pub enum CacheResponse {
 pub struct StateMachineData {
     last_applied_log_id: Option<LogId<NodeId>>,
     last_membership: StoredMembership<NodeId, Node>,
-    /// TODO should be converted to a concurrent map if we keep this
-    pub(crate) kvs: BTreeMap<String, Vec<u8>>,
 }
 
 /// This is a full in-memory state machine acting as a cache.
 /// It does not persist anything at all and losses its data when the whole Raft is being shut
 /// down. If just a single node is restarting, it will re-sync in-memory data from other members.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct StateMachineMemory {
-    pub(crate) data: Arc<RwLock<StateMachineData>>,
+    data: RwLock<StateMachineData>,
     snapshot_idx: AtomicU64,
     snapshot: Mutex<Option<Snapshot<TypeConfigKV>>>,
+    pub(crate) tx_kv: flume::Sender<CacheRequestHandler>,
+    tx_ttl: flume::Sender<(i64, String)>,
 }
 
 impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfigKV>, StorageError<NodeId>> {
         let (last_log_id, last_membership, kv_bytes) = {
             let data = self.data.read().await;
-            let kv_bytes = bincode::serialize(&data.kvs)
-                .map_err(|err| StorageIOError::read_state_machine(&err))?;
+
+            let (ack, rx) = oneshot::channel();
+            self.tx_kv
+                .send(CacheRequestHandler::SnapshotBuild(ack))
+                .expect("kv handler to always be running");
+            let kvs = rx
+                .await
+                .expect("to always receive an answer from kv handler");
+            let kv_bytes =
+                bincode::serialize(&kvs).map_err(|err| StorageIOError::read_state_machine(&err))?;
 
             let last_applied_log = data.last_applied_log_id;
             let last_membership = data.last_membership.clone();
@@ -93,30 +103,22 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             *current_snapshot = Some(snapshot.clone());
         }
 
-        info!("\n\n\nbuild snapshot: {:?}\n\n", snapshot);
-
         Ok(snapshot)
     }
 }
 
 impl StateMachineMemory {
     pub(crate) async fn new() -> Result<Self, StorageError<NodeId>> {
-        let mut sm = Self::default();
-        // let mut sm = Self {
-        //     last_applied_log_id: None,
-        //     last_membership: Default::default(),
-        //     kvs: Arc::new(Default::default()),
-        //     snapshot_idx: Uuid::default(),
-        //     snapshot: None,
-        // };
+        let tx_kv = kv_handler::spawn();
+        let tx_ttl = cache_ttl_handler::spawn(tx_kv.clone());
 
-        // TODO maybe persist snapshots in a temp file on disk to save memory?
-
-        // if let Some(snapshot) = sm.get_current_snapshot_()? {
-        //     sm.update_state_machine_(snapshot).await?;
-        // }
-
-        Ok(sm)
+        Ok(Self {
+            data: Default::default(),
+            snapshot_idx: AtomicU64::new(0),
+            snapshot: Default::default(),
+            tx_kv,
+            tx_ttl,
+        })
     }
 }
 
@@ -146,19 +148,35 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         for entry in entries {
             last_applied_log_id = Some(entry.log_id);
 
+            // we are using sync sends -> unbounded channels
             let resp_value = match entry.payload {
                 EntryPayload::Blank => CacheResponse::Empty,
                 EntryPayload::Normal(req) => match req {
-                    CacheRequest::Put { key, value } => {
-                        // resp_value = Some(value.clone());
-                        // let mut lock = self.kvs.write().await;
-                        data.kvs.insert(key.into(), value);
+                    CacheRequest::Put {
+                        key,
+                        value,
+                        expires,
+                    } => {
+                        if let Some(exp) = expires {
+                            self.tx_ttl
+                                .send((exp, key.to_string()))
+                                .expect("cache ttl handler to always be running");
+                        }
+
+                        self.tx_kv
+                            .send(CacheRequestHandler::Put((key.to_string(), value)))
+                            .expect("cache ttl handler to always be running");
+
                         CacheResponse::Ok
+                        // data.kvs.insert(key.into(), value);
                     }
 
                     CacheRequest::Delete { key } => {
+                        self.tx_kv
+                            .send(CacheRequestHandler::Delete(key.to_string()))
+                            .expect("cache ttl handler to always be running");
                         // let mut lock = self.kvs.write().await;
-                        data.kvs.remove(key.as_ref());
+                        // data.kvs.remove(key.as_ref());
                         CacheResponse::Ok
                     }
                 },
@@ -195,9 +213,16 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
 
         let mut data = self.data.write().await;
+
+        let (ack, rx) = oneshot::channel();
+        self.tx_kv
+            .send(CacheRequestHandler::SnapshotInstall((kvs, ack)))
+            .expect("kv handler to always be running");
+        rx.await
+            .expect("to always receive an answer from the kv handler");
+
         data.last_applied_log_id = meta.last_log_id;
         data.last_membership = meta.last_membership.clone();
-        data.kvs = kvs;
 
         Ok(())
     }

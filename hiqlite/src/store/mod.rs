@@ -109,7 +109,7 @@ pub(crate) async fn start_raft_cache(
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
     };
 
-    let kv_store = state_machine_store.clone();
+    let tx_kv = state_machine_store.tx_kv.clone();
 
     let raft = openraft::Raft::new(
         node_config.node_id,
@@ -138,7 +138,7 @@ pub(crate) async fn start_raft_cache(
     Ok(StateRaftCache {
         raft,
         lock: Default::default(),
-        kv_store,
+        tx_kv,
     })
 }
 
