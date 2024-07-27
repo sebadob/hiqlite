@@ -87,7 +87,6 @@ in case of any errors or problems.
 ### TODOs before v0.1.0
 
 - metrics / health endpoint or maybe even a simple health UI
-- possibility to register an automatic shutdown handle with the `DbClient`
 - a lot of code cleanup
 - proper documentation
 - more examples
