@@ -21,10 +21,10 @@ default = ["auto-heal", "backup", "sqlite"]
 #default = ["auto-heal", "backup", "cache", "sqlite"]
 
 auto-heal = []
-#auto-heal-logs = ["openraft/loosen-follower-log-revert"]
 backup = ["s3"]
-cache = []
-#cache = ["auto-heal-logs"]
+#cache = []
+# TODO we should not need the "openraft/loosen-follower-log-revert" here -> conflict in self-healing tests
+cache = ["openraft/loosen-follower-log-revert"]
 io-uring = ["rocksdb/io-uring"]
 jemalloc = ["rocksdb/jemalloc"]
 s3 = ["backup", "dep:cryptr"]

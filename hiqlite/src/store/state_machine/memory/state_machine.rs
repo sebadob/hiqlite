@@ -142,8 +142,9 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         // TODO -> we could take the lock only once at the start and be much faster with everything!
         let mut data = self.data.write().await;
 
+        let mut last_applied_log_id = None;
         for entry in entries {
-            data.last_applied_log_id = Some(entry.log_id);
+            last_applied_log_id = Some(entry.log_id);
 
             let resp_value = match entry.payload {
                 EntryPayload::Blank => CacheResponse::Empty,
@@ -169,6 +170,9 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
 
             replies.push(resp_value);
         }
+
+        data.last_applied_log_id = last_applied_log_id;
+
         Ok(replies)
     }
 

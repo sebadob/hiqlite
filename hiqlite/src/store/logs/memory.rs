@@ -86,7 +86,6 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
 
     async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfigKV>> {
         let lock = self.data.lock().await;
-
         let last_purged_log_id = lock.last_purged;
         let last_log_id = lock.last_log_id;
 
@@ -154,14 +153,14 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
     #[tracing::instrument(level = "debug", skip(self))]
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> StorageResult<()> {
         let mut lock = self.logs.write().await;
-        lock.retain(|id, _| id >= &log_id.index);
+        lock.retain(|id, _| id < &log_id.index);
         Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
     async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
         let mut lock = self.logs.write().await;
-        lock.retain(|id, _| *id <= log_id.index);
+        lock.retain(|id, _| *id > log_id.index);
         Ok(())
     }
 
