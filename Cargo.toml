@@ -35,6 +35,7 @@ home = "0.5.9"
 http-body-util = "0.1.2"
 hyper = { version = "1.4.1", features = ["client", "http2"] }
 hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
+mime_guess = "2.0.5"
 openraft = { version = "0.9.13", features = ["serde", "storage-v2"] }
 redb = "2.1.1"
 reqwest = { version = "0.12", default-features = false, features = [
@@ -52,6 +53,8 @@ sha2 = { version = "0.10.8", features = ["asm"] }
 thiserror = "1.0.61"
 tokio = { version = "1.38.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.0", features = ["ring"] }
+tower = { version = "0.4", features = [] }
+tower-http = { version = "0.5.0", features = ["set-header", "sensitive-headers", "util"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }
 uuid = { version = "1.8.0", features = ["v7"] }

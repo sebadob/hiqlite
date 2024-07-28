@@ -23,7 +23,7 @@ backup = ["s3"]
 #cache = []
 # TODO we should not need the "openraft/loosen-follower-log-revert" here -> conflict in self-healing tests
 cache = ["openraft/loosen-follower-log-revert"]
-dashboard = ["dep:argon2", "dep:axum-extra", "dep:cryptr"]
+dashboard = ["dep:argon2", "dep:axum-extra", "dep:cryptr", "dep:mime_guess", "dep:tower", "dep:tower-http"]
 io-uring = ["rocksdb/io-uring"]
 jemalloc = ["rocksdb/jemalloc"]
 s3 = ["backup", "dep:cryptr"]
@@ -51,6 +51,7 @@ hex.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+mime_guess = { workspace = true, optional = true }
 openraft.workspace = true
 # TODO feature gate or completely remove for now
 redb.workspace = true
@@ -68,6 +69,8 @@ sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
 tracing.workspace = true
 uuid.workspace = true
 # TODO can we feature gate here? probably a `tls` would need to pull these in then

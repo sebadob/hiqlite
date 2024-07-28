@@ -26,8 +26,10 @@ impl DbClient {
         if let Some(state) = self.state.clone() {
             let (tx, rx_shutdown) = watch::channel(false);
 
-            ctrlc::set_handler(move || tx.send(true).unwrap())
-                .expect("Error setting shutdown handle");
+            ctrlc::set_handler(move || {
+                let _ = tx.send(true);
+            })
+            .expect("Error setting shutdown handle");
 
             Ok(ShutdownHandle {
                 state,

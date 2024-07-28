@@ -1,8 +1,10 @@
 use std::env;
 
 pub mod handlers;
+pub mod middleware;
 mod password;
 pub mod session;
+pub mod static_files;
 
 #[derive(Debug)]
 pub struct DashboardState {

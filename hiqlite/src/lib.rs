@@ -122,7 +122,11 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
             .nodes
             .get(node_config.node_id as usize - 1)
             .expect("NodeConfig.node_id not found in NodeConfig.nodes");
-        (node.addr_api.clone(), node.addr_raft.clone())
+
+        let api_addr = build_listen_addr(&node.addr_api, tls_api_client_config.is_some());
+        let addr_raft = build_listen_addr(&node.addr_raft, tls_raft);
+
+        (api_addr, addr_raft)
     };
 
     // TODO put behind Mutex to make it dynamic?
@@ -216,24 +220,19 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     let router_api = default_routes.with_state(state.clone());
     #[cfg(feature = "dashboard")]
     let router_api = default_routes
+        .route("/", get(dashboard::handlers::redirect_to_index))
         .nest(
             "/dashboard",
-            Router::new().route(
-                "/login",
-                get(dashboard::handlers::check_login).post(dashboard::handlers::login),
-            ),
+            Router::new()
+                .route("/", get(dashboard::handlers::redirect_to_index))
+                .route(
+                    "/login",
+                    get(dashboard::handlers::check_login).post(dashboard::handlers::login),
+                )
+                .layer(dashboard::middleware::middleware())
+                .fallback(dashboard::static_files::handler),
         )
         .with_state(state.clone());
-
-    // .with_state(state.clone());
-
-    // #[cfg(feature = "dashboard")]
-    // router_api = router_api.nest(
-    //     "/dashboard",
-    //     Router::new().route("/login", get(handlers::check_login).post(handlers::login)),
-    // );
-
-    // router_api = router_api.with_state(state.clone());
 
     info!("api external listening on {}", &api_addr);
     let tls_config = if let Some(config) = &node_config.tls_api {
@@ -304,6 +303,17 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     let client = DbClient::new_local(state, tls_api_client_config, tx_shutdown);
 
     Ok(client)
+}
+
+fn build_listen_addr(addr: &str, tls: bool) -> String {
+    let port = if let Some((_, port)) = addr.split_once(':') {
+        port
+    } else if tls {
+        "443"
+    } else {
+        "80"
+    };
+    format!("0.0.0.0:{}", port)
 }
 
 async fn shutdown_signal(mut rx: watch::Receiver<bool>) {

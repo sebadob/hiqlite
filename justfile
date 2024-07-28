@@ -101,10 +101,18 @@ test:
 
 
 # builds the code
-build:
+build ty="server":
     #!/usr/bin/env bash
     set -euxo pipefail
-    cargo build
+
+    if [[ {{ty}} == "server" ]]; then
+          cargo build
+    elif [[ {{ty}} == "ui" ]]; then
+      cd dashboard
+      rm -rf build
+      npm run build
+      git add build/*
+    fi
 
 
 # builds the code in --release mode
