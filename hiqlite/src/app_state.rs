@@ -15,6 +15,9 @@ use crate::store::state_machine::memory::TypeConfigKV;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
+#[cfg(feature = "dashboard")]
+use crate::dashboard::DashboardState;
+
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RaftType {
@@ -51,6 +54,8 @@ pub struct AppState {
     // TODO this should become dynamic at some point to make dynamic cluster changes possible in the future
     #[allow(clippy::type_complexity)]
     pub client_buffers: HashMap<NodeId, (flume::Sender<Vec<u8>>, flume::Receiver<Vec<u8>>)>,
+    #[cfg(feature = "dashboard")]
+    pub dashboard: DashboardState,
 }
 
 pub struct StateRaftDB {

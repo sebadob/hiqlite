@@ -62,6 +62,8 @@ pub enum Error {
     Token(Cow<'static, str>),
     #[error("Transaction: {0}")]
     Transaction(Cow<'static, str>),
+    #[error("Unauthorized: {0}")]
+    Unauthorized(Cow<'static, str>),
     #[error("WebSocket: {0}")]
     WebSocket(String),
 }
@@ -123,6 +125,7 @@ impl IntoResponse for Error {
             Error::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
             Error::Token(_) => StatusCode::UNAUTHORIZED,
             Error::Transaction(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Error::WebSocket(_) => StatusCode::BAD_REQUEST,
         };
 
@@ -259,5 +262,13 @@ impl From<cryptr::CryptrError> for Error {
     fn from(value: cryptr::CryptrError) -> Self {
         error!("cryptr::CryptrError: {}", value);
         Self::Cryptr(value.to_string())
+    }
+}
+
+#[cfg(feature = "dashboard")]
+impl From<argon2::password_hash::Error> for Error {
+    fn from(value: argon2::password_hash::Error) -> Self {
+        error!("argon2::password_hash::Error: {}", value);
+        Self::Unauthorized("invalid credentials".into())
     }
 }

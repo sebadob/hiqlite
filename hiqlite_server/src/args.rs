@@ -7,7 +7,7 @@ pub enum Args {
     Serve(ArgsConfig),
 
     /// Generate a new default config with safe values for testing
-    GenerateConfig,
+    GenerateConfig(ArgsGenerate),
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -27,6 +27,13 @@ pub struct ArgsConfig {
     /// Enable SQL statement logging
     #[clap(short, long, default_value = "info")]
     pub log_level: LogLevel,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct ArgsGenerate {
+    /// Set the password for the dashboard
+    #[clap(short, long)]
+    pub password: Option<String>,
 }
 
 #[derive(Debug, Clone, ValueEnum)]

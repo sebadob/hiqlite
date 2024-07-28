@@ -29,9 +29,6 @@ pub use openraft::SnapshotPolicy;
 pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
-#[cfg(feature = "s3")]
-pub use crate::config::EncKeysFrom;
-
 mod app_state;
 mod config;
 mod db_client;
@@ -46,6 +43,8 @@ mod tls;
 
 #[cfg(feature = "backup")]
 mod backup;
+#[cfg(feature = "dashboard")]
+mod dashboard;
 #[cfg(feature = "s3")]
 pub mod s3;
 
@@ -143,6 +142,10 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
         secret_api: node_config.secret_api,
         secret_raft: node_config.secret_raft,
         client_buffers,
+        #[cfg(feature = "dashboard")]
+        dashboard: dashboard::DashboardState {
+            password_dashboard: node_config.password_dashboard,
+        },
     });
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
@@ -187,7 +190,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
         }
     });
 
-    let router_api = Router::new()
+    let default_routes = Router::new()
         .nest(
             "/cluster",
             Router::new()
@@ -207,9 +210,30 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
         // TODO
         .route("/query/consistent", post(api::query))
         .route("/stream", get(api::stream))
-        .route("/ping", get(api::ping))
-        // .layer(compression_middleware.clone().into_inner())
+        .route("/ping", get(api::ping));
+
+    #[cfg(not(feature = "dashboard"))]
+    let router_api = default_routes.with_state(state.clone());
+    #[cfg(feature = "dashboard")]
+    let router_api = default_routes
+        .nest(
+            "/dashboard",
+            Router::new().route(
+                "/login",
+                get(dashboard::handlers::check_login).post(dashboard::handlers::login),
+            ),
+        )
         .with_state(state.clone());
+
+    // .with_state(state.clone());
+
+    // #[cfg(feature = "dashboard")]
+    // router_api = router_api.nest(
+    //     "/dashboard",
+    //     Router::new().route("/login", get(handlers::check_login).post(handlers::login)),
+    // );
+
+    // router_api = router_api.with_state(state.clone());
 
     info!("api external listening on {}", &api_addr);
     let tls_config = if let Some(config) = &node_config.tls_api {

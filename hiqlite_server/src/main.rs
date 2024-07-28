@@ -7,22 +7,23 @@ use tracing_subscriber::EnvFilter;
 
 mod args;
 mod config;
+mod password;
 
 #[tokio::main]
 async fn main() -> Result<(), hiqlite::Error> {
     match Args::parse() {
-        Args::Serve(args_config) => {
-            init_logging(&args_config.log_level);
+        Args::Serve(args) => {
+            init_logging(&args.log_level);
 
-            let node_config = config::build_node_config(args_config)?;
+            let node_config = config::build_node_config(args)?;
             let client = hiqlite::start_node(node_config).await?;
 
             let mut shutdown_handle = client.shutdown_handle()?;
             shutdown_handle.wait().await?;
         }
-        Args::GenerateConfig => {
+        Args::GenerateConfig(args) => {
             init_logging(&LogLevel::Info);
-            config::generate().await?;
+            config::generate(args).await?;
         }
     }
 

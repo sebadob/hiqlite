@@ -12,8 +12,9 @@ name = "hiqlite"
 path = "src/main.rs"
 
 [dependencies]
-hiqlite = { path = "../hiqlite", features = ["cache", "shutdown-handle", "webpki-roots"] }
+hiqlite = { path = "../hiqlite", features = ["cache", "dashboard", "shutdown-handle", "webpki-roots"] }
 
+argon2.workspace = true
 clap.workspace = true
 cryptr.workspace = true
 home.workspace = true

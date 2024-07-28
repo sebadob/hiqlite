@@ -1,9 +1,9 @@
-use crate::config::EncKeysFrom;
 use crate::Error;
 use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter};
 use std::env;
 use tracing::warn;
 
+pub use crate::config::EncKeysFrom;
 pub use cryptr::stream::s3::*;
 pub use cryptr::EncKeys;
 

@@ -5,6 +5,9 @@ use openraft::SnapshotPolicy;
 use std::borrow::Cow;
 use std::env;
 
+#[cfg(feature = "dashboard")]
+use crate::dashboard::DashboardState;
+
 pub use openraft::Config as RaftConfig;
 
 #[cfg(feature = "s3")]
@@ -48,6 +51,8 @@ pub struct NodeConfig {
     /// If an `S3Config` is given, it will be used to push backups to the S3 bucket.
     #[cfg(feature = "s3")]
     pub s3_config: Option<crate::s3::S3Config>,
+    #[cfg(feature = "dashboard")]
+    pub password_dashboard: String,
 }
 
 impl Default for NodeConfig {
@@ -67,6 +72,8 @@ impl Default for NodeConfig {
             enc_keys_from: EncKeysFrom::Env,
             #[cfg(feature = "s3")]
             s3_config: None,
+            #[cfg(feature = "dashboard")]
+            password_dashboard: String::default(),
         }
     }
 }
@@ -128,6 +135,8 @@ impl NodeConfig {
             secret_api: env::var("HQL_SECRET_API").expect("HQL_SECRET_API not found"),
             enc_keys_from,
             s3_config,
+            #[cfg(feature = "dashboard")]
+            password_dashboard: DashboardState::from_env().password_dashboard,
         };
 
         slf.is_valid()
@@ -160,6 +169,8 @@ impl NodeConfig {
             enc_keys_from: EncKeysFrom::Env,
             #[cfg(feature = "s3")]
             s3_config: None,
+            #[cfg(feature = "dashboard")]
+            password_dashboard: String::default(),
         };
 
         slf.is_valid()?;
@@ -211,6 +222,13 @@ impl NodeConfig {
         if self.secret_raft.len() < 16 || self.secret_api.len() < 16 {
             return Err(Error::Config(
                 "'secret_raft' and 'secret_api' should be at least 16 characters long".into(),
+            ));
+        }
+
+        #[cfg(feature = "dashboard")]
+        if self.password_dashboard.len() < 14 {
+            return Err(Error::Config(
+                "password_dashboard should be at least 14 characters long".into(),
             ));
         }
 

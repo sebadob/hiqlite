@@ -14,7 +14,9 @@ license = "Apache-2.0"
 authors = ["Sebastian Dobe <sebastiandobe@mailbox.org"]
 
 [workspace.dependencies]
+argon2 = "0.5.3"
 axum = { version = "0.7.5", features = ["http2", "tokio"] }
+axum-extra = { version = "0.9.3", features = ["cookie"] }
 axum-server = { version = "0.6.0", features = ["tls-rustls"] }
 bincode = "1.3.3"
 byteorder = "1.4.3"

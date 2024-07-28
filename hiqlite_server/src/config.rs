@@ -1,4 +1,5 @@
-use crate::args::ArgsConfig;
+use crate::args::{ArgsConfig, ArgsGenerate};
+use crate::password;
 use cryptr::{utils, EncKeys};
 use hiqlite::{Error, NodeConfig};
 use tokio::fs;
@@ -21,7 +22,7 @@ pub fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
     Ok(config)
 }
 
-pub async fn generate() -> Result<(), Error> {
+pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
     let path = default_config_dir();
     fs::create_dir_all(&path).await?;
 
@@ -32,7 +33,14 @@ pub async fn generate() -> Result<(), Error> {
         ));
     }
 
-    let default_config = default_config()?;
+    let password_dashboard = if let Some(password) = args.password {
+        password::hash_password_b64(password).await?
+    } else {
+        let plain = utils::secure_random_alnum(16);
+        println!("New password for the dashboard: {}", plain);
+        password::hash_password_b64(plain).await?
+    };
+    let default_config = default_config(&password_dashboard)?;
     fs::write(&path_file, default_config).await?;
     println!("New default config file created: {}", path_file);
 
@@ -64,7 +72,7 @@ fn default_config_file_path() -> String {
     format!("{}/config", default_config_dir())
 }
 
-fn default_config() -> Result<String, Error> {
+fn default_config(password_dashboard_b64: &str) -> Result<String, Error> {
     let data_dir = format!("{}/data", default_config_dir());
     let secret_raft = utils::secure_random_alnum(32);
     let secret_api = utils::secure_random_alnum(32);
@@ -179,11 +187,15 @@ ENC_KEYS="
 # This identifies the key ID from the `ENC_KEYS` list, that
 # should actively be used for new encryptions.
 ENC_KEY_ACTIVE={}
+
+# The password for the dashboard as Argon2ID hash
+HQL_PASSWORD_DASHBOARD={}
 "#,
         data_dir,
         secret_raft,
         secret_api,
         enc_keys_b64.trim(),
-        enc_key_active
+        enc_key_active,
+        password_dashboard_b64,
     ))
 }

@@ -114,6 +114,19 @@ build-release:
     cargo build --release
 
 
+run ty="server":
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    clear
+
+    if [[ {{ty}} == "server" ]]; then
+      cargo run -- serve
+    elif [[ {{ty}} == "ui" ]]; then
+      cd dashboard
+      npm run dev -- --host=0.0.0.0
+    fi
+
+
 # verifies the MSRV
 msrv-verify:
     cargo msrv verify
