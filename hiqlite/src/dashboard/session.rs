@@ -12,11 +12,20 @@ use chrono::Utc;
 use cryptr::utils::{b64_decode, b64_encode};
 use cryptr::EncValue;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use std::env;
+use std::sync::LazyLock;
+use tracing::{debug, info};
 
 const COOKIE_NAME: &str = "__Host-Hiqlite-Session";
 const COOKIE_NAME_DEV: &str = "Hiqlite-Session";
 const SESSION_LIFETIME: i64 = 3600;
+
+const INSECURE_COOKIES: LazyLock<bool> = LazyLock::new(|| {
+    env::var("HQL_INSECURE_COOKIE")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .expect("Cannot parse HQL_INSECURE_COOKIE as bool")
+});
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Session {
@@ -27,6 +36,7 @@ pub(crate) struct Session {
 #[axum::async_trait]
 impl<S> FromRequestParts<S> for Session
 where
+    // Arc<AppState>: FromRef<S>,
     S: Send + Sync,
 {
     type Rejection = Error;
@@ -35,31 +45,51 @@ where
         parts: &mut request::Parts,
         _state: &S,
     ) -> Result<Self, Self::Rejection> {
+        // TODO we can't impl the from req for Arc<AppState>
+        // let st = parts
+        //     .extract_with_state::<Arc<AppState>, _>(state)
+        //     .await
+        //     .expect("AppState to be available");
+
+        info!("from_request_parts");
         let headers = &parts.headers;
+        info!("from_request_parts: {:?}", headers);
         check_csrf(&parts.method, headers).await?;
+        info!("check_csrf ok");
 
         let jar = CookieJar::from_headers(headers);
-        Ok(Session::try_from(&jar)?)
+        info!("{:?}", jar);
+        Ok(Session::try_from_jar(&jar)?)
     }
 }
 
-impl TryFrom<&CookieJar> for Session {
-    type Error = Error;
-
-    fn try_from(jar: &CookieJar) -> Result<Self, Self::Error> {
-        // TODO decide between dev and prod
-        let c = jar
-            .get(COOKIE_NAME_DEV)
-            .ok_or(Error::Unauthorized("no session found".into()))?;
-        let enc_bytes = b64_decode(c.value())?;
-        let dec = EncValue::try_from_bytes(enc_bytes)?.decrypt()?;
-
-        let slf: Self = bincode::deserialize(dec.as_ref()).unwrap();
-        slf.is_valid()?;
-
-        Ok(slf)
-    }
-}
+// #[axum::async_trait]
+// impl<S> FromRequestParts<S> for Session
+// where
+//     S: Send + Sync,
+// {
+//     type Rejection = Error;
+//
+//     async fn from_request_parts(
+//         parts: &mut request::Parts,
+//         state: &S,
+//     ) -> Result<Self, Self::Rejection> {
+//         let st = parts
+//             .extract_with_state::<AppStateExt, _>(state)
+//             .await
+//             .expect("AppState to be available");
+//
+//         info!("from_request_parts");
+//         let headers = &parts.headers;
+//         info!("from_request_parts: {:?}", headers);
+//         check_csrf(&parts.method, headers).await?;
+//         info!("check_csrf ok");
+//
+//         let jar = CookieJar::from_headers(headers);
+//         info!("{:?}", jar);
+//         Ok(Session::try_from_jar(&jar, st.dashboard.insecure_cookie)?)
+//     }
+// }
 
 impl Session {
     fn new() -> Self {
@@ -75,11 +105,41 @@ impl Session {
         let enc_bytes = enc.into_bytes().to_vec();
         let b64 = b64_encode(&enc_bytes);
 
-        let max_age = Utc::now().timestamp() - self.expires;
-        Ok(format!(
-            "{}={}; Secure; HttpOnly; SameSite=Lax; Max-Age={}",
-            COOKIE_NAME_DEV, b64, max_age
-        ))
+        let max_age = self.expires - Utc::now().timestamp();
+
+        let cookie_header = if *INSECURE_COOKIES {
+            format!(
+                "{}={}; HttpOnly; SameSite=Lax; Max-Age={}",
+                COOKIE_NAME_DEV, b64, max_age
+            )
+        } else {
+            format!(
+                "{}={}; Secure; HttpOnly; SameSite=Lax; Max-Age={}",
+                COOKIE_NAME, b64, max_age
+            )
+        };
+
+        Ok(cookie_header)
+    }
+
+    fn try_from_jar(jar: &CookieJar) -> Result<Self, Error> {
+        // TODO decide between dev and prod
+        let name = if *INSECURE_COOKIES {
+            COOKIE_NAME_DEV
+        } else {
+            COOKIE_NAME
+        };
+        let cookie = jar
+            .get(name)
+            .ok_or(Error::Unauthorized("no session found".into()))?;
+
+        let enc_bytes = b64_decode(cookie.value())?;
+        let dec = EncValue::try_from_bytes(enc_bytes)?.decrypt()?;
+
+        let slf: Self = bincode::deserialize(dec.as_ref()).unwrap();
+        slf.is_valid()?;
+
+        Ok(slf)
     }
 
     #[inline]

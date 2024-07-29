@@ -88,6 +88,7 @@ clippy-features:
     cargo clippy --no-default-features --features cache
     cargo clippy --no-default-features --features sqlite,cache
 
+    cargo clippy --no-default-features --features dashboard
     cargo clippy --no-default-features --features shutdown-handle
 
 

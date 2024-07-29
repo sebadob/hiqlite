@@ -225,9 +225,12 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
             "/dashboard",
             Router::new()
                 .route("/", get(dashboard::handlers::redirect_to_index))
-                .route(
-                    "/login",
-                    get(dashboard::handlers::check_login).post(dashboard::handlers::login),
+                .nest(
+                    "/api",
+                    Router::new().route(
+                        "/login",
+                        get(dashboard::handlers::login_check).post(dashboard::handlers::login),
+                    ),
                 )
                 .layer(dashboard::middleware::middleware())
                 .fallback(dashboard::static_files::handler),

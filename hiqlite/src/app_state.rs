@@ -4,6 +4,7 @@ use crate::store::state_machine::sqlite::writer::WriterRequest;
 use crate::NodeId;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 

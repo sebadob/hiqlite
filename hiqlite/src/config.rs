@@ -53,6 +53,8 @@ pub struct NodeConfig {
     pub s3_config: Option<crate::s3::S3Config>,
     #[cfg(feature = "dashboard")]
     pub password_dashboard: String,
+    // #[cfg(feature = "dashboard")]
+    // pub insecure_cookie: bool,
 }
 
 impl Default for NodeConfig {
@@ -74,6 +76,8 @@ impl Default for NodeConfig {
             s3_config: None,
             #[cfg(feature = "dashboard")]
             password_dashboard: String::default(),
+            // #[cfg(feature = "dashboard")]
+            // insecure_cookie: false,
         }
     }
 }
@@ -112,6 +116,9 @@ impl NodeConfig {
 
         let s3_config = S3Config::try_from_env();
 
+        #[cfg(feature = "dashboard")]
+        let dashboard_state = DashboardState::from_env();
+
         let slf = Self {
             node_id: env::var("HQL_NODE_ID")
                 .expect("Node ID not found")
@@ -136,7 +143,7 @@ impl NodeConfig {
             enc_keys_from,
             s3_config,
             #[cfg(feature = "dashboard")]
-            password_dashboard: DashboardState::from_env().password_dashboard,
+            password_dashboard: dashboard_state.password_dashboard,
         };
 
         slf.is_valid()
@@ -171,6 +178,8 @@ impl NodeConfig {
             s3_config: None,
             #[cfg(feature = "dashboard")]
             password_dashboard: String::default(),
+            // #[cfg(feature = "dashboard")]
+            // insecure_cookie: false,
         };
 
         slf.is_valid()?;

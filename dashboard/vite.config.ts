@@ -1,7 +1,7 @@
 import {sveltekit} from '@sveltejs/kit/vite';
 import {defineConfig} from 'vite';
 
-const backend = 'http://127.0.0.1:8080';
+const backend = 'http://127.0.0.1:11021';
 
 export default defineConfig({
     plugins: [sveltekit()],
@@ -11,7 +11,7 @@ export default defineConfig({
         //     cert: fs.readFileSync(`${__dirname}/../tls/cert-chain.pem`)
         // },
         proxy: {
-            // '/.well-known/': backend,
+            '/dashboard/api': backend,
         }
     }
 });

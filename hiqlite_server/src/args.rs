@@ -34,6 +34,10 @@ pub struct ArgsGenerate {
     /// Set the password for the dashboard
     #[clap(short, long)]
     pub password: Option<String>,
+
+    /// Issue insecure authn cookies for the dashboard. Do NOT use in production!
+    #[clap(long, default_value = "false")]
+    pub insecure_cookie: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]

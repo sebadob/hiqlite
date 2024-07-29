@@ -1,5 +1,19 @@
-<script>
-    import ThemeSwitch from "$lib/components/ThemeSwitch.svelte";
+<script lang="ts">
+    import {onMount} from "svelte";
+    import Loading from "$lib/components/Loading.svelte";
+    import ThemeSwitchAbsolute from "$lib/components/ThemeSwitchAbsolute.svelte";
+
+    let isLoggedIn = $state(false);
+
+    onMount(async () => {
+        let res = await fetch("/dashboard/api/login");
+        if (res.status === 401) {
+            window.location.replace('/dashboard/login');
+        } else {
+            isLoggedIn = true;
+        }
+    });
+
 </script>
 
 <svelte:head>
@@ -8,5 +22,27 @@
     <title>Dashboard</title>
 </svelte:head>
 
-<h1>Dashboard</h1>
-<ThemeSwitch/>
+<main>
+    {#if isLoggedIn}
+        <div class="content">
+            <h1>Dashboard</h1>
+        </div>
+    {:else}
+        <Loading/>
+    {/if}
+</main>
+
+<ThemeSwitchAbsolute/>
+
+<style>
+    main {
+        display: flex;
+        height: 100dvh;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .content {
+        justify-content: flex-start;
+    }
+</style>

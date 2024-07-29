@@ -40,7 +40,7 @@ pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
         println!("New password for the dashboard: {}", plain);
         password::hash_password_b64(plain).await?
     };
-    let default_config = default_config(&password_dashboard)?;
+    let default_config = default_config(&password_dashboard, args.insecure_cookie)?;
     fs::write(&path_file, default_config).await?;
     println!("New default config file created: {}", path_file);
 
@@ -72,7 +72,7 @@ fn default_config_file_path() -> String {
     format!("{}/config", default_config_dir())
 }
 
-fn default_config(password_dashboard_b64: &str) -> Result<String, Error> {
+fn default_config(password_dashboard_b64: &str, insecure_cookie: bool) -> Result<String, Error> {
     let data_dir = format!("{}/data", default_config_dir());
     let secret_raft = utils::secure_random_alnum(32);
     let secret_api = utils::secure_random_alnum(32);
@@ -190,6 +190,11 @@ ENC_KEY_ACTIVE={}
 
 # The password for the dashboard as Argon2ID hash
 HQL_PASSWORD_DASHBOARD={}
+
+# Can be set to `true` during local dev and testing to issue
+# insecure cookies
+# default: false
+HQL_INSECURE_COOKIE={}
 "#,
         data_dir,
         secret_raft,
@@ -197,5 +202,6 @@ HQL_PASSWORD_DASHBOARD={}
         enc_keys_b64.trim(),
         enc_key_active,
         password_dashboard_b64,
+        insecure_cookie,
     ))
 }
