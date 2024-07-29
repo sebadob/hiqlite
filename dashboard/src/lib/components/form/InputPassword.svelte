@@ -93,16 +93,16 @@
     <div class="input-row">
         <input
                 style:padding-right={showCopy ? '55px' : '30px'}
-                type={type}
-                id={id}
-                name={name}
-                title={title}
+                {type}
+                {id}
+                {name}
+                {title}
                 aria-label={title}
                 bind:value
 
-                autocomplete={autocomplete}
-                placeholder={placeholder}
-                disabled={disabled}
+                {autocomplete}
+                {placeholder}
+                {disabled}
 
                 required={required || undefined}
                 maxlength={maxLength || undefined}
