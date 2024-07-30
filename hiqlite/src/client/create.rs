@@ -29,18 +29,16 @@ impl Client {
             state: Some(state),
             leader,
             // TODO do we even still need this for a local client? -> all raft messages should use internal API ?
-            client: Arc::new(
-                reqwest::Client::builder()
-                    .http2_prior_knowledge()
-                    // TODO
-                    // .danger_accept_invalid_certs(tls_config.as_ref().map(|c| c.))
-                    .build()
-                    .unwrap(),
-            ),
+            client: reqwest::Client::builder()
+                .http2_prior_knowledge()
+                // TODO
+                // .danger_accept_invalid_certs(tls_config.as_ref().map(|c| c.))
+                .build()
+                .unwrap(),
             tx_client,
             tls_config,
             api_secret: None,
-            request_id: Arc::new(AtomicUsize::new(0)),
+            request_id: AtomicUsize::new(0),
             tx_shutdown: Some(tx_shutdown),
             #[cfg(feature = "cache")]
             app_start: chrono::Utc::now().timestamp_micros(),
@@ -80,19 +78,17 @@ impl Client {
         let db_client = DbClient {
             state: None,
             leader,
-            client: Arc::new(
-                reqwest::Client::builder()
-                    // .user_agent("Raft Client")
-                    .http2_prior_knowledge()
-                    // TODO
-                    // .danger_accept_invalid_certs()
-                    .build()
-                    .unwrap(),
-            ),
+            client: reqwest::Client::builder()
+                // .user_agent("Raft Client")
+                .http2_prior_knowledge()
+                // TODO
+                // .danger_accept_invalid_certs()
+                .build()
+                .unwrap(),
             tx_client,
             tls_config,
             api_secret: Some(api_secret),
-            request_id: Arc::new(AtomicUsize::new(0)),
+            request_id: AtomicUsize::new(0),
             tx_shutdown: None,
             #[cfg(feature = "cache")]
             app_start: chrono::Utc::now().timestamp_micros(),

@@ -32,13 +32,14 @@ pub struct Client {
 
 pub(crate) struct DbClient {
     pub(crate) state: Option<Arc<AppState>>,
+    // TODO maybe we can get rid of the Arc here with a mod of client stream
     pub(crate) leader: Arc<RwLock<(NodeId, String)>>,
-    pub(crate) client: Arc<reqwest::Client>,
+    pub(crate) client: reqwest::Client,
     pub(crate) tx_client: flume::Sender<ClientStreamReq>,
     pub(crate) tls_config: Option<Arc<rustls::ClientConfig>>,
     // Only remote clients will have `Some(_)` here -> local ones have the state
     pub(crate) api_secret: Option<String>,
-    pub(crate) request_id: Arc<AtomicUsize>,
+    pub(crate) request_id: AtomicUsize,
     pub(crate) tx_shutdown: Option<watch::Sender<bool>>,
     #[cfg(feature = "cache")]
     pub(crate) app_start: i64,
