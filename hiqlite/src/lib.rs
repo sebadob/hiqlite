@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -50,15 +51,15 @@ pub mod s3;
 
 type NodeId = u64;
 
-/// Create params for distributed SQL modifying queries.
-/// TODO create multiple branches here to be able to catch the correct sizes
-/// with upfront capacity assignment earlier.
+// Create params for distributed SQL modifying queries.
+// TODO create multiple branches here to be able to catch the correct sizes
+// with upfront capacity assignment earlier.
 #[macro_export]
 macro_rules! params {
     ( $( $param:expr ),* ) => {
         {
             #[allow(unused_mut)]
-            let mut params = Vec::new();
+            let mut params = Vec::with_capacity(2);
             $(
                 params.push(Param::from($param));
             )*
@@ -137,6 +138,8 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
         client_buffers.insert(node.id, (tx, rx));
     }
 
+    let (tx_client_stream, rx_client_stream) = flume::unbounded();
+
     let state = Arc::new(AppState {
         id: node_config.node_id,
         addr_api: api_addr.clone(),
@@ -151,6 +154,10 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
         dashboard: dashboard::DashboardState {
             password_dashboard: node_config.password_dashboard,
         },
+        #[cfg(feature = "dashboard")]
+        client_request_id: AtomicUsize::new(0),
+        #[cfg(feature = "dashboard")]
+        tx_client_stream: tx_client_stream.clone(),
     });
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
@@ -308,7 +315,13 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
     #[cfg(feature = "cache")]
     member_cache.await??;
 
-    Ok(Client::new_local(state, tls_api_client_config, tx_shutdown))
+    Ok(Client::new_local(
+        state,
+        tls_api_client_config,
+        tx_client_stream,
+        rx_client_stream,
+        tx_shutdown,
+    ))
 }
 
 fn build_listen_addr(addr: &str, tls: bool) -> String {

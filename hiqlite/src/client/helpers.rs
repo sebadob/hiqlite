@@ -44,7 +44,12 @@ impl Client {
 
     #[inline(always)]
     pub(crate) fn new_request_id(&self) -> usize {
-        self.inner.request_id.fetch_add(1, Ordering::Relaxed)
+        #[cfg(feature = "dashboard")]
+        if let Some(st) = &self.inner.state {
+            st.new_request_id()
+        } else {
+            self.inner.request_id.fetch_add(1, Ordering::Relaxed)
+        }
     }
 
     #[inline]

@@ -20,7 +20,7 @@ const COOKIE_NAME: &str = "__Host-Hiqlite-Session";
 const COOKIE_NAME_DEV: &str = "Hiqlite-Session";
 const SESSION_LIFETIME: i64 = 3600;
 
-const INSECURE_COOKIES: LazyLock<bool> = LazyLock::new(|| {
+static INSECURE_COOKIES: LazyLock<bool> = LazyLock::new(|| {
     env::var("HQL_INSECURE_COOKIE")
         .unwrap_or_else(|_| "false".to_string())
         .parse::<bool>()

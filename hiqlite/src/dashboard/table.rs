@@ -46,7 +46,7 @@ impl<'r> From<crate::Row<'r>> for Table {
 impl Table {
     pub async fn find(state: &AppStateExt, name: String) -> Result<Self, Error> {
         query_map_one(
-            &state,
+            state,
             "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name = $1",
             params!(name),
         )
@@ -55,7 +55,7 @@ impl Table {
 
     pub async fn find_all(state: &AppStateExt) -> Result<Vec<Self>, Error> {
         let res: Vec<Self> = query_map(
-            &state,
+            state,
             "SELECT type,name,tbl_name,sql FROM sqlite_master",
             params!(),
         )

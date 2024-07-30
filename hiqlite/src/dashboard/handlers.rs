@@ -1,9 +1,11 @@
 use crate::dashboard::session;
 use crate::dashboard::session::Session;
 use crate::dashboard::table::Table;
+use crate::network::api::ApiStreamResponsePayload;
 use crate::network::AppStateExt;
-use crate::query::rows::{ColumnOwned, RowOwned};
-use crate::Error;
+use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
+use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
+use crate::{params, Error};
 use axum::body::Body;
 use axum::http::header::LOCATION;
 use axum::http::{HeaderMap, Method};
@@ -11,6 +13,7 @@ use axum::response::Response;
 use axum::{body, Form, Json};
 use hyper::StatusCode;
 use serde::Deserialize;
+use tokio::sync::oneshot;
 use tokio::task;
 use tracing::info;
 
@@ -83,21 +86,75 @@ pub(crate) async fn post_query(
         })
         .await??
     } else {
-        todo!()
+        let sql = Query {
+            sql: sql.into(),
+            params: params!(),
+        };
 
-        // let rows_affected = stmt.raw_execute()?;
-        // let affected = if rows_affected > i64::MAX as usize {
-        //     i64::MAX
-        // } else {
-        //     rows_affected as i64
-        // };
-        // vec![RowOwned {
-        //     columns: vec![ColumnOwned {
-        //         name: "rows_affected".to_string(),
-        //         value: ValueOwned::Integer(affected),
-        //     }],
-        // }]
+        let rows_affected = execute_generic(&state, sql.clone()).await?;
+        let affected = if rows_affected > i64::MAX as usize {
+            i64::MAX
+        } else {
+            rows_affected as i64
+        };
+        vec![RowOwned {
+            columns: vec![ColumnOwned {
+                name: "rows_affected".to_string(),
+                value: ValueOwned::Integer(affected),
+            }],
+        }]
     };
 
     Ok(Json(res))
+}
+
+async fn execute_generic(state: &AppStateExt, sql: Query) -> Result<usize, Error> {
+    if is_this_local_leader(state).await? {
+        let res = state
+            .raft_db
+            .raft
+            .client_write(QueryWrite::Execute(sql))
+            .await?;
+        let resp: crate::Response = res.data;
+        match resp {
+            crate::Response::Execute(res) => res.result,
+            _ => unreachable!(),
+        }
+    } else {
+        let (ack, rx) = oneshot::channel();
+        state
+            .tx_client_stream
+            .send_async(crate::client::stream::ClientStreamReq::Execute(
+                crate::client::stream::ClientExecutePayload {
+                    request_id: state.new_request_id(),
+                    sql,
+                    ack,
+                },
+            ))
+            .await
+            .expect("Client Stream Manager to always be running");
+        let res = rx
+            .await
+            .expect("To always receive an answer from Client Stream Manager")?;
+        match res {
+            ApiStreamResponsePayload::Execute(res) => res,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[inline(always)]
+pub(crate) async fn is_this_local_leader(state: &AppStateExt) -> Result<bool, Error> {
+    match state.raft_db.raft.current_leader().await {
+        None => Err(Error::LeaderChange(
+            "Leader election has not finished yet".into(),
+        )),
+        Some(current) => {
+            if state.id == current {
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+    }
 }

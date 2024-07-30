@@ -1,4 +1,5 @@
 use crate::app_state::AppState;
+use crate::client::stream::ClientStreamReq;
 use crate::client::DbClient;
 use crate::{tls, Client, NodeId};
 use std::sync::atomic::AtomicUsize;
@@ -10,6 +11,8 @@ impl Client {
     pub(crate) fn new_local(
         state: Arc<AppState>,
         tls_config: Option<Arc<rustls::ClientConfig>>,
+        tx_client: flume::Sender<ClientStreamReq>,
+        rx_client: flume::Receiver<ClientStreamReq>,
         tx_shutdown: watch::Sender<bool>,
     ) -> Self {
         let leader_id = state.id;
@@ -18,11 +21,12 @@ impl Client {
         let node_id = state.id;
         let secret = state.secret_api.clone();
         let leader = Arc::new(RwLock::new((leader_id, leader_addr)));
-        let tx_client = Self::open_stream(
+        Self::open_stream(
             node_id,
             tls_config.clone(),
             secret.as_bytes().to_vec(),
             leader.clone(),
+            rx_client,
         );
 
         let db_client = DbClient {
@@ -68,11 +72,13 @@ impl Client {
         };
 
         let leader = Arc::new(RwLock::new((leader_id, leader_addr)));
-        let tx_client = Self::open_stream(
+        let (tx_client, rx_client) = flume::unbounded();
+        Self::open_stream(
             node_id,
             tls_config.clone(),
             api_secret.as_bytes().to_vec(),
             leader.clone(),
+            rx_client,
         );
 
         let db_client = DbClient {

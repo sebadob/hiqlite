@@ -12,7 +12,7 @@ mod helpers;
 mod mgmt;
 mod migrate;
 mod query;
-mod stream;
+pub mod stream;
 mod transaction;
 
 #[cfg(feature = "backup")]

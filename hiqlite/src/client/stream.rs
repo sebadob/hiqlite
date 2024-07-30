@@ -116,11 +116,15 @@ impl Client {
         tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: Vec<u8>,
         leader: Arc<RwLock<(NodeId, String)>>,
-    ) -> flume::Sender<ClientStreamReq> {
-        // TODO option like "limit in-flight requests"
-        let (tx, rx) = flume::unbounded();
-        task::spawn(client_stream(node_id, tls_config, secret, leader, rx));
-        tx
+        rx_client_stream: flume::Receiver<ClientStreamReq>,
+    ) {
+        task::spawn(client_stream(
+            node_id,
+            tls_config,
+            secret,
+            leader,
+            rx_client_stream,
+        ));
     }
 }
 
