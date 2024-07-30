@@ -1,19 +1,27 @@
 <script lang="ts">
-    import ThemeSwitchAbsolute from "$lib/components/ThemeSwitchAbsolute.svelte";
     import Form from "$lib/components/form/Form.svelte";
     import Button from "$lib/components/Button.svelte";
     import InputPassword from "$lib/components/form/InputPassword.svelte";
+    import type {ISession} from "$lib/types/session";
+    import {API_PREFIX} from "$lib/constants";
 
-    function onResponse(res: Response) {
+    let {session = $bindable()}: { session?: ISession } = $props();
+
+    async function onResponse(res: Response) {
         if (res.status === 200) {
-            window.location.replace('/dashboard');
+            session = await res.json();
         }
     }
 </script>
 
-<main>
+<svelte:head>
+    <meta property="description" content="Hiqlite Login"/>
+    <title>Login</title>
+</svelte:head>
+
+<div class="container">
     <div class="login">
-        <Form action="/dashboard/api/login" onResponse={onResponse}>
+        <Form action={`${API_PREFIX}/session`} onResponse={onResponse}>
             <InputPassword
                     id="password"
                     name="password"
@@ -27,19 +35,21 @@
             </Button>
         </Form>
     </div>
-</main>
-
-<ThemeSwitchAbsolute/>
+</div>
 
 <style>
-    main {
+    .container {
+        flex: 1;
         display: flex;
-        height: 100dvh;
         justify-content: center;
         align-items: center;
     }
 
     .login {
         max-width: 15rem;
+        display: flex;
+        height: 100dvh;
+        justify-content: center;
+        align-items: center;
     }
 </style>

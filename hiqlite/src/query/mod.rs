@@ -17,6 +17,24 @@ pub mod rows;
 // TODO
 // - query_optional
 
+// pub(crate) async fn query_columns<S>(
+//     read_pool: &Arc<SqlitePool>,
+//     stmt: S,
+// ) -> Result<Vec<(String, String)>, Error>
+// where
+//     S: Into<Cow<'static, str>>,
+// {
+//     let sql = stmt.into();
+//     let conn = read_pool.get().await?;
+//
+//     task::spawn_blocking(move || {
+//         let mut stmt = conn.prepare(&sql)?;
+//         let columns = ColumnOwned::mapping_cols_from_stmt(stmt.columns())?;
+//         Ok::<Vec<(String, String)>, Error>(columns)
+//     })
+//     .await?
+// }
+
 pub(crate) async fn query_consistent<S>(
     state: AppStateExt,
     stmt: S,

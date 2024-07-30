@@ -1,7 +1,3 @@
-<!--
-  some markdown here
--->
-
 <script lang="ts">
     let {
         action,

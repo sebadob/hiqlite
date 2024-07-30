@@ -57,6 +57,7 @@ type NodeId = u64;
 macro_rules! params {
     ( $( $param:expr ),* ) => {
         {
+            #[allow(unused_mut)]
             let mut params = Vec::new();
             $(
                 params.push(Param::from($param));
@@ -227,10 +228,13 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
                 .route("/", get(dashboard::handlers::redirect_to_index))
                 .nest(
                     "/api",
-                    Router::new().route(
-                        "/login",
-                        get(dashboard::handlers::login_check).post(dashboard::handlers::login),
-                    ),
+                    Router::new()
+                        .route(
+                            "/session",
+                            get(dashboard::handlers::get_session)
+                                .post(dashboard::handlers::post_session),
+                        )
+                        .route("/tables", get(dashboard::handlers::get_tables)),
                 )
                 .layer(dashboard::middleware::middleware())
                 .fallback(dashboard::static_files::handler),

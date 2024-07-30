@@ -7,6 +7,7 @@ pub mod middleware;
 mod password;
 pub mod session;
 pub mod static_files;
+mod table;
 
 #[derive(Debug)]
 pub struct DashboardState {

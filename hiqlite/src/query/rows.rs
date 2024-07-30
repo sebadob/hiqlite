@@ -1,5 +1,4 @@
 use crate::Error;
-use rusqlite::Column;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
@@ -85,6 +84,20 @@ impl RowOwned {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Column {
+    typ: ColumnType,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ColumnType {
+    Null,
+    Integer,
+    Real,
+    Text,
+    Blob,
+}
+
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColumnOwned {
     // TODO find a way to include all the column names only once at the very top level and
@@ -96,7 +109,7 @@ pub struct ColumnOwned {
 impl ColumnOwned {
     #[inline(always)]
     pub(crate) fn mapping_cols_from_stmt(
-        columns: Vec<Column>,
+        columns: Vec<rusqlite::Column>,
     ) -> Result<Vec<(String, String)>, Error> {
         let mut cols = Vec::with_capacity(columns.len());
         for col in columns {

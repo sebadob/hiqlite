@@ -1,15 +1,15 @@
 use crate::dashboard::session;
 use crate::dashboard::session::Session;
+use crate::dashboard::table::Table;
 use crate::network::AppStateExt;
 use crate::Error;
 use axum::body::Body;
 use axum::http::header::LOCATION;
 use axum::http::{HeaderMap, Method};
 use axum::response::Response;
-use axum::Form;
+use axum::{Form, Json};
 use hyper::StatusCode;
 use serde::Deserialize;
-use tracing::info;
 
 pub async fn redirect_to_index() -> Response {
     Response::builder()
@@ -19,9 +19,8 @@ pub async fn redirect_to_index() -> Response {
         .unwrap()
 }
 
-pub async fn login_check(s: Session) -> Result<(), Error> {
-    info!("check login: {:?}", s);
-    Ok(())
+pub async fn get_session(s: Session) -> Result<Json<Session>, Error> {
+    Ok(Json(s))
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,11 +28,15 @@ pub struct LoginRequest {
     pub password: String,
 }
 
-pub async fn login(
+pub async fn post_session(
     state: AppStateExt,
     headers: HeaderMap,
     Form(login): Form<LoginRequest>,
 ) -> Result<Response, Error> {
-    info!("login: {:?}", login);
     session::set_session_verify(&state, Method::POST, &headers, login).await
+}
+
+pub async fn get_tables(state: AppStateExt, _: Session) -> Result<Json<Vec<Table>>, Error> {
+    let tables = Table::find_all(&state).await?;
+    Ok(Json(tables))
 }

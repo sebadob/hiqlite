@@ -2,11 +2,11 @@ use crate::dashboard::handlers::LoginRequest;
 use crate::dashboard::password;
 use crate::network::AppStateExt;
 use crate::Error;
-use axum::body::Body;
 use axum::extract::FromRequestParts;
 use axum::http::header::SET_COOKIE;
-use axum::http::{request, HeaderMap, Method, StatusCode};
-use axum::response::Response;
+use axum::http::{request, HeaderMap, Method};
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use axum_extra::extract::CookieJar;
 use chrono::Utc;
 use cryptr::utils::{b64_decode, b64_encode};
@@ -14,7 +14,7 @@ use cryptr::EncValue;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::LazyLock;
-use tracing::{debug, info};
+use tracing::{debug, warn};
 
 const COOKIE_NAME: &str = "__Host-Hiqlite-Session";
 const COOKIE_NAME_DEV: &str = "Hiqlite-Session";
@@ -51,45 +51,13 @@ where
         //     .await
         //     .expect("AppState to be available");
 
-        info!("from_request_parts");
         let headers = &parts.headers;
-        info!("from_request_parts: {:?}", headers);
         check_csrf(&parts.method, headers).await?;
-        info!("check_csrf ok");
 
         let jar = CookieJar::from_headers(headers);
-        info!("{:?}", jar);
         Ok(Session::try_from_jar(&jar)?)
     }
 }
-
-// #[axum::async_trait]
-// impl<S> FromRequestParts<S> for Session
-// where
-//     S: Send + Sync,
-// {
-//     type Rejection = Error;
-//
-//     async fn from_request_parts(
-//         parts: &mut request::Parts,
-//         state: &S,
-//     ) -> Result<Self, Self::Rejection> {
-//         let st = parts
-//             .extract_with_state::<AppStateExt, _>(state)
-//             .await
-//             .expect("AppState to be available");
-//
-//         info!("from_request_parts");
-//         let headers = &parts.headers;
-//         info!("from_request_parts: {:?}", headers);
-//         check_csrf(&parts.method, headers).await?;
-//         info!("check_csrf ok");
-//
-//         let jar = CookieJar::from_headers(headers);
-//         info!("{:?}", jar);
-//         Ok(Session::try_from_jar(&jar, st.dashboard.insecure_cookie)?)
-//     }
-// }
 
 impl Session {
     fn new() -> Self {
@@ -161,12 +129,9 @@ pub async fn set_session_verify(
     check_csrf(&method, headers).await?;
     password::verify_password(login.password, state.dashboard.password_dashboard.clone()).await?;
 
-    let cookie = Session::new().as_cookie()?;
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(SET_COOKIE, cookie)
-        .body(Body::empty())
-        .unwrap())
+    let session = Session::new();
+    let cookie = session.as_cookie()?;
+    Ok(([(SET_COOKIE, cookie)], Json(session)).into_response())
 }
 
 #[inline]
@@ -212,7 +177,12 @@ async fn check_csrf(method: &Method, headers: &HeaderMap) -> Result<(), Error> {
             "cross-origin request forbidden for this resource".into(),
         ))
     } else {
-        // allow requests that do not contain the header
-        Ok(())
+        warn!("sec-fetch-site is missing");
+        if *INSECURE_COOKIES {
+            // Sec-* headers will not be added in an insecure context
+            Ok(())
+        } else {
+            Err(Error::Unauthorized("CSRF violation".into()))
+        }
     }
 }
