@@ -83,12 +83,13 @@ in case of any errors or problems.
   faster method with more manual work
 - in addition to SQLite - in-memory K/V store with optional independent TTL per entry
 - listen / notify to send real-time messages through the Raft
+- integrated simple dashboard UI for debugging the database in production (very ugly, but it basically works)
 
 ### TODOs before v0.1.0
 
-- make the `hiqlite_server` work and make it possible to spin up an instance for testing
-- metrics / health endpoint or maybe even a simple health UI
-- a lot of code cleanup
+- prettify the dashboard
+- metrics / health endpoint with separate, optional metrics token
+- code cleanup
 - proper documentation
 - more examples
 - default auto-backup task

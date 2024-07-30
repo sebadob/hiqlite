@@ -47,6 +47,7 @@ pub(crate) async fn dashboard_query_dynamic(
             params: params!(),
         };
 
+        // TODO check for `RETURNING` to execute `query` instead
         let rows_affected = execute_dynamic(&state, sql.clone()).await?;
         let affected = if rows_affected > i64::MAX as usize {
             i64::MAX
