@@ -3,6 +3,7 @@
     import {API_PREFIX} from "$lib/constants";
     import {onMount} from "svelte";
     import TableDetails from "$lib/components/tables/TableDetails.svelte";
+    import {get} from "$lib/fetch";
 
     let tables: ITable[] = $state([]);
     let selected: undefined | ITable = $state();
@@ -17,7 +18,7 @@
     })
 
     async function fetchTables() {
-        let res = await fetch(`${API_PREFIX}/tables`);
+        let res = await get(`${API_PREFIX}/tables`);
         if (res.status === 200) {
             tables = await res.json();
         } else {

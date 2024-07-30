@@ -6,19 +6,23 @@
     import {API_PREFIX} from "$lib/constants";
     import Login from "$lib/components/Login.svelte";
     import Tables from "$lib/components/tables/Tables.svelte";
+    import {storeSession} from "$lib/stores/session";
 
     let session: undefined | ISession = $state();
     let mustLogin = $state(false);
+
+    storeSession.subscribe(s => {
+        session = s;
+    })
 
     onMount(async () => {
         let res = await fetch(`${API_PREFIX}/session`);
         if (res.status === 401) {
             mustLogin = true;
-            // window.location.replace('/dashboard/login');
         } else {
             let s = await res.json();
             console.log(s);
-            session = s;
+            storeSession.set(s);
         }
     });
 

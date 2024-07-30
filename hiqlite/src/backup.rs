@@ -112,7 +112,7 @@ async fn is_metadata_ok(path_db: String) -> Result<(), Error> {
 
 #[tracing::instrument(level = "debug", skip_all)]
 #[cfg(feature = "backup")]
-pub async fn restore_backup_finish(state: Arc<AppState>) {
+pub async fn restore_backup_finish(state: &Arc<AppState>) {
     loop {
         match state.raft_db.raft.is_initialized().await {
             Ok(res) => {

@@ -155,7 +155,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     if backup_applied {
-        backup::restore_backup_finish(state.clone()).await;
+        backup::restore_backup_finish(&state).await;
     }
 
     let (tx_shutdown, rx_shutdown) = watch::channel(false);
@@ -209,11 +209,11 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
                 .route("/metrics", get(management::metrics)),
         )
         // TODO
-        .route("/execute", post(api::execute))
+        // .route("/execute", post(api::execute))
         // TODO
-        .route("/query", post(api::query))
+        // .route("/query", post(api::query))
         // TODO
-        .route("/query/consistent", post(api::query))
+        // .route("/query/consistent", post(api::query))
         .route("/stream", get(api::stream))
         .route("/ping", get(api::ping));
 
@@ -229,6 +229,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
                 .nest(
                     "/api",
                     Router::new()
+                        .route("/query", post(dashboard::handlers::post_query))
                         .route(
                             "/session",
                             get(dashboard::handlers::get_session)

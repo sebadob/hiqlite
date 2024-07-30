@@ -7,14 +7,12 @@
     } = $props();
 
     let sql = $derived(table.sql?.split('\n'));
-
-    let isExpanded = $state(false);
 </script>
 
 <section>
     <h5 class="header">
-        {table.typ} {table.tbl_name}<br/>
-        {table.name}
+        {table.name}<br/>
+        {table.typ}: {table.tbl_name}
     </h5>
 
     <div class="sql font-mono">

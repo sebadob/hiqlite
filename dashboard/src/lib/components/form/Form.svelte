@@ -1,4 +1,6 @@
 <script lang="ts">
+    import {handleRes} from "$lib/fetch";
+
     let {
         action,
         method = 'POST',
@@ -43,6 +45,8 @@
             },
             body: params,
         });
+        // always check for 401
+        handleRes(res);
 
         if (onResponse) {
             onResponse(res);

@@ -90,6 +90,12 @@ impl Session {
         Ok(cookie_header)
     }
 
+    // async fn try_from_headers(headers: &HeaderMap, method: &Method) -> Result<Self, Error> {
+    //     check_csrf(&method, headers).await?;
+    //     let jar = CookieJar::from_headers(headers);
+    //     Ok(Session::try_from_jar(&jar)?)
+    // }
+
     fn try_from_jar(jar: &CookieJar) -> Result<Self, Error> {
         // TODO decide between dev and prod
         let name = if *INSECURE_COOKIES {
@@ -134,7 +140,6 @@ pub async fn set_session_verify(
     Ok(([(SET_COOKIE, cookie)], Json(session)).into_response())
 }
 
-#[inline]
 async fn check_csrf(method: &Method, headers: &HeaderMap) -> Result<(), Error> {
     if let Some(site) = headers.get("sec-fetch-site") {
         let site = site.to_str().unwrap_or_default();

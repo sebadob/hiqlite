@@ -1,11 +1,9 @@
 use crate::migration::Migration;
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{fmt_ok, get_payload, validate_secret, AppStateExt, Error};
+use crate::network::{AppStateExt, Error};
 use crate::query::query_consistent;
 use crate::query::rows::RowOwned;
-use axum::body;
-use axum::http::HeaderMap;
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -85,60 +83,60 @@ pub async fn ping() {}
 
 // TODO maybe remove this endpoint in favor or a generic REST endpoint which chooses the
 // the correct sub-method on its own? -> way better UX and response will be just `text` anyway?
-pub(crate) async fn execute(
-    state: AppStateExt,
-    headers: HeaderMap,
-    body: body::Bytes,
-) -> Result<Response, Error> {
-    validate_secret(&state, &headers)?;
+// pub(crate) async fn execute(
+//     state: AppStateExt,
+//     headers: HeaderMap,
+//     body: body::Bytes,
+// ) -> Result<Response, Error> {
+//     validate_secret(&state, &headers)?;
+//
+//     let payload = get_payload::<Query>(&headers, body)?;
+//     match state
+//         .raft_db
+//         .raft
+//         .client_write(QueryWrite::Execute(payload))
+//         .await
+//     {
+//         Ok(resp) => {
+//             let resp: crate::Response = resp.data;
+//             let res = match resp {
+//                 crate::Response::Execute(res) => res.result,
+//                 _ => unreachable!(),
+//             };
+//             fmt_ok(headers, res)
+//         }
+//         Err(err) => {
+//             eprintln!("\nError on leader: {:?}\n", err);
+//             Err(Error::from(err))
+//         }
+//     }
+// }
 
-    let payload = get_payload::<Query>(&headers, body)?;
-    match state
-        .raft_db
-        .raft
-        .client_write(QueryWrite::Execute(payload))
-        .await
-    {
-        Ok(resp) => {
-            let resp: crate::Response = resp.data;
-            let res = match resp {
-                crate::Response::Execute(res) => res.result,
-                _ => unreachable!(),
-            };
-            fmt_ok(headers, res)
-        }
-        Err(err) => {
-            eprintln!("\nError on leader: {:?}\n", err);
-            Err(Error::from(err))
-        }
-    }
-}
-
-#[inline(always)]
-pub(crate) async fn query(
-    state: AppStateExt,
-    headers: HeaderMap,
-    body: body::Bytes,
-) -> Result<Response, Error> {
-    validate_secret(&state, &headers)?;
-
-    // TODO check accept header and allow JSON requests for ease of use as well
-    let _payload = get_payload::<Query>(&headers, body)?;
-
-    // match &payload {
-    //     Query::Execute(_) => {
-    //         return Err(ApiError::BadRequest(
-    //             "Query must be Query::Execute for this endpoint".into(),
-    //         ));
-    //     }
-    //     _ => {}
-    // };
-
-    // let conn = state.sql_reader.get().await?;
-    // let value = query_map(&state, payload).await?;
-    todo!()
-    // fmt_ok(headers, value)
-}
+// pub(crate) async fn query(
+//     state: AppStateExt,
+//     headers: HeaderMap,
+//     body: body::Bytes,
+// ) -> Result<Response, Error> {
+//     check_csrf(&Method::POST, &headers)?;
+//     validate_secret(&state, &headers)?;
+//
+//     // TODO check accept header and allow JSON requests for ease of use as well
+//     let _payload = get_payload::<Query>(&headers, body)?;
+//
+//     // match &payload {
+//     //     Query::Execute(_) => {
+//     //         return Err(ApiError::BadRequest(
+//     //             "Query must be Query::Execute for this endpoint".into(),
+//     //         ));
+//     //     }
+//     //     _ => {}
+//     // };
+//
+//     // let conn = state.sql_reader.get().await?;
+//     // let value = query_map(&state, payload).await?;
+//     todo!()
+//     // fmt_ok(headers, value)
+// }
 
 // #[inline(always)]
 // pub(crate) async fn query_consistent(
