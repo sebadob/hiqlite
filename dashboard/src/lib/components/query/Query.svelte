@@ -1,8 +1,11 @@
 <script lang="ts">
     import {API_PREFIX} from "$lib/constants";
     import {postText} from "$lib/fetch";
+    import Results from "$lib/components/query/Results.svelte";
+    import type {IRow} from "$lib/types/query_results";
 
     let {query}: { query: string } = $props();
+    let rows: IRow[] = $state([]);
 
     function onKeyDown(ev: KeyboardEvent) {
         if (ev.ctrlKey && ev.code === 'Enter') {
@@ -12,8 +15,14 @@
     }
 
     async function execute() {
+        rows = [];
+
         let res = await postText(`${API_PREFIX}/query`, query);
-        console.log(res);
+        if (res.status === 200) {
+            rows = await res.json();
+        } else {
+            console.error(await res.json());
+        }
     }
 </script>
 
@@ -23,6 +32,8 @@
         onkeydown={onKeyDown}
 >
 </textarea>
+
+<Results bind:rows/>
 
 <style>
     textarea {

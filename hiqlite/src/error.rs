@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use thiserror::Error;
 use tokio::task::JoinError;
-use tracing::error;
+use tracing::trace;
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum Error {
@@ -141,14 +141,14 @@ impl From<std::io::Error> for Error {
 
 impl From<Box<bincode::ErrorKind>> for Error {
     fn from(value: Box<ErrorKind>) -> Self {
-        error!("\n\nbincode::ErrorKind: {}\n", value);
+        trace!("\n\nbincode::ErrorKind: {}\n", value);
         Self::Bincode(value.to_string())
     }
 }
 
 impl From<reqwest::Error> for Error {
     fn from(value: reqwest::Error) -> Self {
-        error!("reqwest::Error: {}", value);
+        trace!("reqwest::Error: {}", value);
         if value.is_connect() {
             Self::Connect(value.to_string())
         } else if value.is_timeout() {
@@ -161,98 +161,98 @@ impl From<reqwest::Error> for Error {
 
 impl From<RaftWriteError> for Error {
     fn from(value: RaftWriteError) -> Self {
-        error!("ClientWriteError: {}", value);
+        trace!("ClientWriteError: {}", value);
         Self::ClientWriteError(value)
     }
 }
 
 impl From<RaftInitError> for Error {
     fn from(value: RaftInitError) -> Self {
-        error!("InitializeError: {}", value);
+        trace!("InitializeError: {}", value);
         Self::InitializeError(value)
     }
 }
 
 impl From<RaftSnapshotError> for Error {
     fn from(value: RaftSnapshotError) -> Self {
-        error!("SnapshotError: {}", value);
+        trace!("SnapshotError: {}", value);
         Self::SnapshotError(value)
     }
 }
 
 impl From<RaftError<u64>> for Error {
     fn from(value: RaftError<u64>) -> Self {
-        error!("RaftError: {}", value);
+        trace!("RaftError: {}", value);
         Self::RaftError(value)
     }
 }
 
 impl From<RaftError<u64, CheckIsLeaderError<u64, Node>>> for Error {
     fn from(value: RaftError<u64, CheckIsLeaderError<u64, Node>>) -> Self {
-        error!("CheckIsLeaderError: {}", value);
+        trace!("CheckIsLeaderError: {}", value);
         Self::CheckIsLeaderError(value)
     }
 }
 
 impl From<Fatal<u64>> for Error {
     fn from(value: Fatal<u64>) -> Self {
-        error!("RaftErrorFatal: {}", value);
+        trace!("RaftErrorFatal: {}", value);
         Self::RaftErrorFatal(value)
     }
 }
 
 impl From<rusqlite::Error> for Error {
     fn from(value: rusqlite::Error) -> Self {
-        error!("Sqlite: {}", value);
+        trace!("Sqlite: {}", value);
         Self::Sqlite(value.to_string().into())
     }
 }
 
 impl From<deadpool::managed::BuildError> for Error {
     fn from(value: BuildError) -> Self {
-        error!("Sqlite: {}", value);
+        trace!("Sqlite: {}", value);
         Self::Sqlite(value.to_string().into())
     }
 }
 
 impl From<deadpool::managed::PoolError<rusqlite::Error>> for Error {
     fn from(value: PoolError<rusqlite::Error>) -> Self {
-        error!("Sqlite: {}", value);
+        trace!("Sqlite: {}", value);
         Self::Sqlite(value.to_string().into())
     }
 }
 
 impl From<deadpool::unmanaged::PoolError> for Error {
     fn from(value: deadpool::unmanaged::PoolError) -> Self {
-        error!("Sqlite: {}", value);
+        trace!("Sqlite: {}", value);
         Self::Sqlite(value.to_string().into())
     }
 }
 
 impl From<serde_json::Error> for Error {
     fn from(value: serde_json::Error) -> Self {
-        error!("BadRequest: {}", value);
+        trace!("BadRequest: {}", value);
         Self::BadRequest(value.to_string().into())
     }
 }
 
 impl From<fastwebsockets::WebSocketError> for Error {
     fn from(value: WebSocketError) -> Self {
-        error!("WebSocket: {}", value);
+        trace!("WebSocket: {}", value);
         Self::WebSocket(value.to_string())
     }
 }
 
 impl From<JoinError> for Error {
     fn from(value: JoinError) -> Self {
-        error!("JoinError: {}", value);
+        trace!("JoinError: {}", value);
         Self::Error(value.to_string().into())
     }
 }
 
 impl From<flume::RecvError> for Error {
     fn from(value: flume::RecvError) -> Self {
-        error!("flume::RecvError: {}", value);
+        trace!("flume::RecvError: {}", value);
         Self::Channel(value.to_string())
     }
 }
@@ -260,7 +260,7 @@ impl From<flume::RecvError> for Error {
 #[cfg(feature = "s3")]
 impl From<cryptr::CryptrError> for Error {
     fn from(value: cryptr::CryptrError) -> Self {
-        error!("cryptr::CryptrError: {}", value);
+        trace!("cryptr::CryptrError: {}", value);
         Self::Cryptr(value.to_string())
     }
 }
@@ -268,7 +268,7 @@ impl From<cryptr::CryptrError> for Error {
 #[cfg(feature = "dashboard")]
 impl From<argon2::password_hash::Error> for Error {
     fn from(value: argon2::password_hash::Error) -> Self {
-        error!("argon2::password_hash::Error: {}", value);
+        trace!("argon2::password_hash::Error: {}", value);
         Self::Unauthorized("invalid credentials".into())
     }
 }
