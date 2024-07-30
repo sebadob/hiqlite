@@ -106,6 +106,8 @@ impl LogStoreWriter {
         task::spawn_blocking(move || {
             // let mut callbacks = Vec::with_capacity(8);
 
+            let mut is_dirty = false;
+
             while let Ok(action) = rx.recv() {
                 match action {
                     ActionWrite::Append(ActionAppend { rx, callback, ack }) => {
@@ -118,11 +120,13 @@ impl LogStoreWriter {
                             }
                         }
 
+                        is_dirty = true;
                         let is_ok = res.is_ok();
-                        if let Err(err) = ack.send(res.clone()) {
+
+                        if let Err(err) = ack.send(res) {
                             // this should usually not happen, but it may during a shutdown crash
-                            error!("error sending back ack after logs append - syncing now!");
-                            db.flush_wal(true);
+                            error!("error sending back ack after logs append: {:?}", err);
+                            // db.flush_wal(true);
                         }
 
                         if is_ok {
@@ -181,10 +185,7 @@ impl LogStoreWriter {
                             }
                         };
 
-                        // logs will be removed only after a snapshot has been created recently
-                        // -> sync wal to disk and make really sure we have everything available at the next restart
-                        db.flush_wal(true);
-
+                        is_dirty = true;
                         ack.send(res).unwrap();
                     }
 
@@ -204,9 +205,10 @@ impl LogStoreWriter {
 
                     ActionWrite::Sync => {
                         // panic!("async append callbacks are only available for openraft 0.10+");
-                        trace!("Syncing WAL logs to disk");
-
-                        db.flush_wal(true);
+                        if is_dirty {
+                            db.flush_wal(true);
+                            is_dirty = false;
+                        }
                         // for callback in callbacks.drain(..) {
                         //     callback.log_io_completed(Ok(()));
                         // }

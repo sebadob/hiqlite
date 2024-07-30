@@ -1,0 +1,69 @@
+<script lang="ts">
+    import type {INode, IRaftMetrics} from "$lib/types/raft_metrics";
+    import {get} from "$lib/fetch";
+    import {API_PREFIX} from "$lib/constants";
+    import {onMount} from "svelte";
+    import Metric from "$lib/components/health/Metric.svelte";
+
+    let metrics: undefined | IRaftMetrics = $state();
+    let members = $derived(metrics?.membership_config.membership.configs.join(', '));
+
+    setInterval(() => {
+        fetchMetrics();
+    }, 10000);
+
+    onMount(() => {
+        fetchMetrics();
+    })
+
+    async function fetchMetrics() {
+        let res = await get(`${API_PREFIX}/metrics`);
+        if (res.status === 200) {
+            metrics = await res.json();
+
+        } else {
+            console.error(await res.json());
+        }
+    }
+</script>
+
+<b>Metrics</b>
+
+<Metric label="Node">
+    {metrics?.id}
+    {metrics?.state}
+</Metric>
+
+<Metric label="Current Leader">
+    {metrics?.current_leader}
+</Metric>
+
+<Metric label="Last Log Index">
+    {metrics?.last_log_index}
+</Metric>
+
+<Metric label="Last Applied Log">
+    {metrics?.last_applied?.leader_id.node_id}
+    -
+    {metrics?.last_applied?.leader_id.term}
+    -
+    {metrics?.last_applied?.index}
+</Metric>
+
+<Metric label="Snapshot">
+    {metrics?.snapshot?.leader_id}
+    -
+    {metrics?.snapshot?.index}
+</Metric>
+
+<Metric label="Vote Leader">
+    {metrics?.vote.leader_id.node_id}
+</Metric>
+
+<Metric label="Millis Quorum Ack">
+    {metrics?.millis_since_quorum_ack}
+</Metric>
+
+<Metric label="Members">
+    {members}
+</Metric>

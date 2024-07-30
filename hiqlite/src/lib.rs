@@ -236,6 +236,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
                 .nest(
                     "/api",
                     Router::new()
+                        .route("/metrics", get(dashboard::handlers::get_metrics))
                         .route("/query", post(dashboard::handlers::post_query))
                         .route(
                             "/session",

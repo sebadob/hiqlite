@@ -3,13 +3,14 @@ use crate::dashboard::table::Table;
 use crate::dashboard::{query, session};
 use crate::network::AppStateExt;
 use crate::query::rows::RowOwned;
-use crate::Error;
+use crate::{Error, Node};
 use axum::body::Body;
 use axum::http::header::LOCATION;
 use axum::http::{HeaderMap, Method};
 use axum::response::Response;
 use axum::{body, Form, Json};
 use hyper::StatusCode;
+use openraft::RaftMetrics;
 use serde::Deserialize;
 
 pub async fn redirect_to_index() -> Response {
@@ -42,7 +43,7 @@ pub async fn get_tables(state: AppStateExt, _: Session) -> Result<Json<Vec<Table
     Ok(Json(tables))
 }
 
-pub(crate) async fn post_query(
+pub async fn post_query(
     state: AppStateExt,
     _: Session,
     body: body::Bytes,
@@ -51,4 +52,9 @@ pub(crate) async fn post_query(
     let sql = binding.trim().to_string();
     let res = query::dashboard_query_dynamic(state, sql).await?;
     Ok(Json(res))
+}
+
+pub async fn get_metrics(state: AppStateExt, _: Session) -> Json<RaftMetrics<u64, Node>> {
+    let metrics = state.raft_db.raft.metrics().borrow().clone();
+    Json(metrics)
 }
