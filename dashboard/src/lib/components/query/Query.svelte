@@ -9,7 +9,6 @@
 
     function onKeyDown(ev: KeyboardEvent) {
         if (ev.ctrlKey && ev.code === 'Enter') {
-            console.log('ctrl + enter');
             execute();
         }
     }
@@ -45,6 +44,7 @@
         outline: none;
         resize: none;
         font-size: 1.1rem;
+        color: var(--col-text);
         background: var(--col-bg);
         border-bottom: 1px solid var(--col-mid-a);
     }

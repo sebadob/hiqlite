@@ -5,6 +5,7 @@ use std::fmt::Debug;
 pub mod handlers;
 pub mod middleware;
 mod password;
+mod query;
 pub mod session;
 pub mod static_files;
 mod table;

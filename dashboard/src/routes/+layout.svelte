@@ -7,6 +7,7 @@
     import Login from "$lib/components/Login.svelte";
     import Tables from "$lib/components/tables/Tables.svelte";
     import {storeSession} from "$lib/stores/session";
+    import Health from "$lib/components/Health.svelte";
 
     let session: undefined | ISession = $state();
     let mustLogin = $state(false);
@@ -39,6 +40,7 @@
     <main>
         <slot/>
     </main>
+    <Health/>
 {:else if mustLogin}
     <Login bind:session/>
 {:else}
