@@ -1,13 +1,13 @@
 use crate::start::build_config;
 use crate::{check, log, TEST_DATA_DIR};
-use hiqlite::{start_node, DbClient, Error};
+use hiqlite::{start_node, Client, Error};
 use std::time::Duration;
 use tokio::{fs, time};
 
 pub async fn test_self_healing(
-    mut client_1: DbClient,
-    mut client_2: DbClient,
-    client_3: DbClient,
+    mut client_1: Client,
+    mut client_2: Client,
+    client_3: Client,
 ) -> Result<(), Error> {
     check::is_client_db_healthy(&client_1).await?;
     check::is_client_db_healthy(&client_2).await?;
@@ -97,7 +97,7 @@ pub async fn test_self_healing(
     Ok(())
 }
 
-async fn shutdown_lock_sm_db_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
+async fn shutdown_lock_sm_db_restart(client: Client, node_id: u64) -> Result<Client, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
     time::sleep(Duration::from_millis(150)).await;
@@ -116,7 +116,7 @@ async fn shutdown_lock_sm_db_restart(client: DbClient, node_id: u64) -> Result<D
     Ok(client)
 }
 
-async fn shutdown_remove_all_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
+async fn shutdown_remove_all_restart(client: Client, node_id: u64) -> Result<Client, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
     time::sleep(Duration::from_millis(2000)).await;
@@ -132,7 +132,7 @@ async fn shutdown_remove_all_restart(client: DbClient, node_id: u64) -> Result<D
     Ok(client)
 }
 
-async fn shutdown_remove_sm_db_restart(client: DbClient, node_id: u64) -> Result<DbClient, Error> {
+async fn shutdown_remove_sm_db_restart(client: Client, node_id: u64) -> Result<Client, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
     time::sleep(Duration::from_millis(200)).await;
@@ -164,7 +164,7 @@ async fn shutdown_remove_sm_db_restart(client: DbClient, node_id: u64) -> Result
 //     Ok(client)
 // }
 
-async fn is_leader(client: &DbClient, node_id: u64) -> Result<bool, Error> {
+async fn is_leader(client: &Client, node_id: u64) -> Result<bool, Error> {
     if let Some(leader) = client.metrics_db().await?.current_leader {
         Ok(leader == node_id)
     } else {

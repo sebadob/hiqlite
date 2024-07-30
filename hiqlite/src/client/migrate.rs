@@ -1,12 +1,12 @@
-use crate::db_client::stream::{ClientMigratePayload, ClientStreamReq};
+use crate::client::stream::{ClientMigratePayload, ClientStreamReq};
 use crate::migration::{Migration, Migrations};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::sqlite::state_machine::QueryWrite;
-use crate::{DbClient, Error, Response};
+use crate::{Client, Error, Response};
 use rust_embed::RustEmbed;
 use tokio::sync::oneshot;
 
-impl DbClient {
+impl Client {
     #[cold]
     pub async fn migrate<T: RustEmbed>(&self) -> Result<(), Error> {
         match self.migrate_execute(Migrations::build::<T>()).await {
@@ -36,7 +36,8 @@ impl DbClient {
             }
         } else {
             let (ack, rx) = oneshot::channel();
-            self.tx_client
+            self.inner
+                .tx_client
                 .send_async(ClientStreamReq::Migrate(ClientMigratePayload {
                     request_id: self.new_request_id(),
                     migrations,

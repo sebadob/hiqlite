@@ -1,15 +1,15 @@
 use crate::store::state_machine::memory::state_machine::CacheRequest;
-use crate::{DbClient, Error};
+use crate::{Client, Error};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-impl DbClient {
+impl Client {
     /// Listen to events on the distributed event bus
     pub async fn listen<T>(&self) -> Result<T, Error>
     where
         T: for<'de> Deserialize<'de>,
     {
-        if let Some(state) = &self.state {
+        if let Some(state) = &self.inner.state {
             let (_ts, bytes) = state.raft_cache.rx_notify.recv_async().await?;
             let res = bincode::deserialize(&bytes).unwrap();
             Ok(res)
@@ -25,7 +25,7 @@ impl DbClient {
     where
         T: for<'de> Deserialize<'de>,
     {
-        if let Some(state) = &self.state {
+        if let Some(state) = &self.inner.state {
             if let Ok((_, bytes)) = state.raft_cache.rx_notify.try_recv() {
                 let res = bincode::deserialize(&bytes).unwrap();
                 Ok(Some(res))
@@ -46,7 +46,7 @@ impl DbClient {
     where
         T: for<'de> Deserialize<'de>,
     {
-        if let Some(state) = &self.state {
+        if let Some(state) = &self.inner.state {
             loop {
                 let (ts, bytes) = state.raft_cache.rx_notify.recv_async().await?;
                 if ts > after_ts_micros {
@@ -67,7 +67,7 @@ impl DbClient {
     where
         T: for<'de> Deserialize<'de>,
     {
-        self.listen_after(self.app_start).await
+        self.listen_after(self.inner.app_start).await
     }
 
     /// Notify all other Raft members with this new event data.
@@ -75,7 +75,7 @@ impl DbClient {
     where
         P: Serialize,
     {
-        if let Some(state) = &self.state {
+        if let Some(state) = &self.inner.state {
             let payload = bincode::serialize(payload).unwrap();
             state
                 .raft_cache

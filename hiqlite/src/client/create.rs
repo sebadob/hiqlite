@@ -1,11 +1,11 @@
 use crate::app_state::AppState;
-use crate::{tls, DbClient, NodeId};
-use reqwest::Client;
+use crate::client::DbClient;
+use crate::{tls, Client, NodeId};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::sync::{watch, RwLock};
 
-impl DbClient {
+impl Client {
     /// Create a local client that skips network connections if not necessary
     pub(crate) fn new_local(
         state: Arc<AppState>,
@@ -25,12 +25,12 @@ impl DbClient {
             leader.clone(),
         );
 
-        Self {
+        let db_client = DbClient {
             state: Some(state),
             leader,
             // TODO do we even still need this for a local client? -> all raft messages should use internal API ?
             client: Arc::new(
-                Client::builder()
+                reqwest::Client::builder()
                     .http2_prior_knowledge()
                     // TODO
                     // .danger_accept_invalid_certs(tls_config.as_ref().map(|c| c.))
@@ -44,6 +44,10 @@ impl DbClient {
             tx_shutdown: Some(tx_shutdown),
             #[cfg(feature = "cache")]
             app_start: chrono::Utc::now().timestamp_micros(),
+        };
+
+        Self {
+            inner: Arc::new(db_client),
         }
     }
 
@@ -73,11 +77,11 @@ impl DbClient {
             leader.clone(),
         );
 
-        Self {
+        let db_client = DbClient {
             state: None,
             leader,
             client: Arc::new(
-                Client::builder()
+                reqwest::Client::builder()
                     // .user_agent("Raft Client")
                     .http2_prior_knowledge()
                     // TODO
@@ -92,6 +96,10 @@ impl DbClient {
             tx_shutdown: None,
             #[cfg(feature = "cache")]
             app_start: chrono::Utc::now().timestamp_micros(),
+        };
+
+        Self {
+            inner: Arc::new(db_client),
         }
     }
 }

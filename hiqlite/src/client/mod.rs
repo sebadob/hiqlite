@@ -24,14 +24,13 @@ mod listen_notify;
 #[cfg(feature = "shutdown-handle")]
 mod shutdown_handle;
 
+/// Database client
 #[derive(Clone)]
 pub struct Client {
     pub(crate) inner: Arc<DbClient>,
 }
 
-/// Database client
-#[derive(Clone)]
-pub struct DbClient {
+pub(crate) struct DbClient {
     pub(crate) state: Option<Arc<AppState>>,
     pub(crate) leader: Arc<RwLock<(NodeId, String)>>,
     pub(crate) client: Arc<reqwest::Client>,

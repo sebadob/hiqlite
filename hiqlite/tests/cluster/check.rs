@@ -1,8 +1,8 @@
 use crate::debug;
 use crate::execute_query::TestData;
-use hiqlite::{params, DbClient, Error, Param};
+use hiqlite::{params, Client, Error, Param};
 
-pub async fn is_client_db_healthy(client: &DbClient) -> Result<(), Error> {
+pub async fn is_client_db_healthy(client: &Client) -> Result<(), Error> {
     let is_healthy = client.is_healthy().await;
     debug(&is_healthy);
     assert!(is_healthy.is_ok());

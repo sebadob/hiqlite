@@ -19,7 +19,7 @@ use tokio::sync::watch;
 use tokio::task;
 use tracing::info;
 
-pub use crate::db_client::DbClient;
+pub use crate::client::Client;
 pub use crate::error::Error;
 pub use crate::query::rows::Row;
 pub use crate::store::state_machine::sqlite::state_machine::{Params, Response};
@@ -30,8 +30,8 @@ pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
 mod app_state;
+mod client;
 mod config;
-mod db_client;
 mod error;
 mod helpers;
 mod init;
@@ -88,7 +88,7 @@ impl Display for Node {
 /// Starts a Raft node.
 /// # Panics
 /// If an incorrect `node_config` was given.
-pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
+pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
     node_config.is_valid()?;
 
     if node_config.tls_api.is_some() || node_config.tls_raft.is_some() {
@@ -308,9 +308,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<DbClient, Error> {
     #[cfg(feature = "cache")]
     member_cache.await??;
 
-    let client = DbClient::new_local(state, tls_api_client_config, tx_shutdown);
-
-    Ok(client)
+    Ok(Client::new_local(state, tls_api_client_config, tx_shutdown))
 }
 
 fn build_listen_addr(addr: &str, tls: bool) -> String {

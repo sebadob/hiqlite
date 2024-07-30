@@ -1,22 +1,17 @@
-use crate::db_client::stream::{ClientBatchPayload, ClientStreamReq};
+use crate::client::stream::{ClientBackupPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::sqlite::state_machine::QueryWrite;
-use crate::{DbClient, Error, Response};
-use std::borrow::Cow;
+use crate::{Client, Error, Response};
 use tokio::sync::oneshot;
 
-impl DbClient {
-    /// Takes an arbitrary SQL String with multiple queries and executes all of them as a batch
-    pub async fn batch<S>(&self, sql: S) -> Result<Vec<Result<usize, Error>>, Error>
-    where
-        S: Into<Cow<'static, str>>,
-    {
-        let sql = sql.into();
-        match self.batch_execute(sql.clone()).await {
+impl Client {
+    #[cold]
+    pub async fn backup(&self) -> Result<(), Error> {
+        match self.backup_execute().await {
             Ok(res) => Ok(res),
             Err(err) => {
                 if self.was_leader_update_error(&err).await {
-                    self.batch_execute(sql).await
+                    self.backup_execute().await
                 } else {
                     Err(err)
                 }
@@ -24,27 +19,28 @@ impl DbClient {
         }
     }
 
-    async fn batch_execute(
-        &self,
-        sql: Cow<'static, str>,
-    ) -> Result<Vec<Result<usize, Error>>, Error> {
+    #[cold]
+    async fn backup_execute(&self) -> Result<(), Error> {
+        let current_leader = self.inner.leader.read().await.0;
+
         if let Some(state) = self.is_this_local_leader().await {
             let res = state
                 .raft_db
                 .raft
-                .client_write(QueryWrite::Batch(sql))
+                .client_write(QueryWrite::Backup(current_leader))
                 .await?;
             let resp: Response = res.data;
             match resp {
-                Response::Batch(res) => Ok(res.result),
+                Response::Backup(res) => res,
                 _ => unreachable!(),
             }
         } else {
             let (ack, rx) = oneshot::channel();
-            self.tx_client
-                .send_async(ClientStreamReq::Batch(ClientBatchPayload {
+            self.inner
+                .tx_client
+                .send_async(ClientStreamReq::Backup(ClientBackupPayload {
                     request_id: self.new_request_id(),
-                    sql,
+                    node_id: current_leader,
                     ack,
                 }))
                 .await
@@ -53,7 +49,7 @@ impl DbClient {
                 .await
                 .expect("To always receive an answer from Client Stream Manager")?;
             match res {
-                ApiStreamResponsePayload::Batch(res) => res,
+                ApiStreamResponsePayload::Backup(res) => res,
                 _ => unreachable!(),
             }
         }

@@ -1,20 +1,20 @@
-use crate::db_client::stream::{ClientKVPayload, ClientStreamReq};
+use crate::client::stream::{ClientKVPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
-use crate::{DbClient, Error};
+use crate::{Client, Error};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use tokio::sync::oneshot;
 
-impl DbClient {
+impl Client {
     pub async fn get<K, V>(&self, key: K) -> Result<Option<V>, Error>
     where
         K: Into<String>,
         V: for<'a> Deserialize<'a>,
     {
-        if let Some(state) = &self.state {
+        if let Some(state) = &self.inner.state {
             let (ack, rx) = oneshot::channel();
             state
                 .raft_cache
@@ -74,7 +74,8 @@ impl DbClient {
             Ok(res.data)
         } else {
             let (ack, rx) = oneshot::channel();
-            self.tx_client
+            self.inner
+                .tx_client
                 .send_async(ClientStreamReq::KV(ClientKVPayload {
                     request_id: self.new_request_id(),
                     cache_req,

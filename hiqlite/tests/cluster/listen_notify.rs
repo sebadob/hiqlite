@@ -1,5 +1,5 @@
 use crate::log;
-use hiqlite::{DbClient, Error};
+use hiqlite::{Client, Error};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::time::Duration;
@@ -12,9 +12,9 @@ struct Event {
 }
 
 pub async fn test_listen_notify(
-    client_1: &DbClient,
-    client_2: &DbClient,
-    client_3: &DbClient,
+    client_1: &Client,
+    client_2: &Client,
+    client_3: &Client,
 ) -> Result<(), Error> {
     log("Publish an event and make sure all members can see it");
 

@@ -1,13 +1,13 @@
-use crate::db_client::stream::{ClientQueryConsistentPayload, ClientStreamReq};
+use crate::client::stream::{ClientQueryConsistentPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::state_machine::Query;
-use crate::{query, DbClient, Error, Params};
+use crate::{query, Client, Error, Params};
 use serde::de::DeserializeOwned;
 use std::borrow::Cow;
 use tokio::sync::oneshot;
 
-impl DbClient {
+impl Client {
     /// Execute a consistent query. This query will run on the leader node only and pause Raft
     /// replication at a point, where all "current" logs have been applied to at least a quorum
     /// of all nodes. This means whatever result this query returns, at least hals of the nodes + 1
@@ -84,7 +84,8 @@ impl DbClient {
             .await
         } else {
             let (ack, rx) = oneshot::channel();
-            self.tx_client
+            self.inner
+                .tx_client
                 .send_async(ClientStreamReq::QueryConsistent(
                     ClientQueryConsistentPayload {
                         request_id: self.new_request_id(),
@@ -113,7 +114,7 @@ impl DbClient {
         T: for<'r> From<crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
-        if let Some(state) = &self.state {
+        if let Some(state) = &self.inner.state {
             query::query_map(state, stmt, params).await
         } else {
             todo!("query_map for remote clients")
@@ -127,7 +128,7 @@ impl DbClient {
         T: for<'r> From<crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
-        if let Some(state) = &self.state {
+        if let Some(state) = &self.inner.state {
             query::query_map_one(state, stmt, params).await
         } else {
             todo!("query_map_one for remote clients")
@@ -143,7 +144,7 @@ impl DbClient {
         T: DeserializeOwned + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
-        if let Some(state) = &self.state {
+        if let Some(state) = &self.inner.state {
             query::query_as(state, stmt, params).await
         } else {
             todo!("query_as for remote clients")
@@ -157,7 +158,7 @@ impl DbClient {
         T: DeserializeOwned + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
-        if let Some(state) = &self.state {
+        if let Some(state) = &self.inner.state {
             query::query_as_one(state, stmt, params).await
         } else {
             todo!("query_as_one for remote clients")

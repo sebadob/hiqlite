@@ -1,6 +1,6 @@
 use crate::log;
 use chrono::Utc;
-use hiqlite::{params, DbClient, Error, Param};
+use hiqlite::{params, Client, Error, Param};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time;
@@ -24,9 +24,9 @@ impl<'r> From<hiqlite::Row<'r>> for TestData {
 }
 
 pub async fn test_execute_query(
-    client_1: &DbClient,
-    client_2: &DbClient,
-    client_3: &DbClient,
+    client_1: &Client,
+    client_2: &Client,
+    client_3: &Client,
 ) -> Result<(), Error> {
     log("Inserting test data");
 

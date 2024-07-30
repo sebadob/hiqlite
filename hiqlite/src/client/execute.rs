@@ -1,12 +1,12 @@
-use crate::db_client::stream::{ClientExecutePayload, ClientStreamReq};
+use crate::client::stream::{ClientExecutePayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
-use crate::{DbClient, Error, Params, Response};
+use crate::{Client, Error, Params, Response};
 use std::borrow::Cow;
 use tokio::sync::oneshot;
 
-impl DbClient {
+impl Client {
     /// `EXECUTE` a modifying query
     ///
     /// This method may return stale value because it does not force to read on a legal leader.
@@ -47,7 +47,8 @@ impl DbClient {
             }
         } else {
             let (ack, rx) = oneshot::channel();
-            self.tx_client
+            self.inner
+                .tx_client
                 .send_async(ClientStreamReq::Execute(ClientExecutePayload {
                     request_id: self.new_request_id(),
                     sql,
@@ -124,7 +125,8 @@ impl DbClient {
             }
         } else {
             let (ack, rx) = oneshot::channel();
-            self.tx_client
+            self.inner
+                .tx_client
                 .send_async(ClientStreamReq::ExecuteReturning(ClientExecutePayload {
                     request_id: self.new_request_id(),
                     sql,

@@ -1,14 +1,14 @@
 use crate::execute_query::TestData;
 use crate::log;
 use chrono::Utc;
-use hiqlite::{params, DbClient, Error, Param};
+use hiqlite::{params, Client, Error, Param};
 use std::time::Duration;
 use tokio::time;
 
 pub async fn test_transactions(
-    client_1: &DbClient,
-    client_2: &DbClient,
-    client_3: &DbClient,
+    client_1: &Client,
+    client_2: &Client,
+    client_3: &Client,
 ) -> Result<(), Error> {
     // we re-use the test table from the simple insert / query tests here
 

@@ -1,5 +1,5 @@
 use crate::log;
-use hiqlite::{DbClient, Error};
+use hiqlite::{Client, Error};
 use std::string::ToString;
 use std::time::Duration;
 use tokio::time;
@@ -8,9 +8,9 @@ pub const KEY: &str = "my key 1";
 pub const VALUE: &str = "test value 123";
 
 pub async fn test_cache(
-    client_1: &DbClient,
-    client_2: &DbClient,
-    client_3: &DbClient,
+    client_1: &Client,
+    client_2: &Client,
+    client_3: &Client,
 ) -> Result<(), Error> {
     log("Put a value into the cache");
     client_1.put(KEY, &VALUE.to_string(), None).await?;
@@ -88,7 +88,7 @@ pub async fn test_cache(
     Ok(())
 }
 
-pub async fn insert_test_value_cache(client: &DbClient) -> Result<(), Error> {
+pub async fn insert_test_value_cache(client: &Client) -> Result<(), Error> {
     log("Insert a test value again to be able to test replication after self-healing");
     client.put(KEY, &VALUE.to_string(), None).await?;
 

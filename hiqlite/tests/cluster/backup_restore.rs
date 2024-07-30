@@ -1,11 +1,11 @@
 use crate::execute_query::TestData;
 use crate::start::build_config;
 use crate::{backup, log};
-use hiqlite::{params, start_node, DbClient, Error, Param};
+use hiqlite::{params, start_node, Client, Error, Param};
 use std::env;
 use tokio::task;
 
-pub async fn start_test_cluster_with_backup() -> Result<(DbClient, DbClient, DbClient), Error> {
+pub async fn start_test_cluster_with_backup() -> Result<(Client, Client, Client), Error> {
     let path = backup::find_backup_file(1).await;
     let (_path, backup_name) = path.rsplit_once('/').unwrap();
     env::set_var("HIQLITE_BACKUP_RESTORE", backup_name);
@@ -23,7 +23,7 @@ pub async fn start_test_cluster_with_backup() -> Result<(DbClient, DbClient, DbC
     Ok((client_1, client_2, client_3))
 }
 
-pub async fn test_db_is_healthy_after_restore(client: &DbClient) -> Result<(), Error> {
+pub async fn test_db_is_healthy_after_restore(client: &Client) -> Result<(), Error> {
     let data = TestData {
         id: 3,
         ts: 0, // Timestamp will be different anyway, we don't care right now

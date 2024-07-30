@@ -1,31 +1,31 @@
 use crate::app_state::AppState;
-use crate::db_client::stream::ClientStreamReq;
+use crate::client::stream::ClientStreamReq;
 use crate::network::HEADER_NAME_SECRET;
-use crate::{DbClient, Error};
+use crate::{Client, Error};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::debug;
 
-impl DbClient {
+impl Client {
     #[inline(always)]
     pub(crate) fn api_secret(&self) -> &str {
-        if let Some(st) = &self.state {
+        if let Some(st) = &self.inner.state {
             st.secret_api.as_str()
         } else {
-            self.api_secret.as_ref().unwrap()
+            self.inner.api_secret.as_ref().unwrap()
         }
     }
 
     #[inline(always)]
     pub(crate) async fn build_addr(&self, path: &str) -> String {
-        let scheme = if self.tls_config.is_some() {
+        let scheme = if self.inner.tls_config.is_some() {
             "https"
         } else {
             "http"
         };
         let url = {
-            let lock = self.leader.read().await;
+            let lock = self.inner.leader.read().await;
             format!("{}://{}{}", scheme, lock.1, path)
         };
         debug!("request url: {}", url);
@@ -34,8 +34,8 @@ impl DbClient {
 
     #[inline(always)]
     pub(crate) async fn is_this_local_leader(&self) -> Option<&Arc<AppState>> {
-        if let Some(state) = &self.state {
-            if state.id == self.leader.read().await.0 {
+        if let Some(state) = &self.inner.state {
+            if state.id == self.inner.leader.read().await.0 {
                 return Some(state);
             }
         }
@@ -44,7 +44,7 @@ impl DbClient {
 
     #[inline(always)]
     pub(crate) fn new_request_id(&self) -> usize {
-        self.request_id.fetch_add(1, Ordering::Relaxed)
+        self.inner.request_id.fetch_add(1, Ordering::Relaxed)
     }
 
     #[inline]
@@ -56,7 +56,7 @@ impl DbClient {
                 let api_addr = node.as_ref().unwrap().addr_api.clone();
                 let leader_id = id.unwrap();
                 {
-                    let mut lock = self.leader.write().await;
+                    let mut lock = self.inner.leader.write().await;
                     // we check additionally to prevent race conditions and multiple
                     // re-connect triggers
                     if lock.0 != leader_id {
@@ -66,7 +66,8 @@ impl DbClient {
                 }
 
                 if has_changed {
-                    self.tx_client
+                    self.inner
+                        .tx_client
                         .send_async(ClientStreamReq::LeaderChange((id, node.clone())))
                         .await
                         .expect("the Client API WebSocket Manager to always be running");
@@ -87,9 +88,9 @@ impl DbClient {
             let url = self.build_addr(path).await;
             let res = if let Some(body) = body {
                 let body = bincode::serialize(body).unwrap();
-                self.client.post(url).body(body)
+                self.inner.client.post(url).body(body)
             } else {
-                self.client.get(url)
+                self.inner.client.get(url)
             }
             .header(HEADER_NAME_SECRET, self.api_secret())
             .send()

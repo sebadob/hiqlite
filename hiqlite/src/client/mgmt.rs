@@ -1,8 +1,8 @@
 use crate::app_state::AppState;
-use crate::db_client::stream::ClientStreamReq;
+use crate::client::stream::ClientStreamReq;
 use crate::store::logs::rocksdb::ActionWrite;
 use crate::store::state_machine::sqlite::writer::WriterRequest;
-use crate::{DbClient, Error, Node, NodeId};
+use crate::{Client, Error, Node, NodeId};
 use openraft::RaftMetrics;
 use std::clone::Clone;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use tokio::sync::{oneshot, watch};
 use tokio::time;
 use tracing::error;
 
-impl DbClient {
+impl Client {
     // pub async fn init(&self) -> Result<(), Error> {
     //     let url = self.build_addr("/cluster/init").await;
     //     let res = self
@@ -43,7 +43,7 @@ impl DbClient {
 
     #[cfg(feature = "sqlite")]
     pub async fn metrics_db(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
-        if let Some(state) = &self.state {
+        if let Some(state) = &self.inner.state {
             let metrics = state.raft_db.raft.metrics().borrow().clone();
             Ok(metrics)
         } else {
@@ -54,7 +54,7 @@ impl DbClient {
 
     #[cfg(feature = "cache")]
     pub async fn metrics_cache(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
-        if let Some(state) = &self.state {
+        if let Some(state) = &self.inner.state {
             let metrics = state.raft_cache.raft.metrics().borrow().clone();
             Ok(metrics)
         } else {
@@ -89,8 +89,8 @@ impl DbClient {
     /// Perform a graceful shutdown for this Raft node.
     /// Works on local clients only and can't shut down remote nodes.
     pub async fn shutdown(&self) -> Result<(), Error> {
-        if let Some(state) = &self.state {
-            Self::shutdown_execute(state, &self.tx_client, &self.tx_shutdown).await
+        if let Some(state) = &self.inner.state {
+            Self::shutdown_execute(state, &self.inner.tx_client, &self.inner.tx_shutdown).await
         } else {
             Err(Error::Error(
                 "Shutdown for remote Raft clients is not yet implemented".into(),

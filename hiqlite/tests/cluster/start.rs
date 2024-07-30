@@ -1,9 +1,9 @@
 use crate::{log, TEST_DATA_DIR};
-use hiqlite::{start_node, DbClient, Error, Node, NodeConfig};
+use hiqlite::{start_node, Client, Error, Node, NodeConfig};
 use std::time::Duration;
 use tokio::{fs, task, time};
 
-pub async fn start_test_cluster() -> Result<(DbClient, DbClient, DbClient), Error> {
+pub async fn start_test_cluster() -> Result<(Client, Client, Client), Error> {
     let handle_client_1 = task::spawn(start_node(build_config(1).await));
     let handle_client_2 = task::spawn(start_node(build_config(2).await));
     let handle_client_3 = task::spawn(start_node(build_config(3).await));
@@ -71,9 +71,9 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
 }
 
 pub async fn wait_for_healthy_cluster(
-    client_1: &DbClient,
-    client_2: &DbClient,
-    client_3: &DbClient,
+    client_1: &Client,
+    client_2: &Client,
+    client_3: &Client,
 ) -> Result<(), Error> {
     for i in 1..=3 {
         loop {

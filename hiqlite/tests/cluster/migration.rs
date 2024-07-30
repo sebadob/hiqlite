@@ -1,6 +1,6 @@
 use crate::execute_query::TestData;
 use crate::{debug, log};
-use hiqlite::{params, AppliedMigration, DbClient, Error};
+use hiqlite::{params, AppliedMigration, Client, Error};
 use std::time::Duration;
 use tokio::time;
 
@@ -21,9 +21,9 @@ struct MigrationBad3;
 struct MigrationGood;
 
 pub async fn test_migrations(
-    client_1: &DbClient,
-    client_2: &DbClient,
-    client_3: &DbClient,
+    client_1: &Client,
+    client_2: &Client,
+    client_3: &Client,
 ) -> Result<(), Error> {
     // TODO the should_panic annotation does not work in this context -> maybe create separate tests
     // to catch these panics properly in the future, even though they do what they should when checking
@@ -66,7 +66,7 @@ pub async fn test_migrations(
     Ok(())
 }
 
-async fn apply_migrations(client: &DbClient) -> Result<(), Error> {
+async fn apply_migrations(client: &Client) -> Result<(), Error> {
     log("Apply correct migration and make sure tables exist");
     let res = client.migrate::<MigrationGood>().await;
     debug(&res);
@@ -75,7 +75,7 @@ async fn apply_migrations(client: &DbClient) -> Result<(), Error> {
     Ok(())
 }
 
-async fn test_migrations_are_correct(client: &DbClient) -> Result<(), Error> {
+async fn test_migrations_are_correct(client: &Client) -> Result<(), Error> {
     // sql syntax error is in definition for table `bad_2`
     let res: Result<TestData, Error> = client.query_map_one("SELECT * FROM bad_1", params!()).await;
     assert!(res.is_err());

@@ -1,9 +1,9 @@
 use crate::{log, TEST_DATA_DIR};
-use hiqlite::{params, DbClient, Error, Param};
+use hiqlite::{params, Client, Error, Param};
 use std::time::Duration;
 use tokio::{fs, time};
 
-pub async fn test_backup(client_1: &DbClient) -> Result<(), Error> {
+pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
     log("Creating backup request via client_1");
     client_1.backup().await?;
 
@@ -32,7 +32,7 @@ pub async fn test_backup(client_1: &DbClient) -> Result<(), Error> {
     Ok(())
 }
 
-pub async fn test_backup_restore_prerequisites(client: &DbClient) -> Result<(), Error> {
+pub async fn test_backup_restore_prerequisites(client: &Client) -> Result<(), Error> {
     // We want to introduce changes to the current database which can be compared to the
     // backup that has been backed up right beforehand.
     client

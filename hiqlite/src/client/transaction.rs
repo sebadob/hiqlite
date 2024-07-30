@@ -1,11 +1,11 @@
-use crate::db_client::stream::{ClientStreamReq, ClientTransactionPayload};
+use crate::client::stream::{ClientStreamReq, ClientTransactionPayload};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
-use crate::{DbClient, Error, Params, Response};
+use crate::{Client, Error, Params, Response};
 use std::borrow::Cow;
 use tokio::sync::oneshot;
 
-impl DbClient {
+impl Client {
     /// Takes multiple queries and executes all of them in a single transaction.
     pub async fn txn<C, Q>(&self, sql: Q) -> Result<Vec<Result<usize, Error>>, Error>
     where
@@ -47,7 +47,8 @@ impl DbClient {
             }
         } else {
             let (ack, rx) = oneshot::channel();
-            self.tx_client
+            self.inner
+                .tx_client
                 .send_async(ClientStreamReq::Transaction(ClientTransactionPayload {
                     request_id: self.new_request_id(),
                     queries,

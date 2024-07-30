@@ -4,7 +4,7 @@ use crate::network::api::{
 };
 use crate::network::handshake::HandshakeSecret;
 use crate::store::state_machine::sqlite::state_machine::Query;
-use crate::{tls, DbClient, Error, Node, NodeId};
+use crate::{tls, Client, Error, Node, NodeId};
 use axum::http::header::{CONNECTION, UPGRADE};
 use axum::http::Request;
 use bytes::Bytes;
@@ -110,7 +110,7 @@ enum WritePayload {
     Close,
 }
 
-impl DbClient {
+impl Client {
     pub(crate) fn open_stream(
         node_id: NodeId,
         tls_config: Option<Arc<rustls::ClientConfig>>,
