@@ -10,7 +10,7 @@ use tokio::time;
 pub struct TestData {
     pub id: i64,
     pub ts: i64,
-    pub description: String,
+    pub description: Option<String>,
 }
 
 impl<'r> From<hiqlite::Row<'r>> for TestData {
@@ -33,7 +33,7 @@ pub async fn test_execute_query(
     let data = TestData {
         id: 1,
         ts: Utc::now().timestamp(),
-        description: "My First Row from client 1".to_string(),
+        description: Some("My First Row from client 1".to_string()),
     };
     let rows_affected = client_1
         .execute(
@@ -65,7 +65,7 @@ pub async fn test_execute_query(
     let data = TestData {
         id: 2,
         ts: Utc::now().timestamp(),
-        description: "My First Row from client 2".to_string(),
+        description: Some("My First Row from client 2".to_string()),
     };
     let rows_affected = client_2
         .execute(
@@ -94,7 +94,7 @@ pub async fn test_execute_query(
     let data = TestData {
         id: 3,
         ts: Utc::now().timestamp(),
-        description: "My First Row from client 3".to_string(),
+        description: None,
     };
     let rows_affected = client_3
         .execute(
@@ -176,7 +176,7 @@ pub async fn test_execute_query(
     let data = TestData {
         id: 7,
         ts: Utc::now().timestamp(),
-        description: "Execute Returning Data".to_string(),
+        description: Some("Execute Returning Data".to_string()),
     };
     let mut rows = client_1
         .execute_returning(
@@ -187,13 +187,16 @@ pub async fn test_execute_query(
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get::<i64>("id"), data.id);
     assert_eq!(rows[0].get::<i64>("ts"), data.ts);
-    assert_eq!(rows[0].get::<String>("description"), data.description);
+    assert_eq!(
+        rows[0].get::<Option<String>>("description").as_deref(),
+        Some("Execute Returning Data")
+    );
 
     log("Test Execute Returning Mapped");
     let data = TestData {
         id: 8,
         ts: Utc::now().timestamp(),
-        description: "Execute Returning Data with mapping".to_string(),
+        description: None,
     };
     let rows: Vec<TestData> = client_1
         .execute_returning_map(

@@ -20,7 +20,7 @@ pub async fn test_transactions(
         .txn([
             (sql, params!(11, now, "Transaction Data id 11")),
             (sql, params!(12, now, "Transaction Data id 12")),
-            (sql, params!(13, now, "Transaction Data id 13")),
+            (sql, params!(13, now, None::<Option<String>>)),
         ])
         // The first result returned is for the whole transaction commit
         .await?;
@@ -38,15 +38,21 @@ pub async fn test_transactions(
 
     assert_eq!(data[0].id, 11);
     assert_eq!(data[0].ts, now);
-    assert_eq!(data[0].description, "Transaction Data id 11");
+    assert_eq!(
+        data[0].description.as_deref(),
+        Some("Transaction Data id 11")
+    );
 
     assert_eq!(data[1].id, 12);
     assert_eq!(data[1].ts, now);
-    assert_eq!(data[1].description, "Transaction Data id 12");
+    assert_eq!(
+        data[1].description.as_deref(),
+        Some("Transaction Data id 12")
+    );
 
     assert_eq!(data[2].id, 13);
     assert_eq!(data[2].ts, now);
-    assert_eq!(data[2].description, "Transaction Data id 13");
+    assert_eq!(data[2].description, None);
 
     log("Making sure transaction data exists for client 2");
     time::sleep(Duration::from_millis(10)).await;
@@ -56,15 +62,21 @@ pub async fn test_transactions(
 
     assert_eq!(data[0].id, 11);
     assert_eq!(data[0].ts, now);
-    assert_eq!(data[0].description, "Transaction Data id 11");
+    assert_eq!(
+        data[0].description.as_deref(),
+        Some("Transaction Data id 11")
+    );
 
     assert_eq!(data[1].id, 12);
     assert_eq!(data[1].ts, now);
-    assert_eq!(data[1].description, "Transaction Data id 12");
+    assert_eq!(
+        data[1].description.as_deref(),
+        Some("Transaction Data id 12")
+    );
 
     assert_eq!(data[2].id, 13);
     assert_eq!(data[2].ts, now);
-    assert_eq!(data[2].description, "Transaction Data id 13");
+    assert_eq!(data[2].description, None);
 
     log("Making sure transaction data exists for client 3");
     let data: Vec<TestData> = client_3.query_map(select, params!(11)).await?;
@@ -72,15 +84,21 @@ pub async fn test_transactions(
 
     assert_eq!(data[0].id, 11);
     assert_eq!(data[0].ts, now);
-    assert_eq!(data[0].description, "Transaction Data id 11");
+    assert_eq!(
+        data[0].description.as_deref(),
+        Some("Transaction Data id 11")
+    );
 
     assert_eq!(data[1].id, 12);
     assert_eq!(data[1].ts, now);
-    assert_eq!(data[1].description, "Transaction Data id 12");
+    assert_eq!(
+        data[1].description.as_deref(),
+        Some("Transaction Data id 12")
+    );
 
     assert_eq!(data[2].id, 13);
     assert_eq!(data[2].ts, now);
-    assert_eq!(data[2].description, "Transaction Data id 13");
+    assert_eq!(data[2].description, None);
 
     Ok(())
 }

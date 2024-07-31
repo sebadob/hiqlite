@@ -101,7 +101,7 @@ async fn test_migrations_are_correct(client: &Client) -> Result<(), Error> {
     assert_eq!(migrations[0].name, "init");
     assert_eq!(
         migrations[0].hash,
-        "e710ab597974f5f7a8445d8d6827144d6aff6d1194a89fba58c3007915330e29"
+        "46a52cfa9b2532439423fe769a3a75aa17e8690ee98b2c1b7c5c21560702e2aa"
     );
 
     assert_eq!(migrations[1].id, 2);

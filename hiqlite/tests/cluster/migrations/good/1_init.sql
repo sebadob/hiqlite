@@ -4,5 +4,5 @@ CREATE TABLE test
         CONSTRAINT test_pk
             PRIMARY KEY,
     ts          INTEGER NOT NULL,
-    description TEXT    NOT NULL
+    description TEXT
 );

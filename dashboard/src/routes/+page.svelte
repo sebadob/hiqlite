@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Query from "$lib/components/query/Query.svelte";
+    import Queries from "$lib/components/query/Queries.svelte";
 </script>
 
 <svelte:head>
@@ -7,7 +7,7 @@
     <title>Dashboard</title>
 </svelte:head>
 
-<Query query="SELECT * FROM _metadata"/>
+<Queries/>
 
 <style>
 </style>

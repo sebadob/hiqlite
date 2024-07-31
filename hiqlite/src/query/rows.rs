@@ -36,21 +36,33 @@ pub struct RowOwned {
 
 impl RowOwned {
     #[inline(always)]
-    pub(crate) fn from_row_column(row: &rusqlite::Row, columns: &[(String, String)]) -> Self {
+    pub(crate) fn from_row_column(row: &rusqlite::Row, columns: &[ColumnInfo]) -> Self {
         let mut cols = Vec::with_capacity(columns.len());
 
-        for (i, (name, value)) in columns.iter().enumerate() {
-            let value = match value.as_str() {
-                "NULL" => ValueOwned::Null,
-                "INTEGER" => ValueOwned::Integer(row.get(i).unwrap()),
-                "REAL" => ValueOwned::Real(row.get(i).unwrap()),
-                "TEXT" => ValueOwned::Text(row.get(i).unwrap()),
-                "BLOB" => ValueOwned::Blob(row.get(i).unwrap()),
-                _ => unreachable!(),
+        for (i, info) in columns.iter().enumerate() {
+            let value = match info.typ {
+                // we always map expression results to strings
+                ColumnType::Expr => row.get(i).map(ValueOwned::Text).unwrap_or(ValueOwned::Null),
+                ColumnType::Integer => row
+                    .get(i)
+                    .map(ValueOwned::Integer)
+                    .unwrap_or(ValueOwned::Null),
+                ColumnType::Real => row.get(i).map(ValueOwned::Real).unwrap_or(ValueOwned::Null),
+                ColumnType::Text => row.get(i).map(ValueOwned::Text).unwrap_or(ValueOwned::Null),
+                ColumnType::Blob => row.get(i).map(ValueOwned::Blob).unwrap_or(ValueOwned::Null),
             };
 
+            // let value = match value.as_str() {
+            //     "NULL" => ValueOwned::Null,
+            //     "INTEGER" => ValueOwned::Integer(row.get(i).unwrap()),
+            //     "REAL" => ValueOwned::Real(row.get(i).unwrap()),
+            //     "TEXT" => ValueOwned::Text(row.get(i).unwrap()),
+            //     "BLOB" => ValueOwned::Blob(row.get(i).unwrap()),
+            //     _ => unreachable!(),
+            // };
+
             cols.push(ColumnOwned {
-                name: name.clone(),
+                name: info.name.clone(),
                 value,
             })
         }
@@ -84,18 +96,35 @@ impl RowOwned {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Column {
-    typ: ColumnType,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnInfo {
+    pub name: String,
+    pub typ: ColumnType,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ColumnType {
-    Null,
+    Expr,
     Integer,
     Real,
     Text,
     Blob,
+}
+
+impl ColumnType {
+    fn from_decl_type(typ: Option<&str>) -> Self {
+        if let Some(t) = typ {
+            match t {
+                "INTEGER" => Self::Integer,
+                "REAL" => Self::Real,
+                "TEXT" => Self::Text,
+                "BLOB" => Self::Blob,
+                ct => unreachable!("unreachable column type: {}", ct),
+            }
+        } else {
+            Self::Expr
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -110,15 +139,19 @@ impl ColumnOwned {
     #[inline(always)]
     pub(crate) fn mapping_cols_from_stmt(
         columns: Vec<rusqlite::Column>,
-    ) -> Result<Vec<(String, String)>, Error> {
+    ) -> Result<Vec<ColumnInfo>, Error> {
         let mut cols = Vec::with_capacity(columns.len());
         for col in columns {
-            if col.decl_type().is_none() {
-                return Err(Error::Sqlite(
-                    "cannot return expressions als column types".into(),
-                ));
-            }
-            cols.push((col.name().to_string(), col.decl_type().unwrap().to_string()));
+            // if col.decl_type().is_none() {
+            //     return Err(Error::Sqlite(
+            //         "cannot return expressions als column types".into(),
+            //     ));
+            // }
+            // cols.push((col.name().to_string(), col.decl_type().unwrap().to_string()));
+            cols.push(ColumnInfo {
+                name: col.name().to_string(),
+                typ: ColumnType::from_decl_type(col.decl_type()),
+            });
         }
         Ok(cols)
     }

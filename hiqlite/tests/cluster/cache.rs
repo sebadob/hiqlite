@@ -89,7 +89,7 @@ pub async fn test_cache(
 }
 
 pub async fn insert_test_value_cache(client: &Client) -> Result<(), Error> {
-    log("Insert a test value again to be able to test replication after self-healing");
+    log("Insert a test value to be able to test replication after self-healing");
     client.put(KEY, &VALUE.to_string(), None).await?;
 
     Ok(())

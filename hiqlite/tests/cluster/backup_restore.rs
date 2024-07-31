@@ -24,18 +24,12 @@ pub async fn start_test_cluster_with_backup() -> Result<(Client, Client, Client)
 }
 
 pub async fn test_db_is_healthy_after_restore(client: &Client) -> Result<(), Error> {
-    let data = TestData {
-        id: 3,
-        ts: 0, // Timestamp will be different anyway, we don't care right now
-        description: "My First Row from client 3".to_string(),
-    };
-
     log("Check old data still exists");
     let res: TestData = client
         .query_as_one("SELECT * FROM test WHERE id = $1", params!(3))
         .await?;
-    assert_eq!(res.id, data.id);
-    assert_eq!(res.description, data.description);
+    assert_eq!(res.id, 3);
+    assert_eq!(res.description, None);
 
     log("Make sure the database changes from before the restore have been reverted");
     let res: Result<TestData, Error> = client

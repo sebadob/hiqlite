@@ -20,7 +20,7 @@ pub async fn test_batch(
         INSERT INTO test VALUES
             (21, {now}, "Batch Data 1"),
             (22, {now}, "Batch Data 2"),
-            (23, {now}, "Batch Data 3");
+            (23, {now}, null);
 
        -- comments should be ignored and not throw errors
        INSERT INTO test VALUES (21, {now}, "This should error - unique key constraint");
@@ -45,15 +45,15 @@ pub async fn test_batch(
 
     assert_eq!(data[0].id, 21);
     assert_eq!(data[0].ts, now);
-    assert_eq!(data[0].description, "Batch Data 1");
+    assert_eq!(data[0].description.as_deref(), Some("Batch Data 1"));
 
     assert_eq!(data[1].id, 22);
     assert_eq!(data[1].ts, now);
-    assert_eq!(data[1].description, "Batch Data 2");
+    assert_eq!(data[1].description.as_deref(), Some("Batch Data 2"));
 
     assert_eq!(data[2].id, 23);
     assert_eq!(data[2].ts, now);
-    assert_eq!(data[2].description, "Batch Data 3");
+    assert_eq!(data[2].description, None);
 
     let data: Vec<TestData> = client_3
         .query_as("SELECT * FROM test WHERE id > $1", params!(20))
@@ -62,15 +62,15 @@ pub async fn test_batch(
 
     assert_eq!(data[0].id, 21);
     assert_eq!(data[0].ts, now);
-    assert_eq!(data[0].description, "Batch Data 1");
+    assert_eq!(data[0].description.as_deref(), Some("Batch Data 1"));
 
     assert_eq!(data[1].id, 22);
     assert_eq!(data[1].ts, now);
-    assert_eq!(data[1].description, "Batch Data 2");
+    assert_eq!(data[1].description.as_deref(), Some("Batch Data 2"));
 
     assert_eq!(data[2].id, 23);
     assert_eq!(data[2].ts, now);
-    assert_eq!(data[2].description, "Batch Data 3");
+    assert_eq!(data[2].description, None);
 
     Ok(())
 }

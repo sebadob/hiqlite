@@ -4,7 +4,7 @@
     import Results from "$lib/components/query/Results.svelte";
     import type {IRow} from "$lib/types/query_results";
 
-    let {query}: { query: string } = $props();
+    let {query = $bindable()}: { query: string } = $props();
     let rows: IRow[] = $state([]);
 
     function onKeyDown(ev: KeyboardEvent) {
