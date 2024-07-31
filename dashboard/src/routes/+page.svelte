@@ -4,10 +4,7 @@
 
 <svelte:head>
     <meta property="description" content="Hiqlite Dashboard"/>
-    <title>Dashboard</title>
+    <title>Hiqlite</title>
 </svelte:head>
 
 <Queries/>
-
-<style>
-</style>

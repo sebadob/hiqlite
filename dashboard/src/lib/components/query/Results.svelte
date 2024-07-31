@@ -1,7 +1,30 @@
 <script lang="ts">
-    import type {IRow, SqlValue} from "$lib/types/query_results";
+    import type {IColumn, IRow, SqlValue} from "$lib/types/query_results";
 
     let {rows = $bindable()}: { rows: IRow[] } = $props();
+
+    let cols: IColumn[][] = $state([[]]);
+
+    $effect(() => {
+        if (rows.length === 0) {
+            cols = [[]];
+            return;
+        }
+
+        let newCols: IColumn[][] = [];
+        for (let i = 0; i < rows[0].columns.length; i++) {
+            newCols.push([]);
+        }
+
+        for (let row of rows) {
+            let columns = row.columns;
+            for (let i = 0; i < columns.length; i++) {
+                newCols[i].push(columns[i]);
+            }
+        }
+
+        cols = newCols;
+    })
 
     function buf2hex(buffer: ArrayBuffer) {
         return [...new Uint8Array(buffer)]
@@ -25,41 +48,32 @@
 </script>
 
 <div id="query-results">
-    {#if rows.length > 0}
-        <div class="row head">
-            {#each rows[0].columns as column (column.name)}
-                <div class="col">
-                    <b>{column.name}</b>
-                </div>
-            {/each}
-        </div>
+    {#each cols as col}
+        <div class="col">
+            <div class="head">
+                <b>{col[0]?.name}</b>
+            </div>
 
-        <div class="rows">
-            {#each rows as row}
-                <div class="row">
-                    {#each row.columns as column}
-                        <div class="col">
-                            {sqlToStr(column.value)}
-                        </div>
-                    {/each}
+            {#each col as c}
+                <div class="value">
+                    <span>
+                        {sqlToStr(c.value)}
+                    </span>
                 </div>
             {/each}
         </div>
-    {/if}
+    {/each}
 </div>
 
 <style>
     #query-results {
-        width: 100%;
-        height: 100%;
-        overflow-x: auto;
-    }
-
-    .row {
+        flex: 1;
+        max-width: var(--width-inner);
+        overflow: auto;
         display: flex;
     }
 
-    .row:nth-child(even) {
+    .col > div:nth-child(odd) {
         background: rgba(0, 0, 0, .1);
     }
 
@@ -67,13 +81,14 @@
         background: rgba(0, 0, 0, .15);
     }
 
-    .rows {
-        overflow-y: auto;
+    .head > b, .value > span {
+        margin: 0 .33rem;
     }
 
     .col {
-        width: 10rem;
-        padding: .2rem;
+        display: flex;
+        flex-direction: column;
+        max-width: 10rem;
         word-wrap: break-word;
         border-right: 1px solid rgba(0, 0, 0, .1);
     }

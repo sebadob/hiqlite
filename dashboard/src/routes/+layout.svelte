@@ -7,8 +7,13 @@
     import {storeSession} from "$lib/stores/session";
     import Health from "$lib/components/health/Health.svelte";
     import {API_PREFIX} from "$lib/utils/fetch";
+    import {useSignal} from "$lib/stores/sharedRune.svelte";
+    import {DEFAULT_QUERY_FULL} from "$lib/stores/query.svelte.js";
 
     let session: undefined | ISession = $state();
+    let isInitialized = $state(false);
+
+    let queries = useSignal('queries', [DEFAULT_QUERY_FULL]);
 
     storeSession.subscribe(s => {
         session = s;
@@ -21,18 +26,9 @@
     onMount(async () => {
         let res = await fetch(`${API_PREFIX}/session`);
         if (res.status === 200) {
-            let s = await res.json();
-            console.log(s);
-            storeSession.set(s);
+            storeSession.set(await res.json());
         }
-
-        // if (res.status === 401) {
-        //     mustLogin = true;
-        // } else {
-        //     let s = await res.json();
-        //     console.log(s);
-        //     storeSession.set(s);
-        // }
+        isInitialized = true;
     });
 
 </script>
@@ -49,14 +45,8 @@
         <slot/>
     </main>
     <Health/>
-{:else}
-    <Login bind:session/>
-    <!--{:else if mustLogin}-->
-    <!--    <Login bind:session/>-->
-    <!--{:else}-->
-    <!--    <main>-->
-    <!--        <Loading/>-->
-    <!--    </main>-->
+{:else if isInitialized}
+    <Login/>
 {/if}
 
 <ThemeSwitchAbsolute/>
@@ -70,10 +60,8 @@
     }
 
     main {
-        height: 100dvh;
-        width: 100dvw;
+        flex: 1;
         display: flex;
         flex-direction: column;
-        align-items: center;
     }
 </style>

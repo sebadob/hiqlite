@@ -3,6 +3,10 @@
     import TableDetails from "$lib/components/tables/TableDetails.svelte";
     import TableView from "$lib/components/tables/TableView.svelte";
     import {fetchGet} from "$lib/utils/fetch";
+    import IconDocText from "$lib/components/icons/IconDocText.svelte";
+    import {AUTO_QUERY, QUERIES} from "$lib/stores/query.svelte.js";
+    import type {IQuery} from "$lib/types/query";
+    import {randomKey} from "$lib/utils/randomKey";
 
     let data: ITable[] = $state([]);
     let selectedTable: undefined | ITable = $state();
@@ -22,8 +26,17 @@
         }
     }
 
-    async function select(tableName: string) {
+    function select(tableName: string) {
         selectedTable = data.filter(t => t.name === tableName)[0];
+    }
+
+    function addInfoQuery(tableName: string) {
+        let query: IQuery = {
+            id: `${tableName}_${randomKey(4)}`,
+            query: `${AUTO_QUERY}\nPRAGMA table_info(${tableName})`,
+        };
+        QUERIES.push(query);
+        select(tableName);
     }
 </script>
 
@@ -43,16 +56,29 @@
 <div id="tables">
     <div class="tables">
         {#each data as table (table.name)}
-        <span
-                role="button"
-                tabindex="0"
-                class="tbl-name"
-                style:background={selectedTable?.name === table.name ? 'var(--col-s)' : ''}
-                onclick={() => select(table.name)}
-                onkeydown={() => select(table.name)}
-        >
-            {table.name}
-        </span>
+            <div
+                    role="button"
+                    tabindex="0"
+                    class="entry"
+                    style:background={selectedTable?.name === table.name ? 'var(--col-s)' : ''}
+                    onclick={() => select(table.name)}
+                    onkeydown={() => select(table.name)}
+            >
+                <div>
+                    {table.name}
+                </div>
+                {#if table.typ === 'table'}
+                    <div
+                            role="button"
+                            tabindex="0"
+                            class="btn"
+                            onclick={() => addInfoQuery(table.name)}
+                            onkeydown={() => addInfoQuery(table.name)}
+                    >
+                        <IconDocText/>
+                    </div>
+                {/if}
+            </div>
         {/each}
     </div>
 
@@ -64,10 +90,28 @@
 <style>
     #tables {
         height: 100%;
-        width: 18rem;
+        width: var(--width-tables);
+        min-width: 18rem;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
+    }
+
+    .btn {
+        color: var(--col-mid);
+        cursor: pointer;
+    }
+
+    .entry {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: .15rem .25rem;
+        cursor: pointer;
+    }
+
+    .entry:hover {
+        background: var(--col-a);
     }
 
     .selector {
@@ -78,14 +122,5 @@
         display: flex;
         flex-direction: column;
         overflow-y: auto;
-    }
-
-    .tbl-name {
-        padding: .15rem .25rem;
-        cursor: pointer;
-    }
-
-    .tbl-name:hover {
-        background: var(--col-a);
     }
 </style>

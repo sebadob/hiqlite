@@ -4,6 +4,7 @@
     import type {IRow} from "$lib/types/query_results";
     import type {IQuery} from "$lib/types/query";
     import {onMount} from "svelte";
+    import {AUTO_QUERY} from "$lib/stores/query.svelte.js";
 
     // let {query, onUpdate}: {
     //     query: IQuery,
@@ -13,6 +14,12 @@
         query: IQuery,
     } = $props();
     let rows: IRow[] = $state([]);
+
+    $effect(() => {
+        if (query.query.startsWith(AUTO_QUERY)) {
+            execute();
+        }
+    });
 
     function onKeyDown(ev: KeyboardEvent) {
         if (ev.ctrlKey) {
@@ -53,20 +60,17 @@
 
 <style>
     textarea {
-        width: calc(100% - 20px);
+        /*width: calc(100% - 20px);*/
         height: 20rem;
         padding: 10px;
         border: 1px solid var(--col-gmid);
         border-radius: 3px;
         outline: none;
-        resize: none;
+        /*resize: none;*/
+        resize: vertical;
         font-size: 1.1rem;
         color: var(--col-text);
         background: var(--col-bg);
         border-bottom: 1px solid var(--col-mid-a);
-    }
-
-    textarea:focus {
-        resize: none;
     }
 </style>

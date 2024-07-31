@@ -2,14 +2,13 @@
     import Form from "$lib/components/form/Form.svelte";
     import Button from "$lib/components/Button.svelte";
     import InputPassword from "$lib/components/form/InputPassword.svelte";
-    import type {ISession} from "$lib/types/session";
     import {API_PREFIX} from "$lib/utils/fetch";
-
-    let {session = $bindable()}: { session?: ISession } = $props();
+    import {storeSession} from "$lib/stores/session";
 
     async function onResponse(res: Response) {
         if (res.status === 200) {
-            session = await res.json();
+            let s = await res.json();
+            storeSession.set(s);
         }
     }
 </script>
