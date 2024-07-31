@@ -5,16 +5,18 @@ import {storeSession} from "$lib/stores/session";
 //     'Accept': 'application/json',
 // }
 
-export async function get(url: string) {
-    let res = await fetch(url, {
+export const API_PREFIX = '/dashboard/api';
+
+export async function fetchGet(url: string) {
+    let res = await fetch(`${API_PREFIX}${url}`, {
         method: 'GET',
         // headers: HEADERS,
     });
     return handleRes(res);
 }
 
-export async function post(url: string, payload: any) {
-    let res = await fetch(url, {
+export async function fetchPost(url: string, payload: any) {
+    let res = await fetch(`${API_PREFIX}${url}`, {
         method: 'POST',
         // headers: HEADERS,
         body: JSON.stringify(payload),
@@ -22,8 +24,8 @@ export async function post(url: string, payload: any) {
     return handleRes(res);
 }
 
-export async function postText(url: string, payload: any) {
-    let res = await fetch(url, {
+export async function fetchPostText(url: string, payload: any) {
+    let res = await fetch(`${API_PREFIX}${url}`, {
         method: 'POST',
         // headers: HEADERS,
         body: payload,

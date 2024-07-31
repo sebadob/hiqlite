@@ -1,9 +1,8 @@
 <script lang="ts">
     import type {INode, IRaftMetrics} from "$lib/types/raft_metrics";
-    import {get} from "$lib/fetch";
-    import {API_PREFIX} from "$lib/constants";
     import {onMount} from "svelte";
     import Metric from "$lib/components/health/Metric.svelte";
+    import {fetchGet} from "$lib/utils/fetch";
 
     let metrics: undefined | IRaftMetrics = $state();
     let members = $derived(metrics?.membership_config.membership.configs.join(', '));
@@ -17,7 +16,7 @@
     })
 
     async function fetchMetrics() {
-        let res = await get(`${API_PREFIX}/metrics`);
+        let res = await fetchGet('/metrics');
         if (res.status === 200) {
             metrics = await res.json();
 

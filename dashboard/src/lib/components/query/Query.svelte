@@ -1,22 +1,24 @@
 <script lang="ts">
-    import {API_PREFIX} from "$lib/constants";
-    import {postText} from "$lib/fetch";
+    import {fetchPostText} from "$lib/utils/fetch";
     import Results from "$lib/components/query/Results.svelte";
     import type {IRow} from "$lib/types/query_results";
+    import type {IQuery} from "$lib/types/query";
+    import {onMount} from "svelte";
 
-    let {query, index, onUpdate}: {
-        query: string, index: number,
-        onUpdate: (number, string) => void,
+    // let {query, onUpdate}: {
+    //     query: IQuery,
+    //     onUpdate: (id: string, query: string) => void,
+    // } = $props();
+    let {query}: {
+        query: IQuery,
     } = $props();
     let rows: IRow[] = $state([]);
 
-    $effect(() => {
-        onUpdate(index, query);
-    });
-
     function onKeyDown(ev: KeyboardEvent) {
-        if (ev.ctrlKey && ev.code === 'Enter') {
-            execute();
+        if (ev.ctrlKey) {
+            if (ev.code === 'Enter') {
+                execute();
+            }
         }
     }
 
@@ -24,15 +26,14 @@
         rows = [];
 
         let q = [];
-        for (let line of query.split(/\r?\n/)) {
-            console.log(line);
+        for (let line of query.query.split(/\r?\n/)) {
             if (!line.startsWith('--')) {
                 q.push(line);
             }
         }
         let qry = q.join('\n');
 
-        let res = await postText(`${API_PREFIX}/query`, qry);
+        let res = await fetchPostText('/query', qry);
         if (res.status === 200) {
             rows = await res.json();
         } else {
@@ -43,7 +44,7 @@
 
 <textarea
         name="query"
-        bind:value={query}
+        bind:value={query.query}
         onkeydown={onKeyDown}
 >
 </textarea>

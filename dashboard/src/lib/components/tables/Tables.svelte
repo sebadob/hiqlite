@@ -1,21 +1,20 @@
 <script lang="ts">
     import {type ITable, ITableView} from "$lib/types/table";
-    import {API_PREFIX} from "$lib/constants";
     import TableDetails from "$lib/components/tables/TableDetails.svelte";
-    import {get} from "$lib/fetch";
     import TableView from "$lib/components/tables/TableView.svelte";
+    import {fetchGet} from "$lib/utils/fetch";
 
     let data: ITable[] = $state([]);
     let selectedTable: undefined | ITable = $state();
-    let selectedView = $state(ITableView.Table);
+    let viewSelected = $state(ITableView.Table);
     let error: undefined | Error = $state();
 
     $effect(() => {
-        fetchTables(selectedView);
+        fetchTables(viewSelected);
     })
 
     async function fetchTables(view: ITableView) {
-        let res = await get(`${API_PREFIX}/tables/${view}`);
+        let res = await fetchGet(`/tables/${view}`);
         if (res.status === 200) {
             data = await res.json();
         } else {
@@ -35,10 +34,10 @@
 {/if}
 
 <div class="selector">
-    <TableView view={ITableView.Table} bind:selectedView/>
-    <TableView view={ITableView.Index} bind:selectedView/>
-    <TableView view={ITableView.Trigger} bind:selectedView/>
-    <TableView view={ITableView.View} bind:selectedView/>
+    <TableView view={ITableView.Table} bind:viewSelected/>
+    <TableView view={ITableView.Index} bind:viewSelected/>
+    <TableView view={ITableView.Trigger} bind:viewSelected/>
+    <TableView view={ITableView.View} bind:viewSelected/>
 </div>
 
 <div id="tables">

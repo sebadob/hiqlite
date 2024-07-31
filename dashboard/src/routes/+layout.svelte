@@ -1,30 +1,38 @@
 <script lang="ts">
     import ThemeSwitchAbsolute from "$lib/components/ThemeSwitchAbsolute.svelte";
     import {onMount} from "svelte";
-    import Loading from "$lib/components/Loading.svelte";
     import type {ISession} from "$lib/types/session";
-    import {API_PREFIX} from "$lib/constants";
     import Login from "$lib/components/Login.svelte";
     import Tables from "$lib/components/tables/Tables.svelte";
     import {storeSession} from "$lib/stores/session";
     import Health from "$lib/components/health/Health.svelte";
+    import {API_PREFIX} from "$lib/utils/fetch";
 
     let session: undefined | ISession = $state();
-    let mustLogin = $state(false);
 
     storeSession.subscribe(s => {
         session = s;
     })
 
+    $effect(() => {
+        console.log(session);
+    });
+
     onMount(async () => {
         let res = await fetch(`${API_PREFIX}/session`);
-        if (res.status === 401) {
-            mustLogin = true;
-        } else {
+        if (res.status === 200) {
             let s = await res.json();
             console.log(s);
             storeSession.set(s);
         }
+
+        // if (res.status === 401) {
+        //     mustLogin = true;
+        // } else {
+        //     let s = await res.json();
+        //     console.log(s);
+        //     storeSession.set(s);
+        // }
     });
 
 </script>
@@ -41,12 +49,14 @@
         <slot/>
     </main>
     <Health/>
-{:else if mustLogin}
-    <Login bind:session/>
 {:else}
-    <main>
-        <Loading/>
-    </main>
+    <Login bind:session/>
+    <!--{:else if mustLogin}-->
+    <!--    <Login bind:session/>-->
+    <!--{:else}-->
+    <!--    <main>-->
+    <!--        <Loading/>-->
+    <!--    </main>-->
 {/if}
 
 <ThemeSwitchAbsolute/>

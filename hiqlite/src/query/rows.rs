@@ -42,8 +42,8 @@ impl RowOwned {
 
         for (i, info) in columns.iter().enumerate() {
             let value = match info.typ {
-                // we always map expression results to strings
                 ColumnType::Expr => {
+                    // returned expressions can be any type we don't know in advance
                     // TODO is there a nicer solution for this with the encapsulated type?
                     if let Ok(text) = row.get::<_, String>(i) {
                         ValueOwned::Text(text)

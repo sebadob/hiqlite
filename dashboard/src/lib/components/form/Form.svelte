@@ -1,5 +1,5 @@
 <script lang="ts">
-    import {handleRes} from "$lib/fetch";
+    import {handleRes} from "$lib/utils/fetch";
 
     let {
         action,

@@ -1,18 +1,18 @@
 <script lang="ts">
     import {ITableView} from "$lib/types/table";
 
-    let {view, selectedView = $bindable()}: {
+    let {view, viewSelected = $bindable()}: {
         view: ITableView,
-        selectedView: ITableView
+        viewSelected: ITableView
     } = $props();
 
     function onClick() {
-        selectedView = view;
+        viewSelected = view;
     }
 </script>
 
 <div
-        class={selectedView === view ? 'selected' : ''}
+        class={viewSelected === view ? 'selected' : ''}
         role="button"
         tabindex="0"
         onclick={onClick}
