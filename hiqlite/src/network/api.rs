@@ -79,6 +79,21 @@ use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
 //     // Ok(state.kv_store.read().await.get(key).cloned())
 // }
 
+pub async fn health(state: AppStateExt) -> impl IntoResponse {
+    let metrics = state.raft_db.raft.metrics().borrow().clone();
+    metrics.running_state?;
+
+    // TODO maybe add a check for remote nodes as well via membership config
+
+    if metrics.current_leader.is_some() {
+        Ok(())
+    } else {
+        Err(Error::LeaderChange(
+            "The leader voting process has not finished yet".into(),
+        ))
+    }
+}
+
 pub async fn ping() {}
 
 // TODO maybe remove this endpoint in favor or a generic REST endpoint which chooses the

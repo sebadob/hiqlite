@@ -170,6 +170,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
     let router_internal = Router::new()
         .route("/stream/db", get(raft_server::stream))
         .route("/stream/cache", get(raft_server::stream))
+        .route("/health", get(api::health))
         .route("/ping", get(api::ping))
         // .layer(compression_middleware.clone().into_inner())
         .with_state(state.clone());
@@ -222,6 +223,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
         // TODO
         // .route("/query/consistent", post(api::query))
         .route("/stream", get(api::stream))
+        .route("/health", get(api::health))
         .route("/ping", get(api::ping));
 
     #[cfg(not(feature = "dashboard"))]
