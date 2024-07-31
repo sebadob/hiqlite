@@ -5,6 +5,7 @@ use crate::network::AppStateExt;
 use crate::query::rows::RowOwned;
 use crate::{Error, Node};
 use axum::body::Body;
+use axum::extract::Path;
 use axum::http::header::LOCATION;
 use axum::http::{HeaderMap, Method};
 use axum::response::Response;
@@ -40,6 +41,35 @@ pub async fn post_session(
 
 pub async fn get_tables(state: AppStateExt, _: Session) -> Result<Json<Vec<Table>>, Error> {
     let tables = Table::find_all(&state).await?;
+    Ok(Json(tables))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TableFilterRequest {
+    Table,
+    Index,
+    View,
+    Trigger,
+}
+
+impl TableFilterRequest {
+    pub fn as_str(&self) -> &str {
+        match self {
+            TableFilterRequest::Table => "table",
+            TableFilterRequest::Index => "index",
+            TableFilterRequest::View => "view",
+            TableFilterRequest::Trigger => "trigger",
+        }
+    }
+}
+
+pub async fn get_tables_filtered(
+    state: AppStateExt,
+    _: Session,
+    Path(filter): Path<TableFilterRequest>,
+) -> Result<Json<Vec<Table>>, Error> {
+    let tables = Table::find_all_filtered(&state, filter).await?;
     Ok(Json(tables))
 }
 

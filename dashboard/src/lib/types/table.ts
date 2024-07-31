@@ -4,3 +4,10 @@ export interface ITable {
     tbl_name: string,
     sql: string,
 }
+
+export enum ITableView {
+    Table = 'table',
+    Index = 'index',
+    Trigger = 'view',
+    View = 'trigger',
+}

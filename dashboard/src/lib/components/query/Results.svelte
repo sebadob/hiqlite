@@ -59,16 +59,16 @@
         display: flex;
     }
 
+    .row:nth-child(even) {
+        background: rgba(0, 0, 0, .1);
+    }
+
     .head {
         background: rgba(0, 0, 0, .15);
     }
 
     .rows {
         overflow-y: auto;
-    }
-
-    .rows:nth-child(odd) {
-        background: rgba(0, 0, 0, .1);
     }
 
     .col {

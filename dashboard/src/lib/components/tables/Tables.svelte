@@ -1,33 +1,30 @@
 <script lang="ts">
-    import type {ITable} from "$lib/types/table";
+    import {type ITable, ITableView} from "$lib/types/table";
     import {API_PREFIX} from "$lib/constants";
-    import {onMount} from "svelte";
     import TableDetails from "$lib/components/tables/TableDetails.svelte";
     import {get} from "$lib/fetch";
+    import TableView from "$lib/components/tables/TableView.svelte";
 
-    let tables: ITable[] = $state([]);
-    let selected: undefined | ITable = $state();
-    // let indexes: Table[] = $state([]);
-    // let views: Table[] = $state([]);
-    // let triggers: Table[] = $state([]);
-
+    let data: ITable[] = $state([]);
+    let selectedTable: undefined | ITable = $state();
+    let selectedView = $state(ITableView.Table);
     let error: undefined | Error = $state();
 
-    onMount(() => {
-        fetchTables();
+    $effect(() => {
+        fetchTables(selectedView);
     })
 
-    async function fetchTables() {
-        let res = await get(`${API_PREFIX}/tables`);
+    async function fetchTables(view: ITableView) {
+        let res = await get(`${API_PREFIX}/tables/${view}`);
         if (res.status === 200) {
-            tables = await res.json();
+            data = await res.json();
         } else {
             error = await res.json();
         }
     }
 
     async function select(tableName: string) {
-        selected = tables.filter(t => t.name === tableName)[0];
+        selectedTable = data.filter(t => t.name === tableName)[0];
     }
 </script>
 
@@ -37,16 +34,21 @@
     </div>
 {/if}
 
-<h3>TABLES</h3>
+<div class="selector">
+    <TableView view={ITableView.Table} bind:selectedView/>
+    <TableView view={ITableView.Index} bind:selectedView/>
+    <TableView view={ITableView.Trigger} bind:selectedView/>
+    <TableView view={ITableView.View} bind:selectedView/>
+</div>
 
 <div id="tables">
     <div class="tables">
-        {#each tables as table (table.name)}
+        {#each data as table (table.name)}
         <span
                 role="button"
                 tabindex="0"
                 class="tbl-name"
-                style:background={selected?.name === table.name ? 'var(--col-s)' : ''}
+                style:background={selectedTable?.name === table.name ? 'var(--col-s)' : ''}
                 onclick={() => select(table.name)}
                 onkeydown={() => select(table.name)}
         >
@@ -55,8 +57,8 @@
         {/each}
     </div>
 
-    {#if selected}
-        <TableDetails table={selected}/>
+    {#if selectedTable}
+        <TableDetails table={selectedTable}/>
     {/if}
 </div>
 
@@ -67,6 +69,10 @@
         display: flex;
         flex-direction: column;
         justify-content: space-between;
+    }
+
+    .selector {
+        display: flex;
     }
 
     .tables {

@@ -1,3 +1,4 @@
+use crate::dashboard::handlers::TableFilterRequest;
 use crate::network::AppStateExt;
 use crate::query::{query_map, query_map_one};
 use crate::{params, Error, Param, Row};
@@ -58,6 +59,20 @@ impl Table {
             state,
             "SELECT type,name,tbl_name,sql FROM sqlite_master",
             params!(),
+        )
+        .await?;
+
+        Ok(res)
+    }
+
+    pub async fn find_all_filtered(
+        state: &AppStateExt,
+        filter: TableFilterRequest,
+    ) -> Result<Vec<Self>, Error> {
+        let res: Vec<Self> = query_map(
+            state,
+            "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE type = $1",
+            params!(filter.as_str()),
         )
         .await?;
 

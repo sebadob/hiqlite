@@ -244,7 +244,11 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
                             get(dashboard::handlers::get_session)
                                 .post(dashboard::handlers::post_session),
                         )
-                        .route("/tables", get(dashboard::handlers::get_tables)),
+                        .route("/tables", get(dashboard::handlers::get_tables))
+                        .route(
+                            "/tables/:filter",
+                            get(dashboard::handlers::get_tables_filtered),
+                        ),
                 )
                 .layer(dashboard::middleware::middleware())
                 .fallback(dashboard::static_files::handler),
