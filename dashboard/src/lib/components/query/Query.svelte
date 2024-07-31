@@ -4,8 +4,15 @@
     import Results from "$lib/components/query/Results.svelte";
     import type {IRow} from "$lib/types/query_results";
 
-    let {query = $bindable()}: { query: string } = $props();
+    let {query, index, onUpdate}: {
+        query: string, index: number,
+        onUpdate: (number, string) => void,
+    } = $props();
     let rows: IRow[] = $state([]);
+
+    $effect(() => {
+        onUpdate(index, query);
+    });
 
     function onKeyDown(ev: KeyboardEvent) {
         if (ev.ctrlKey && ev.code === 'Enter') {
@@ -16,7 +23,16 @@
     async function execute() {
         rows = [];
 
-        let res = await postText(`${API_PREFIX}/query`, query);
+        let q = [];
+        for (let line of query.split(/\r?\n/)) {
+            console.log(line);
+            if (!line.startsWith('--')) {
+                q.push(line);
+            }
+        }
+        let qry = q.join('\n');
+
+        let res = await postText(`${API_PREFIX}/query`, qry);
         if (res.status === 200) {
             rows = await res.json();
         } else {

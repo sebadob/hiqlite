@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug)]
 pub enum Row<'a> {
     Borrowed(&'a rusqlite::Row<'a>),
+    // TODO we could only include ValueOwned + ref to ColumnInfo -> smaller payloads
     Owned(RowOwned),
 }
 
@@ -42,7 +43,21 @@ impl RowOwned {
         for (i, info) in columns.iter().enumerate() {
             let value = match info.typ {
                 // we always map expression results to strings
-                ColumnType::Expr => row.get(i).map(ValueOwned::Text).unwrap_or(ValueOwned::Null),
+                ColumnType::Expr => {
+                    // TODO is there a nicer solution for this with the encapsulated type?
+                    if let Ok(text) = row.get::<_, String>(i) {
+                        ValueOwned::Text(text)
+                    } else if let Ok(i) = row.get::<_, i64>(i) {
+                        ValueOwned::Integer(i)
+                    } else if let Ok(r) = row.get::<_, f64>(i) {
+                        ValueOwned::Real(r)
+                    } else if let Ok(b) = row.get::<_, Vec<u8>>(i) {
+                        ValueOwned::Blob(b)
+                    } else {
+                        ValueOwned::Null
+                    }
+                }
+                // ColumnType::Expr => row.get(i).map(ValueOwned::Text).unwrap_or(ValueOwned::Null),
                 ColumnType::Integer => row
                     .get(i)
                     .map(ValueOwned::Integer)
@@ -51,15 +66,6 @@ impl RowOwned {
                 ColumnType::Text => row.get(i).map(ValueOwned::Text).unwrap_or(ValueOwned::Null),
                 ColumnType::Blob => row.get(i).map(ValueOwned::Blob).unwrap_or(ValueOwned::Null),
             };
-
-            // let value = match value.as_str() {
-            //     "NULL" => ValueOwned::Null,
-            //     "INTEGER" => ValueOwned::Integer(row.get(i).unwrap()),
-            //     "REAL" => ValueOwned::Real(row.get(i).unwrap()),
-            //     "TEXT" => ValueOwned::Text(row.get(i).unwrap()),
-            //     "BLOB" => ValueOwned::Blob(row.get(i).unwrap()),
-            //     _ => unreachable!(),
-            // };
 
             cols.push(ColumnOwned {
                 name: info.name.clone(),
@@ -142,12 +148,6 @@ impl ColumnOwned {
     ) -> Result<Vec<ColumnInfo>, Error> {
         let mut cols = Vec::with_capacity(columns.len());
         for col in columns {
-            // if col.decl_type().is_none() {
-            //     return Err(Error::Sqlite(
-            //         "cannot return expressions als column types".into(),
-            //     ));
-            // }
-            // cols.push((col.name().to_string(), col.decl_type().unwrap().to_string()));
             cols.push(ColumnInfo {
                 name: col.name().to_string(),
                 typ: ColumnType::from_decl_type(col.decl_type()),

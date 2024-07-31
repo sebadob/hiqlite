@@ -22,7 +22,9 @@ pub(crate) async fn dashboard_query_dynamic(
     // we need to check if we can do a local select query or if it is
     // modifying and needs to go through the raft
     let sql_start = sql[..7].to_lowercase();
-    let is_select = sql_start.starts_with("select") || sql_start.starts_with("explain");
+    let is_select = sql_start.starts_with("select")
+        || sql_start.starts_with("explain")
+        || sql_start.starts_with("pragma");
 
     if is_select {
         let conn = state.raft_db.read_pool.get().await?;
