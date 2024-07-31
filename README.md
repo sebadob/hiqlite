@@ -88,7 +88,7 @@ in case of any errors or problems.
 ### TODOs before v0.1.0
 
 - prettify the dashboard
-- metrics / health endpoint with separate, optional metrics token
+- fully capable remote client in case you don't embed Hiqlite
 - code cleanup
 - proper documentation
 - more examples

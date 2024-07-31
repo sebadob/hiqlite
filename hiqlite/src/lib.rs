@@ -213,7 +213,6 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
                     "/membership/:raft_type",
                     get(management::get_membership).post(management::post_membership),
                 )
-                // .route("/init", post(management::init))
                 .route("/metrics", get(management::metrics)),
         )
         // TODO
