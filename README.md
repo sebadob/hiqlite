@@ -83,12 +83,13 @@ in case of any errors or problems.
   faster method with more manual work
 - in addition to SQLite - in-memory K/V store with optional independent TTL per entry
 - listen / notify to send real-time messages through the Raft
-- integrated simple dashboard UI for debugging the database in production (very ugly, but it basically works)
+- integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
+  done
+  ![dashboard screenshot](https://github.com/sebadob/hiqlite/tree/main/dashboard/screenshot.png)
 
 ### TODOs before v0.1.0
 
 - fully capable remote client in case you don't embed Hiqlite
-- code cleanup
 - proper documentation
 - more examples
 - default auto-backup task
