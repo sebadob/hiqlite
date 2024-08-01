@@ -7,7 +7,6 @@ use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
     StorageIOError, StoredMembership,
 };
-use redb::{Database, TableDefinition};
 use rusqlite::types::Type;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;

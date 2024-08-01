@@ -11,7 +11,6 @@ use openraft::StorageIOError;
 use openraft::Vote;
 use openraft::{CommittedLeaderId, Entry};
 use openraft::{LeaderId, LogId};
-use redb::{Database, ReadableTable, TableDefinition};
 use std::collections::{BTreeMap, Bound, VecDeque};
 use std::fmt::Debug;
 use std::ops::{Deref, RangeBounds};

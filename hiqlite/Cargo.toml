@@ -54,7 +54,7 @@ hyper-util.workspace = true
 mime_guess = { workspace = true, optional = true }
 openraft.workspace = true
 # TODO feature gate or completely remove for now
-redb.workspace = true
+#redb.workspace = true
 reqwest.workspace = true
 rocksdb.workspace = true
 rusqlite = { workspace = true, optional = true }

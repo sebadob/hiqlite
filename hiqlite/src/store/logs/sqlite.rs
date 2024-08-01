@@ -11,7 +11,6 @@ use openraft::RaftLogReader;
 use openraft::StorageError;
 use openraft::StorageIOError;
 use openraft::Vote;
-use redb::{Database, ReadableTable, TableDefinition};
 use rusqlite::{PrepFlags, ToSql, Transaction, TransactionBehavior};
 use std::collections::Bound;
 use std::fmt::Debug;

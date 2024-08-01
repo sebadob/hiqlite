@@ -37,7 +37,7 @@ hyper = { version = "1.4.1", features = ["client", "http2"] }
 hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
 mime_guess = "2.0.5"
 openraft = { version = "0.9.13", features = ["serde", "storage-v2"] }
-redb = "2.1.1"
+#redb = "2.1.1"
 reqwest = { version = "0.12", default-features = false, features = [
     "http2", "json", "rustls-tls"
 ] }
