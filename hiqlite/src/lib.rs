@@ -90,6 +90,9 @@ impl Display for Node {
 /// # Panics
 /// If an incorrect `node_config` was given.
 pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
+    #[cfg(not(any(feature = "cache", feature = "sqlite")))]
+    panic!("you must enable at least one state machine with either 'cache' or 'sqlite' feature");
+
     node_config.is_valid()?;
 
     if node_config.tls_api.is_some() || node_config.tls_raft.is_some() {

@@ -5,10 +5,9 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
-# TODO add `cache` here when its working
-categories = ["database"]
-keywords = ["database", "sql", "sqlite", "raft"]
-description = "Hiqlite - highly-available, embeddable, raft-based SQLite"
+categories = ["database", "caching"]
+keywords = ["database", "sql", "sqlite", "raft", "cache"]
+description = "Hiqlite - highly-available, embeddable, raft-based SQLite + cache"
 readme = "../README.md"
 repository = "https://github.com/sebadob/hiqlite"
 
@@ -20,7 +19,6 @@ default = ["auto-heal", "backup", "sqlite"]
 
 auto-heal = []
 backup = ["s3"]
-#cache = []
 # TODO we should not need the "openraft/loosen-follower-log-revert" here -> conflict in self-healing tests
 cache = ["openraft/loosen-follower-log-revert"]
 dashboard = ["dep:argon2", "dep:axum-extra", "dep:cryptr", "dep:mime_guess", "dep:tower", "dep:tower-http"]
@@ -29,7 +27,7 @@ jemalloc = ["rocksdb/jemalloc"]
 s3 = ["backup", "dep:cryptr"]
 shutdown-handle = ["dep:ctrlc"]
 sqlite = ["dep:deadpool", "dep:rusqlite", "dep:serde_rusqlite"]
-webpki-roots = ["reqwest/rustls-tls-webpki-roots"]
+webpki-roots = ["dep:webpki-roots", "reqwest/rustls-tls-webpki-roots"]
 
 [dependencies]
 argon2 = { workspace = true, optional = true }
@@ -53,16 +51,14 @@ hyper.workspace = true
 hyper-util.workspace = true
 mime_guess = { workspace = true, optional = true }
 openraft.workspace = true
-# TODO feature gate or completely remove for now
+# TODO not competitive for logs right now, maybe get rid of it in the future
 #redb.workspace = true
 reqwest.workspace = true
 rocksdb.workspace = true
 rusqlite = { workspace = true, optional = true }
 rust-embed.workspace = true
-# TODO do we need a tls feature?
 rustls.workspace = true
 serde.workspace = true
-# TODO feature to make this available or simply always pull it in?
 serde_json.workspace = true
 serde_rusqlite = { workspace = true, optional = true }
 sha2.workspace = true
@@ -73,9 +69,7 @@ tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 tracing.workspace = true
 uuid.workspace = true
-# TODO can we feature gate here? probably a `tls` would need to pull these in then
-# -> if not, try to use system trust store in TLS config builder?
-webpki-roots.workspace = true
+webpki-roots = { workspace = true, optional = true }
 
 # make minimal versions happy
 lazy_static.workspace = true

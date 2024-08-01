@@ -17,7 +17,7 @@ authors = ["Sebastian Dobe <sebastiandobe@mailbox.org"]
 argon2 = "0.5.3"
 axum = { version = "0.7.5", features = ["http2", "tokio"] }
 axum-extra = { version = "0.9.3", features = ["cookie"] }
-axum-server = { version = "0.6.0", features = ["tls-rustls"] }
+axum-server = { version = "0.7.1", features = ["tls-rustls", "tls-rustls-no-provider"] }
 bincode = "1.3.3"
 byteorder = "1.4.3"
 bytes = "1.6.0"
