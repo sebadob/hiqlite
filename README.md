@@ -85,7 +85,7 @@ in case of any errors or problems.
 - listen / notify to send real-time messages through the Raft
 - integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
   done
-  ![dashboard screenshot](https://github.com/sebadob/hiqlite/tree/main/dashboard/screenshot.png)
+  ![dashboard screenshot](https://raw.githubusercontent.com/sebadob/hiqlite/main/dashboard/screenshot.png)
 
 ### TODOs before v0.1.0
 
