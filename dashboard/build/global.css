@@ -5,31 +5,29 @@ to avoid cache problems.
 */
 
 body {
-    /* Default colors */
-    --col-low: hsl(22, 27%, 8%);
-    --col-low-a: hsla(22, 27%, 8%, 80%);
-    --col-mid: hsl(305, 5%, 53%);
-    --col-mid-a: hsla(305, 5%, 53%, 80%);
-    --col-high: hsl(90, 17%, 81%);
-    --col-high-a: hsla(90, 17%, 81%, 80%);
+    --col-mid: hsl(256, 5%, 44%);
+    --col-mid-a: hsla(256, 5%, 44%, 80%);
 
-    --col-p: hsl(129, 34%, 30%);
-    --col-p-a: hsla(129, 34%, 30%, 80%);
-    --col-s: hsl(48, 100%, 70%);
-    --col-s-a: hsla(48, 100%, 70%, 80%);
-    --col-a: hsl(16, 85%, 68%);
-    --col-a-a: hsla(16, 85%, 68%, 80%);
+    --col-p: hsl(45, 70%, 56%);
+    --col-p-a: hsla(45, 70%, 56%, 80%);
+    --col-s: hsl(37, 72%, 54%);
+    --col-s-a: hsl(37, 72%, 54%, 80%);
 
-    --col-ok: hsl(112, 83%, 36%);
-    --col-ok-a: hsla(112, 83%, 36%, 80%);
-    --col-err: hsl(355, 67%, 40%);
-    --col-err-a: hsla(355, 67%, 40%, 80%);
+    --col-ok: hsl(112, 83%, 50%);
+    --col-ok-a: hsla(112, 83%, 50%, 80%);
+    --col-err: hsl(355, 67%, 50%);
+    --col-err-a: hsla(355, 67%, 50%, 80%);
 
-    --col-text: var(--col-low);
-    --col-bg: var(--col-high);
+    --col-text: hsl(265, 11%, 22%);
+    --col-text-a: hsl(265, 11%, 22%, 80%);
+    --col-bg: hsl(270, 3%, 75%);
+    --col-bg-a: hsl(270, 3%, 75%, 80%);
 
     --col-btn: var(--col-p);
-    --col-btn-acnt: var(--col-high);
+    --col-btn-acnt: var(--col-mid-a);
+
+    --col-tabs-sel: var(--col-text);
+    --col-tabs-bg: var(--col-text);
 
     --col-input-hover: var(--col-mid-a);
     --col-input-focus: var(--col-mid-a);
@@ -41,8 +39,13 @@ body {
 
 /* Dark theme colors */
 body.dark-theme {
-    --col-text: var(--col-high);
-    --col-bg: var(--col-low);
+    --col-text: hsl(270, 3%, 75%);
+    --col-text-a: hsl(270, 3%, 75%, 80%);
+    --col-bg: hsl(265, 11%, 22%);
+    --col-bg-a: hsl(265, 11%, 22%, 80%);
+
+    --col-tabs-sel: var(--col-bg);
+    --col-tabs-bg: hsl(268, 10%, 30%);
 }
 
 /* Styles for users who prefer dark mode at the OS level */
@@ -69,14 +72,24 @@ body.dark-theme {
         --col-err: hsl(355, 67%, 40%);
         --col-err-a: hsla(355, 67%, 40%, 80%);
 
-        --col-text: var(--col-high);
-        --col-bg: var(--col-low);
+        --col-text: hsl(270, 3%, 75%);
+        --col-text-a: hsl(270, 3%, 75%, 80%);
+        --col-bg: hsl(265, 11%, 22%);
+        --col-bg-a: hsl(265, 11%, 22%, 80%);
+
+        --col-tabs-sel: var(--col-bg);
+        --col-tabs-bg: hsl(268, 10%, 30%);
     }
 
     /* Override dark mode with light mode styles if the user decides to swap */
     body.light-theme {
-        --col-text: var(--col-low);
-        --col-bg: var(--col-high);
+        --col-text: hsl(265, 11%, 22%);
+        --col-text-a: hsl(265, 11%, 22%, 80%);
+        --col-bg: hsl(270, 3%, 75%);
+        --col-bg-a: hsl(270, 3%, 75%, 80%);
+
+        --col-tabs-sel: var(--col-text);
+        --col-tabs-bg: var(--col-text);
 
     }
 }

@@ -69,6 +69,7 @@
     #query-results {
         flex: 1;
         max-width: var(--width-inner);
+        min-width: 16rem;
         overflow: auto;
         display: flex;
     }

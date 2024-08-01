@@ -59,8 +59,7 @@
             <div
                     role="button"
                     tabindex="0"
-                    class="entry"
-                    style:background={selectedTable?.name === table.name ? 'var(--col-s)' : ''}
+                    class={selectedTable?.name === table.name ? 'entry selected' : 'entry'}
                     onclick={() => select(table.name)}
                     onkeydown={() => select(table.name)}
             >
@@ -112,6 +111,12 @@
 
     .entry:hover {
         background: var(--col-a);
+        color: var(--col-tabs-sel);
+    }
+
+    .selected {
+        background: var(--col-s);
+        color: var(--col-tabs-sel);
     }
 
     .selector {

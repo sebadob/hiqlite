@@ -123,13 +123,18 @@ impl Client {
                     .await
                     .expect("SQL writer to always be running");
 
-                let _ = state
+                if state
                     .raft_db
                     .logs_writer
                     .send_async(ActionWrite::Shutdown)
-                    .await;
-
-                rx.await.expect("To always get an answer from SQL writer");
+                    .await
+                    .is_ok()
+                {
+                    // this sometimes fails because of race conditions and internal drop handlers
+                    // it just depends on which task is faster, but in any case the writer
+                    // does a wal flush before exiting
+                    rx.await.expect("To always get an answer from SQL writer");
+                }
             }
             Err(err) => {
                 return Err(Error::Error(err.to_string().into()));

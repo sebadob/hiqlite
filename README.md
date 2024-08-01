@@ -87,7 +87,6 @@ in case of any errors or problems.
 
 ### TODOs before v0.1.0
 
-- prettify the dashboard
 - fully capable remote client in case you don't embed Hiqlite
 - code cleanup
 - proper documentation

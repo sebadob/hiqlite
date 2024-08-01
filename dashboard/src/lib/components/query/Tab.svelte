@@ -78,7 +78,8 @@
         padding-left: 5px;
         padding-right: 20px;
         color: var(--col-s-a);
-        background: var(--col-text);
+        background: var(--col-tabs-bg);
+        border-bottom: 2px solid var(--col-tabs-bg);
         text-align: center;
         cursor: pointer;
     }
@@ -89,7 +90,7 @@
 
     .selected {
         background: var(--col-s);
-        color: var(--col-text);
+        color: var(--col-tabs-sel);
         border-bottom: 2px solid var(--col-s);
         cursor: text;
     }

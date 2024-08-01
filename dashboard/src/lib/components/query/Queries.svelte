@@ -11,7 +11,6 @@
 
     $effect(() => {
         let last = QUERIES[QUERIES.length - 1];
-        console.log(last.query);
         if (last?.query.startsWith(AUTO_QUERY)) {
             tabSelected = last.id;
         }
@@ -71,7 +70,7 @@
         display: flex;
         align-items: center;
         flex-wrap: wrap;
-        background: var(--col-text);
+        background: var(--col-tabs-bg);
     }
 
     .ctrl {

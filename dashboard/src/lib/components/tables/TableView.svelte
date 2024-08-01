@@ -24,8 +24,9 @@
 <style>
     div {
         flex: 1;
+        /*color: var(--col-tabs);*/
         color: var(--col-s-a);
-        background: var(--col-text);
+        background: var(--col-tabs-bg);
         text-align: center;
         cursor: pointer;
     }
@@ -36,7 +37,7 @@
 
     .selected {
         background: var(--col-s);
-        color: var(--col-text);
+        color: var(--col-tabs-sel);
         border-bottom: 2px solid var(--col-s);
     }
 </style>

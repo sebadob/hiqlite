@@ -19,10 +19,6 @@
         session = s;
     })
 
-    $effect(() => {
-        console.log(session);
-    });
-
     onMount(async () => {
         let res = await fetch(`${API_PREFIX}/session`);
         if (res.status === 200) {
