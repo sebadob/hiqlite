@@ -22,7 +22,6 @@ use strum::IntoEnumIterator;
 use tokio::fs;
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::info;
-use tracing::log::__private_api::loc;
 use uuid::Uuid;
 
 #[cfg(feature = "dlock")]

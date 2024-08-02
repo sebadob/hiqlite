@@ -64,7 +64,7 @@ check:
     clear
     cargo update
     cargo +nightly clippy -- -D warnings
-    cargo minimal-versions check
+    cargo minimal-versions check -p hiqlite --all-features
 
 
 # checks all combinations of features with clippy

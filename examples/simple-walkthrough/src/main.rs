@@ -46,23 +46,25 @@ fn test_nodes() -> Vec<Node> {
     ]
 }
 
-fn node_config(node_id: u64, nodes: Vec<Node>) -> Result<NodeConfig, Error> {
-    NodeConfig::new(
+fn node_config(node_id: u64, nodes: Vec<Node>) -> NodeConfig {
+    NodeConfig {
         node_id,
         nodes,
-        Some(ServerTlsConfig {
+        log_statements: true,
+        tls_raft: Some(ServerTlsConfig {
             key: "../../tls/key.pem".into(),
             cert: "../../tls/cert-chain.pem".into(),
             danger_tls_no_verify: true,
         }),
-        Some(ServerTlsConfig {
+        tls_api: Some(ServerTlsConfig {
             key: "../../tls/key.pem".into(),
             cert: "../../tls/cert-chain.pem".into(),
             danger_tls_no_verify: true,
         }),
-        "SuperSecureRaftSecret".to_string(),
-        "SuperSecureApiSecret".to_string(),
-    )
+        secret_raft: "SuperSecureRaftSecret".to_string(),
+        secret_api: "SuperSecureApiSecret".to_string(),
+        ..Default::default()
+    }
 }
 
 /// Matches our test table for this example.
@@ -113,7 +115,7 @@ async fn main() -> Result<(), Error> {
 
 async fn server(args: Option<Server>) -> Result<(), Error> {
     let config = if let Some(args) = args {
-        let mut config = node_config(args.node_id, test_nodes())?;
+        let mut config = node_config(args.node_id, test_nodes());
 
         // to make this example work when starting all nodes on the same host,
         // we need to save into custom folders for each one
@@ -121,7 +123,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
         cleanup(config.data_dir.as_ref()).await;
         config
     } else {
-        let config = node_config(1, vec![test_nodes()[0].clone()])?;
+        let config = node_config(1, vec![test_nodes()[0].clone()]);
         cleanup(config.data_dir.as_ref()).await;
         config
     };

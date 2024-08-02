@@ -8,14 +8,14 @@ use crate::network::raft_server;
 use crate::network::{api, management};
 use axum::routing::{get, post};
 use axum::Router;
-use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::net::SocketAddr;
+use num_traits::ToPrimitive;
+use strum::IntoEnumIterator;
 use std::str::FromStr;
 use std::sync::Arc;
-use strum::IntoEnumIterator;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task;
@@ -38,8 +38,6 @@ pub use tls::ServerTlsConfig;
 pub use client::dlock::Lock;
 #[cfg(feature = "cache")]
 pub use num_derive::ToPrimitive;
-#[cfg(feature = "cache")]
-pub use num_traits;
 #[cfg(feature = "cache")]
 pub use strum::EnumIter;
 
@@ -114,7 +112,7 @@ impl Display for Node {
 /// If an incorrect `node_config` was given.
 #[cfg(not(feature = "cache"))]
 pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
-    #[derive(Debug, serde::Serialize, serde::Deserialize, EnumIter, ToPrimitive)]
+    #[derive(Debug, serde::Serialize, serde::Deserialize, strum::EnumIter, num_derive::ToPrimitive)]
     enum Empty {}
 
     start_node_inner::<Empty>(node_config).await

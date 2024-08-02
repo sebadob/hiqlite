@@ -2,7 +2,7 @@
 
 This example shows the basic usage of the project.
 
-Most options are hardcoded for simplicity and you only need to provide the `--node-id` during startup to make this
+Most options are hardcoded for simplicity, and you only need to provide the `--node-id` during startup to make this
 example as simple and easy as possible.
 
 You can run the example either with a single node, or with a 3 node Raft cluster.
