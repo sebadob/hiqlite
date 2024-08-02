@@ -20,7 +20,7 @@ mod backup;
 #[cfg(feature = "cache")]
 mod cache;
 #[cfg(feature = "dlock")]
-mod dlock;
+pub(crate) mod dlock;
 #[cfg(feature = "cache")]
 mod listen_notify;
 #[cfg(feature = "shutdown-handle")]

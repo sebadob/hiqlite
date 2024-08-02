@@ -44,7 +44,7 @@ pub enum CacheRequest {
     },
     Notify((i64, Vec<u8>)),
     #[cfg(feature = "dlock")]
-    Lock(Cow<'static, str>),
+    Lock((Cow<'static, str>, Option<u64>)),
     #[cfg(feature = "dlock")]
     LockRelease((Cow<'static, str>, u64)),
 }
@@ -258,16 +258,26 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                     }
 
                     #[cfg(feature = "dlock")]
-                    CacheRequest::Lock(key) => {
+                    CacheRequest::Lock((key, id)) => {
                         let (ack, rx) = oneshot::channel();
-                        self.tx_dlock
-                            .send(LockRequest::Lock(LockRequestPayload {
-                                key,
-                                log_id: last_applied_log_id.unwrap().index,
-                                ack,
-                            }))
-                            // this channel can never be closed - we have both sides
-                            .unwrap();
+
+                        // the id will be Some(_) in case this request is coming in after awaiting a queue
+                        if let Some(log_id) = id {
+                            self.tx_dlock
+                                .send(LockRequest::Acquire(LockRequestPayload {
+                                    key,
+                                    log_id,
+                                    ack,
+                                }))
+                                // this channel can never be closed - we have both sides
+                                .unwrap();
+                        } else {
+                            let log_id = id.unwrap_or(last_applied_log_id.unwrap().index);
+                            self.tx_dlock
+                                .send(LockRequest::Lock(LockRequestPayload { key, log_id, ack }))
+                                // this channel can never be closed - we have both sides
+                                .unwrap();
+                        }
 
                         let state = rx
                             .await

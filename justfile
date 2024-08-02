@@ -98,7 +98,7 @@ test:
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
-    cargo test --features cache
+    cargo test --features cache,dlock
     #cargo test
 
 

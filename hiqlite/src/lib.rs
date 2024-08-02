@@ -34,6 +34,8 @@ pub use openraft::SnapshotPolicy;
 pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
+#[cfg(feature = "dlock")]
+pub use client::dlock::Lock;
 #[cfg(feature = "cache")]
 pub use num_derive::ToPrimitive;
 #[cfg(feature = "cache")]

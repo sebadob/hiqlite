@@ -1,5 +1,5 @@
 use crate::log;
-use hiqlite::{Client, Error};
+use hiqlite::{Client, Error, Lock};
 use std::time::Duration;
 use tokio::{task, time};
 
@@ -15,7 +15,15 @@ pub async fn test_dlock(
     log("Make sure the locks can't be obtained on any client while not dropped");
     let c3 = client_3.clone();
     let handle_1 = task::spawn(async move {
-        c3.lock("1").await?;
+        let lock = c3.lock("1").await?;
+        Ok::<Lock, Error>(lock)
+    });
+
+    let c2 = client_2.clone();
+    // just make sure that this 2nd task is not faster by accident
+    time::sleep(Duration::from_millis(50)).await;
+    let handle_1_2 = task::spawn(async move {
+        c2.lock("1").await?;
         Ok::<(), Error>(())
     });
 
@@ -28,17 +36,26 @@ pub async fn test_dlock(
     time::sleep(Duration::from_millis(100)).await;
     // should not finish until we release locks
     assert!(!handle_1.is_finished());
+    assert!(!handle_1_2.is_finished());
     assert!(!handle_2.is_finished());
 
     log("Drop locks and make sure the queued await can acquire it");
     drop(lock_1);
-    time::sleep(Duration::from_millis(10)).await;
-    assert!(handle_1.is_finished());
+    log("awaiting handle_1");
+    let lock_1_awaited = handle_1.await??;
+    assert!(!handle_1_2.is_finished());
     assert!(!handle_2.is_finished());
 
     drop(lock_2);
-    time::sleep(Duration::from_millis(10)).await;
-    assert!(handle_2.is_finished());
+    log("awaiting handle_2");
+    handle_2.await??;
+    assert!(!handle_1_2.is_finished());
+
+    drop(lock_1_awaited);
+    log("awaiting handle_1_2");
+    handle_1_2.await??;
+
+    log("Locks tests finished");
 
     Ok(())
 }

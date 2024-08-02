@@ -5,14 +5,18 @@ use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Add;
 use std::sync::atomic::AtomicU64;
+use std::thread;
 use tokio::sync::oneshot;
 use tokio::task;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 const LOCK_VALID: chrono::Duration = chrono::Duration::seconds(10);
 
 pub enum LockRequest {
+    /// used for a first try lock without coming from a queue
     Lock(LockRequestPayload),
+    /// used after an await to acquire the lock now
+    Acquire(LockRequestPayload),
     Release(LockReleasePayload),
     // Refresh(LockRequestPayload),
     Await(LockAwaitPayload),
@@ -59,6 +63,8 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
     let mut locks: HashMap<String, LockQueue> = HashMap::new();
     let mut queues: HashMap<String, Vec<(u64, oneshot::Sender<LockState>)>> = HashMap::new();
 
+    let rnd = cryptr::utils::secure_random_alnum(4);
+
     while let Ok(req) = rx.recv_async().await {
         match req {
             LockRequest::Lock(LockRequestPayload { key, log_id, ack }) => {
@@ -99,20 +105,43 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
                 }
             }
 
+            LockRequest::Acquire(LockRequestPayload { key, log_id, ack }) => {
+                if let Some(lock) = locks.get_mut(key.as_ref()) {
+                    debug_assert!(lock.current_ticket.is_none());
+                    debug_assert!(lock.queue.front().is_some());
+
+                    let first = lock
+                        .queue
+                        .pop_front()
+                        .expect("First entry to always exist for LockRequest::Acquire");
+                    debug_assert!(
+                        first == log_id,
+                        "first ({}) and log_id ({}) to always match when LockRequest::Acquire",
+                        first,
+                        log_id
+                    );
+
+                    lock.current_ticket = Some(first);
+                    lock.exp = Utc::now().add(LOCK_VALID);
+                    ack.send(LockState::Locked(log_id)).unwrap();
+                } else {
+                    panic!("The lock should always exist when LockRequest::Acquire");
+                }
+            }
+
             LockRequest::Release(LockReleasePayload { key, id }) => {
                 let mut full_remove = false;
 
                 if let Some(lock) = locks.get_mut(key.as_ref()) {
                     if lock.current_ticket == Some(id) {
-                        if let Some(first) = lock.queue.pop_front() {
-                            lock.current_ticket = Some(first);
-                            lock.exp = Utc::now().add(LOCK_VALID);
+                        lock.current_ticket = None;
 
+                        if let Some(first) = lock.queue.front() {
                             if let Some(acks) = queues.get_mut(key.as_ref()) {
-                                let pos_opt = acks.iter().position(|(i, _)| *i == id);
+                                let pos_opt = acks.iter().position(|(i, _)| i == first);
                                 if let Some(pos) = pos_opt {
                                     if let Err(err) =
-                                        acks.swap_remove(pos).1.send(LockState::Locked(id))
+                                        acks.swap_remove(pos).1.send(LockState::Released)
                                     {
                                         panic!(
                                             "Error sending lock await response for lock {}: {:?}",
@@ -126,7 +155,10 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
                         }
                     } else {
                         // TODO can this ever happen?
-                        panic!("Lock for {} / {} as been released already", key, id);
+                        panic!(
+                            "Lock for {} / {} as been released already: {:?}",
+                            key, id, lock
+                        );
                     }
                 }
 
@@ -139,8 +171,6 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
                 let now = Utc::now();
 
                 if let Some(lock) = locks.get_mut(key.as_ref()) {
-                    debug_assert!(lock.current_ticket == Some(id) || lock.queue.contains(&id));
-
                     if lock.exp < now || lock.current_ticket.is_none() {
                         let front = lock.queue.front();
                         if let Some(ticket) = front {

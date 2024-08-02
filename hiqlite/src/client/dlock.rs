@@ -8,6 +8,7 @@ use crate::{Client, Error};
 use std::borrow::Cow;
 use tokio::sync::oneshot;
 use tokio::task;
+use tracing::error;
 
 #[derive(Clone)]
 pub struct Lock {
@@ -16,25 +17,28 @@ pub struct Lock {
     client: Client,
 }
 
-impl Lock {
-    async fn release(self) -> Result<(), Error> {
-        self.client
-            .lock_req_retry(CacheRequest::LockRelease((self.key.clone(), self.id)))
-            .await?;
-        Ok(())
-    }
-}
-
 impl Drop for Lock {
     fn drop(&mut self) {
-        task::spawn(self.clone().release());
+        let client = self.client.clone();
+        let key = self.key.clone();
+        let id = self.id;
+
+        task::spawn(async move {
+            if let Err(err) = client
+                .lock_req_retry(CacheRequest::LockRelease((key.clone(), id)))
+                .await
+            {
+                error!(
+                    "Error releasing distributed lock for {} / {}: {}",
+                    key, id, err
+                );
+            }
+        });
     }
 }
 
 impl Client {
     // TODO
-    // - try_lock
-    // - lock
     // - lock_timeout
 
     pub async fn lock<K>(&self, key: K) -> Result<Lock, Error>
@@ -42,7 +46,9 @@ impl Client {
         K: Into<Cow<'static, str>>,
     {
         let key = key.into();
-        let state = self.lock_req_retry(CacheRequest::Lock(key.clone())).await?;
+        let state = self
+            .lock_req_retry(CacheRequest::Lock((key.clone(), None)))
+            .await?;
         match state {
             LockState::Locked(id) => Ok(Lock {
                 id,
@@ -53,14 +59,16 @@ impl Client {
                 let res = self.lock_await(key.clone(), id).await?;
                 match res {
                     LockState::Released => {
-                        let state = self.lock_req_retry(CacheRequest::Lock(key.clone())).await?;
+                        let state = self
+                            .lock_req_retry(CacheRequest::Lock((key.clone(), Some(id))))
+                            .await?;
                         match state {
                             LockState::Locked(id) => Ok(Lock {
                                 id,
                                 key,
                                 client: self.clone(),
                             }),
-                            _ => unreachable!(),
+                            s => unreachable!("{:?}", s),
                         }
                     }
                     _ => unreachable!(),
@@ -70,38 +78,38 @@ impl Client {
         }
     }
 
-    pub async fn try_lock<K>(&self, key: K) -> Result<Lock, Error>
-    where
-        K: Into<Cow<'static, str>>,
-    {
-        let key = key.into();
-        let state = self.lock_req_retry(CacheRequest::Lock(key.clone())).await?;
-        match state {
-            LockState::Locked(id) => Ok(Lock {
-                id,
-                key,
-                client: self.clone(),
-            }),
-            LockState::Queued(id) => {
-                let res = self.lock_await(key.clone(), id).await?;
-                match res {
-                    LockState::Released => {
-                        let state = self.lock_req_retry(CacheRequest::Lock(key.clone())).await?;
-                        match state {
-                            LockState::Locked(id) => Ok(Lock {
-                                id,
-                                key,
-                                client: self.clone(),
-                            }),
-                            _ => unreachable!(),
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            _ => unreachable!(),
-        }
-    }
+    // pub async fn try_lock<K>(&self, key: K) -> Result<Lock, Error>
+    // where
+    //     K: Into<Cow<'static, str>>,
+    // {
+    //     let key = key.into();
+    //     let state = self.lock_req_retry(CacheRequest::Lock(key.clone())).await?;
+    //     match state {
+    //         LockState::Locked(id) => Ok(Lock {
+    //             id,
+    //             key,
+    //             client: self.clone(),
+    //         }),
+    //         LockState::Queued(id) => {
+    //             let res = self.lock_await(key.clone(), id).await?;
+    //             match res {
+    //                 LockState::Released => {
+    //                     let state = self.lock_req_retry(CacheRequest::Lock(key.clone())).await?;
+    //                     match state {
+    //                         LockState::Locked(id) => Ok(Lock {
+    //                             id,
+    //                             key,
+    //                             client: self.clone(),
+    //                         }),
+    //                         _ => unreachable!(),
+    //                     }
+    //                 }
+    //                 _ => unreachable!(),
+    //             }
+    //         }
+    //         _ => unreachable!(),
+    //     }
+    // }
 
     async fn lock_await(&self, key: Cow<'static, str>, id: u64) -> Result<LockState, Error> {
         if let Some(state) = &self.inner.state {
