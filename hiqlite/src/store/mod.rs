@@ -119,6 +119,9 @@ where
     let tx_caches = state_machine_store.tx_caches.clone();
     let rx_notify = state_machine_store.rx_notify.clone();
 
+    #[cfg(feature = "dlock")]
+    let tx_dlock = state_machine_store.tx_dlock.clone();
+
     let raft = openraft::Raft::new(
         node_config.node_id,
         raft_config.clone(),
@@ -148,6 +151,8 @@ where
         lock: Default::default(),
         tx_caches,
         rx_notify,
+        #[cfg(feature = "dlock")]
+        tx_dlock,
     })
 }
 

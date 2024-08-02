@@ -12,51 +12,6 @@ use strum::IntoEnumIterator;
 use tokio::sync::oneshot;
 
 impl Client {
-    // pub async fn get<K, V>(&self, key: K) -> Result<Option<V>, Error>
-    // where
-    //     K: Into<String>,
-    //     V: for<'a> Deserialize<'a>,
-    // {
-    //     if let Some(state) = &self.inner.state {
-    //         let (ack, rx) = oneshot::channel();
-    //         state
-    //             .raft_cache
-    //             .tx_kv
-    //             .send(CacheRequestHandler::Get((key.into(), ack)))
-    //             .expect("kv handler to always be running");
-    //         let value = rx
-    //             .await
-    //             .expect("to always get an answer from the kv handler");
-    //         Ok(value.map(|b| bincode::deserialize(&b).unwrap()))
-    //     } else {
-    //         todo!("CacheGet for remote clients")
-    //     }
-    //     // Err(Error::Cache("no value found".into()))
-    // }
-
-    // /// `Put` a value into the cache.
-    // /// The optional `ttl` is the lifetime of the value in seconds from *now* on.
-    // pub async fn put<K, V>(&self, key: K, value: &V, ttl: Option<i64>) -> Result<(), Error>
-    // where
-    //     K: Into<Cow<'static, str>>,
-    //     V: Serialize,
-    // {
-    //     self.cache_req_retry(CacheRequest::Put {
-    //         key: key.into(),
-    //         value: bincode::serialize(value).unwrap(),
-    //         expires: ttl.map(|seconds| Utc::now().timestamp().saturating_add(seconds)),
-    //     })
-    //     .await
-    // }
-    //
-    // pub async fn delete<K>(&self, key: K) -> Result<(), Error>
-    // where
-    //     K: Into<Cow<'static, str>>,
-    // {
-    //     self.cache_req_retry(CacheRequest::Delete { key: key.into() })
-    //         .await
-    // }
-
     pub async fn get<C, K, V>(&self, cache: C, key: K) -> Result<Option<V>, Error>
     where
         C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,

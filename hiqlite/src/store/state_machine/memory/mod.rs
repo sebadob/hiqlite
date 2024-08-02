@@ -5,7 +5,9 @@ use std::io::Cursor;
 mod cache_ttl_handler;
 pub mod kv_handler;
 pub mod state_machine;
-mod test;
+
+#[cfg(feature = "dlock")]
+pub mod dlock_handler;
 
 openraft::declare_raft_types!(
     pub TypeConfigKV:

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::{task, time};
-use tracing::warn;
+use tracing::{debug, warn};
 
 pub fn spawn(tx_kv: flume::Sender<CacheRequestHandler>) -> flume::Sender<(i64, String)> {
     let (tx, rx) = flume::unbounded();
@@ -44,13 +44,16 @@ async fn ttl_handler(
         tokio::select! {
             req = rx.recv_async() => {
                 if let Ok((ttl, key)) = req {
+                    // TODO currently we use microsecond precision and this could overlap
+                    // if very unlucky -> use nano's or da an additional step ech time to check if
+                    // the entry exists already? otherwise a value will not be expired
                     data.insert(ttl, key);
                 } else {
                     break;
                 }
             }
             _ = time::sleep(sleep_exp) => {
-                warn!("Timeout reached - first entry in map expires");
+                debug!("Timeout reached - first entry in map expires");
             }
         }
     }

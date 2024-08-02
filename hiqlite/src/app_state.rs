@@ -23,6 +23,9 @@ use crate::dashboard::DashboardState;
 #[cfg(feature = "dashboard")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(feature = "dlock")]
+use crate::store::state_machine::memory::dlock_handler::LockRequest;
+
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RaftType {
@@ -90,4 +93,6 @@ pub struct StateRaftCache {
     pub lock: Mutex<()>,
     pub tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     pub rx_notify: flume::Receiver<(i64, Vec<u8>)>,
+    #[cfg(feature = "dlock")]
+    pub tx_dlock: flume::Sender<LockRequest>,
 }

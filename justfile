@@ -86,6 +86,7 @@ clippy-features:
     cargo clippy --no-default-features --features sqlite,auto-heal,backup
 
     cargo clippy --no-default-features --features cache
+    cargo clippy --no-default-features --features cache,dlock
     cargo clippy --no-default-features --features sqlite,cache
 
     cargo clippy --no-default-features --features dashboard

@@ -20,6 +20,8 @@ mod transaction;
 
 #[cfg(feature = "cache")]
 mod cache;
+#[cfg(feature = "dlock")]
+mod dlock;
 #[cfg(feature = "cache")]
 mod listen_notify;
 
@@ -101,6 +103,13 @@ async fn exec_tests() -> Result<(), Error> {
         log("Test listen / notify");
         listen_notify::test_listen_notify(&client_1, &client_2, &client_3).await?;
         log("listen / notify finished");
+    }
+
+    #[cfg(feature = "dlock")]
+    {
+        log("Test distributed locks");
+        dlock::test_dlock(&client_1, &client_2, &client_3).await?;
+        log("Distributed locks tests finished");
     }
 
     log("Test shutdown and restart");

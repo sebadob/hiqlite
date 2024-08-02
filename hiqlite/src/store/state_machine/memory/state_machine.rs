@@ -24,6 +24,9 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::info;
 use uuid::Uuid;
 
+#[cfg(feature = "dlock")]
+use crate::store::state_machine::memory::dlock_handler::{self, *};
+
 type Entry = openraft::Entry<TypeConfigKV>;
 type SnapshotData = Cursor<Vec<u8>>;
 
@@ -40,12 +43,18 @@ pub enum CacheRequest {
         key: Cow<'static, str>,
     },
     Notify((i64, Vec<u8>)),
+    #[cfg(feature = "dlock")]
+    Lock(Cow<'static, str>),
+    #[cfg(feature = "dlock")]
+    LockRelease((Cow<'static, str>, u64)),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CacheResponse {
     Empty,
     Ok,
+    #[cfg(feature = "dlock")]
+    Lock(LockState),
 }
 
 #[derive(Debug, Default)]
@@ -68,12 +77,17 @@ pub struct StateMachineMemory {
 
     tx_notify: flume::Sender<(i64, Vec<u8>)>,
     pub(crate) rx_notify: flume::Receiver<(i64, Vec<u8>)>,
+
+    #[cfg(feature = "dlock")]
+    pub(crate) tx_dlock: flume::Sender<LockRequest>,
 }
 
 impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfigKV>, StorageError<NodeId>> {
         let (last_log_id, last_membership, kv_bytes) = {
             let data = self.data.read().await;
+
+            // TODO should we include notifications in snapshots as well? -> unsure if it makes sense or not
 
             let mut caches = Vec::with_capacity(self.tx_caches.len());
             for tx in &self.tx_caches {
@@ -148,6 +162,9 @@ impl StateMachineMemory {
         }
         // let tx_ttl = cache_ttl_handler::spawn(tx_caches.clone());
 
+        #[cfg(feature = "dlock")]
+        let tx_dlock = dlock_handler::spawn();
+
         let (tx_notify, rx_notify) = flume::unbounded();
 
         Ok(Self {
@@ -158,6 +175,8 @@ impl StateMachineMemory {
             tx_ttls,
             tx_notify,
             rx_notify,
+            #[cfg(feature = "dlock")]
+            tx_dlock,
         })
     }
 }
@@ -236,6 +255,36 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             // this channel can never be closed - we have both sides
                             .unwrap();
                         CacheResponse::Ok
+                    }
+
+                    #[cfg(feature = "dlock")]
+                    CacheRequest::Lock(key) => {
+                        let (ack, rx) = oneshot::channel();
+                        self.tx_dlock
+                            .send(LockRequest::Lock(LockRequestPayload {
+                                key,
+                                log_id: last_applied_log_id.unwrap().index,
+                                ack,
+                            }))
+                            // this channel can never be closed - we have both sides
+                            .unwrap();
+
+                        let state = rx
+                            .await
+                            .expect("To always get a response from dlock handler");
+
+                        CacheResponse::Lock(state)
+                    }
+
+                    #[cfg(feature = "dlock")]
+                    CacheRequest::LockRelease((key, id)) => {
+                        self.tx_dlock
+                            .send(LockRequest::Release(LockReleasePayload { key, id }))
+                            // this channel can never be closed - we have both sides
+                            .unwrap();
+
+                        // we can return early without waiting for answer, release should never fail anyway
+                        CacheResponse::Lock(LockState::Released)
                     }
                 },
 
