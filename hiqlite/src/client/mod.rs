@@ -26,7 +26,9 @@ mod listen_notify;
 #[cfg(feature = "shutdown-handle")]
 mod shutdown_handle;
 
-/// Database client
+/// This is the main database client.
+/// It will handle all things you need to work with the Database / Cache / Event Bus / Distributed Locks.
+/// It wraps all inner data inside an internal `Arc<_>`, which means it's very cheap to clone directly.
 #[derive(Clone)]
 pub struct Client {
     pub(crate) inner: Arc<DbClient>,

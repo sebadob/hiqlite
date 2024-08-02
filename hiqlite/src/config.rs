@@ -17,9 +17,12 @@ pub enum EncKeysFrom {
     File(String),
 }
 
-/// The config for a Raft Node
+/// The main Node config.
 ///
-/// TODO if feature `serde` is set, should maybe be Serialize / Deserialize
+/// Most default values are good for internal, fast networks. If you have a slow or unstable
+/// network, you might want to tune the `RaftConfig`. However, you should never adjust the
+/// `max_in_snapshot_log_to_keep`, because this will play a crucial role if you need to restore
+/// from a backup in case of desaster recovery.
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     /// The `node_id` defines which entry from the `nodes` is "this node"
@@ -33,10 +36,10 @@ pub struct NodeConfig {
     /// you can afford this. No data will be lost with an in-memory DB because Raft logs and
     /// snapshots are always persisted and the in-memory DB can be rebuilt quickly after a restart.
     pub filename_db: Cow<'static, str>,
-    /// Enabled statement logging or the SQL writer
+    /// Enables statement logging or the SQL writer
     pub log_statements: bool,
-    // pub mode: NodeMode,
     /// The internal Raft config. This must be the same on each node.
+    /// You will get good defaults with `NodeConfig::default_raft_config(_)`.
     pub raft_config: RaftConfig,
     /// If RPC and HTTP connections should use TLS
     pub tls_raft: Option<ServerTlsConfig>,
@@ -45,16 +48,15 @@ pub struct NodeConfig {
     pub secret_raft: String,
     /// Secret for Raft management and DB API - at least 16 characters long
     pub secret_api: String,
-    /// From where `ENC_KEYS` should be read for S3 backup encryption.
+    /// From where `ENC_KEYS` should be read for S3 backup encryption. feature `s3`
     #[cfg(feature = "s3")]
     pub enc_keys_from: EncKeysFrom,
-    /// If an `S3Config` is given, it will be used to push backups to the S3 bucket.
+    /// If an `S3Config` is given, it will be used to push backups to the S3 bucket. feature `s3`
     #[cfg(feature = "s3")]
     pub s3_config: Option<crate::s3::S3Config>,
+    /// Set the password for the integrated dashboard. Must be given as argon2id hash. feature `dashboard`
     #[cfg(feature = "dashboard")]
     pub password_dashboard: String,
-    // #[cfg(feature = "dashboard")]
-    // pub insecure_cookie: bool,
 }
 
 impl Default for NodeConfig {
@@ -151,43 +153,7 @@ impl NodeConfig {
         slf
     }
 
-    // TODO get rid of the `new()` because it gets messier the more features come.
-    // its a far better DX to just init directly and use `..Default::default()`
-    pub fn new(
-        node_id: NodeId,
-        nodes: Vec<Node>,
-        tls_raft: Option<ServerTlsConfig>,
-        tls_api: Option<ServerTlsConfig>,
-        secret_raft: String,
-        secret_api: String,
-    ) -> Result<Self, Error> {
-        let slf = Self {
-            node_id,
-            nodes,
-            data_dir: "hiqlite".into(),
-            filename_db: "hiqlite.db".into(),
-            log_statements: false,
-            raft_config: Self::default_raft_config(10_000),
-            tls_raft,
-            tls_api,
-            secret_raft,
-            secret_api,
-            #[cfg(feature = "s3")]
-            enc_keys_from: EncKeysFrom::Env,
-            #[cfg(feature = "s3")]
-            s3_config: None,
-            #[cfg(feature = "dashboard")]
-            password_dashboard: String::default(),
-            // #[cfg(feature = "dashboard")]
-            // insecure_cookie: false,
-        };
-
-        slf.is_valid()?;
-
-        Ok(slf)
-    }
-
-    /// Provides a good starting point for a `RaftConfig` inside a fast network.
+    /// Provides good defaults for a `RaftConfig` inside a fast network.
     #[allow(deprecated)] // allow to not need ..Default::default() and miss config updates
     pub fn default_raft_config(logs_until_snapshot: u64) -> RaftConfig {
         RaftConfig {
@@ -215,6 +181,7 @@ impl NodeConfig {
         }
     }
 
+    /// Validates the config
     pub fn is_valid(&self) -> Result<(), Error> {
         if self.nodes.is_empty() {
             return Err(Error::Config("'nodes' must not be empty".into()));

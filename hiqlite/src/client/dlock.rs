@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 use tokio::task;
 use tracing::error;
 
+/// A distributed lock with the feature `dlock`. Releases on drop automatically.
 #[derive(Clone)]
 pub struct Lock {
     id: u64,

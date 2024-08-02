@@ -1,10 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "hiqlite",
-    "hiqlite_server",
-    "examples/*",
-]
+members = ["hiqlite", "hiqlite_server", "examples/*"]
 
 [workspace.package]
 version = "0.0.1"
@@ -17,17 +13,28 @@ authors = ["Sebastian Dobe <sebastiandobe@mailbox.org"]
 argon2 = "0.5.3"
 axum = { version = "0.7.5", features = ["http2", "tokio"] }
 axum-extra = { version = "0.9.3", features = ["cookie"] }
-axum-server = { version = "0.7.1", features = ["tls-rustls", "tls-rustls-no-provider"] }
+axum-server = { version = "0.7.1", features = [
+    "tls-rustls",
+    "tls-rustls-no-provider",
+] }
 bincode = "1.3.3"
 byteorder = "1.4.3"
 bytes = "1.6.0"
-chrono = { version = "0.4.38", default-features = false, features = ["std", "clock", "now"] }
+chrono = { version = "0.4.38", default-features = false, features = [
+    "std",
+    "clock",
+    "now",
+] }
 clap = { version = "4.1.11", features = ["derive", "env"] }
 cryptr = { version = "0.5.1", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"
-fastwebsockets = { version = "0.8.0", features = ["upgrade", "with_axum", "unstable-split"] }
+fastwebsockets = { version = "0.8.0", features = [
+    "upgrade",
+    "with_axum",
+    "unstable-split",
+] }
 flume = "0.11.0"
 getrandom = { version = "0.2.15", features = ["std"] }
 hex = "0.4.3"
@@ -41,11 +48,17 @@ num-derive = "0.4.2"
 openraft = { version = "0.9.13", features = ["serde", "storage-v2"] }
 #redb = "2.1.1"
 reqwest = { version = "0.12", default-features = false, features = [
-    "http2", "json", "rustls-tls"
+    "http2",
+    "json",
+    "rustls-tls",
 ] }
 rocksdb = { version = "0.22.0", default-features = true, features = ["snappy"] }
 # serde_rusqlite prevents from upgrading in v0.35
-rusqlite = { version = "0.31", features = ["backup", "bundled", "column_decltype"] }
+rusqlite = { version = "0.31", features = [
+    "backup",
+    "bundled",
+    "column_decltype",
+] }
 rust-embed = { version = "8.5.0", features = ["compression"] }
 rustls = { version = "0.23.5", features = ["ring"] }
 serde = { version = "1.0.114", features = ["derive"] }
@@ -57,7 +70,11 @@ thiserror = "1.0.61"
 tokio = { version = "1.38.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.0", features = ["ring"] }
 tower = { version = "0.4", features = [] }
-tower-http = { version = "0.5.0", features = ["set-header", "sensitive-headers", "util"] }
+tower-http = { version = "0.5.0", features = [
+    "set-header",
+    "sensitive-headers",
+    "util",
+] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }
 uuid = { version = "1.8.0", features = ["v7"] }

@@ -59,14 +59,16 @@ mod tls;
 mod backup;
 #[cfg(feature = "dashboard")]
 mod dashboard;
+
+/// Exports and types to set up a connection to an S3 storage bucket.
+/// Needs the feature `s3` enabled.
 #[cfg(feature = "s3")]
 pub mod s3;
 
 type NodeId = u64;
 
-// Create params for distributed SQL modifying queries.
-// TODO create multiple branches here to be able to catch the correct sizes
-// with upfront capacity assignment earlier.
+/// Helper macro to created Owned Params which can be serialized and sent
+/// over the Raft network between nodes.
 #[macro_export]
 macro_rules! params {
     ( $( $param:expr ),* ) => {
@@ -81,11 +83,19 @@ macro_rules! params {
     };
 }
 
-/// A Raft member node
+/// A Raft / Hiqlite node
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Node {
+    /// Each Raft config must include one Node with `id == 1`.
+    /// Node `1` will care about init and setup if the Raft does not exit yet or
+    /// if other Nodes need to join.
     pub id: NodeId,
+    /// The Raft internal address. This is separated from the API address and runs on
+    /// a different server and port to make it possible to boost security and split
+    /// network bandwidth. The internal Raft API should never be exposed to the public.
     pub addr_raft: String,
+    /// The public API address. To this address, the `Client`s will connect to talk
+    /// to other Raft Leader nodes over the network if necessary.
     pub addr_api: String,
 }
 
@@ -99,7 +109,7 @@ impl Display for Node {
     }
 }
 
-/// Starts a Raft node.
+/// The main entry function to start a Raft / Hiqlite node.
 /// # Panics
 /// If an incorrect `node_config` was given.
 #[cfg(not(feature = "cache"))]
@@ -110,7 +120,9 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
     start_node_inner::<Empty>(node_config).await
 }
 
-/// Starts a Raft node.
+/// The main entry function to start a Raft / Hiqlite node.
+/// With the `cache` feature enabled, you need to provide the generic enum which
+/// will function as the Cache Index value to decide between multiple caches.
 /// # Panics
 /// If an incorrect `node_config` was given.
 #[cfg(feature = "cache")]

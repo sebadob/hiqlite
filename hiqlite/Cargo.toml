@@ -12,7 +12,8 @@ readme = "../README.md"
 repository = "https://github.com/sebadob/hiqlite"
 
 [package.metadata.docs.rs]
-all-features = true
+features = ["cache", "dashboard", "dlock", "shutdown-handle", "sqlite"]
+cargo-args = ["--lib"]
 
 [features]
 default = ["auto-heal", "backup", "sqlite"]
@@ -20,11 +21,23 @@ default = ["auto-heal", "backup", "sqlite"]
 auto-heal = []
 backup = ["s3"]
 # TODO we should not need the "openraft/loosen-follower-log-revert" here -> conflict in self-healing tests
-cache = ["dep:strum", "dep:num-traits", "dep:num-derive", "openraft/loosen-follower-log-revert"]
-dashboard = ["dep:argon2", "dep:axum-extra", "dep:cryptr", "dep:mime_guess", "dep:tower", "dep:tower-http"]
+cache = [
+    "dep:strum",
+    "dep:num-traits",
+    "dep:num-derive",
+    "openraft/loosen-follower-log-revert",
+]
+dashboard = [
+    "dep:argon2",
+    "dep:axum-extra",
+    "dep:cryptr",
+    "dep:mime_guess",
+    "dep:tower",
+    "dep:tower-http",
+]
 dlock = ["cache"]
-io-uring = ["rocksdb/io-uring"]
-jemalloc = ["rocksdb/jemalloc"]
+#io-uring = ["rocksdb/io-uring"]
+#jemalloc = ["rocksdb/jemalloc"]
 s3 = ["backup", "dep:cryptr"]
 shutdown-handle = ["dep:ctrlc"]
 sqlite = ["dep:deadpool", "dep:rusqlite", "dep:serde_rusqlite"]
