@@ -13,7 +13,7 @@ use rusqlite::types::Type;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,6 +22,7 @@ use strum::IntoEnumIterator;
 use tokio::fs;
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::info;
+use tracing::log::__private_api::loc;
 use uuid::Uuid;
 
 #[cfg(feature = "dlock")]
@@ -99,7 +100,23 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
                     .expect("to always receive an answer from kv handler");
                 caches.push(snap);
             }
-            let snapshot_bytes = bincode::serialize(&caches)
+
+            #[cfg(feature = "dlock")]
+            let locks_bytes = {
+                let (ack, rx) = oneshot::channel();
+                self.tx_dlock
+                    .send(LockRequest::SnapshotBuild(ack))
+                    .expect("locks handler to always be running");
+                let locks = rx
+                    .await
+                    .expect("to always receive an answer from locks handler");
+                bincode::serialize(&locks).unwrap()
+            };
+            #[cfg(not(feature = "dlock"))]
+            let locks_bytes: Vec<u8> = Vec::default();
+
+            let snap = (caches, locks_bytes);
+            let snapshot_bytes = bincode::serialize(&snap)
                 .map_err(|err| StorageIOError::read_state_machine(&err))?;
 
             let last_applied_log = data.last_applied_log_id;
@@ -327,13 +344,16 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         meta: &SnapshotMeta<NodeId, Node>,
         snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
-        let caches: Vec<BTreeMap<String, Vec<u8>>> = bincode::deserialize(snapshot.get_ref())
-            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+        let snap: (Vec<BTreeMap<String, Vec<u8>>>, Vec<u8>) =
+            bincode::deserialize(snapshot.get_ref())
+                .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+        // let caches: Vec<BTreeMap<String, Vec<u8>>> = bincode::deserialize(snapshot.get_ref())
+        //     .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
 
         // make sure to hold the metadata lock the whole time
         let mut data = self.data.write().await;
 
-        for (idx, kv_data) in caches.into_iter().enumerate() {
+        for (idx, kv_data) in snap.0.into_iter().enumerate() {
             let (ack, rx) = oneshot::channel();
             self.tx_caches
                 .get(idx)
@@ -342,6 +362,18 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                 .expect("kv handler to always be running");
             rx.await
                 .expect("to always receive an answer from the kv handler");
+        }
+
+        #[cfg(feature = "dlock")]
+        {
+            let locks: HashMap<String, dlock_handler::LockQueue> =
+                bincode::deserialize(&snap.1).unwrap();
+            let (ack, rx) = oneshot::channel();
+            self.tx_dlock
+                .send(LockRequest::SnapshotInstall((locks, ack)))
+                .expect("locks handler to always be running");
+            rx.await
+                .expect("to always get an answer from locks handler");
         }
 
         data.last_applied_log_id = meta.last_log_id;

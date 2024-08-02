@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use openraft::LogState;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ops::Add;
 use std::sync::atomic::AtomicU64;
 use std::thread;
@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 use tokio::task;
 use tracing::{error, info, warn};
 
-const LOCK_VALID: chrono::Duration = chrono::Duration::seconds(10);
+const LOCK_VALID_SECONDS: i64 = 10;
 
 pub enum LockRequest {
     /// used for a first try lock without coming from a queue
@@ -20,6 +20,8 @@ pub enum LockRequest {
     Release(LockReleasePayload),
     // Refresh(LockRequestPayload),
     Await(LockAwaitPayload),
+    SnapshotBuild(oneshot::Sender<HashMap<String, LockQueue>>),
+    SnapshotInstall((HashMap<String, LockQueue>, oneshot::Sender<()>)),
 }
 
 pub struct LockRequestPayload {
@@ -46,10 +48,10 @@ pub enum LockState {
     Released,
 }
 
-#[derive(Debug)]
-struct LockQueue {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockQueue {
     current_ticket: Option<u64>,
-    exp: DateTime<Utc>,
+    exp: i64,
     queue: VecDeque<u64>,
 }
 
@@ -68,7 +70,7 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
     while let Ok(req) = rx.recv_async().await {
         match req {
             LockRequest::Lock(LockRequestPayload { key, log_id, ack }) => {
-                let now = Utc::now();
+                let now = Utc::now().timestamp();
                 if let Some(lock) = locks.get_mut(key.as_ref()) {
                     if lock.exp < now || lock.current_ticket.is_none() {
                         let front = lock.queue.front();
@@ -76,7 +78,7 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
                             if *ticket == log_id {
                                 lock.queue.pop_front();
                                 lock.current_ticket = Some(log_id);
-                                lock.exp = now.add(LOCK_VALID);
+                                lock.exp = now + LOCK_VALID_SECONDS;
                                 ack.send(LockState::Locked(log_id)).unwrap();
                             } else {
                                 lock.queue.push_back(log_id);
@@ -85,7 +87,7 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
                         } else {
                             lock.queue.pop_front();
                             lock.current_ticket = Some(log_id);
-                            lock.exp = now.add(LOCK_VALID);
+                            lock.exp = now + LOCK_VALID_SECONDS;
                             ack.send(LockState::Locked(log_id)).unwrap();
                         }
                     } else {
@@ -97,7 +99,7 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
                         key.to_string(),
                         LockQueue {
                             current_ticket: Some(log_id),
-                            exp: now.add(LOCK_VALID),
+                            exp: now + LOCK_VALID_SECONDS,
                             queue: Default::default(),
                         },
                     );
@@ -122,7 +124,7 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
                     );
 
                     lock.current_ticket = Some(first);
-                    lock.exp = Utc::now().add(LOCK_VALID);
+                    lock.exp = Utc::now().timestamp() + LOCK_VALID_SECONDS;
                     ack.send(LockState::Locked(log_id)).unwrap();
                 } else {
                     panic!("The lock should always exist when LockRequest::Acquire");
@@ -168,7 +170,7 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
             }
 
             LockRequest::Await(LockAwaitPayload { key, id, ack }) => {
-                let now = Utc::now();
+                let now = Utc::now().timestamp();
 
                 if let Some(lock) = locks.get_mut(key.as_ref()) {
                     if lock.exp < now || lock.current_ticket.is_none() {
@@ -177,7 +179,7 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
                             if *ticket == id {
                                 lock.queue.pop_front();
                                 lock.current_ticket = Some(id);
-                                lock.exp = now.add(LOCK_VALID);
+                                lock.exp = now + LOCK_VALID_SECONDS;
                                 ack.send(LockState::Locked(id)).unwrap();
                             } else if let Some(queue) = queues.get_mut(key.as_ref()) {
                                 queue.push((id, ack));
@@ -195,6 +197,13 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
                 } else {
                     panic!("The lock should always exist when we receive an await");
                 }
+            }
+
+            LockRequest::SnapshotBuild(ack) => ack.send(locks.clone()).unwrap(),
+
+            LockRequest::SnapshotInstall((data, ack)) => {
+                locks = data;
+                ack.send(()).unwrap()
             }
         }
     }
