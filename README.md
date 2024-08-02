@@ -83,13 +83,13 @@ in case of any errors or problems.
   faster method with more manual work
 - in addition to SQLite - multiple in-memory K/V caches with optional independent TTL per entry per cache
 - listen / notify to send real-time messages through the Raft
+- `dlock` feature provides access to distributed locks
 - integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
   done
   ![dashboard screenshot](https://raw.githubusercontent.com/sebadob/hiqlite/main/dashboard/screenshot.png)
 
 ### TODOs before v0.1.0
 
-- explore possibilities to implement distributed locks
 - fully capable remote client in case you don't embed Hiqlite
 - proper documentation
 - more examples
