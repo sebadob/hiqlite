@@ -18,7 +18,6 @@ pub enum LockRequest {
     /// used after an await to acquire the lock now
     Acquire(LockRequestPayload),
     Release(LockReleasePayload),
-    // Refresh(LockRequestPayload),
     Await(LockAwaitPayload),
     SnapshotBuild(oneshot::Sender<HashMap<String, LockQueue>>),
     SnapshotInstall((HashMap<String, LockQueue>, oneshot::Sender<()>)),
@@ -64,8 +63,6 @@ pub fn spawn() -> flume::Sender<LockRequest> {
 async fn lock_handler(rx: flume::Receiver<LockRequest>) {
     let mut locks: HashMap<String, LockQueue> = HashMap::new();
     let mut queues: HashMap<String, Vec<(u64, oneshot::Sender<LockState>)>> = HashMap::new();
-
-    let rnd = cryptr::utils::secure_random_alnum(4);
 
     while let Ok(req) = rx.recv_async().await {
         match req {
