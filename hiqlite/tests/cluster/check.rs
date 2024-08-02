@@ -31,11 +31,18 @@ pub async fn is_client_db_healthy(client: &Client) -> Result<(), Error> {
 
     #[cfg(feature = "cache")]
     {
-        use crate::cache::KEY;
+        use crate::cache::{KEY, KEY_2, VALUE, VALUE_2};
         use crate::Cache;
 
         let v: String = client.get(Cache::One, KEY).await?.unwrap();
-        assert_eq!(&v, crate::cache::VALUE);
+        assert_eq!(&v, VALUE);
+        let v: String = client.get(Cache::Two, KEY_2).await?.unwrap();
+        assert_eq!(&v, VALUE_2);
+
+        let v: Option<String> = client.get(Cache::One, KEY_2).await?;
+        assert!(v.is_none());
+        let v: Option<String> = client.get(Cache::Two, KEY).await?;
+        assert!(v.is_none());
     }
 
     Ok(())

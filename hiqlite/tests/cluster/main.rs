@@ -30,6 +30,7 @@ pub const TEST_DATA_DIR: &str = "tests/data_test";
 enum Cache {
     One,
     Two,
+    Three,
 }
 
 #[tokio::test(flavor = "multi_thread")]

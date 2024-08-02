@@ -7,6 +7,9 @@ use tokio::time;
 pub const KEY: &str = "my key 1";
 pub const VALUE: &str = "test value 123";
 
+pub const KEY_2: &str = "my key 2";
+pub const VALUE_2: &str = "test value 456";
+
 pub async fn test_cache(
     client_1: &Client,
     client_2: &Client,
@@ -87,6 +90,27 @@ pub async fn test_cache(
     let v: Option<String> = client_3.get(Cache::One, key_long).await?;
     assert!(v.is_none());
 
+    log("Test cache separation");
+    client_1
+        .put(Cache::One, KEY, &VALUE.to_string(), None)
+        .await?;
+    let v: String = client_1.get(Cache::One, KEY).await?.unwrap();
+    assert_eq!(&v, VALUE);
+    let v: Option<String> = client_1.get(Cache::Two, KEY).await?;
+    assert!(v.is_none());
+    let v: Option<String> = client_1.get(Cache::Three, KEY).await?;
+    assert!(v.is_none());
+
+    client_1
+        .put(Cache::Two, KEY_2, &VALUE_2.to_string(), None)
+        .await?;
+    let v: String = client_1.get(Cache::Two, KEY_2).await?.unwrap();
+    assert_eq!(&v, VALUE_2);
+    let v: Option<String> = client_1.get(Cache::One, KEY_2).await?;
+    assert!(v.is_none());
+    let v: Option<String> = client_1.get(Cache::Three, KEY_2).await?;
+    assert!(v.is_none());
+
     insert_test_value_cache(client_1).await?;
 
     Ok(())
@@ -96,6 +120,9 @@ pub async fn insert_test_value_cache(client: &Client) -> Result<(), Error> {
     log("Insert a test value to be able to test replication after self-healing");
     client
         .put(Cache::One, KEY, &VALUE.to_string(), None)
+        .await?;
+    client
+        .put(Cache::Two, KEY_2, &VALUE_2.to_string(), None)
         .await?;
 
     Ok(())
