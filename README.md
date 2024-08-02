@@ -89,6 +89,8 @@ in case of any errors or problems.
 
 ### TODOs before v0.1.0
 
+- make it possible to create multiple strongly-typed caches
+- explore possibilities to implement distributed locks
 - fully capable remote client in case you don't embed Hiqlite
 - proper documentation
 - more examples
