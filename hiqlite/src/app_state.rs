@@ -88,6 +88,6 @@ pub struct StateRaftDB {
 pub struct StateRaftCache {
     pub raft: openraft::Raft<TypeConfigKV>,
     pub lock: Mutex<()>,
-    pub tx_kv: flume::Sender<CacheRequestHandler>,
+    pub tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     pub rx_notify: flume::Receiver<(i64, Vec<u8>)>,
 }

@@ -31,7 +31,10 @@ pub async fn is_client_db_healthy(client: &Client) -> Result<(), Error> {
 
     #[cfg(feature = "cache")]
     {
-        let v: String = client.get(crate::cache::KEY).await?.unwrap();
+        use crate::cache::KEY;
+        use crate::Cache;
+
+        let v: String = client.get(Cache::One, KEY).await?.unwrap();
         assert_eq!(&v, crate::cache::VALUE);
     }
 

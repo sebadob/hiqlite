@@ -74,6 +74,12 @@ struct Entity {
     pub description: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, hiqlite::EnumIter, hiqlite::ToPrimitive)]
+enum Cache {
+    One,
+    Two,
+}
+
 // This impl is needed for the more efficient and faster `query_map()`
 impl<'r> From<Row<'r>> for Entity {
     fn from(mut row: Row<'r>) -> Self {
@@ -128,7 +134,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
     // the others will go to sleep
     let is_node_1 = config.node_id == 1;
 
-    let client = start_node(config).await?;
+    let client = start_node::<Cache>(config).await?;
     let mut shutdown_handle = client.shutdown_handle()?;
 
     // give the client some time to initialize everything

@@ -1,5 +1,6 @@
 use crate::self_heal::test_self_healing;
 use hiqlite::Error;
+use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
 use std::{env, process};
@@ -23,6 +24,13 @@ mod cache;
 mod listen_notify;
 
 pub const TEST_DATA_DIR: &str = "tests/data_test";
+
+#[cfg(feature = "cache")]
+#[derive(Debug, Serialize, Deserialize, hiqlite::EnumIter, hiqlite::ToPrimitive)]
+enum Cache {
+    One,
+    Two,
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_cluster() {

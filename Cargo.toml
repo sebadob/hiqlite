@@ -36,6 +36,8 @@ http-body-util = "0.1.2"
 hyper = { version = "1.4.1", features = ["client", "http2"] }
 hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
 mime_guess = "2.0.5"
+num-traits = "0.2.19"
+num-derive = "0.4.2"
 openraft = { version = "0.9.13", features = ["serde", "storage-v2"] }
 #redb = "2.1.1"
 reqwest = { version = "0.12", default-features = false, features = [
@@ -50,6 +52,7 @@ serde = { version = "1.0.114", features = ["derive"] }
 serde_json = "1.0.57"
 serde_rusqlite = "0.35.0"
 sha2 = { version = "0.10.8", features = ["asm"] }
+strum = { version = "0.26.3", features = ["derive"] }
 thiserror = "1.0.61"
 tokio = { version = "1.38.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.0", features = ["ring"] }

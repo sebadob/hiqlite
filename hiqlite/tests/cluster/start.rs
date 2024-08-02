@@ -1,12 +1,12 @@
-use crate::{log, TEST_DATA_DIR};
+use crate::{log, Cache, TEST_DATA_DIR};
 use hiqlite::{start_node, Client, Error, Node, NodeConfig};
 use std::time::Duration;
 use tokio::{fs, task, time};
 
 pub async fn start_test_cluster() -> Result<(Client, Client, Client), Error> {
-    let handle_client_1 = task::spawn(start_node(build_config(1).await));
-    let handle_client_2 = task::spawn(start_node(build_config(2).await));
-    let handle_client_3 = task::spawn(start_node(build_config(3).await));
+    let handle_client_1 = task::spawn(start_node::<Cache>(build_config(1).await));
+    let handle_client_2 = task::spawn(start_node::<Cache>(build_config(2).await));
+    let handle_client_3 = task::spawn(start_node::<Cache>(build_config(3).await));
 
     let client_1 = handle_client_1.await??;
     let client_2 = handle_client_2.await??;

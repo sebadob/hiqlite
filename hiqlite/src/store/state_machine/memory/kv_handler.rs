@@ -5,10 +5,12 @@ use openraft::{Snapshot, StorageError};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::sync::Arc;
+use std::thread;
 use tokio::sync::{oneshot, RwLock};
 use tokio::task;
-use tracing::warn;
+use tracing::{info, warn};
 
 #[derive(Debug)]
 pub enum CacheRequestHandler {
@@ -19,13 +21,22 @@ pub enum CacheRequestHandler {
     SnapshotInstall((BTreeMap<String, Vec<u8>>, oneshot::Sender<()>)),
 }
 
-pub fn spawn() -> flume::Sender<CacheRequestHandler> {
+pub fn spawn<C: Debug>(cache: C) -> flume::Sender<CacheRequestHandler> {
     let (tx, rx) = flume::unbounded();
-    task::spawn(kv_handler(rx));
+    let cache_name = format!("{:?}", cache);
+
+    task::spawn(kv_handler(cache_name, rx));
+
     tx
 }
 
-async fn kv_handler(rx: flume::Receiver<CacheRequestHandler>) {
+async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>) {
+    info!(
+        "Cache {} running on Thread {:?}",
+        cache_name,
+        thread::current().id()
+    );
+
     let mut data: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
     while let Ok(req) = rx.recv_async().await {
@@ -47,5 +58,5 @@ async fn kv_handler(rx: flume::Receiver<CacheRequestHandler>) {
         }
     }
 
-    warn!("cache::kv_handler exiting");
+    warn!("cache::kv_handler for {} exiting", cache_name);
 }

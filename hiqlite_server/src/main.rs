@@ -6,6 +6,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 mod args;
+mod cache;
 mod config;
 mod password;
 
@@ -16,7 +17,7 @@ async fn main() -> Result<(), hiqlite::Error> {
             init_logging(&args.log_level);
 
             let node_config = config::build_node_config(args)?;
-            let client = hiqlite::start_node(node_config).await?;
+            let client = hiqlite::start_node::<cache::Cache>(node_config).await?;
 
             let mut shutdown_handle = client.shutdown_handle()?;
             shutdown_handle.wait().await?;

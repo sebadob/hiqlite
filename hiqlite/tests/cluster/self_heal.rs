@@ -1,5 +1,5 @@
 use crate::start::build_config;
-use crate::{check, log, TEST_DATA_DIR};
+use crate::{check, log, Cache, TEST_DATA_DIR};
 use hiqlite::{start_node, Client, Error};
 use std::time::Duration;
 use tokio::{fs, time};
@@ -110,7 +110,7 @@ async fn shutdown_lock_sm_db_restart(client: Client, node_id: u64) -> Result<Cli
     fs::File::create_new(path_lock_file).await?;
 
     log(format!("Re-starting client {}", node_id));
-    let client = start_node(build_config(node_id).await).await?;
+    let client = start_node::<Cache>(build_config(node_id).await).await?;
     time::sleep(Duration::from_millis(150)).await;
 
     Ok(client)
@@ -126,7 +126,7 @@ async fn shutdown_remove_all_restart(client: Client, node_id: u64) -> Result<Cli
     fs::remove_dir_all(folder).await?;
 
     log(format!("Re-starting client {}", node_id));
-    let client = start_node(build_config(node_id).await).await?;
+    let client = start_node::<Cache>(build_config(node_id).await).await?;
     time::sleep(Duration::from_millis(150)).await;
 
     Ok(client)
@@ -142,7 +142,7 @@ async fn shutdown_remove_sm_db_restart(client: Client, node_id: u64) -> Result<C
     fs::remove_dir_all(folder_sm_db).await?;
 
     log(format!("Re-starting client {}", node_id));
-    let client = start_node(build_config(node_id).await).await?;
+    let client = start_node::<Cache>(build_config(node_id).await).await?;
     time::sleep(Duration::from_millis(150)).await;
 
     Ok(client)

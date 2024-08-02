@@ -5,6 +5,7 @@ use std::io::Cursor;
 mod cache_ttl_handler;
 pub mod kv_handler;
 pub mod state_machine;
+mod test;
 
 openraft::declare_raft_types!(
     pub TypeConfigKV:

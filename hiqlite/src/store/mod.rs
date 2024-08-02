@@ -5,12 +5,16 @@ use crate::store::state_machine::sqlite::state_machine::SqlitePool;
 use crate::store::state_machine::sqlite::writer::WriterRequest;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::{init, Error, NodeConfig, NodeId, RaftConfig};
+use num_traits::ToPrimitive;
 use openraft::storage::RaftLogStorage;
 use openraft::{Raft, StorageError};
 use rusqlite::OpenFlags;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cmp::PartialEq;
+use std::fmt::Debug;
 use std::sync::Arc;
+use strum::IntoEnumIterator;
 
 #[cfg(feature = "cache")]
 use crate::app_state::StateRaftCache;
@@ -96,12 +100,15 @@ pub(crate) async fn start_raft_db(
 }
 
 #[cfg(feature = "cache")]
-pub(crate) async fn start_raft_cache(
+pub(crate) async fn start_raft_cache<C>(
     node_config: NodeConfig,
     raft_config: Arc<RaftConfig>,
-) -> Result<StateRaftCache, Error> {
+) -> Result<StateRaftCache, Error>
+where
+    C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+{
     let log_store = logs::memory::LogStoreMemory::new();
-    let state_machine_store = Arc::new(StateMachineMemory::new().await.unwrap());
+    let state_machine_store = Arc::new(StateMachineMemory::new::<C>().await.unwrap());
 
     let network = NetworkStreaming {
         node_id: node_config.node_id,
@@ -109,7 +116,7 @@ pub(crate) async fn start_raft_cache(
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
     };
 
-    let tx_kv = state_machine_store.tx_kv.clone();
+    let tx_caches = state_machine_store.tx_caches.clone();
     let rx_notify = state_machine_store.rx_notify.clone();
 
     let raft = openraft::Raft::new(
@@ -139,7 +146,7 @@ pub(crate) async fn start_raft_cache(
     Ok(StateRaftCache {
         raft,
         lock: Default::default(),
-        tx_kv,
+        tx_caches,
         rx_notify,
     })
 }

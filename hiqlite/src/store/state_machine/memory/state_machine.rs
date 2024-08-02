@@ -1,25 +1,28 @@
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::{cache_ttl_handler, kv_handler, TypeConfigKV};
 use crate::store::StorageResult;
-use crate::{Node, NodeId};
+use crate::{Error, Node, NodeId};
+use dotenvy::var;
+use num_traits::ToPrimitive;
 use openraft::storage::RaftStateMachine;
 use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
     StorageIOError, StoredMembership,
 };
 use rusqlite::types::Type;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use strum::IntoEnumIterator;
 use tokio::fs;
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::info;
 use uuid::Uuid;
-
-// pub(crate) type KvStore = Arc<RwLock<BTreeMap<String, Vec<u8>>>>;
 
 type Entry = openraft::Entry<TypeConfigKV>;
 type SnapshotData = Cursor<Vec<u8>>;
@@ -27,11 +30,13 @@ type SnapshotData = Cursor<Vec<u8>>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CacheRequest {
     Put {
+        cache_idx: usize,
         key: Cow<'static, str>,
         value: Vec<u8>,
         expires: Option<i64>,
     },
     Delete {
+        cache_idx: usize,
         key: Cow<'static, str>,
     },
     Notify((i64, Vec<u8>)),
@@ -58,8 +63,8 @@ pub struct StateMachineMemory {
     snapshot_idx: AtomicU64,
     snapshot: Mutex<Option<Snapshot<TypeConfigKV>>>,
 
-    pub(crate) tx_kv: flume::Sender<CacheRequestHandler>,
-    tx_ttl: flume::Sender<(i64, String)>,
+    pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
+    tx_ttl: flume::Sender<(i64, (usize, String))>,
 
     tx_notify: flume::Sender<(i64, Vec<u8>)>,
     pub(crate) rx_notify: flume::Receiver<(i64, Vec<u8>)>,
@@ -70,20 +75,33 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
         let (last_log_id, last_membership, kv_bytes) = {
             let data = self.data.read().await;
 
-            let (ack, rx) = oneshot::channel();
-            self.tx_kv
-                .send(CacheRequestHandler::SnapshotBuild(ack))
-                .expect("kv handler to always be running");
-            let kvs = rx
-                .await
-                .expect("to always receive an answer from kv handler");
-            let kv_bytes =
-                bincode::serialize(&kvs).map_err(|err| StorageIOError::read_state_machine(&err))?;
+            // let (ack, rx) = oneshot::channel();
+            // self.tx_kv
+            //     .send(CacheRequestHandler::SnapshotBuild(ack))
+            //     .expect("kv handler to always be running");
+            // let kvs = rx
+            //     .await
+            //     .expect("to always receive an answer from kv handler");
+            // let kv_bytes =
+            //     bincode::serialize(&kvs).map_err(|err| StorageIOError::read_state_machine(&err))?;
+
+            let mut caches = Vec::with_capacity(self.tx_caches.len());
+            for tx in &self.tx_caches {
+                let (ack, rx) = oneshot::channel();
+                tx.send(CacheRequestHandler::SnapshotBuild(ack))
+                    .expect("kv handler to always be running");
+                let snap = rx
+                    .await
+                    .expect("to always receive an answer from kv handler");
+                caches.push(snap);
+            }
+            let snapshot_bytes = bincode::serialize(&caches)
+                .map_err(|err| StorageIOError::read_state_machine(&err))?;
 
             let last_applied_log = data.last_applied_log_id;
             let last_membership = data.last_membership.clone();
 
-            (last_applied_log, last_membership, kv_bytes)
+            (last_applied_log, last_membership, snapshot_bytes)
         };
 
         let snapshot_idx = self.snapshot_idx.fetch_add(1, Ordering::Relaxed) + 1;
@@ -112,8 +130,29 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
 }
 
 impl StateMachineMemory {
-    pub(crate) async fn new() -> Result<Self, StorageError<NodeId>> {
-        let tx_kv = kv_handler::spawn();
+    pub(crate) async fn new<C>() -> Result<Self, Error>
+    where
+        C: Debug + IntoEnumIterator + ToPrimitive,
+    {
+        // we must make sure that the index is correct and in order
+        let mut len = 0;
+        for variant in C::iter() {
+            if variant.to_usize().unwrap() != len {
+                return Err(Error::Config(
+                    "Cache Index enum must start at '0' and have no gaps in iter()".into(),
+                ));
+            }
+            len += 1;
+        }
+        if len == 0 {
+            return Err(Error::Config("Cache Index enum is empty".into()));
+        }
+
+        // we will start a separate task for each given cache index
+        let mut tx_kv = Vec::with_capacity(len);
+        for variant in C::iter() {
+            tx_kv.push(kv_handler::spawn(variant));
+        }
         let tx_ttl = cache_ttl_handler::spawn(tx_kv.clone());
 
         let (tx_notify, rx_notify) = flume::unbounded();
@@ -122,7 +161,7 @@ impl StateMachineMemory {
             data: Default::default(),
             snapshot_idx: AtomicU64::new(0),
             snapshot: Default::default(),
-            tx_kv,
+            tx_caches: tx_kv,
             tx_ttl,
             tx_notify,
             rx_notify,
@@ -162,17 +201,22 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
 
                 EntryPayload::Normal(req) => match req {
                     CacheRequest::Put {
+                        cache_idx,
                         key,
                         value,
                         expires,
                     } => {
+                        let idx = cache_idx.to_usize().unwrap();
+
                         if let Some(exp) = expires {
                             self.tx_ttl
-                                .send((exp, key.to_string()))
+                                .send((exp, (idx, key.to_string())))
                                 .expect("cache ttl handler to always be running");
                         }
 
-                        self.tx_kv
+                        self.tx_caches
+                            .get(idx)
+                            .unwrap()
                             .send(CacheRequestHandler::Put((key.to_string(), value)))
                             .expect("cache ttl handler to always be running");
 
@@ -180,8 +224,12 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         // data.kvs.insert(key.into(), value);
                     }
 
-                    CacheRequest::Delete { key } => {
-                        self.tx_kv
+                    CacheRequest::Delete { cache_idx, key } => {
+                        let idx = cache_idx.to_usize().unwrap();
+
+                        self.tx_caches
+                            .get(idx)
+                            .unwrap()
                             .send(CacheRequestHandler::Delete(key.to_string()))
                             .expect("cache ttl handler to always be running");
                         // let mut lock = self.kvs.write().await;
@@ -227,17 +275,31 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         meta: &SnapshotMeta<NodeId, Node>,
         snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
-        let kvs: BTreeMap<String, Vec<u8>> = bincode::deserialize(snapshot.get_ref())
+        let caches: Vec<BTreeMap<String, Vec<u8>>> = bincode::deserialize(snapshot.get_ref())
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+        // let kvs: BTreeMap<String, Vec<u8>> = bincode::deserialize(snapshot.get_ref())
+        //     .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
 
+        // make sure to hold the metadata lock the whole time
         let mut data = self.data.write().await;
 
-        let (ack, rx) = oneshot::channel();
-        self.tx_kv
-            .send(CacheRequestHandler::SnapshotInstall((kvs, ack)))
-            .expect("kv handler to always be running");
-        rx.await
-            .expect("to always receive an answer from the kv handler");
+        for (idx, kv_data) in caches.into_iter().enumerate() {
+            let (ack, rx) = oneshot::channel();
+            self.tx_caches
+                .get(idx)
+                .unwrap()
+                .send(CacheRequestHandler::SnapshotInstall((kv_data, ack)))
+                .expect("kv handler to always be running");
+            rx.await
+                .expect("to always receive an answer from the kv handler");
+        }
+
+        // let (ack, rx) = oneshot::channel();
+        // self.tx_kv
+        //     .send(CacheRequestHandler::SnapshotInstall((kvs, ack)))
+        //     .expect("kv handler to always be running");
+        // rx.await
+        //     .expect("to always receive an answer from the kv handler");
 
         data.last_applied_log_id = meta.last_log_id;
         data.last_membership = meta.last_membership.clone();

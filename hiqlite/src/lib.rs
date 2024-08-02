@@ -8,16 +8,21 @@ use crate::network::raft_server;
 use crate::network::{api, management};
 use axum::routing::{get, post};
 use axum::Router;
+use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use strum::IntoEnumIterator;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task;
 use tracing::info;
+
+#[cfg(feature = "dashboard")]
+use std::sync::atomic::AtomicUsize;
 
 pub use crate::client::Client;
 pub use crate::error::Error;
@@ -29,8 +34,12 @@ pub use openraft::SnapshotPolicy;
 pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
 
-#[cfg(feature = "dashboard")]
-use std::sync::atomic::AtomicUsize;
+#[cfg(feature = "cache")]
+pub use num_derive::ToPrimitive;
+#[cfg(feature = "cache")]
+pub use num_traits;
+#[cfg(feature = "cache")]
+pub use strum::EnumIter;
 
 mod app_state;
 mod client;
@@ -91,7 +100,29 @@ impl Display for Node {
 /// Starts a Raft node.
 /// # Panics
 /// If an incorrect `node_config` was given.
+#[cfg(not(feature = "cache"))]
 pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
+    #[derive(Debug, serde::Serialize, serde::Deserialize, EnumIter, ToPrimitive)]
+    enum Empty {}
+
+    start_node_inner::<Empty>(node_config).await
+}
+
+/// Starts a Raft node.
+/// # Panics
+/// If an incorrect `node_config` was given.
+#[cfg(feature = "cache")]
+pub async fn start_node<C>(node_config: NodeConfig) -> Result<Client, Error>
+where
+    C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+{
+    start_node_inner::<C>(node_config).await
+}
+
+async fn start_node_inner<C>(node_config: NodeConfig) -> Result<Client, Error>
+where
+    C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+{
     #[cfg(not(any(feature = "cache", feature = "sqlite")))]
     panic!("you must enable at least one state machine with either 'cache' or 'sqlite' feature");
 
@@ -122,7 +153,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
     #[cfg(feature = "sqlite")]
     let raft_db = store::start_raft_db(node_config.clone(), raft_config.clone()).await?;
     #[cfg(feature = "cache")]
-    let raft_cache = store::start_raft_cache(node_config.clone(), raft_config).await?;
+    let raft_cache = store::start_raft_cache::<C>(node_config.clone(), raft_config).await?;
 
     let (api_addr, rpc_addr) = {
         let node = node_config
