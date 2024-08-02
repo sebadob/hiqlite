@@ -18,16 +18,12 @@ mod self_heal;
 mod start;
 mod transaction;
 
-#[cfg(feature = "cache")]
 mod cache;
-#[cfg(feature = "dlock")]
 mod dlock;
-#[cfg(feature = "cache")]
 mod listen_notify;
 
 pub const TEST_DATA_DIR: &str = "tests/data_test";
 
-#[cfg(feature = "cache")]
 #[derive(Debug, Serialize, Deserialize, hiqlite::EnumIter, hiqlite::ToPrimitive)]
 enum Cache {
     One,
@@ -70,47 +66,36 @@ async fn exec_tests() -> Result<(), Error> {
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
     log("Cluster is healthy");
 
-    #[cfg(feature = "sqlite")]
     debug(&client_1.metrics_db().await?);
-    #[cfg(feature = "cache")]
     debug(&client_1.metrics_cache().await?);
 
-    #[cfg(feature = "sqlite")]
-    {
-        log("Starting migration tests");
-        migration::test_migrations(&client_1, &client_2, &client_3).await?;
-        log("Migration tests finished");
+    log("Starting migration tests");
+    migration::test_migrations(&client_1, &client_2, &client_3).await?;
+    log("Migration tests finished");
 
-        log("Starting data insertion and query tests");
-        execute_query::test_execute_query(&client_1, &client_2, &client_3).await?;
-        log("Basic query tests finished");
+    log("Starting data insertion and query tests");
+    execute_query::test_execute_query(&client_1, &client_2, &client_3).await?;
+    log("Basic query tests finished");
 
-        log("Starting Transaction tests");
-        transaction::test_transactions(&client_1, &client_2, &client_3).await?;
-        log("Transaction tests finished");
+    log("Starting Transaction tests");
+    transaction::test_transactions(&client_1, &client_2, &client_3).await?;
+    log("Transaction tests finished");
 
-        log("Starting batch tests");
-        batch::test_batch(&client_1, &client_2, &client_3).await?;
-        log("Batch tests finished");
-    }
+    log("Starting batch tests");
+    batch::test_batch(&client_1, &client_2, &client_3).await?;
+    log("Batch tests finished");
 
-    #[cfg(feature = "cache")]
-    {
-        log("Test cache operations");
-        cache::test_cache(&client_1, &client_2, &client_3).await?;
-        log("Cache operations finished");
+    log("Test cache operations");
+    cache::test_cache(&client_1, &client_2, &client_3).await?;
+    log("Cache operations finished");
 
-        log("Test listen / notify");
-        listen_notify::test_listen_notify(&client_1, &client_2, &client_3).await?;
-        log("listen / notify finished");
-    }
+    log("Test listen / notify");
+    listen_notify::test_listen_notify(&client_1, &client_2, &client_3).await?;
+    log("listen / notify finished");
 
-    #[cfg(feature = "dlock")]
-    {
-        log("Test distributed locks");
-        dlock::test_dlock(&client_1, &client_2, &client_3).await?;
-        log("Distributed locks tests finished");
-    }
+    log("Test distributed locks");
+    dlock::test_dlock(&client_1, &client_2, &client_3).await?;
+    log("Distributed locks tests finished");
 
     log("Test shutdown and restart");
     client_1.shutdown().await?;
@@ -129,7 +114,6 @@ async fn exec_tests() -> Result<(), Error> {
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
     log("Cluster is healthy again");
 
-    #[cfg(feature = "cache")]
     cache::insert_test_value_cache(&client_1).await?;
 
     log("Make sure all data is ok");
@@ -161,7 +145,6 @@ async fn exec_tests() -> Result<(), Error> {
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
     log("Cluster is healthy again");
 
-    #[cfg(feature = "cache")]
     cache::insert_test_value_cache(&client_1).await?;
 
     time::sleep(Duration::from_millis(1000)).await;
