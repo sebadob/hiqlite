@@ -63,6 +63,7 @@ impl ServerTlsConfig {
 }
 
 pub fn build_tls_config(tls_no_verify: bool) -> Arc<ClientConfig> {
+    #[allow(unused_mut)]
     let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
     #[cfg(feature = "webpki-roots")]
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());

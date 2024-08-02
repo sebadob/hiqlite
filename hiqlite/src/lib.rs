@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -29,6 +28,9 @@ pub use migration::AppliedMigration;
 pub use openraft::SnapshotPolicy;
 pub use store::state_machine::sqlite::param::Param;
 pub use tls::ServerTlsConfig;
+
+#[cfg(feature = "dashboard")]
+use std::sync::atomic::AtomicUsize;
 
 mod app_state;
 mod client;

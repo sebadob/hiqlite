@@ -1,4 +1,3 @@
-use crate::client::stream::ClientStreamReq;
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::SqlitePool;
 use crate::store::state_machine::sqlite::writer::WriterRequest;
@@ -6,7 +5,6 @@ use crate::NodeId;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -19,7 +17,11 @@ use crate::store::state_machine::memory::TypeConfigKV;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
 #[cfg(feature = "dashboard")]
+use crate::client::stream::ClientStreamReq;
+#[cfg(feature = "dashboard")]
 use crate::dashboard::DashboardState;
+#[cfg(feature = "dashboard")]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -65,6 +67,7 @@ pub struct AppState {
     pub tx_client_stream: flume::Sender<ClientStreamReq>,
 }
 
+#[cfg(feature = "dashboard")]
 impl AppState {
     #[inline(always)]
     pub fn new_request_id(&self) -> usize {
