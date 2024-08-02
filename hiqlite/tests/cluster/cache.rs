@@ -47,6 +47,8 @@ pub async fn test_cache(
     let key = "key exp";
     let value = "some expiring value".to_string();
     client_1.put(Cache::One, key, &value, Some(1)).await?;
+    client_1.put(Cache::Two, key, &value, Some(1)).await?;
+    client_1.put(Cache::Three, key, &value, Some(1)).await?;
 
     let key_long = "key long exp";
     let value_long = "some other expiring value".to_string();
@@ -63,6 +65,20 @@ pub async fn test_cache(
     let v: String = client_3.get(Cache::One, key).await?.unwrap();
     assert_eq!(v, value);
 
+    let v: String = client_1.get(Cache::Two, key).await?.unwrap();
+    assert_eq!(v, value);
+    let v: String = client_2.get(Cache::Two, key).await?.unwrap();
+    assert_eq!(v, value);
+    let v: String = client_3.get(Cache::Two, key).await?.unwrap();
+    assert_eq!(v, value);
+
+    let v: String = client_1.get(Cache::Three, key).await?.unwrap();
+    assert_eq!(v, value);
+    let v: String = client_2.get(Cache::Three, key).await?.unwrap();
+    assert_eq!(v, value);
+    let v: String = client_3.get(Cache::Three, key).await?.unwrap();
+    assert_eq!(v, value);
+
     // it should be gone shortly after the expiry
     time::sleep(Duration::from_millis(600)).await;
     let v: Option<String> = client_1.get(Cache::One, key).await?;
@@ -70,6 +86,20 @@ pub async fn test_cache(
     let v: Option<String> = client_2.get(Cache::One, key).await?;
     assert!(v.is_none());
     let v: Option<String> = client_3.get(Cache::One, key).await?;
+    assert!(v.is_none());
+
+    let v: Option<String> = client_1.get(Cache::Two, key).await?;
+    assert!(v.is_none());
+    let v: Option<String> = client_2.get(Cache::Two, key).await?;
+    assert!(v.is_none());
+    let v: Option<String> = client_3.get(Cache::Two, key).await?;
+    assert!(v.is_none());
+
+    let v: Option<String> = client_1.get(Cache::Three, key).await?;
+    assert!(v.is_none());
+    let v: Option<String> = client_2.get(Cache::Three, key).await?;
+    assert!(v.is_none());
+    let v: Option<String> = client_3.get(Cache::Three, key).await?;
     assert!(v.is_none());
 
     // the 3-second value should still be there

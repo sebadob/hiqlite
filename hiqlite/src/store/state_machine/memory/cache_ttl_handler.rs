@@ -8,19 +8,17 @@ use tokio::sync::RwLock;
 use tokio::{task, time};
 use tracing::warn;
 
-pub fn spawn(
-    tx_kv: Vec<flume::Sender<CacheRequestHandler>>,
-) -> flume::Sender<(i64, (usize, String))> {
+pub fn spawn(tx_kv: flume::Sender<CacheRequestHandler>) -> flume::Sender<(i64, String)> {
     let (tx, rx) = flume::unbounded();
     task::spawn(ttl_handler(tx_kv, rx));
     tx
 }
 
 async fn ttl_handler(
-    tx_kv: Vec<flume::Sender<CacheRequestHandler>>,
-    rx: flume::Receiver<(i64, (usize, String))>,
+    tx_kv: flume::Sender<CacheRequestHandler>,
+    rx: flume::Receiver<(i64, String)>,
 ) {
-    let mut data: BTreeMap<i64, (usize, String)> = BTreeMap::new();
+    let mut data: BTreeMap<i64, String> = BTreeMap::new();
 
     loop {
         let sleep_exp = {
@@ -30,10 +28,8 @@ async fn ttl_handler(
 
             if let Some(exp) = first_exp {
                 if exp < 1 {
-                    let (idx, key) = data.pop_first().unwrap().1;
+                    let key = data.pop_first().unwrap().1;
                     tx_kv
-                        .get(idx)
-                        .unwrap()
                         .send(CacheRequestHandler::Delete(key))
                         .expect("kv handler to always be running");
                     continue;
@@ -47,8 +43,8 @@ async fn ttl_handler(
 
         tokio::select! {
             req = rx.recv_async() => {
-                if let Ok((ttl, idx_key)) = req {
-                    data.insert(ttl, idx_key);
+                if let Ok((ttl, key)) = req {
+                    data.insert(ttl, key);
                 } else {
                     break;
                 }

@@ -64,7 +64,7 @@ pub struct StateMachineMemory {
     snapshot: Mutex<Option<Snapshot<TypeConfigKV>>>,
 
     pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
-    tx_ttl: flume::Sender<(i64, (usize, String))>,
+    tx_ttls: Vec<flume::Sender<(i64, String)>>,
 
     tx_notify: flume::Sender<(i64, Vec<u8>)>,
     pub(crate) rx_notify: flume::Receiver<(i64, Vec<u8>)>,
@@ -74,16 +74,6 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfigKV>, StorageError<NodeId>> {
         let (last_log_id, last_membership, kv_bytes) = {
             let data = self.data.read().await;
-
-            // let (ack, rx) = oneshot::channel();
-            // self.tx_kv
-            //     .send(CacheRequestHandler::SnapshotBuild(ack))
-            //     .expect("kv handler to always be running");
-            // let kvs = rx
-            //     .await
-            //     .expect("to always receive an answer from kv handler");
-            // let kv_bytes =
-            //     bincode::serialize(&kvs).map_err(|err| StorageIOError::read_state_machine(&err))?;
 
             let mut caches = Vec::with_capacity(self.tx_caches.len());
             for tx in &self.tx_caches {
@@ -149,11 +139,14 @@ impl StateMachineMemory {
         }
 
         // we will start a separate task for each given cache index
-        let mut tx_kv = Vec::with_capacity(len);
+        let mut tx_caches = Vec::with_capacity(len);
+        let mut tx_ttls = Vec::with_capacity(len);
         for variant in C::iter() {
-            tx_kv.push(kv_handler::spawn(variant));
+            let tx_cache = kv_handler::spawn(variant);
+            tx_caches.push(tx_cache.clone());
+            tx_ttls.push(cache_ttl_handler::spawn(tx_cache));
         }
-        let tx_ttl = cache_ttl_handler::spawn(tx_kv.clone());
+        // let tx_ttl = cache_ttl_handler::spawn(tx_caches.clone());
 
         let (tx_notify, rx_notify) = flume::unbounded();
 
@@ -161,8 +154,8 @@ impl StateMachineMemory {
             data: Default::default(),
             snapshot_idx: AtomicU64::new(0),
             snapshot: Default::default(),
-            tx_caches: tx_kv,
-            tx_ttl,
+            tx_caches,
+            tx_ttls,
             tx_notify,
             rx_notify,
         })
@@ -209,8 +202,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         let idx = cache_idx.to_usize().unwrap();
 
                         if let Some(exp) = expires {
-                            self.tx_ttl
-                                .send((exp, (idx, key.to_string())))
+                            self.tx_ttls
+                                .get(idx)
+                                .unwrap()
+                                .send((exp, key.to_string()))
                                 .expect("cache ttl handler to always be running");
                         }
 
@@ -221,7 +216,6 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             .expect("cache ttl handler to always be running");
 
                         CacheResponse::Ok
-                        // data.kvs.insert(key.into(), value);
                     }
 
                     CacheRequest::Delete { cache_idx, key } => {
@@ -232,8 +226,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             .unwrap()
                             .send(CacheRequestHandler::Delete(key.to_string()))
                             .expect("cache ttl handler to always be running");
-                        // let mut lock = self.kvs.write().await;
-                        // data.kvs.remove(key.as_ref());
+
                         CacheResponse::Ok
                     }
 
@@ -277,8 +270,6 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     ) -> Result<(), StorageError<NodeId>> {
         let caches: Vec<BTreeMap<String, Vec<u8>>> = bincode::deserialize(snapshot.get_ref())
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
-        // let kvs: BTreeMap<String, Vec<u8>> = bincode::deserialize(snapshot.get_ref())
-        //     .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
 
         // make sure to hold the metadata lock the whole time
         let mut data = self.data.write().await;
@@ -293,13 +284,6 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
             rx.await
                 .expect("to always receive an answer from the kv handler");
         }
-
-        // let (ack, rx) = oneshot::channel();
-        // self.tx_kv
-        //     .send(CacheRequestHandler::SnapshotInstall((kvs, ack)))
-        //     .expect("kv handler to always be running");
-        // rx.await
-        //     .expect("to always receive an answer from the kv handler");
 
         data.last_applied_log_id = meta.last_log_id;
         data.last_membership = meta.last_membership.clone();

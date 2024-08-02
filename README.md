@@ -81,7 +81,7 @@ in case of any errors or problems.
   This will end up behind a `serde` feature in the future which is not implemented yet.
 - `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
   faster method with more manual work
-- in addition to SQLite - in-memory K/V store with optional independent TTL per entry
+- in addition to SQLite - multiple in-memory K/V caches with optional independent TTL per entry per cache
 - listen / notify to send real-time messages through the Raft
 - integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
   done
@@ -89,7 +89,6 @@ in case of any errors or problems.
 
 ### TODOs before v0.1.0
 
-- make it possible to create multiple strongly-typed caches
 - explore possibilities to implement distributed locks
 - fully capable remote client in case you don't embed Hiqlite
 - proper documentation
