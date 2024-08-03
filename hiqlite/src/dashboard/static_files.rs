@@ -7,13 +7,13 @@ use axum::{
 };
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
-use tracing::{error, warn};
+use tracing::debug;
 
 // cache lifetime in seconds -> 6 months
 static CACHE_CTRL_VAL: &str = "max-age=15552000, public";
 
 #[derive(RustEmbed)]
-#[folder = "../dashboard/build"]
+#[folder = "static"]
 pub struct DashboardHtml;
 
 pub async fn handler(uri: Uri, req: Request) -> response::Response {
@@ -57,10 +57,10 @@ pub async fn handler(uri: Uri, req: Request) -> response::Response {
             .unwrap(),
 
         None => {
-            error!("Asset {} not found", path);
-            for a in DashboardHtml::iter() {
-                warn!("Available asset: {}", a);
-            }
+            debug!("Asset {} not found", path);
+            // for a in DashboardHtml::iter() {
+            //     warn!("Available asset: {}", a);
+            // }
             Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::from("not found"))

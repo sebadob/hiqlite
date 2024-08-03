@@ -1,5 +1,5 @@
 use crate::start::build_config;
-use crate::{check, log, Cache, TEST_DATA_DIR};
+use crate::{cache, check, log, Cache, TEST_DATA_DIR};
 use hiqlite::{start_node, Client, Error};
 use std::time::Duration;
 use tokio::{fs, time};
@@ -12,6 +12,23 @@ pub async fn test_self_healing(
     check::is_client_db_healthy(&client_1).await?;
     check::is_client_db_healthy(&client_2).await?;
     check::is_client_db_healthy(&client_3).await?;
+
+    log("Test cache recovery from snapshot + logs");
+    let metrics = client_1.metrics_cache().await?;
+    let last_log = metrics.last_log_index.unwrap();
+    assert!(last_log > 5);
+    let client_healed = if !is_leader(&client_1, 1).await? {
+        client_1 = modify_cache_restart_after_purge(client_1, 1).await?;
+        &client_1
+    } else {
+        client_2 = modify_cache_restart_after_purge(client_2, 2).await?;
+        &client_2
+    };
+    check::is_client_db_healthy(&client_healed).await?;
+    check::is_client_db_healthy(&client_1).await?;
+    check::is_client_db_healthy(&client_2).await?;
+    check::is_client_db_healthy(&client_3).await?;
+    log("Client has self-healed successfully");
 
     log("Test recovery in case of state machine crash on non-leader");
     let client_healed = if !is_leader(&client_1, 1).await? {
@@ -95,6 +112,38 @@ pub async fn test_self_healing(
     log("client_3 shutdown complete after self heal tests");
 
     Ok(())
+}
+
+async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Result<Client, Error> {
+    // we want to trigger a snapshot -> insert 1000 items
+    for _ in 0..1000 {
+        cache::insert_test_value_cache(&client).await?;
+    }
+    // at this point, we have a snapshot -> insert a new value with TTL and make sure
+    // everything is fine after the restart and replication
+    let key = "purge_key";
+    let value = "after snap value".to_string();
+    client.put(Cache::One, key, &value, Some(5)).await?;
+
+    log(format!("Shutting down client {}", node_id));
+    client.shutdown().await?;
+    time::sleep(Duration::from_millis(100)).await;
+
+    log(format!("Re-starting client {}", node_id));
+    let client = start_node::<Cache>(build_config(node_id).await).await?;
+    time::sleep(Duration::from_millis(100)).await;
+
+    check::is_client_db_healthy(&client).await?;
+
+    time::sleep(Duration::from_millis(100)).await;
+    let v: String = client.get(Cache::One, key).await?.unwrap();
+    assert_eq!(v, value);
+
+    time::sleep(Duration::from_millis(2000)).await;
+    let v: Option<String> = client.get(Cache::One, key).await?;
+    assert!(v.is_none());
+
+    Ok(client)
 }
 
 async fn shutdown_lock_sm_db_restart(client: Client, node_id: u64) -> Result<Client, Error> {

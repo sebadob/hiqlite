@@ -77,7 +77,7 @@
     .tab {
         padding-left: 5px;
         padding-right: 20px;
-        color: var(--col-s-a);
+        color: var(--col-p-a);
         background: var(--col-tabs-bg);
         border-bottom: 2px solid var(--col-tabs-bg);
         text-align: center;
@@ -85,13 +85,13 @@
     }
 
     .tab:hover {
-        border-bottom: 2px solid var(--col-s);
+        border-bottom: 2px solid var(--col-p);
     }
 
     .selected {
-        background: var(--col-s);
+        background: var(--col-p);
         color: var(--col-tabs-sel);
-        border-bottom: 2px solid var(--col-s);
+        border-bottom: 2px solid var(--col-p);
         cursor: text;
     }
 

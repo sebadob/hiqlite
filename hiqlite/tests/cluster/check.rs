@@ -2,6 +2,9 @@ use crate::debug;
 use crate::execute_query::TestData;
 use hiqlite::{params, Client, Error, Param};
 
+use crate::cache::{KEY, KEY_2, VALUE, VALUE_2};
+use crate::Cache;
+
 pub async fn is_client_db_healthy(client: &Client) -> Result<(), Error> {
     let is_healthy = client.is_healthy().await;
     debug(&is_healthy);
@@ -25,9 +28,6 @@ pub async fn is_client_db_healthy(client: &Client) -> Result<(), Error> {
     assert_eq!(data[3].id, 21);
     assert_eq!(data[4].id, 22);
     assert_eq!(data[5].id, 23);
-
-    use crate::cache::{KEY, KEY_2, VALUE, VALUE_2};
-    use crate::Cache;
 
     let v: String = client.get(Cache::One, KEY).await?.unwrap();
     assert_eq!(&v, VALUE);

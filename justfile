@@ -1,7 +1,7 @@
 set shell := ["bash", "-uc"]
 
 export TAG := `cat Cargo.toml | grep '^version =' | cut -d " " -f3 | xargs`
-export MSRV := `cat Cargo.toml | grep '^rust-version =' | cut -d " " -f3 | xargs`
+export MSRV := `cat hiqlite/Cargo.toml | grep '^rust-version =' | cut -d " " -f3 | xargs`
 export USER :=  `echo "$(id -u):$(id -g)"`
 
 default:
@@ -99,7 +99,6 @@ test:
     set -euxo pipefail
     clear
     cargo test --features cache,dlock
-    #cargo test
 
 
 # builds the code
@@ -113,7 +112,7 @@ build ty="server":
       cd dashboard
       rm -rf build
       npm run build
-      git add build/*
+      git add ../hiqlite/static
     fi
 
 
@@ -139,6 +138,9 @@ run ty="server":
 
 # verifies the MSRV
 msrv-verify:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    cd hiqlite
     cargo msrv verify
 
 
@@ -178,11 +180,19 @@ release: verfiy-is-clean
 publish-dry: verfiy-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
-    cargo publish --dry-run
+    cargo publish --dry-run -p hiqlite
+    #cargo publish --dry-run -p hiqlite-server
 
 
-# publishes the current version to cargo.io
+# publishes the current lib version to cargo.io
 publish: verfiy-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
-    cargo publish
+    cargo publish -p hiqlite
+
+
+# publishes the hiqlite-server to cargo.io
+publish-server: verfiy-is-clean
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    cargo publish -p hiqlite-server

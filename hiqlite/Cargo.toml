@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-rust-version.workspace = true
+rust-version = "1.80.0"
 categories = ["database", "caching"]
 keywords = ["database", "sql", "sqlite", "raft", "cache"]
 description = "Hiqlite - highly-available, embeddable, raft-based SQLite + cache"
@@ -13,7 +13,6 @@ repository = "https://github.com/sebadob/hiqlite"
 
 [package.metadata.docs.rs]
 features = ["cache", "dashboard", "dlock", "shutdown-handle", "sqlite"]
-cargo-args = ["--lib"]
 
 [features]
 default = ["auto-heal", "backup", "sqlite"]

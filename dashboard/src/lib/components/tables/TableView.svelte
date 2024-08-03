@@ -25,19 +25,19 @@
     div {
         flex: 1;
         /*color: var(--col-tabs);*/
-        color: var(--col-s-a);
+        color: var(--col-p-a);
         background: var(--col-tabs-bg);
         text-align: center;
         cursor: pointer;
     }
 
     div:hover {
-        border-bottom: 2px solid var(--col-s);
+        border-bottom: 2px solid var(--col-p);
     }
 
     .selected {
-        background: var(--col-s);
+        background: var(--col-p);
         color: var(--col-tabs-sel);
-        border-bottom: 2px solid var(--col-s);
+        border-bottom: 2px solid var(--col-p);
     }
 </style>
