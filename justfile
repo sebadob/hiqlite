@@ -1,7 +1,7 @@
 set shell := ["bash", "-uc"]
 
 export TAG := `cat Cargo.toml | grep '^version =' | cut -d " " -f3 | xargs`
-export MSRV := `cat Cargo.toml | grep '^rust-version =' | cut -d " " -f3 | xargs`
+export MSRV := `cat hiqlite/Cargo.toml | grep '^rust-version =' | cut -d " " -f3 | xargs`
 export USER :=  `echo "$(id -u):$(id -g)"`
 
 default:
@@ -138,6 +138,9 @@ run ty="server":
 
 # verifies the MSRV
 msrv-verify:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    cd hiqlite
     cargo msrv verify
 
 

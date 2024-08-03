@@ -2,7 +2,6 @@ use crate::start::build_config;
 use crate::{cache, check, log, Cache, TEST_DATA_DIR};
 use hiqlite::{start_node, Client, Error};
 use std::time::Duration;
-use tokio::time::Instant;
 use tokio::{fs, time};
 
 pub async fn test_self_healing(
