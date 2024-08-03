@@ -81,12 +81,13 @@
     }
 
     .l1, .l2, .l3 {
+        color: var(--col-btn-text);
         border: 1px solid var(--col-mid);
-        box-shadow: 1px 1px 2px var(--col-mid);
+        box-shadow: 1px 1px 1px var(--col-mid);
     }
 
     .l1 {
-        color: var(--col-btn-acnt);
+        color: var(--col-btn-text);
         background: var(--col-btn);
     }
 

@@ -112,7 +112,7 @@ build ty="server":
       cd dashboard
       rm -rf build
       npm run build
-      git add build/*
+      git add ../hiqlite/static
     fi
 
 

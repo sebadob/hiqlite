@@ -18,8 +18,8 @@ lto = true
 strip = true
 panic = "abort"
 
-[patch.crates-io]
-hiqlite = { path = "hiqlite" }
+#[patch.crates-io]
+#hiqlite = { path = "hiqlite" }
 
 [workspace.dependencies]
 argon2 = "0.5.3"

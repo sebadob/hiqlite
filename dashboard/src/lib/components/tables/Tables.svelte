@@ -110,12 +110,12 @@
     }
 
     .entry:hover {
-        background: var(--col-a);
+        background: var(--col-p);
         color: var(--col-tabs-sel);
     }
 
     .selected {
-        background: var(--col-s);
+        background: var(--col-p);
         color: var(--col-tabs-sel);
     }
 

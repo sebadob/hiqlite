@@ -10,7 +10,7 @@
     aside {
         width: var(--width-health);
         min-width: 10rem;
-        padding: 1.5rem .5rem 1rem .5rem;
+        padding: .15rem .5rem 1rem .5rem;
         border-left: 1px solid var(--col-mid-a);
     }
 </style>

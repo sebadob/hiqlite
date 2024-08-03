@@ -14,8 +14,8 @@ const config = {
         },
         adapter: adapter({
             fallback: null,
-            // pages: '../templates/html',
-            // assets: '../static/v1',
+            pages: '../hiqlite/static',
+            assets: '../hiqlite/static',
             precompress: true,
             strict: true,
         }),
