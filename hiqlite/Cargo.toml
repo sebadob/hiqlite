@@ -13,7 +13,6 @@ repository = "https://github.com/sebadob/hiqlite"
 
 [package.metadata.docs.rs]
 features = ["cache", "dashboard", "dlock", "shutdown-handle", "sqlite"]
-cargo-args = ["--lib"]
 
 [features]
 default = ["auto-heal", "backup", "sqlite"]

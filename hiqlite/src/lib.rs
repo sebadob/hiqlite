@@ -1,6 +1,6 @@
 // Copyright 2024 Sebastian Dobe <sebastiandobe@mailbox.org>
 
-#![doc = include_str!("../../README.md")]
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
 use crate::app_state::{AppState, RaftType};
