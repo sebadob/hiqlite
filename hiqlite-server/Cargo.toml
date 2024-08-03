@@ -1,5 +1,5 @@
 [package]
-name = "hiqlite_server"
+name = "hiqlite-server"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

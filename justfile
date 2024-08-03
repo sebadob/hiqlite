@@ -99,7 +99,6 @@ test:
     set -euxo pipefail
     clear
     cargo test --features cache,dlock
-    #cargo test
 
 
 # builds the code
@@ -178,11 +177,13 @@ release: verfiy-is-clean
 publish-dry: verfiy-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
-    cargo publish --dry-run
+    cargo publish --dry-run -p hiqlite
+    cargo publish --dry-run -p hiqlite-server
 
 
 # publishes the current version to cargo.io
 publish: verfiy-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
-    cargo publish
+    cargo publish -p hiqlite
+    cargo publish -p hiqlite-server
