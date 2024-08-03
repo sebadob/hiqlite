@@ -178,12 +178,18 @@ publish-dry: verfiy-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish --dry-run -p hiqlite
-    cargo publish --dry-run -p hiqlite-server
+    #cargo publish --dry-run -p hiqlite-server
 
 
-# publishes the current version to cargo.io
+# publishes the current lib version to cargo.io
 publish: verfiy-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish -p hiqlite
+
+
+# publishes the hiqlite-server to cargo.io
+publish-server: verfiy-is-clean
+    #!/usr/bin/env bash
+    set -euxo pipefail
     cargo publish -p hiqlite-server
