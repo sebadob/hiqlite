@@ -12,6 +12,7 @@ name = "hiqlite"
 path = "src/main.rs"
 
 [dependencies]
+#hiqlite = { version = "0.0.1", features = ["full"] }
 hiqlite = { path = "../hiqlite", features = ["full"] }
 
 argon2.workspace = true

@@ -13,6 +13,15 @@ rust-version = "1.80.0"
 license = "Apache-2.0"
 authors = ["Sebastian Dobe <sebastiandobe@mailbox.org"]
 
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+panic = "abort"
+
+[patch.crates-io]
+hiqlite = { path = "hiqlite" }
+
 [workspace.dependencies]
 argon2 = "0.5.3"
 axum = { version = "0.7.5", features = ["http2", "tokio"] }
