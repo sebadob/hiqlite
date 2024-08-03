@@ -4,20 +4,24 @@ use chrono::Utc;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{oneshot, RwLock};
 use tokio::{task, time};
 use tracing::{debug, warn};
 
-pub fn spawn(tx_kv: flume::Sender<CacheRequestHandler>) -> flume::Sender<(i64, String)> {
+#[derive(Debug)]
+pub enum TtlRequest {
+    Ttl((i64, String)),
+    SnapshotBuild(oneshot::Sender<BTreeMap<i64, String>>),
+    SnapshotInstall((BTreeMap<i64, String>, oneshot::Sender<()>)),
+}
+
+pub fn spawn(tx_kv: flume::Sender<CacheRequestHandler>) -> flume::Sender<TtlRequest> {
     let (tx, rx) = flume::unbounded();
     task::spawn(ttl_handler(tx_kv, rx));
     tx
 }
 
-async fn ttl_handler(
-    tx_kv: flume::Sender<CacheRequestHandler>,
-    rx: flume::Receiver<(i64, String)>,
-) {
+async fn ttl_handler(tx_kv: flume::Sender<CacheRequestHandler>, rx: flume::Receiver<TtlRequest>) {
     let mut data: BTreeMap<i64, String> = BTreeMap::new();
 
     loop {
@@ -42,12 +46,33 @@ async fn ttl_handler(
         };
 
         tokio::select! {
+            // req = rx.recv_async() => {
+            //     if let Ok((ttl, key)) = req {
+            //         // TODO currently we use microsecond precision and this could overlap
+            //         // if very unlucky -> use nano's or da an additional step ech time to check if
+            //         // the entry exists already? otherwise a value will not be expired
+            //         data.insert(ttl, key);
+            //     } else {
+            //         break;
+            //     }
+            // }
             req = rx.recv_async() => {
-                if let Ok((ttl, key)) = req {
+                if let Ok(req) = req {
                     // TODO currently we use microsecond precision and this could overlap
                     // if very unlucky -> use nano's or da an additional step ech time to check if
                     // the entry exists already? otherwise a value will not be expired
-                    data.insert(ttl, key);
+                    match req {
+                        TtlRequest::Ttl((ttl, key)) => {
+                            data.insert(ttl, key);
+                        }
+                        TtlRequest::SnapshotBuild(ack) => {
+                            ack.send(data.clone()).unwrap();
+                        }
+                        TtlRequest::SnapshotInstall((snap, ack)) => {
+                            data = snap;
+                            ack.send(()).unwrap();
+                        }
+                    }
                 } else {
                     break;
                 }

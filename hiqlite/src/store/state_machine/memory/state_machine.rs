@@ -1,3 +1,4 @@
+use crate::store::state_machine::memory::cache_ttl_handler::TtlRequest;
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::{cache_ttl_handler, kv_handler, TypeConfigKV};
 use crate::store::StorageResult;
@@ -29,6 +30,11 @@ use crate::store::state_machine::memory::dlock_handler::{self, *};
 
 type Entry = openraft::Entry<TypeConfigKV>;
 type SnapshotData = Cursor<Vec<u8>>;
+
+type SnapshotKVs = Vec<BTreeMap<String, Vec<u8>>>;
+type SnapshotTTLs = Vec<BTreeMap<i64, String>>;
+type SnapshotLocks = Vec<u8>;
+type SnapshotDataInner = (SnapshotKVs, SnapshotTTLs, SnapshotLocks);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CacheRequest {
@@ -73,7 +79,7 @@ pub struct StateMachineMemory {
     snapshot: Mutex<Option<Snapshot<TypeConfigKV>>>,
 
     pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
-    tx_ttls: Vec<flume::Sender<(i64, String)>>,
+    tx_ttls: Vec<flume::Sender<TtlRequest>>,
 
     tx_notify: flume::Sender<(i64, Vec<u8>)>,
     pub(crate) rx_notify: flume::Receiver<(i64, Vec<u8>)>,
@@ -88,6 +94,17 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             let data = self.data.read().await;
 
             // TODO should we include notifications in snapshots as well? -> unsure if it makes sense or not
+
+            let mut ttls = Vec::with_capacity(self.tx_ttls.len());
+            for tx in &self.tx_ttls {
+                let (ack, rx) = oneshot::channel();
+                tx.send(TtlRequest::SnapshotBuild(ack))
+                    .expect("ttl handler to always be running");
+                let snap = rx
+                    .await
+                    .expect("to always receive an answer from ttl handler");
+                ttls.push(snap);
+            }
 
             let mut caches = Vec::with_capacity(self.tx_caches.len());
             for tx in &self.tx_caches {
@@ -114,7 +131,7 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             #[cfg(not(feature = "dlock"))]
             let locks_bytes: Vec<u8> = Vec::default();
 
-            let snap = (caches, locks_bytes);
+            let snap: SnapshotDataInner = (caches, ttls, locks_bytes);
             let snapshot_bytes = bincode::serialize(&snap)
                 .map_err(|err| StorageIOError::read_state_machine(&err))?;
 
@@ -176,7 +193,6 @@ impl StateMachineMemory {
             tx_caches.push(tx_cache.clone());
             tx_ttls.push(cache_ttl_handler::spawn(tx_cache));
         }
-        // let tx_ttl = cache_ttl_handler::spawn(tx_caches.clone());
 
         #[cfg(feature = "dlock")]
         let tx_dlock = dlock_handler::spawn();
@@ -240,7 +256,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             self.tx_ttls
                                 .get(idx)
                                 .unwrap()
-                                .send((exp, key.to_string()))
+                                .send(TtlRequest::Ttl((exp, key.to_string())))
                                 .expect("cache ttl handler to always be running");
                         }
 
@@ -343,16 +359,13 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         meta: &SnapshotMeta<NodeId, Node>,
         snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
-        let snap: (Vec<BTreeMap<String, Vec<u8>>>, Vec<u8>) =
-            bincode::deserialize(snapshot.get_ref())
-                .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
-        // let caches: Vec<BTreeMap<String, Vec<u8>>> = bincode::deserialize(snapshot.get_ref())
-        //     .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+        let (kvs, ttls, locks) = bincode::deserialize::<SnapshotDataInner>(snapshot.get_ref())
+            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
 
         // make sure to hold the metadata lock the whole time
         let mut data = self.data.write().await;
 
-        for (idx, kv_data) in snap.0.into_iter().enumerate() {
+        for (idx, kv_data) in kvs.into_iter().enumerate() {
             let (ack, rx) = oneshot::channel();
             self.tx_caches
                 .get(idx)
@@ -363,10 +376,21 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                 .expect("to always receive an answer from the kv handler");
         }
 
+        for (idx, kv_data) in ttls.into_iter().enumerate() {
+            let (ack, rx) = oneshot::channel();
+            self.tx_ttls
+                .get(idx)
+                .unwrap()
+                .send(TtlRequest::SnapshotInstall((kv_data, ack)))
+                .expect("ttl handler to always be running");
+            rx.await
+                .expect("to always receive an answer from the ttl handler");
+        }
+
         #[cfg(feature = "dlock")]
         {
             let locks: HashMap<String, dlock_handler::LockQueue> =
-                bincode::deserialize(&snap.1).unwrap();
+                bincode::deserialize(&locks).unwrap();
             let (ack, rx) = oneshot::channel();
             self.tx_dlock
                 .send(LockRequest::SnapshotInstall((locks, ack)))
