@@ -5,12 +5,12 @@ Hiqlite is an embeddable SQLite database that can form a Raft cluster to provide
 
 ## Project Status
 
-This project is in a very early phase and I have quite a few things on the TODO before I would consider it to be
-ready for testing in a real application. Until it hits v0.1.0, I will not not care about any changelog or something
-like that, because it costs more time and effort than it's worth at this point.
+This project is in an early phase and I have some things on the TODO before I can release the first v0.1.0.
+Until these TODO's are finished, I will not not care about any changelog or something like that, because it costs more
+time and effort than it's worth at this point.
 
 However, you can take a look at the integration test (`hiqlite/tests/`) or the example. These do work fine so far.
-I do have many panics (that hopefully don't happen ^^) and assertions in case of logic errors all over the code.
+I do have many panics (that hopefully don't happen) and assertions in case of logic errors all over the code.
 I'd rather have my application panic so I can catch the error immediately than missing an error log and ending up in
 an inconsistent state.
 
@@ -18,6 +18,10 @@ Issues and discussions are not available on purpose in this early stage. It woul
 v0.1.0. I will also push directly to `main` until it's hitting the first release, which will most probably break the
 examples from time to time. There is an initial [0.0.1 Tag](https://github.com/sebadob/hiqlite/tree/v0.0.1), just in
 case I do break them.
+
+The project itself is pretty useable by now. The TODO's are mainly about documentation, more examples and making
+the `Client` work for remote-only databases. The `hiqlite_server` is working fine so far as well. It can generate a
+basic starter config for testing on localhost and should be straight forward to use.
 
 ## Why
 
