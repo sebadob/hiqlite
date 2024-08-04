@@ -1,6 +1,11 @@
 # env vars for parsing the NodeConfig
 # prefix for all of them: HIQ_
 
+# Can be set to 'k8s' to try to split off the node id from the hostname
+# when Hiqlite is running as a StatefulSet inside Kubernetes.
+# Will be ignored if `HQL_NODE_ID_FROM=k8s`
+#HQL_NODE_ID_FROM=k8s
+
 # The node id must exist in the nodes and there must always be
 # at least a node with ID 1
 HQL_NODE_ID=1
@@ -16,9 +21,9 @@ HQL_NODE_ID=1
 #
 # 2 nodes must be separated by 2 `\n`
 HQL_NODES="
-1 http://localhost:21001 http://localhost:22001
-2 http://localhost:21002 http://localhost:22002
-3 http://localhost:21003 http://localhost:22003
+1 localhost:8100 localhost:8200
+2 localhost:8100 localhost:8200
+3 localhost:8100 localhost:8200
 "
 
 # The data dir hiqlite will store raft logs and state machine data in.

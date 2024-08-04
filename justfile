@@ -117,7 +117,7 @@ build ty="server":
 
 
 # builds a container image
-build-image:
+build-image name="cr.sebastiandobe.de/hiqlite/hiqlite":
     #!/usr/bin/env bash
     set -euxo pipefail
 
@@ -127,10 +127,11 @@ build-image:
     git add hiqlite/static
 
     cargo build --features server --release
-    mkdir out
+    mkdir -p out
     cp target/release/hiqlite out/
 
-    docker build -t hiqlite .
+    docker build -t {{name}} .
+    docker push {{name}}
 
 
 # builds the code in --release mode

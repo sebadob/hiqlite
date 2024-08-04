@@ -59,6 +59,7 @@ fastwebsockets.workspace = true
 flume.workspace = true
 getrandom.workspace = true
 hex.workspace = true
+hostname.workspace = true
 home = { workspace = true, optional = true }
 http-body-util.workspace = true
 hyper.workspace = true

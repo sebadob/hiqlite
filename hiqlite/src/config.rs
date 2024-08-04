@@ -117,6 +117,26 @@ impl NodeConfig {
     }
 
     fn from_env_parse() -> Self {
+        let env_from = env::var("HQL_NODE_ID_FROM").unwrap_or_else(|_| String::default());
+        let node_id = if env_from == "k8s" {
+            let binding = hostname::get().expect("Cannot read hostname");
+            let hostname = binding.to_str().expect("Invalid hostname format");
+            match hostname.rsplit_once('_') {
+                None => {
+                    panic!(
+                        "Cannot split off the NODE_ID from the hostname {}",
+                        hostname
+                    );
+                }
+                Some((_, id)) => id.parse::<u64>().expect("Cannot parse HQL_NODE_ID to u64"),
+            }
+        } else {
+            env::var("HQL_NODE_ID")
+                .expect("Node ID not found")
+                .parse::<u64>()
+                .expect("Cannot parse HQL_NODE_ID to u64")
+        };
+
         let logs_keep = env::var("HQL_LOGS_UNTIL_SNAPSHOT")
             .unwrap_or_else(|_| "10000".to_string())
             .parse::<u64>()
@@ -134,10 +154,7 @@ impl NodeConfig {
             .unwrap_or(EncKeysFrom::Env);
 
         let slf = Self {
-            node_id: env::var("HQL_NODE_ID")
-                .expect("Node ID not found")
-                .parse::<u64>()
-                .expect("Cannot parse HQL_NODE_ID to u64"),
+            node_id,
             nodes: Node::all_from_env(),
             data_dir: env::var("HQL_DATA_DIR")
                 .unwrap_or("hiqlite".to_string())

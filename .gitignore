@@ -5,6 +5,8 @@ target
 *.log
 .lapce
 Cargo.lock
+my_hiqlite/
+out/
 
 # IMPORTANT! don't remove - will contain at least secrets for S3 testing
 .env

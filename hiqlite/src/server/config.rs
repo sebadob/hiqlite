@@ -81,8 +81,13 @@ fn default_config(password_dashboard_b64: &str, insecure_cookie: bool) -> Result
     let enc_key_active = enc_keys.enc_key_active;
 
     Ok(format!(
-        r#"# The node id must exist in the nodes and there must always be
-# at least a node with ID 1
+        r#"# Can be set to 'k8s' to try to split off the node id from the hostname
+# when Hiqlite is running as a StatefulSet inside Kubernetes.
+#HQL_NODE_ID_FROM=k8s
+
+# The node id must exist in the nodes and there must always be
+# at least a node with ID 1.
+# Will be ignored if `HQL_NODE_ID_FROM=k8s`
 HQL_NODE_ID=1
 
 # All cluster member nodes.
@@ -96,12 +101,12 @@ HQL_NODE_ID=1
 #
 # 2 nodes must be separated by 2 `\n`
 #HQL_NODES="
-#1 localhost:11011 localhost:11021
-#2 localhost:11012 localhost:11022
-#3 localhost:11013 localhost:11023
+#1 localhost:8100 localhost:8200
+#2 localhost:8100 localhost:8200
+#3 localhost:8100 localhost:8200
 #"
 HQL_NODES="
-1 localhost:11011 localhost:11021
+1 localhost:8100 localhost:8200
 "
 
 # The data dir hiqlite will store raft logs and state machine data in.

@@ -45,6 +45,7 @@ flume = "0.11.0"
 getrandom = { version = "0.2.15", features = ["std"] }
 hex = "0.4.3"
 home = "0.5.9"
+hostname = "0.4.0"
 http-body-util = "0.1.2"
 hyper = { version = "1.4.1", features = ["client", "http2"] }
 hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
