@@ -37,6 +37,10 @@ type SnapshotDataInner = (SnapshotKVs, SnapshotTTLs, SnapshotLocks);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CacheRequest {
+    Get {
+        cache_idx: usize,
+        key: String,
+    },
     Put {
         cache_idx: usize,
         key: Cow<'static, str>,
@@ -60,6 +64,7 @@ pub enum CacheResponse {
     Ok,
     #[cfg(feature = "dlock")]
     Lock(LockState),
+    Value(Option<Vec<u8>>),
 }
 
 #[derive(Debug, Default)]
@@ -243,6 +248,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                 EntryPayload::Blank => CacheResponse::Empty,
 
                 EntryPayload::Normal(req) => match req {
+                    CacheRequest::Get { .. } => {
+                        unreachable!("a CacheRequest::Get should never come thorugh the Raft")
+                    }
+
                     CacheRequest::Put {
                         cache_idx,
                         key,

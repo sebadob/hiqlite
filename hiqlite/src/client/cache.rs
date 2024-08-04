@@ -32,9 +32,19 @@ impl Client {
                 .expect("to always get an answer from the kv handler");
             Ok(value.map(|b| bincode::deserialize(&b).unwrap()))
         } else {
-            todo!("CacheGet for remote clients")
+            let res = self
+                .cache_req_retry(CacheRequest::Get {
+                    cache_idx: cache
+                        .to_usize()
+                        .expect("Invalid ToPrimitive impl on Cache Index"),
+                    key: key.into(),
+                })
+                .await?;
+            match res {
+                CacheResponse::Value(opt) => Ok(opt.map(|v| bincode::deserialize(&v).unwrap())),
+                _ => unreachable!(),
+            }
         }
-        // Err(Error::Cache("no value found".into()))
     }
 
     /// `Put` a value into the cache.
@@ -59,7 +69,8 @@ impl Client {
             value: bincode::serialize(value).unwrap(),
             expires: ttl.map(|seconds| Utc::now().timestamp().saturating_add(seconds)),
         })
-        .await
+        .await?;
+        Ok(())
     }
 
     /// `Delete` a value from the cache.
@@ -74,16 +85,16 @@ impl Client {
                 .expect("Invalid ToPrimitive impl on Cache Index"),
             key: key.into(),
         })
-        .await
+        .await?;
+        Ok(())
     }
 
-    async fn cache_req_retry(&self, cache_req: CacheRequest) -> Result<(), Error> {
+    async fn cache_req_retry(&self, cache_req: CacheRequest) -> Result<CacheResponse, Error> {
         match self.cache_req(cache_req.clone()).await {
-            Ok(_) => Ok(()),
+            Ok(resp) => Ok(resp),
             Err(err) => {
                 if self.was_leader_update_error(&err).await {
-                    self.cache_req(cache_req).await?;
-                    Ok(())
+                    self.cache_req(cache_req).await
                 } else {
                     Err(err)
                 }

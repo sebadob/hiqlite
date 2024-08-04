@@ -3,12 +3,16 @@ use crate::network::{AppStateExt, Error};
 use axum::response::IntoResponse;
 use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 use std::ops::Deref;
 use tokio::task;
 use tracing::{error, info, warn};
 
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
+use crate::store::state_machine::memory::{
+    kv_handler::CacheRequestHandler,
+    state_machine::{CacheRequest, CacheResponse},
+};
 
 #[cfg(feature = "sqlite")]
 use crate::{
@@ -226,11 +230,22 @@ pub(crate) enum ApiStreamRequestPayload {
     Batch(std::borrow::Cow<'static, str>),
     #[cfg(feature = "sqlite")]
     Migrate(Vec<Migration>),
+
     #[cfg(feature = "backup")]
     Backup(crate::NodeId),
 
     #[cfg(feature = "cache")]
     KV(CacheRequest),
+
+    // remote-only clients
+    #[cfg(feature = "sqlite")]
+    Query(Query),
+    #[cfg(feature = "cache")]
+    KVGet(CacheRequest),
+    #[cfg(feature = "cache")]
+    Lock,
+    // Listen,
+    // Notify,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -253,8 +268,10 @@ pub(crate) enum ApiStreamResponsePayload {
     Batch(Result<Vec<Result<usize, Error>>, Error>),
     #[cfg(feature = "sqlite")]
     Migrate(Result<(), Error>),
+
     #[cfg(feature = "backup")]
     Backup(Result<(), Error>),
+
     #[cfg(feature = "cache")]
     KV(Result<CacheResponse, Error>),
 }
@@ -596,6 +613,40 @@ async fn handle_socket_concurrent(
                                     result: ApiStreamResponsePayload::KV(Err(Error::from(err))),
                                 },
                             }
+                        }
+
+                        #[cfg(feature = "sqlite")]
+                        ApiStreamRequestPayload::Query(Query { sql, params }) => {
+                            todo!()
+                        }
+
+                        #[cfg(feature = "cache")]
+                        ApiStreamRequestPayload::KVGet(cache_req) => {
+                            let (cache_idx, key) = match cache_req {
+                                CacheRequest::Get { cache_idx, key } => (cache_idx, key),
+                                _ => unreachable!(),
+                            };
+
+                            let (ack, rx) = tokio::sync::oneshot::channel();
+                            state
+                                .raft_cache
+                                .tx_caches
+                                .get(cache_idx)
+                                .unwrap()
+                                .send(CacheRequestHandler::Get((key, ack)))
+                                .expect("kv handler to always be running");
+                            let value = rx.await.expect("to always get an answer from kv handler");
+                            ApiStreamResponse {
+                                request_id: req.request_id,
+                                result: ApiStreamResponsePayload::KV(Ok(CacheResponse::Value(
+                                    value,
+                                ))),
+                            }
+                        }
+
+                        #[cfg(feature = "cache")]
+                        ApiStreamRequestPayload::Lock => {
+                            todo!()
                         }
                     };
 
