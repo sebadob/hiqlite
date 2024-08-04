@@ -111,6 +111,7 @@ impl Client {
                 .expect("To always receive an answer from Client Stream Manager")?;
             match res {
                 ApiStreamResponsePayload::KV(res) => res,
+                #[cfg(feature = "sqlite")]
                 _ => unreachable!(),
             }
         }

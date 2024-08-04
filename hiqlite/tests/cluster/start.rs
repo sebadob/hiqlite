@@ -85,7 +85,7 @@ pub async fn wait_for_healthy_cluster(
                 _ => unreachable!(),
             };
 
-            match client.is_healthy().await {
+            match client.is_healthy_db().await {
                 Ok(_) => {
                     log(format!("Node {} is healthy", i));
                     break;

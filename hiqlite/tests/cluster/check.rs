@@ -6,7 +6,7 @@ use crate::cache::{KEY, KEY_2, VALUE, VALUE_2};
 use crate::Cache;
 
 pub async fn is_client_db_healthy(client: &Client) -> Result<(), Error> {
-    let is_healthy = client.is_healthy().await;
+    let is_healthy = client.is_healthy_db().await;
     debug(&is_healthy);
     assert!(is_healthy.is_ok());
 

@@ -1,12 +1,8 @@
-use crate::migration::Migration;
 use crate::network::handshake::HandshakeSecret;
 use crate::network::{AppStateExt, Error};
-use crate::query::query_consistent;
-use crate::query::rows::RowOwned;
 use axum::response::IntoResponse;
 use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 use std::ops::Deref;
 use tokio::task;
 use tracing::{error, info, warn};
@@ -15,7 +11,11 @@ use tracing::{error, info, warn};
 use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
 
 #[cfg(feature = "sqlite")]
-use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
+use crate::{
+    migration::Migration,
+    query::{query_consistent, rows::RowOwned},
+    store::state_machine::sqlite::state_machine::{Query, QueryWrite},
+};
 
 // pub(crate) async fn write(
 //     state: AppStateExt,
@@ -80,17 +80,28 @@ use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
 // }
 
 pub async fn health(state: AppStateExt) -> impl IntoResponse {
-    let metrics = state.raft_db.raft.metrics().borrow().clone();
-    metrics.running_state?;
+    #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
+    panic!("neither `sqlite` nor `cache` feature enabled");
 
-    // TODO maybe add a check for remote nodes as well via membership config
+    #[cfg(any(feature = "sqlite", feature = "cache"))]
+    {
+        #[cfg(feature = "sqlite")]
+        let metrics = state.raft_db.raft.metrics().borrow().clone();
 
-    if metrics.current_leader.is_some() {
-        Ok(())
-    } else {
-        Err(Error::LeaderChange(
-            "The leader voting process has not finished yet".into(),
-        ))
+        #[cfg(all(not(feature = "sqlite"), feature = "cache"))]
+        let metrics = state.raft_cache.raft.metrics().borrow().clone();
+
+        metrics.running_state?;
+
+        // TODO maybe add a check for remote nodes as well via membership config
+
+        if metrics.current_leader.is_some() {
+            Ok(())
+        } else {
+            Err(Error::LeaderChange(
+                "The leader voting process has not finished yet".into(),
+            ))
+        }
     }
 }
 
@@ -203,11 +214,17 @@ pub(crate) struct ApiStreamRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum ApiStreamRequestPayload {
+    #[cfg(feature = "sqlite")]
     Execute(Query),
+    #[cfg(feature = "sqlite")]
     ExecuteReturning(Query),
+    #[cfg(feature = "sqlite")]
     Transaction(Vec<Query>),
+    #[cfg(feature = "sqlite")]
     QueryConsistent(Query),
-    Batch(Cow<'static, str>),
+    #[cfg(feature = "sqlite")]
+    Batch(std::borrow::Cow<'static, str>),
+    #[cfg(feature = "sqlite")]
     Migrate(Vec<Migration>),
     #[cfg(feature = "backup")]
     Backup(crate::NodeId),
@@ -224,11 +241,17 @@ pub(crate) struct ApiStreamResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum ApiStreamResponsePayload {
+    #[cfg(feature = "sqlite")]
     Execute(Result<usize, Error>),
+    #[cfg(feature = "sqlite")]
     ExecuteReturning(Result<Vec<RowOwned>, Error>),
+    #[cfg(feature = "sqlite")]
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
+    #[cfg(feature = "sqlite")]
     QueryConsistent(Result<Vec<RowOwned>, Error>),
+    #[cfg(feature = "sqlite")]
     Batch(Result<Vec<Result<usize, Error>>, Error>),
+    #[cfg(feature = "sqlite")]
     Migrate(Result<(), Error>),
     #[cfg(feature = "backup")]
     Backup(Result<(), Error>),
@@ -376,6 +399,7 @@ async fn handle_socket_concurrent(
         let tx_write = tx_write.clone();
         task::spawn(async move {
             match req.payload {
+                #[cfg(feature = "sqlite")]
                 ApiStreamRequestPayload::QueryConsistent(Query { sql, params }) => {
                     task::spawn(query_consistent(
                         state,
@@ -388,6 +412,7 @@ async fn handle_socket_concurrent(
 
                 payload => {
                     let res = match payload {
+                        #[cfg(feature = "sqlite")]
                         ApiStreamRequestPayload::Execute(sql) => {
                             match state
                                 .raft_db
@@ -415,6 +440,7 @@ async fn handle_socket_concurrent(
                             }
                         }
 
+                        #[cfg(feature = "sqlite")]
                         ApiStreamRequestPayload::ExecuteReturning(sql) => {
                             match state
                                 .raft_db
@@ -442,6 +468,7 @@ async fn handle_socket_concurrent(
                             }
                         }
 
+                        #[cfg(feature = "sqlite")]
                         ApiStreamRequestPayload::Transaction(queries) => {
                             match state
                                 .raft_db
@@ -469,10 +496,12 @@ async fn handle_socket_concurrent(
                             }
                         }
 
+                        #[cfg(feature = "sqlite")]
                         ApiStreamRequestPayload::QueryConsistent(_) => {
                             unreachable!("has been handled separately")
                         }
 
+                        #[cfg(feature = "sqlite")]
                         ApiStreamRequestPayload::Batch(sql) => {
                             match state
                                 .raft_db
@@ -498,6 +527,7 @@ async fn handle_socket_concurrent(
                             }
                         }
 
+                        #[cfg(feature = "sqlite")]
                         ApiStreamRequestPayload::Migrate(migrations) => {
                             match state
                                 .raft_db

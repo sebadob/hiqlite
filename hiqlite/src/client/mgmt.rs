@@ -1,15 +1,20 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
-use crate::store::logs::rocksdb::ActionWrite;
-use crate::store::state_machine::sqlite::writer::WriterRequest;
-use crate::{Client, Error, Node, NodeId};
-use openraft::RaftMetrics;
-use std::clone::Clone;
+use crate::{Client, Error};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 use tokio::time;
-use tracing::error;
+
+#[cfg(feature = "sqlite")]
+use crate::store::{logs::rocksdb::ActionWrite, state_machine::sqlite::writer::WriterRequest};
+
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+use crate::{Node, NodeId};
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+use openraft::RaftMetrics;
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+use std::clone::Clone;
 
 impl Client {
     // pub async fn init(&self) -> Result<(), Error> {
@@ -63,9 +68,9 @@ impl Client {
         }
     }
 
-    /// Check the Raft health state
-    /// TODO different fn's for db / cache ?
-    pub async fn is_healthy(&self) -> Result<(), Error> {
+    /// Check the Raft health state for the DB
+    #[cfg(feature = "sqlite")]
+    pub async fn is_healthy_db(&self) -> Result<(), Error> {
         let metrics = self.metrics_db().await?;
         metrics.running_state?;
         if metrics.current_leader.is_some() {
@@ -77,11 +82,17 @@ impl Client {
         }
     }
 
-    /// TODO different fn's for db / cache ?
-    pub async fn wait_until_healthy(&self) {
-        while let Err(err) = self.is_healthy().await {
-            error!("Waiting for cluster to become healthy: {}", err);
-            time::sleep(Duration::from_millis(1000)).await;
+    /// Check the Raft health state for the cache
+    #[cfg(feature = "cache")]
+    pub async fn is_healthy_cache(&self) -> Result<(), Error> {
+        let metrics = self.metrics_cache().await?;
+        metrics.running_state?;
+        if metrics.current_leader.is_some() {
+            Ok(())
+        } else {
+            Err(Error::LeaderChange(
+                "The leader voting process has not finished yet".into(),
+            ))
         }
     }
 
@@ -114,7 +125,7 @@ impl Client {
         #[cfg(feature = "sqlite")]
         match state.raft_db.raft.shutdown().await {
             Ok(_) => {
-                let (tx, rx) = oneshot::channel();
+                let (tx, rx) = tokio::sync::oneshot::channel();
 
                 state
                     .raft_db

@@ -1,20 +1,15 @@
-use crate::store::logs;
-use crate::store::state_machine::sqlite::state_machine::SqlitePool;
-use crate::store::state_machine::sqlite::writer::WriterRequest;
 use crate::NodeId;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
-#[cfg(feature = "cache")]
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::{kv_handler::CacheRequestHandler, TypeConfigKV};
 
 #[cfg(feature = "sqlite")]
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
+use crate::store::state_machine::sqlite::{
+    state_machine::SqlitePool, writer::WriterRequest, TypeConfigSqlite,
+};
 
 #[cfg(feature = "dashboard")]
 use crate::client::stream::ClientStreamReq;
@@ -33,6 +28,7 @@ pub enum RaftType {
     Sqlite,
     #[cfg(feature = "cache")]
     Cache,
+    Unknown,
 }
 
 impl RaftType {
@@ -42,6 +38,7 @@ impl RaftType {
             RaftType::Sqlite => "sqlite",
             #[cfg(feature = "cache")]
             RaftType::Cache => "cache",
+            RaftType::Unknown => "unknown",
         }
     }
 }
@@ -51,12 +48,10 @@ impl RaftType {
 pub struct AppState {
     pub id: NodeId,
     pub addr_api: String,
-    // pub addr_raft: String,
+    #[cfg(feature = "sqlite")]
     pub raft_db: StateRaftDB,
     #[cfg(feature = "cache")]
     pub raft_cache: StateRaftCache,
-    // Helper to avoid race conditions with multiple self-managed membership requests
-    // pub raft_lock: Mutex<()>,
     pub secret_raft: String,
     pub secret_api: String,
     // TODO this should become dynamic at some point to make dynamic cluster changes possible in the future
@@ -78,19 +73,20 @@ impl AppState {
     }
 }
 
+#[cfg(feature = "sqlite")]
 pub struct StateRaftDB {
     pub raft: openraft::Raft<TypeConfigSqlite>,
-    pub lock: Mutex<()>,
-    pub logs_writer: flume::Sender<logs::rocksdb::ActionWrite>,
+    pub lock: tokio::sync::Mutex<()>,
+    pub logs_writer: flume::Sender<crate::store::logs::rocksdb::ActionWrite>,
     pub sql_writer: flume::Sender<WriterRequest>,
-    pub read_pool: Arc<SqlitePool>,
+    pub read_pool: std::sync::Arc<SqlitePool>,
     pub log_statements: bool,
 }
 
 #[cfg(feature = "cache")]
 pub struct StateRaftCache {
     pub raft: openraft::Raft<TypeConfigKV>,
-    pub lock: Mutex<()>,
+    pub lock: tokio::sync::Mutex<()>,
     pub tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     pub rx_notify: flume::Receiver<(i64, Vec<u8>)>,
     #[cfg(feature = "dlock")]

@@ -5,14 +5,19 @@ use std::sync::Arc;
 use stream::ClientStreamReq;
 use tokio::sync::{watch, RwLock};
 
+#[cfg(feature = "sqlite")]
 mod batch;
 mod create;
+#[cfg(feature = "sqlite")]
 mod execute;
 mod helpers;
 mod mgmt;
+#[cfg(feature = "sqlite")]
 mod migrate;
+#[cfg(feature = "sqlite")]
 mod query;
 pub mod stream;
+#[cfg(feature = "sqlite")]
 mod transaction;
 
 #[cfg(feature = "backup")]

@@ -116,6 +116,23 @@ build ty="server":
     fi
 
 
+# builds a container image
+build-image:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+
+    cd dashboard
+    npm run build
+    cd ..
+    git add hiqlite/static
+
+    cargo build --features server --release
+    mkdir out
+    cp target/release/hiqlite out/
+
+    docker build -t hiqlite .
+
+
 # builds the code in --release mode
 build-release:
     #!/usr/bin/env bash

@@ -1,14 +1,11 @@
 #![allow(unused)]
 
+use crate::app_state::AppState;
 use crate::network::NetworkStreaming;
-use crate::store::state_machine::sqlite::state_machine::SqlitePool;
-use crate::store::state_machine::sqlite::writer::WriterRequest;
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::{init, Error, NodeConfig, NodeId, RaftConfig};
 use num_traits::ToPrimitive;
 use openraft::storage::RaftLogStorage;
 use openraft::{Raft, StorageError};
-use rusqlite::OpenFlags;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cmp::PartialEq;
@@ -17,17 +14,20 @@ use std::sync::Arc;
 use strum::IntoEnumIterator;
 
 #[cfg(feature = "cache")]
-use crate::app_state::StateRaftCache;
-#[cfg(feature = "cache")]
-use crate::store::state_machine::memory::state_machine::StateMachineMemory;
-#[cfg(feature = "cache")]
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::{
+    app_state::StateRaftCache,
+    store::state_machine::memory::{state_machine::StateMachineMemory, TypeConfigKV},
+};
 
-use crate::app_state::AppState;
 #[cfg(feature = "sqlite")]
-use crate::app_state::StateRaftDB;
-#[cfg(feature = "sqlite")]
-use state_machine::sqlite::state_machine::StateMachineSqlite;
+use crate::{
+    app_state::StateRaftDB,
+    store::state_machine::sqlite::{
+        state_machine::{SqlitePool, StateMachineSqlite},
+        writer::WriterRequest,
+        TypeConfigSqlite,
+    },
+};
 
 // pub mod state_machine_memory;
 pub mod logs;
@@ -162,6 +162,8 @@ pub(crate) fn connect_sqlite(
     path: Option<&str>,
     read_only: bool,
 ) -> Result<rusqlite::Connection, Error> {
+    use rusqlite::OpenFlags;
+
     let conn = if let Some(path) = path {
         let conn = rusqlite::Connection::open(path)?;
         apply_pragmas(&conn, read_only)?;

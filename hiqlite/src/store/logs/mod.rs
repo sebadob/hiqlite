@@ -3,7 +3,8 @@
 // the first release... probably.
 
 pub mod redb;
-// TODO probably don't even include rocksdb without sqlite?
+
+#[cfg(feature = "sqlite")]
 pub mod rocksdb;
 
 #[cfg(feature = "cache")]

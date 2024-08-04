@@ -2,17 +2,24 @@ use crate::network::handshake::HandshakeSecret;
 use crate::network::{AppStateExt, Error};
 use axum::response::IntoResponse;
 use fastwebsockets::{upgrade, Frame, OpCode, Payload};
-use openraft::raft::VoteRequest;
-use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse};
-use openraft::raft::{InstallSnapshotRequest, InstallSnapshotResponse, VoteResponse};
 use serde::{Deserialize, Serialize};
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
+
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::raft::{
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
+    VoteRequest, VoteResponse,
+};
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use tracing::info;
+
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RaftStreamRequest {
     #[cfg(feature = "sqlite")]

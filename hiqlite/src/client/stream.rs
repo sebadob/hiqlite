@@ -1,9 +1,5 @@
-use crate::migration::Migration;
-use crate::network::api::{
-    ApiStreamRequest, ApiStreamRequestPayload, ApiStreamResponse, ApiStreamResponsePayload,
-};
+use crate::network::api::{ApiStreamResponse, ApiStreamResponsePayload};
 use crate::network::handshake::HandshakeSecret;
-use crate::store::state_machine::sqlite::state_machine::Query;
 use crate::{tls, Client, Error, Node, NodeId};
 use axum::http::header::{CONNECTION, UPGRADE};
 use axum::http::Request;
@@ -12,7 +8,6 @@ use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocket, W
 use http_body_util::Empty;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::future::Future;
 use std::ops::Deref;
@@ -29,14 +24,26 @@ use tracing::{debug, error, info, warn};
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::state_machine::CacheRequest;
 
+#[cfg(feature = "sqlite")]
+use crate::{migration::Migration, store::state_machine::sqlite::state_machine::Query};
+
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+use crate::network::api::{ApiStreamRequest, ApiStreamRequestPayload};
+
 #[derive(Debug)]
 pub enum ClientStreamReq {
     // coming from the `DbClient`
+    #[cfg(feature = "sqlite")]
     Execute(ClientExecutePayload),
+    #[cfg(feature = "sqlite")]
     ExecuteReturning(ClientExecutePayload),
+    #[cfg(feature = "sqlite")]
     Transaction(ClientTransactionPayload),
+    #[cfg(feature = "sqlite")]
     QueryConsistent(ClientQueryConsistentPayload),
+    #[cfg(feature = "sqlite")]
     Batch(ClientBatchPayload),
+    #[cfg(feature = "sqlite")]
     Migrate(ClientMigratePayload),
     #[cfg(feature = "backup")]
     Backup(ClientBackupPayload),
@@ -53,6 +60,7 @@ pub enum ClientStreamReq {
     LeaderChange((Option<u64>, Option<Node>)),
 }
 
+#[cfg(feature = "sqlite")]
 #[derive(Debug)]
 pub struct ClientExecutePayload {
     pub request_id: usize,
@@ -60,6 +68,7 @@ pub struct ClientExecutePayload {
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
+#[cfg(feature = "sqlite")]
 #[derive(Debug)]
 pub struct ClientTransactionPayload {
     pub request_id: usize,
@@ -67,6 +76,7 @@ pub struct ClientTransactionPayload {
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
+#[cfg(feature = "sqlite")]
 #[derive(Debug)]
 pub struct ClientQueryConsistentPayload {
     pub request_id: usize,
@@ -74,13 +84,15 @@ pub struct ClientQueryConsistentPayload {
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
+#[cfg(feature = "sqlite")]
 #[derive(Debug)]
 pub struct ClientBatchPayload {
     pub request_id: usize,
-    pub sql: Cow<'static, str>,
+    pub sql: std::borrow::Cow<'static, str>,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
+#[cfg(feature = "sqlite")]
 #[derive(Debug)]
 pub struct ClientMigratePayload {
     pub request_id: usize,
@@ -204,6 +216,7 @@ async fn client_stream(
             };
 
             match req {
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::Execute(exec) => {
                     let req = ApiStreamRequest {
                         request_id: exec.request_id,
@@ -227,6 +240,7 @@ async fn client_stream(
                     }
                 }
 
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::ExecuteReturning(exec) => {
                     let req = ApiStreamRequest {
                         request_id: exec.request_id,
@@ -250,6 +264,7 @@ async fn client_stream(
                     }
                 }
 
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::Transaction(txn) => {
                     let req = ApiStreamRequest {
                         request_id: txn.request_id,
@@ -273,6 +288,7 @@ async fn client_stream(
                     }
                 }
 
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::QueryConsistent(query) => {
                     let req = ApiStreamRequest {
                         request_id: query.request_id,
@@ -296,6 +312,7 @@ async fn client_stream(
                     }
                 }
 
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::Batch(batch) => {
                     let req = ApiStreamRequest {
                         request_id: batch.request_id,
@@ -319,6 +336,7 @@ async fn client_stream(
                     }
                 }
 
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::Migrate(migrate) => {
                     let req = ApiStreamRequest {
                         request_id: migrate.request_id,
@@ -444,27 +462,33 @@ async fn client_stream(
         while let Ok(req) = rx_read.recv_async().await {
             info!("Answer from reader into buffer: {:?}", req);
             match req {
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::Execute(_) => {
                     unreachable!("we should never receive ClientStreamReq::Execute from WS reader")
                 }
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::ExecuteReturning(_) => {
                     unreachable!(
                         "we should never receive ClientStreamReq::ExecuteReturning from WS reader"
                     )
                 }
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::Transaction(_) => {
                     unreachable!(
                         "we should never receive ClientStreamReq::Transaction from WS reader"
                     )
                 }
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::QueryConsistent(_) => {
                     unreachable!(
                         "we should never receive ClientStreamReq::QueryConsistent from WS reader"
                     )
                 }
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::Batch(_) => {
                     unreachable!("we should never receive ClientStreamReq::Batch from WS reader")
                 }
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::Migrate(_) => {
                     unreachable!("we should never receive ClientStreamReq::Migrate from WS reader")
                 }

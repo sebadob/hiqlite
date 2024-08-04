@@ -169,6 +169,7 @@ impl Client {
                     CacheResponse::Lock(state) => Ok(state),
                     _ => unreachable!(),
                 },
+                #[cfg(feature = "sqlite")]
                 _ => unreachable!(),
             }
         }

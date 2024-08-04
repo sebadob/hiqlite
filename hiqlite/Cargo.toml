@@ -28,6 +28,7 @@ dashboard = [
     "dep:mime_guess",
     "dep:tower",
     "dep:tower-http",
+    "sqlite",
 ]
 dlock = ["cache"]
 full = ["auto-heal", "backup", "cache", "dashboard", "dlock", "s3", "shutdown-handle", "sqlite", "webpki-roots"]

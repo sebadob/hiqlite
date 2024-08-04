@@ -14,6 +14,7 @@ pub async fn is_raft_initialized(
         RaftType::Sqlite => Ok(state.raft_db.raft.is_initialized().await?),
         #[cfg(feature = "cache")]
         RaftType::Cache => Ok(state.raft_cache.raft.is_initialized().await?),
+        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
     }
 }
 
@@ -23,6 +24,7 @@ pub async fn get_raft_leader(state: &Arc<AppState>, raft_type: &RaftType) -> Opt
         RaftType::Sqlite => state.raft_db.raft.current_leader().await,
         #[cfg(feature = "cache")]
         RaftType::Cache => state.raft_cache.raft.current_leader().await,
+        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
     }
 }
 
@@ -35,6 +37,7 @@ pub async fn get_raft_metrics(
         RaftType::Sqlite => state.raft_db.raft.metrics().borrow().clone(),
         #[cfg(feature = "cache")]
         RaftType::Cache => state.raft_cache.raft.metrics().borrow().clone(),
+        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
     }
 }
 
@@ -47,6 +50,7 @@ pub async fn lock_raft<'a>(
         RaftType::Sqlite => state.raft_db.lock.lock().await,
         #[cfg(feature = "cache")]
         RaftType::Cache => state.raft_cache.lock.lock().await,
+        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
     }
 }
 
@@ -70,6 +74,7 @@ pub async fn add_new_learner(
                 .await?;
             Ok(())
         }
+        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
     }
 }
 
@@ -98,5 +103,6 @@ pub async fn change_membership(
                 .await?;
             Ok(())
         }
+        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
     }
 }

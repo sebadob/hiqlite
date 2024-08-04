@@ -10,7 +10,7 @@ pub fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
     } else {
         args.config_file
     };
-    let mut config = NodeConfig::from_env_file(&config_path);
+    let mut config = NodeConfig::from_env_all(&config_path);
 
     if let Some(id) = args.node_id {
         config.node_id = id;

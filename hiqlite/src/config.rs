@@ -1,4 +1,3 @@
-use crate::s3::S3Config;
 use crate::tls::ServerTlsConfig;
 use crate::{Error, Node, NodeId};
 use openraft::SnapshotPolicy;
@@ -9,6 +8,7 @@ use std::env;
 use crate::dashboard::DashboardState;
 
 pub use openraft::Config as RaftConfig;
+use tracing::warn;
 
 #[cfg(feature = "s3")]
 #[derive(Debug, Clone)]
@@ -85,8 +85,6 @@ impl Default for NodeConfig {
 }
 
 impl NodeConfig {
-    // TODO impl some `from_`s like env, json, toml, cli
-
     pub fn from_env() -> Self {
         dotenvy::dotenv().ok();
         Self::from_env_parse()
@@ -94,6 +92,19 @@ impl NodeConfig {
 
     pub fn from_env_file(filename: &str) -> Self {
         dotenvy::from_filename(filename).expect("env file to parse does not exist");
+        Self::from_env_parse()
+    }
+
+    /// Tries to build up the config from the following sources in order:
+    /// - read from `./config`
+    /// - read from given `filename`
+    /// - read from env vars
+    pub fn from_env_all(filename: &str) -> Self {
+        dotenvy::dotenv().ok();
+        dotenvy::from_filename("config").ok();
+        if dotenvy::from_filename(filename).is_err() {
+            warn!("Error reading config from file {}", filename);
+        }
         Self::from_env_parse()
     }
 
@@ -106,6 +117,7 @@ impl NodeConfig {
         let tls_raft = crate::tls::ServerTlsConfig::from_env("RAFT");
         let tls_api = crate::tls::ServerTlsConfig::from_env("API");
 
+        #[cfg(feature = "s3")]
         let enc_keys_from = env::var("HQL_ENC_KEYS_FROM")
             .map(|v| {
                 if let Some(path) = v.strip_prefix("file:") {
@@ -116,7 +128,8 @@ impl NodeConfig {
             })
             .unwrap_or(EncKeysFrom::Env);
 
-        let s3_config = S3Config::try_from_env();
+        #[cfg(feature = "s3")]
+        let s3_config = crate::s3::S3Config::try_from_env();
 
         #[cfg(feature = "dashboard")]
         let dashboard_state = DashboardState::from_env();
@@ -142,7 +155,9 @@ impl NodeConfig {
             tls_api,
             secret_raft: env::var("HQL_SECRET_RAFT").expect("HQL_SECRET_RAFT not found"),
             secret_api: env::var("HQL_SECRET_API").expect("HQL_SECRET_API not found"),
+            #[cfg(feature = "s3")]
             enc_keys_from,
+            #[cfg(feature = "s3")]
             s3_config,
             #[cfg(feature = "dashboard")]
             password_dashboard: dashboard_state.password_dashboard,
@@ -254,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_config_from_env() {
-        let c = NodeConfig::from_env_file(".env_example");
+        let c = NodeConfig::from_env_file("config");
         println!("{:?}", c);
 
         assert_eq!(c.node_id, 1);

@@ -4,7 +4,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use bincode::ErrorKind;
-use deadpool::managed::{BuildError, PoolError};
 use fastwebsockets::WebSocketError;
 use openraft::error::{CheckIsLeaderError, ClientWriteError, Fatal, RaftError};
 use serde::{Deserialize, Serialize};
@@ -31,7 +30,7 @@ pub enum Error {
     Config(Cow<'static, str>),
     #[error("Connect: {0}")]
     Connect(String),
-    #[cfg(feature = "s3")]
+    #[cfg(any(feature = "dashboard", feature = "s3"))]
     #[error("Cryptr: {0}")]
     Cryptr(String),
     #[error("Error: {0}")]
@@ -101,6 +100,7 @@ impl IntoResponse for Error {
             Error::Cache(_) => StatusCode::BAD_REQUEST,
             Error::Channel(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::CheckIsLeaderError(_) => StatusCode::CONFLICT,
+            #[cfg(any(feature = "dashboard", feature = "s3"))]
             Error::Cryptr(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::LeaderChange(_) => StatusCode::CONFLICT,
             Error::QueryParams(_) => StatusCode::BAD_REQUEST,
@@ -201,6 +201,7 @@ impl From<Fatal<u64>> for Error {
     }
 }
 
+#[cfg(feature = "sqlite")]
 impl From<rusqlite::Error> for Error {
     fn from(value: rusqlite::Error) -> Self {
         trace!("Sqlite: {}", value);
@@ -208,20 +209,21 @@ impl From<rusqlite::Error> for Error {
     }
 }
 
-impl From<deadpool::managed::BuildError> for Error {
-    fn from(value: BuildError) -> Self {
-        trace!("Sqlite: {}", value);
-        Self::Sqlite(value.to_string().into())
-    }
-}
+// impl From<deadpool::managed::BuildError> for Error {
+//     fn from(value: BuildError) -> Self {
+//         trace!("Sqlite: {}", value);
+//         Self::Sqlite(value.to_string().into())
+//     }
+// }
 
-impl From<deadpool::managed::PoolError<rusqlite::Error>> for Error {
-    fn from(value: PoolError<rusqlite::Error>) -> Self {
-        trace!("Sqlite: {}", value);
-        Self::Sqlite(value.to_string().into())
-    }
-}
+// impl From<deadpool::managed::PoolError<rusqlite::Error>> for Error {
+//     fn from(value: PoolError<rusqlite::Error>) -> Self {
+//         trace!("Sqlite: {}", value);
+//         Self::Sqlite(value.to_string().into())
+//     }
+// }
 
+#[cfg(feature = "sqlite")]
 impl From<deadpool::unmanaged::PoolError> for Error {
     fn from(value: deadpool::unmanaged::PoolError) -> Self {
         trace!("Sqlite: {}", value);
@@ -257,7 +259,7 @@ impl From<flume::RecvError> for Error {
     }
 }
 
-#[cfg(feature = "s3")]
+#[cfg(any(feature = "dashboard", feature = "s3"))]
 impl From<cryptr::CryptrError> for Error {
     fn from(value: cryptr::CryptrError) -> Self {
         trace!("cryptr::CryptrError: {}", value);

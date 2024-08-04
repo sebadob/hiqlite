@@ -1,7 +1,7 @@
 use crate::network::handshake::HandshakeSecret;
 use crate::network::raft_server::{RaftStreamRequest, RaftStreamResponse};
+use crate::Node;
 use crate::{tls, NodeId};
-use crate::{Error, Node};
 use bytes::Bytes;
 use fastwebsockets::{Frame, OpCode, WebSocket};
 use http_body_util::Empty;
@@ -9,26 +9,15 @@ use hyper::header::{CONNECTION, UPGRADE};
 use hyper::upgrade::Upgraded;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
-use openraft::error::InstallSnapshotError;
+use openraft::error::NetworkError;
 use openraft::error::RPCError;
-use openraft::error::RaftError;
-use openraft::error::{NetworkError, RemoteError};
-use openraft::network::RPCOption;
-use openraft::network::RaftNetwork;
-use openraft::network::RaftNetworkFactory;
-use openraft::raft::AppendEntriesRequest;
-use openraft::raft::AppendEntriesResponse;
-use openraft::raft::InstallSnapshotRequest;
-use openraft::raft::InstallSnapshotResponse;
-use openraft::raft::VoteRequest;
-use openraft::raft::VoteResponse;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tokio::{task, time};
+use tokio::time;
 use tracing::{error, info, warn};
 
 #[cfg(feature = "cache")]
@@ -36,6 +25,18 @@ use crate::store::state_machine::memory::TypeConfigKV;
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
+
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use crate::Error;
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::{
+    error::{InstallSnapshotError, RaftError, RemoteError},
+    network::{RPCOption, RaftNetwork, RaftNetworkFactory},
+    raft::{
+        AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
+        InstallSnapshotResponse, VoteRequest, VoteResponse,
+    },
+};
 
 struct SpawnExecutor;
 
@@ -65,7 +66,7 @@ impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
 
         let (sender, rx) = flume::unbounded();
 
-        let handle = task::spawn(Self::ws_handler(
+        let handle = tokio::task::spawn(Self::ws_handler(
             self.node_id,
             "/stream/cache",
             node.clone(),
@@ -92,7 +93,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
 
         let (sender, rx) = flume::unbounded();
 
-        let handle = task::spawn(Self::ws_handler(
+        let handle = tokio::task::spawn(Self::ws_handler(
             self.node_id,
             "/stream/db",
             node.clone(),

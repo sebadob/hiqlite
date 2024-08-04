@@ -2,12 +2,11 @@ use crate::app_state::{AppState, RaftType};
 use crate::network::management::LearnerReq;
 use crate::network::HEADER_NAME_SECRET;
 use crate::{helpers, Error, Node, NodeId};
-use openraft::{Membership, Raft};
-use std::collections::BTreeMap;
+use openraft::Membership;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
@@ -15,10 +14,15 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
 
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use std::collections::BTreeMap;
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use tracing::info;
+
 /// Initializes a fresh node 1, if it has not been set up yet.
 #[cfg(feature = "sqlite")]
 pub async fn init_pristine_node_1_db(
-    raft: &Raft<TypeConfigSqlite>,
+    raft: &openraft::Raft<TypeConfigSqlite>,
     this_node: u64,
     nodes: &[Node],
     secret_api: &str,
@@ -50,7 +54,7 @@ pub async fn init_pristine_node_1_db(
 /// Initializes a fresh node 1, if it has not been set up yet.
 #[cfg(feature = "cache")]
 pub async fn init_pristine_node_1_cache(
-    raft: &Raft<TypeConfigKV>,
+    raft: &openraft::Raft<TypeConfigKV>,
     this_node: u64,
     nodes: &[Node],
     secret_api: &str,
@@ -335,7 +339,9 @@ async fn is_initialized_timeout(
 // TODO get rid of the duplication here and make it prettier -> figure out generic types properly
 
 #[cfg(feature = "sqlite")]
-async fn is_initialized_timeout_sqlite(raft: &Raft<TypeConfigSqlite>) -> Result<bool, Error> {
+async fn is_initialized_timeout_sqlite(
+    raft: &openraft::Raft<TypeConfigSqlite>,
+) -> Result<bool, Error> {
     // Do not try to initialize already initialized nodes
     if raft.is_initialized().await? {
         return Ok(true);

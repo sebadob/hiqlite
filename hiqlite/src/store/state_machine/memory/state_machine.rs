@@ -10,7 +10,6 @@ use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
     StorageIOError, StoredMembership,
 };
-use rusqlite::types::Type;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
