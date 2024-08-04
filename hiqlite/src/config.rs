@@ -182,7 +182,7 @@ impl NodeConfig {
             #[cfg(feature = "s3")]
             enc_keys_from,
             #[cfg(feature = "s3")]
-            s3_config: crate::s3::S3Config::try_from_env().map(std::sync::Arc::new),
+            s3_config: crate::s3::S3Config::try_from_env(),
             #[cfg(feature = "dashboard")]
             password_dashboard: DashboardState::from_env().password_dashboard,
         };
@@ -302,18 +302,18 @@ mod tests {
             vec![
                 Node {
                     id: 1,
-                    addr_raft: "http://localhost:21001".to_string(),
-                    addr_api: "http://localhost:22001".to_string(),
+                    addr_raft: "localhost:8100".to_string(),
+                    addr_api: "localhost:8200".to_string(),
                 },
                 Node {
                     id: 2,
-                    addr_raft: "http://localhost:21002".to_string(),
-                    addr_api: "http://localhost:22002".to_string(),
+                    addr_raft: "localhost:8100".to_string(),
+                    addr_api: "localhost:8200".to_string(),
                 },
                 Node {
                     id: 3,
-                    addr_raft: "http://localhost:21003".to_string(),
-                    addr_api: "http://localhost:22003".to_string(),
+                    addr_raft: "localhost:8100".to_string(),
+                    addr_api: "localhost:8200".to_string(),
                 },
             ]
         );

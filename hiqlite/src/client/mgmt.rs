@@ -15,6 +15,7 @@ use crate::{Node, NodeId};
 use openraft::RaftMetrics;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use std::clone::Clone;
+use tracing::info;
 
 impl Client {
     #[cfg(feature = "sqlite")]
@@ -67,7 +68,22 @@ impl Client {
         }
     }
 
-    // #[must_use]
+    #[cfg(feature = "sqlite")]
+    pub async fn wait_until_healthy_db(&self) {
+        while self.is_healthy_db().await.is_err() {
+            info!("Waiting for healthy Raft DB");
+            time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    #[cfg(feature = "cache")]
+    pub async fn wait_until_healthy_cache(&self) {
+        while self.is_healthy_cache().await.is_err() {
+            info!("Waiting for healthy Raft DB");
+            time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
     /// Perform a graceful shutdown for this Raft node.
     /// Works on local clients only and can't shut down remote nodes.
     pub async fn shutdown(&self) -> Result<(), Error> {

@@ -269,11 +269,9 @@ where
     );
 
     #[cfg(all(feature = "backup", feature = "s3"))]
-    backup::start_cron(
-        client.clone(),
-        node_config.s3_config.unwrap(),
-        node_config.backup_config,
-    );
+    if let Some(s3_config) = node_config.s3_config {
+        backup::start_cron(client.clone(), s3_config, node_config.backup_config);
+    }
 
     Ok(client)
 }

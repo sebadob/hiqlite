@@ -40,7 +40,9 @@ pub enum ClientStreamReq {
     #[cfg(feature = "sqlite")]
     Transaction(ClientTransactionPayload),
     #[cfg(feature = "sqlite")]
-    QueryConsistent(ClientQueryConsistentPayload),
+    Query(ClientQueryPayload),
+    #[cfg(feature = "sqlite")]
+    QueryConsistent(ClientQueryPayload),
     #[cfg(feature = "sqlite")]
     Batch(ClientBatchPayload),
     #[cfg(feature = "sqlite")]
@@ -78,7 +80,7 @@ pub struct ClientTransactionPayload {
 
 #[cfg(feature = "sqlite")]
 #[derive(Debug)]
-pub struct ClientQueryConsistentPayload {
+pub struct ClientQueryPayload {
     pub request_id: usize,
     pub query: Query,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
@@ -289,6 +291,30 @@ async fn client_stream(
                 }
 
                 #[cfg(feature = "sqlite")]
+                ClientStreamReq::Query(query) => {
+                    let req = ApiStreamRequest {
+                        request_id: query.request_id,
+                        payload: ApiStreamRequestPayload::Query(query.query),
+                    };
+
+                    match tx_write
+                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
+                        .await
+                    {
+                        Ok(_) => {
+                            in_flight.insert(query.request_id, query.ack);
+                        }
+                        Err(err) => {
+                            error!("Error sending txn request to writer: {}", err);
+                            let _ = query
+                                .ack
+                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
+                            break;
+                        }
+                    }
+                }
+
+                #[cfg(feature = "sqlite")]
                 ClientStreamReq::QueryConsistent(query) => {
                     let req = ApiStreamRequest {
                         request_id: query.request_id,
@@ -476,6 +502,12 @@ async fn client_stream(
                 ClientStreamReq::Transaction(_) => {
                     unreachable!(
                         "we should never receive ClientStreamReq::Transaction from WS reader"
+                    )
+                }
+                #[cfg(feature = "sqlite")]
+                ClientStreamReq::Query(_) => {
+                    unreachable!(
+                        "we should never receive ClientStreamReq::QueryConsistent from WS reader"
                     )
                 }
                 #[cfg(feature = "sqlite")]

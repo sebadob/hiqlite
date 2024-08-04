@@ -152,21 +152,21 @@ pub async fn test_execute_query(
 
     log("Query consistent from all clients");
     let res: Vec<TestData> = client_1
-        .query_map_consistent("SELECT * FROM test WHERE id = $1", params!(3))
+        .query_consistent_map("SELECT * FROM test WHERE id = $1", params!(3))
         .await?;
     assert_eq!(res[0].id, data.id);
     assert_eq!(res[0].ts, data.ts);
     assert_eq!(res[0].description, data.description);
 
     let res: Vec<TestData> = client_2
-        .query_map_consistent("SELECT * FROM test WHERE id = $1", params!(3))
+        .query_consistent_map("SELECT * FROM test WHERE id = $1", params!(3))
         .await?;
     assert_eq!(res[0].id, data.id);
     assert_eq!(res[0].ts, data.ts);
     assert_eq!(res[0].description, data.description);
 
     let res: Vec<TestData> = client_3
-        .query_map_consistent("SELECT * FROM test WHERE id = $1", params!(3))
+        .query_consistent_map("SELECT * FROM test WHERE id = $1", params!(3))
         .await?;
     assert_eq!(res[0].id, data.id);
     assert_eq!(res[0].ts, data.ts);

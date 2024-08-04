@@ -62,6 +62,7 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         tls_api: None,
         secret_raft: "asdasdasdasdasdasd".to_string(),
         secret_api: "qweqweqweqweqweqwe".to_string(),
+        backup_config: Default::default(),
         enc_keys_from: hiqlite::s3::EncKeysFrom::Env,
         s3_config: hiqlite::s3::S3Config::try_from_env(),
         #[cfg(feature = "dashboard")]

@@ -1,6 +1,7 @@
 use crate::Error;
 use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter};
 use std::env;
+use std::sync::Arc;
 use tracing::warn;
 
 pub use crate::config::EncKeysFrom;
@@ -20,7 +21,7 @@ impl S3Config {
         key: S,
         secret: S,
         path_style: bool,
-    ) -> Result<Self, Error>
+    ) -> Result<Arc<Self>, Error>
     where
         S: Into<String>,
     {
@@ -37,10 +38,10 @@ impl S3Config {
         let bucket = Bucket::new(endpoint, name.into(), region, credentials, options)
             .map_err(|err| Error::S3(err.to_string()))?;
 
-        Ok(Self { bucket })
+        Ok(Arc::new(Self { bucket }))
     }
 
-    pub fn try_from_env() -> Option<Self> {
+    pub fn try_from_env() -> Option<Arc<Self>> {
         if let Ok(url) = env::var("HQL_S3_URL") {
             // we assume that all values exist when we can read the url successfully
 
@@ -61,7 +62,7 @@ impl S3Config {
 
             let bucket = Bucket::new(url, bucket_name, region, credentials, options).unwrap();
 
-            Some(S3Config { bucket })
+            Some(Arc::new(S3Config { bucket }))
         } else {
             None
         }

@@ -22,7 +22,7 @@ use crate::store::state_machine::memory::dlock_handler::{
 #[cfg(feature = "sqlite")]
 use crate::{
     migration::Migration,
-    query::{query_consistent, rows::RowOwned},
+    query::{query_consistent_local, query_owned_local, rows::RowOwned},
     store::state_machine::sqlite::state_machine::{Query, QueryWrite},
 };
 
@@ -268,6 +268,8 @@ pub(crate) enum ApiStreamResponsePayload {
     #[cfg(feature = "sqlite")]
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
     #[cfg(feature = "sqlite")]
+    Query(Result<Vec<RowOwned>, Error>),
+    #[cfg(feature = "sqlite")]
     QueryConsistent(Result<Vec<RowOwned>, Error>),
     #[cfg(feature = "sqlite")]
     Batch(Result<Vec<Result<usize, Error>>, Error>),
@@ -423,266 +425,268 @@ async fn handle_socket_concurrent(
         let state = state.clone();
         let tx_write = tx_write.clone();
         task::spawn(async move {
-            match req.payload {
+            let request_id = req.request_id;
+
+            let res = match req.payload {
                 #[cfg(feature = "sqlite")]
-                ApiStreamRequestPayload::QueryConsistent(Query { sql, params }) => {
-                    task::spawn(query_consistent(
-                        state,
-                        sql,
-                        params,
-                        req.request_id,
-                        tx_write,
-                    ));
-                }
-
-                payload => {
-                    let res = match payload {
-                        #[cfg(feature = "sqlite")]
-                        ApiStreamRequestPayload::Execute(sql) => {
-                            match state
-                                .raft_db
-                                .raft
-                                .client_write(QueryWrite::Execute(sql))
-                                .await
-                            {
-                                Ok(resp) => {
-                                    let resp: crate::Response = resp.data;
-                                    let res = match resp {
-                                        crate::Response::Execute(res) => res.result,
-                                        _ => unreachable!(),
-                                    };
-                                    ApiStreamResponse {
-                                        request_id: req.request_id,
-                                        result: ApiStreamResponsePayload::Execute(res),
-                                    }
-                                }
-                                Err(err) => ApiStreamResponse {
-                                    request_id: req.request_id,
-                                    result: ApiStreamResponsePayload::Execute(Err(Error::from(
-                                        err,
-                                    ))),
-                                },
-                            }
-                        }
-
-                        #[cfg(feature = "sqlite")]
-                        ApiStreamRequestPayload::ExecuteReturning(sql) => {
-                            match state
-                                .raft_db
-                                .raft
-                                .client_write(QueryWrite::ExecuteReturning(sql))
-                                .await
-                            {
-                                Ok(resp) => {
-                                    let resp: crate::Response = resp.data;
-                                    let res = match resp {
-                                        crate::Response::ExecuteReturning(res) => res.result,
-                                        _ => unreachable!(),
-                                    };
-                                    ApiStreamResponse {
-                                        request_id: req.request_id,
-                                        result: ApiStreamResponsePayload::ExecuteReturning(res),
-                                    }
-                                }
-                                Err(err) => ApiStreamResponse {
-                                    request_id: req.request_id,
-                                    result: ApiStreamResponsePayload::ExecuteReturning(Err(
-                                        Error::from(err),
-                                    )),
-                                },
-                            }
-                        }
-
-                        #[cfg(feature = "sqlite")]
-                        ApiStreamRequestPayload::Transaction(queries) => {
-                            match state
-                                .raft_db
-                                .raft
-                                .client_write(QueryWrite::Transaction(queries))
-                                .await
-                            {
-                                Ok(resp) => {
-                                    let resp: crate::Response = resp.data;
-                                    let res = match resp {
-                                        crate::Response::Transaction(res) => res,
-                                        _ => unreachable!(),
-                                    };
-                                    ApiStreamResponse {
-                                        request_id: req.request_id,
-                                        result: ApiStreamResponsePayload::Transaction(res),
-                                    }
-                                }
-                                Err(err) => ApiStreamResponse {
-                                    request_id: req.request_id,
-                                    result: ApiStreamResponsePayload::Execute(Err(Error::from(
-                                        err,
-                                    ))),
-                                },
-                            }
-                        }
-
-                        #[cfg(feature = "sqlite")]
-                        ApiStreamRequestPayload::QueryConsistent(_) => {
-                            unreachable!("has been handled separately")
-                        }
-
-                        #[cfg(feature = "sqlite")]
-                        ApiStreamRequestPayload::Batch(sql) => {
-                            match state
-                                .raft_db
-                                .raft
-                                .client_write(QueryWrite::Batch(sql))
-                                .await
-                            {
-                                Ok(resp) => {
-                                    let resp: crate::Response = resp.data;
-                                    let res = match resp {
-                                        crate::Response::Batch(res) => res,
-                                        _ => unreachable!(),
-                                    };
-                                    ApiStreamResponse {
-                                        request_id: req.request_id,
-                                        result: ApiStreamResponsePayload::Batch(Ok(res.result)),
-                                    }
-                                }
-                                Err(err) => ApiStreamResponse {
-                                    request_id: req.request_id,
-                                    result: ApiStreamResponsePayload::Batch(Err(Error::from(err))),
-                                },
-                            }
-                        }
-
-                        #[cfg(feature = "sqlite")]
-                        ApiStreamRequestPayload::Migrate(migrations) => {
-                            match state
-                                .raft_db
-                                .raft
-                                .client_write(QueryWrite::Migration(migrations))
-                                .await
-                            {
-                                Ok(resp) => {
-                                    let resp: crate::Response = resp.data;
-                                    let res = match resp {
-                                        crate::Response::Migrate(res) => res,
-                                        _ => unreachable!(),
-                                    };
-                                    ApiStreamResponse {
-                                        request_id: req.request_id,
-                                        result: ApiStreamResponsePayload::Migrate(res),
-                                    }
-                                }
-                                Err(err) => ApiStreamResponse {
-                                    request_id: req.request_id,
-                                    result: ApiStreamResponsePayload::Execute(Err(Error::from(
-                                        err,
-                                    ))),
-                                },
-                            }
-                        }
-
-                        #[cfg(feature = "backup")]
-                        ApiStreamRequestPayload::Backup(node_id) => {
-                            match state
-                                .raft_db
-                                .raft
-                                .client_write(QueryWrite::Backup(node_id))
-                                .await
-                            {
-                                Ok(resp) => {
-                                    let resp: crate::Response = resp.data;
-                                    let res = match resp {
-                                        crate::Response::Backup(res) => res,
-                                        _ => unreachable!(),
-                                    };
-                                    ApiStreamResponse {
-                                        request_id: req.request_id,
-                                        result: ApiStreamResponsePayload::Backup(res),
-                                    }
-                                }
-                                Err(err) => ApiStreamResponse {
-                                    request_id: req.request_id,
-                                    result: ApiStreamResponsePayload::Backup(Err(Error::from(err))),
-                                },
-                            }
-                        }
-
-                        #[cfg(feature = "cache")]
-                        ApiStreamRequestPayload::KV(cache_req) => {
-                            match state.raft_cache.raft.client_write(cache_req).await {
-                                Ok(resp) => {
-                                    let resp: CacheResponse = resp.data;
-                                    ApiStreamResponse {
-                                        request_id: req.request_id,
-                                        result: ApiStreamResponsePayload::KV(Ok(resp)),
-                                    }
-                                }
-                                Err(err) => ApiStreamResponse {
-                                    request_id: req.request_id,
-                                    result: ApiStreamResponsePayload::KV(Err(Error::from(err))),
-                                },
-                            }
-                        }
-
-                        #[cfg(feature = "sqlite")]
-                        ApiStreamRequestPayload::Query(Query { sql, params }) => {
-                            todo!()
-                        }
-
-                        #[cfg(feature = "cache")]
-                        ApiStreamRequestPayload::KVGet(cache_req) => {
-                            let (cache_idx, key) = match cache_req {
-                                CacheRequest::Get { cache_idx, key } => (cache_idx, key),
+                ApiStreamRequestPayload::Execute(sql) => {
+                    match state
+                        .raft_db
+                        .raft
+                        .client_write(QueryWrite::Execute(sql))
+                        .await
+                    {
+                        Ok(resp) => {
+                            let resp: crate::Response = resp.data;
+                            let res = match resp {
+                                crate::Response::Execute(res) => res.result,
                                 _ => unreachable!(),
                             };
-
-                            let (ack, rx) = tokio::sync::oneshot::channel();
-                            state
-                                .raft_cache
-                                .tx_caches
-                                .get(cache_idx)
-                                .unwrap()
-                                .send(CacheRequestHandler::Get((key, ack)))
-                                .expect("kv handler to always be running");
-                            let value = rx.await.expect("to always get an answer from kv handler");
                             ApiStreamResponse {
-                                request_id: req.request_id,
-                                result: ApiStreamResponsePayload::KV(Ok(CacheResponse::Value(
-                                    value,
-                                ))),
+                                request_id,
+                                result: ApiStreamResponsePayload::Execute(res),
                             }
                         }
-
-                        #[cfg(feature = "dlock")]
-                        ApiStreamRequestPayload::LockAwait(cache_req) => {
-                            let (key, id) = match cache_req {
-                                CacheRequest::LockAwait((key, id)) => (key, id),
-                                _ => unreachable!(),
-                            };
-
-                            let (ack, rx) = tokio::sync::oneshot::channel();
-                            state
-                                .raft_cache
-                                .tx_dlock
-                                .send(LockRequest::Await(LockAwaitPayload { key, id, ack }))
-                                .expect("kv handler to always be running");
-                            let lock_state = rx
-                                .await
-                                .expect("to always get an answer from the kv handler");
-
-                            ApiStreamResponse {
-                                request_id: req.request_id,
-                                result: ApiStreamResponsePayload::Lock(lock_state),
-                            }
-                        }
-                    };
-
-                    if let Err(err) = tx_write.send_async(WsWriteMsg::Payload(res)).await {
-                        panic!(
-                            "Error sending payload to tx_write - this should never happen: {}",
-                            err
-                        );
+                        Err(err) => ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::Execute(Err(Error::from(err))),
+                        },
                     }
                 }
+
+                #[cfg(feature = "sqlite")]
+                ApiStreamRequestPayload::ExecuteReturning(sql) => {
+                    match state
+                        .raft_db
+                        .raft
+                        .client_write(QueryWrite::ExecuteReturning(sql))
+                        .await
+                    {
+                        Ok(resp) => {
+                            let resp: crate::Response = resp.data;
+                            let res = match resp {
+                                crate::Response::ExecuteReturning(res) => res.result,
+                                _ => unreachable!(),
+                            };
+                            ApiStreamResponse {
+                                request_id,
+                                result: ApiStreamResponsePayload::ExecuteReturning(res),
+                            }
+                        }
+                        Err(err) => ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::ExecuteReturning(Err(Error::from(
+                                err,
+                            ))),
+                        },
+                    }
+                }
+
+                #[cfg(feature = "sqlite")]
+                ApiStreamRequestPayload::Transaction(queries) => {
+                    match state
+                        .raft_db
+                        .raft
+                        .client_write(QueryWrite::Transaction(queries))
+                        .await
+                    {
+                        Ok(resp) => {
+                            let resp: crate::Response = resp.data;
+                            let res = match resp {
+                                crate::Response::Transaction(res) => res,
+                                _ => unreachable!(),
+                            };
+                            ApiStreamResponse {
+                                request_id,
+                                result: ApiStreamResponsePayload::Transaction(res),
+                            }
+                        }
+                        Err(err) => ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::Execute(Err(Error::from(err))),
+                        },
+                    }
+                }
+
+                #[cfg(feature = "sqlite")]
+                ApiStreamRequestPayload::QueryConsistent(Query { sql, params }) => {
+                    let res = query_consistent_local(
+                        &state.raft_db.raft,
+                        state.raft_db.log_statements,
+                        state.raft_db.read_pool.clone(),
+                        sql,
+                        params,
+                    )
+                    .await;
+
+                    ApiStreamResponse {
+                        request_id,
+                        result: ApiStreamResponsePayload::QueryConsistent(res),
+                    }
+                }
+
+                #[cfg(feature = "sqlite")]
+                ApiStreamRequestPayload::Batch(sql) => {
+                    match state
+                        .raft_db
+                        .raft
+                        .client_write(QueryWrite::Batch(sql))
+                        .await
+                    {
+                        Ok(resp) => {
+                            let resp: crate::Response = resp.data;
+                            let res = match resp {
+                                crate::Response::Batch(res) => res,
+                                _ => unreachable!(),
+                            };
+                            ApiStreamResponse {
+                                request_id,
+                                result: ApiStreamResponsePayload::Batch(Ok(res.result)),
+                            }
+                        }
+                        Err(err) => ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::Batch(Err(Error::from(err))),
+                        },
+                    }
+                }
+
+                #[cfg(feature = "sqlite")]
+                ApiStreamRequestPayload::Migrate(migrations) => {
+                    match state
+                        .raft_db
+                        .raft
+                        .client_write(QueryWrite::Migration(migrations))
+                        .await
+                    {
+                        Ok(resp) => {
+                            let resp: crate::Response = resp.data;
+                            let res = match resp {
+                                crate::Response::Migrate(res) => res,
+                                _ => unreachable!(),
+                            };
+                            ApiStreamResponse {
+                                request_id,
+                                result: ApiStreamResponsePayload::Migrate(res),
+                            }
+                        }
+                        Err(err) => ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::Execute(Err(Error::from(err))),
+                        },
+                    }
+                }
+
+                #[cfg(feature = "backup")]
+                ApiStreamRequestPayload::Backup(node_id) => {
+                    match state
+                        .raft_db
+                        .raft
+                        .client_write(QueryWrite::Backup(node_id))
+                        .await
+                    {
+                        Ok(resp) => {
+                            let resp: crate::Response = resp.data;
+                            let res = match resp {
+                                crate::Response::Backup(res) => res,
+                                _ => unreachable!(),
+                            };
+                            ApiStreamResponse {
+                                request_id,
+                                result: ApiStreamResponsePayload::Backup(res),
+                            }
+                        }
+                        Err(err) => ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::Backup(Err(Error::from(err))),
+                        },
+                    }
+                }
+
+                #[cfg(feature = "cache")]
+                ApiStreamRequestPayload::KV(cache_req) => {
+                    match state.raft_cache.raft.client_write(cache_req).await {
+                        Ok(resp) => {
+                            let resp: CacheResponse = resp.data;
+                            ApiStreamResponse {
+                                request_id,
+                                result: ApiStreamResponsePayload::KV(Ok(resp)),
+                            }
+                        }
+                        Err(err) => ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::KV(Err(Error::from(err))),
+                        },
+                    }
+                }
+
+                #[cfg(feature = "sqlite")]
+                ApiStreamRequestPayload::Query(Query { sql, params }) => {
+                    let res = query_owned_local(
+                        state.raft_db.log_statements,
+                        state.raft_db.read_pool.clone(),
+                        sql,
+                        params,
+                    )
+                    .await;
+
+                    ApiStreamResponse {
+                        request_id,
+                        result: ApiStreamResponsePayload::Query(res),
+                    }
+                }
+
+                #[cfg(feature = "cache")]
+                ApiStreamRequestPayload::KVGet(cache_req) => {
+                    let (cache_idx, key) = match cache_req {
+                        CacheRequest::Get { cache_idx, key } => (cache_idx, key),
+                        _ => unreachable!(),
+                    };
+
+                    let (ack, rx) = tokio::sync::oneshot::channel();
+                    state
+                        .raft_cache
+                        .tx_caches
+                        .get(cache_idx)
+                        .unwrap()
+                        .send(CacheRequestHandler::Get((key, ack)))
+                        .expect("kv handler to always be running");
+                    let value = rx.await.expect("to always get an answer from kv handler");
+                    ApiStreamResponse {
+                        request_id,
+                        result: ApiStreamResponsePayload::KV(Ok(CacheResponse::Value(value))),
+                    }
+                }
+
+                #[cfg(feature = "dlock")]
+                ApiStreamRequestPayload::LockAwait(cache_req) => {
+                    let (key, id) = match cache_req {
+                        CacheRequest::LockAwait((key, id)) => (key, id),
+                        _ => unreachable!(),
+                    };
+
+                    let (ack, rx) = tokio::sync::oneshot::channel();
+                    state
+                        .raft_cache
+                        .tx_dlock
+                        .send(LockRequest::Await(LockAwaitPayload { key, id, ack }))
+                        .expect("kv handler to always be running");
+                    let lock_state = rx
+                        .await
+                        .expect("to always get an answer from the kv handler");
+
+                    ApiStreamResponse {
+                        request_id,
+                        result: ApiStreamResponsePayload::Lock(lock_state),
+                    }
+                }
+            };
+
+            if let Err(err) = tx_write.send_async(WsWriteMsg::Payload(res)).await {
+                panic!(
+                    "Error sending payload to tx_write - this should never happen: {}",
+                    err
+                );
             }
         });
     }

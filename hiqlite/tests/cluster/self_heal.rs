@@ -99,7 +99,7 @@ pub async fn test_self_healing(
     client_1 = shutdown_remove_all_restart(client_1, 1).await?;
     // full replication will take a few moments, vote takes a bit longer sometimes
     log("Waiting for cluster to become healthy again");
-    client_1.wait_until_healthy().await;
+    client_1.wait_until_healthy_db().await;
     check::is_client_db_healthy(&client_1).await?;
     log("Client has self-healed and re-joined successfully");
 

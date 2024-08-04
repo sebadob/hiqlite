@@ -1,6 +1,4 @@
 use crate::app_state::AppState;
-use crate::network::api::{ApiStreamResponse, ApiStreamResponsePayload, WsWriteMsg};
-use crate::network::AppStateExt;
 use crate::query::rows::{ColumnOwned, RowOwned};
 use crate::store::state_machine::sqlite::state_machine::SqlitePool;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
@@ -10,12 +8,9 @@ use serde::de::DeserializeOwned;
 use std::borrow::Cow;
 use std::sync::Arc;
 use tokio::task;
-use tracing::{error, info};
+use tracing::info;
 
 pub mod rows;
-
-// TODO
-// - query_optional
 
 // pub(crate) async fn query_columns<S>(
 //     read_pool: &Arc<SqlitePool>,
@@ -35,35 +30,6 @@ pub mod rows;
 //     .await?
 // }
 
-pub(crate) async fn query_consistent<S>(
-    state: AppStateExt,
-    stmt: S,
-    params: Params,
-    request_id: usize,
-    tx_ws_writer: flume::Sender<WsWriteMsg>,
-) where
-    S: Into<Cow<'static, str>>,
-{
-    let res = query_consistent_local(
-        &state.raft_db.raft,
-        state.raft_db.log_statements,
-        state.raft_db.read_pool.clone(),
-        stmt,
-        params,
-    )
-    .await;
-
-    if let Err(err) = tx_ws_writer
-        .send_async(WsWriteMsg::Payload(ApiStreamResponse {
-            request_id,
-            result: ApiStreamResponsePayload::QueryConsistent(res),
-        }))
-        .await
-    {
-        error!("{}", err);
-    }
-}
-
 pub(crate) async fn query_consistent_local<S>(
     raft: &Raft<TypeConfigSqlite>,
     log_statements: bool,
@@ -74,13 +40,25 @@ pub(crate) async fn query_consistent_local<S>(
 where
     S: Into<Cow<'static, str>>,
 {
+    let _ = raft.ensure_linearizable().await?;
+    query_owned_local(log_statements, read_pool, stmt, params).await
+}
+
+pub(crate) async fn query_owned_local<S>(
+    log_statements: bool,
+    read_pool: Arc<SqlitePool>,
+    stmt: S,
+    params: Params,
+) -> Result<Vec<RowOwned>, Error>
+where
+    S: Into<Cow<'static, str>>,
+{
     let stmt: Cow<'static, str> = stmt.into();
     if log_statements {
-        info!("query_consistent:\n{}\n{:?}", stmt, params)
+        info!("query_owned_local:\n{}\n{:?}", stmt, params)
     }
 
     let conn = read_pool.get().await?;
-    let _ = raft.ensure_linearizable().await?;
 
     task::spawn_blocking(move || {
         let mut stmt = conn.prepare_cached(stmt.as_ref())?;
