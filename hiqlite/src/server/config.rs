@@ -1,5 +1,5 @@
-use crate::args::{ArgsConfig, ArgsGenerate};
-use crate::password;
+use crate::server::args::{ArgsConfig, ArgsGenerate};
+use crate::server::password;
 use cryptr::{utils, EncKeys};
 use hiqlite::{Error, NodeConfig};
 use tokio::fs;

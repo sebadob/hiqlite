@@ -129,7 +129,7 @@ run ty="server":
     clear
 
     if [[ {{ty}} == "server" ]]; then
-      cargo run -- serve
+      cargo run --features server -- serve
     elif [[ {{ty}} == "ui" ]]; then
       cd dashboard
       npm run dev -- --host=0.0.0.0

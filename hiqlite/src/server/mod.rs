@@ -1,20 +1,17 @@
-// Copyright 2024 Sebastian Dobe <sebastiandobe@mailbox.org>
-
-use crate::args::LogLevel;
-use args::Args;
+use crate::server::args::{Args, LogLevel};
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
+use hiqlite::Error;
 
 mod args;
 mod cache;
 mod config;
+mod logging;
 mod password;
 
-#[tokio::main]
-async fn main() -> Result<(), hiqlite::Error> {
+pub async fn server() -> Result<(), Error> {
     match Args::parse() {
         Args::Serve(args) => {
-            init_logging(&args.log_level);
+            logging::init_logging(&args.log_level);
 
             let node_config = config::build_node_config(args)?;
             let client = hiqlite::start_node::<cache::Cache>(node_config).await?;
@@ -23,18 +20,10 @@ async fn main() -> Result<(), hiqlite::Error> {
             shutdown_handle.wait().await?;
         }
         Args::GenerateConfig(args) => {
-            init_logging(&LogLevel::Info);
+            logging::init_logging(&LogLevel::Info);
             config::generate(args).await?;
         }
     }
 
     Ok(())
-}
-
-fn init_logging(level: &LogLevel) {
-    tracing_subscriber::fmt()
-        .with_target(true)
-        .with_level(true)
-        .with_env_filter(EnvFilter::new(level.as_str()))
-        .init();
 }

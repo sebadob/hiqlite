@@ -34,6 +34,7 @@ full = ["auto-heal", "backup", "cache", "dashboard", "dlock", "s3", "shutdown-ha
 #io-uring = ["rocksdb/io-uring"]
 #jemalloc = ["rocksdb/jemalloc"]
 s3 = ["backup", "dep:cryptr"]
+server = ["dep:clap", "dep:home", "dep:tracing-subscriber", "full", "tokio/macros"]
 shutdown-handle = ["dep:ctrlc"]
 sqlite = ["dep:deadpool", "dep:rusqlite", "dep:serde_rusqlite"]
 webpki-roots = ["dep:webpki-roots", "reqwest/rustls-tls-webpki-roots"]
@@ -47,6 +48,7 @@ bincode.workspace = true
 byteorder.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+clap = { workspace = true, optional = true }
 cryptr = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
 deadpool = { workspace = true, optional = true }
@@ -55,6 +57,7 @@ fastwebsockets.workspace = true
 flume.workspace = true
 getrandom.workspace = true
 hex.workspace = true
+home = { workspace = true, optional = true }
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
@@ -80,6 +83,7 @@ tokio-rustls.workspace = true
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 uuid.workspace = true
 webpki-roots = { workspace = true, optional = true }
 
