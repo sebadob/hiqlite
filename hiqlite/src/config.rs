@@ -108,11 +108,13 @@ impl NodeConfig {
     /// 2. read from given `filename`
     /// 3. read from env vars
     pub fn from_env_all(filename: &str) -> Self {
-        dotenvy::from_filename("config").ok();
-        if dotenvy::from_filename_override(filename).is_err() {
-            warn!("Error reading config from file {}", filename);
+        if dotenvy::from_filename("config").is_err() {
+            warn!("config file './config' not found");
         }
-        // dotenvy::dotenv_override().ok();
+        if dotenvy::from_filename_override(filename).is_err() {
+            warn!("config file '{}' not found", filename);
+        }
+        dotenvy::dotenv_override().ok();
         Self::from_env_parse()
     }
 
@@ -121,14 +123,18 @@ impl NodeConfig {
         let node_id = if env_from == "k8s" {
             let binding = hostname::get().expect("Cannot read hostname");
             let hostname = binding.to_str().expect("Invalid hostname format");
-            match hostname.rsplit_once('_') {
+            match hostname.rsplit_once('-') {
                 None => {
                     panic!(
                         "Cannot split off the NODE_ID from the hostname {}",
                         hostname
                     );
                 }
-                Some((_, id)) => id.parse::<u64>().expect("Cannot parse HQL_NODE_ID to u64"),
+                Some((_, id)) => {
+                    let id_hostname = id.parse::<u64>().expect("Cannot parse HQL_NODE_ID to u64");
+                    // the hostnames for k8s sts always start at 0, but we need to start at 1
+                    id_hostname + 1
+                }
             }
         } else {
             env::var("HQL_NODE_ID")
@@ -157,7 +163,7 @@ impl NodeConfig {
             node_id,
             nodes: Node::all_from_env(),
             data_dir: env::var("HQL_DATA_DIR")
-                .unwrap_or("hiqlite".to_string())
+                .unwrap_or("data".to_string())
                 .into(),
             filename_db: env::var("HQL_FILENAME_DB")
                 .unwrap_or("hiqlite.db".to_string())

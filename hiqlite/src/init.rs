@@ -289,6 +289,7 @@ async fn try_become(
                 .body(payload.to_vec())
                 .send()
                 .await;
+            debug!("raw request to {}: {:?}", url, res);
 
             match res {
                 Ok(resp) => {

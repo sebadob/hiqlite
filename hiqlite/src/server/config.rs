@@ -110,7 +110,7 @@ HQL_NODES="
 "
 
 # The data dir hiqlite will store raft logs and state machine data in.
-# default: hiqlite
+# default: hiqlite_data
 HQL_DATA_DIR={}
 
 # The file name of the SQLite database in the state machine folder.
