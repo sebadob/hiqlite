@@ -31,6 +31,7 @@ chrono = { version = "0.4.38", default-features = false, features = [
     "now",
 ] }
 clap = { version = "4.1.11", features = ["derive", "env"] }
+cron = { version = "0.12.1" }
 cryptr = { version = "0.5.1", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }

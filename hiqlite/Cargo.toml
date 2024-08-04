@@ -18,7 +18,7 @@ features = ["cache", "dashboard", "dlock", "shutdown-handle", "sqlite"]
 default = ["auto-heal", "backup", "sqlite"]
 
 auto-heal = []
-backup = ["s3"]
+backup = ["cron", "s3"]
 # TODO we should not need the "openraft/loosen-follower-log-revert" here -> conflict in self-healing tests
 cache = ["openraft/loosen-follower-log-revert"]
 dashboard = [
@@ -34,7 +34,7 @@ dlock = ["cache"]
 full = ["auto-heal", "backup", "cache", "dashboard", "dlock", "s3", "shutdown-handle", "sqlite", "webpki-roots"]
 #io-uring = ["rocksdb/io-uring"]
 #jemalloc = ["rocksdb/jemalloc"]
-s3 = ["backup", "dep:cryptr"]
+s3 = ["dep:cryptr", "backup"]
 server = ["dep:clap", "dep:home", "dep:tracing-subscriber", "full", "tokio/macros"]
 shutdown-handle = ["dep:ctrlc"]
 sqlite = ["dep:deadpool", "dep:rusqlite", "dep:serde_rusqlite"]
@@ -50,6 +50,7 @@ byteorder.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 clap = { workspace = true, optional = true }
+cron = { workspace = true, optional = true }
 cryptr = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
 deadpool = { workspace = true, optional = true }

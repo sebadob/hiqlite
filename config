@@ -65,6 +65,17 @@ HQL_SECRET_API=qweqweqweqweqweqwe
 # default: env
 HQL_ENC_KEYS_FROM=env
 
+# When the auto-backup task should run.
+# Accepts cron syntax:
+# "sec min hour day_of_month month day_of_week year"
+# default: "0 30 2 * * * *"
+HQL_BACKUP_CRON="0 30 2 * * * *"
+
+# Backups older than the configured days will be cleaned up after
+# the backup cron job.
+# default: 30
+HQL_BACKUP_KEEP_DAYS=30
+
 # Access values for the S3 bucket where backups will be pushed to.
 HQL_S3_URL=https://s3.example.com
 HQL_S3_BUCKET=my_bucket

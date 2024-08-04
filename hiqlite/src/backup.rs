@@ -4,8 +4,9 @@ use crate::store::state_machine::sqlite::state_machine::{
     PathBackups, PathDb, PathLockFile, PathSnapshots, QueryWrite, StateMachineData,
     StateMachineSqlite,
 };
-use crate::{Error, NodeConfig};
+use crate::{Client, Error, NodeConfig};
 use std::env;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -13,6 +14,51 @@ use tokio::{fs, task, time};
 use tracing::{debug, error, info, warn};
 
 pub const BACKUP_DB_NAME: &str = "restore.sqlite";
+
+#[derive(Debug, Clone)]
+pub struct BackupConfig {
+    cron_schedule: cron::Schedule,
+    keep_days: u16,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            cron_schedule: cron::Schedule::from_str("0 30 2 * * * *").unwrap(),
+            keep_days: 30,
+        }
+    }
+}
+
+impl BackupConfig {
+    pub fn new(cron_schedule: &str, keep_days: u16) -> Result<Self, Error> {
+        Ok(Self {
+            cron_schedule: cron::Schedule::from_str(cron_schedule)
+                .map_err(|_| Error::Config("Invalid syntax for cron_schedule".into()))?,
+            keep_days,
+        })
+    }
+
+    pub fn from_env() -> Self {
+        let cron_str = env::var("HQL_BACKUP_CRON").unwrap_or_else(|_| "0 30 2 * * * *".to_string());
+        let cron_schedule =
+            cron::Schedule::from_str(&cron_str).expect("Invalid syntax for HQL_BACKUP_CRON");
+
+        let keep_days = env::var("HQL_BACKUP_KEEP_DAYS")
+            .unwrap_or_else(|_| "30".to_string())
+            .parse::<u16>()
+            .expect("Cannot parse HQL_BACKUP_KEEP_DAYS to u16");
+
+        Self {
+            cron_schedule,
+            keep_days,
+        }
+    }
+}
+
+pub fn start_cron(_client: Client, _config: BackupConfig) {
+    todo!()
+}
 
 /// Check if the env var `HIQLITE_BACKUP_RESTORE` is set and restores the given backup if so.
 /// Returns `Ok(true)` if backup has been applied.

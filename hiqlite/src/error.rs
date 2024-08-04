@@ -49,10 +49,12 @@ pub enum Error {
     RaftErrorFatal(Fatal<u64>),
     #[error("Request: {0}")]
     Request(String),
+    #[cfg(feature = "s3")]
     #[error("S3: {0}")]
     S3(String),
     #[error("SnapshotError: {0}")]
     SnapshotError(RaftSnapshotError),
+    #[cfg(feature = "sqlite")]
     #[error("Sqlite: {0}")]
     Sqlite(Cow<'static, str>),
     #[error("Timeout: {0}")]
@@ -119,8 +121,10 @@ impl IntoResponse for Error {
             Error::RaftError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::RaftErrorFatal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Request(_) => StatusCode::BAD_REQUEST,
+            #[cfg(feature = "s3")]
             Error::S3(_) => StatusCode::BAD_REQUEST,
             Error::SnapshotError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            #[cfg(feature = "sqlite")]
             Error::Sqlite(_) => StatusCode::BAD_REQUEST,
             Error::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
             Error::Token(_) => StatusCode::UNAUTHORIZED,

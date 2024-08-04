@@ -3,12 +3,15 @@ use crate::{Error, Node, NodeId};
 use openraft::SnapshotPolicy;
 use std::borrow::Cow;
 use std::env;
+use tracing::warn;
+
+pub use openraft::Config as RaftConfig;
+
+#[cfg(feature = "backup")]
+use crate::backup;
 
 #[cfg(feature = "dashboard")]
 use crate::dashboard::DashboardState;
-
-pub use openraft::Config as RaftConfig;
-use tracing::warn;
 
 #[cfg(feature = "s3")]
 #[derive(Debug, Clone)]
@@ -48,6 +51,9 @@ pub struct NodeConfig {
     pub secret_raft: String,
     /// Secret for Raft management and DB API - at least 16 characters long
     pub secret_api: String,
+    /// auto-backup configuration
+    #[cfg(feature = "backup")]
+    pub backup_config: backup::BackupConfig,
     /// From where `ENC_KEYS` should be read for S3 backup encryption. feature `s3`
     #[cfg(feature = "s3")]
     pub enc_keys_from: EncKeysFrom,
@@ -72,6 +78,8 @@ impl Default for NodeConfig {
             tls_api: None,
             secret_raft: String::default(),
             secret_api: String::default(),
+            #[cfg(feature = "backup")]
+            backup_config: backup::BackupConfig::default(),
             #[cfg(feature = "s3")]
             enc_keys_from: EncKeysFrom::Env,
             #[cfg(feature = "s3")]
@@ -110,12 +118,9 @@ impl NodeConfig {
 
     fn from_env_parse() -> Self {
         let logs_keep = env::var("HQL_LOGS_UNTIL_SNAPSHOT")
-            .unwrap_or("10000".to_string())
+            .unwrap_or_else(|_| "10000".to_string())
             .parse::<u64>()
             .expect("Cannot parse HQL_LOGS_UNTIL_SNAPSHOT to u64");
-
-        let tls_raft = crate::tls::ServerTlsConfig::from_env("RAFT");
-        let tls_api = crate::tls::ServerTlsConfig::from_env("API");
 
         #[cfg(feature = "s3")]
         let enc_keys_from = env::var("HQL_ENC_KEYS_FROM")
@@ -127,12 +132,6 @@ impl NodeConfig {
                 }
             })
             .unwrap_or(EncKeysFrom::Env);
-
-        #[cfg(feature = "s3")]
-        let s3_config = crate::s3::S3Config::try_from_env();
-
-        #[cfg(feature = "dashboard")]
-        let dashboard_state = DashboardState::from_env();
 
         let slf = Self {
             node_id: env::var("HQL_NODE_ID")
@@ -151,16 +150,18 @@ impl NodeConfig {
                 .parse()
                 .expect("Cannot parse HQL_LOG_STATEMENTS to u64"),
             raft_config: Self::default_raft_config(logs_keep),
-            tls_raft,
-            tls_api,
+            tls_raft: ServerTlsConfig::from_env("RAFT"),
+            tls_api: ServerTlsConfig::from_env("API"),
             secret_raft: env::var("HQL_SECRET_RAFT").expect("HQL_SECRET_RAFT not found"),
             secret_api: env::var("HQL_SECRET_API").expect("HQL_SECRET_API not found"),
+            #[cfg(feature = "backup")]
+            backup_config: backup::BackupConfig::from_env(),
             #[cfg(feature = "s3")]
             enc_keys_from,
             #[cfg(feature = "s3")]
-            s3_config,
+            s3_config: crate::s3::S3Config::try_from_env(),
             #[cfg(feature = "dashboard")]
-            password_dashboard: dashboard_state.password_dashboard,
+            password_dashboard: DashboardState::from_env().password_dashboard,
         };
 
         slf.is_valid()

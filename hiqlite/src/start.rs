@@ -260,13 +260,18 @@ where
     #[cfg(feature = "cache")]
     member_cache.await??;
 
-    Ok(Client::new_local(
+    let client = Client::new_local(
         state,
         tls_api_client_config,
         tx_client_stream,
         rx_client_stream,
         tx_shutdown,
-    ))
+    );
+
+    #[cfg(feature = "backup")]
+    backup::start_cron(client.clone(), node_config.backup_config);
+
+    Ok(client)
 }
 
 fn build_listen_addr(addr: &str, tls: bool) -> String {

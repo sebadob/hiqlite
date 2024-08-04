@@ -110,12 +110,12 @@ HQL_DATA_DIR={}
 
 # The file name of the SQLite database in the state machine folder.
 # default: hiqlite.db
-HQL_FILENAME_DB=hiqlite.db
+#HQL_FILENAME_DB=hiqlite.db
 
 # If set to `true`, all SQL statements will be logged for debugging
 # purposes.
 # default: false
-HQL_LOG_STATEMENTS=false
+#HQL_LOG_STATEMENTS=false
 
 # Sets the limit when the Raft will trigger the creation of a new
 # state machine snapshot and purge all logs that are included in
@@ -146,14 +146,25 @@ HQL_SECRET_API={}
 # environment with setting this value to `env`, or parse them from
 # a file on disk with `file:path/to/enc/keys/file`
 # default: env
-HQL_ENC_KEYS_FROM=env
+#HQL_ENC_KEYS_FROM=env
+
+# When the auto-backup task should run.
+# Accepts cron syntax:
+# "sec min hour day_of_month month day_of_week year"
+# default: "0 30 2 * * * *"
+#HQL_BACKUP_CRON="0 30 2 * * * *"
+
+# Backups older than the configured days will be cleaned up after
+# the backup cron job.
+# default: 30
+#HQL_BACKUP_KEEP_DAYS=30
 
 # Access values for the S3 bucket where backups will be pushed to.
-HQL_S3_URL=https://s3.example.com
-HQL_S3_BUCKET=my_bucket
-HQL_S3_REGION=example
-HQL_S3_KEY=s3_key
-HQL_S3_SECRET=s3_secret
+#HQL_S3_URL=https://s3.example.com
+#HQL_S3_BUCKET=my_bucket
+#HQL_S3_REGION=example
+#HQL_S3_KEY=s3_key
+#HQL_S3_SECRET=s3_secret
 
 # You need to define at least one valid encryption key.
 # These keys are used to encrypt the database backups that will
