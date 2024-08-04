@@ -15,7 +15,7 @@ impl Client {
             Ok(res)
         } else {
             Err(Error::Cache(
-                "Listen / Notify does not work for remote clients yet".into(),
+                "Listen / Notify does not work for remote clients".into(),
             ))
         }
     }
@@ -34,7 +34,7 @@ impl Client {
             }
         } else {
             Err(Error::Cache(
-                "Listen / Notify does not work for remote clients yet".into(),
+                "Listen / Notify does not work for remote clients".into(),
             ))
         }
     }
@@ -56,7 +56,7 @@ impl Client {
             }
         } else {
             Err(Error::Cache(
-                "Listen / Notify does not work for remote clients yet".into(),
+                "Listen / Notify does not work for remote clients".into(),
             ))
         }
     }
@@ -88,7 +88,7 @@ impl Client {
             Ok(())
         } else {
             Err(Error::Cache(
-                "Listen / Notify does not work for remote clients yet".into(),
+                "Listen / Notify does not work for remote clients".into(),
             ))
         }
     }

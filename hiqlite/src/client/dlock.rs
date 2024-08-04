@@ -79,39 +79,6 @@ impl Client {
         }
     }
 
-    // pub async fn try_lock<K>(&self, key: K) -> Result<Lock, Error>
-    // where
-    //     K: Into<Cow<'static, str>>,
-    // {
-    //     let key = key.into();
-    //     let state = self.lock_req_retry(CacheRequest::Lock(key.clone())).await?;
-    //     match state {
-    //         LockState::Locked(id) => Ok(Lock {
-    //             id,
-    //             key,
-    //             client: self.clone(),
-    //         }),
-    //         LockState::Queued(id) => {
-    //             let res = self.lock_await(key.clone(), id).await?;
-    //             match res {
-    //                 LockState::Released => {
-    //                     let state = self.lock_req_retry(CacheRequest::Lock(key.clone())).await?;
-    //                     match state {
-    //                         LockState::Locked(id) => Ok(Lock {
-    //                             id,
-    //                             key,
-    //                             client: self.clone(),
-    //                         }),
-    //                         _ => unreachable!(),
-    //                     }
-    //                 }
-    //                 _ => unreachable!(),
-    //             }
-    //         }
-    //         _ => unreachable!(),
-    //     }
-    // }
-
     async fn lock_await(&self, key: Cow<'static, str>, id: u64) -> Result<LockState, Error> {
         if let Some(state) = &self.inner.state {
             let (ack, rx) = oneshot::channel();

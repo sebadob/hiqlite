@@ -17,35 +17,6 @@ use openraft::RaftMetrics;
 use std::clone::Clone;
 
 impl Client {
-    // pub async fn init(&self) -> Result<(), Error> {
-    //     let url = self.build_addr("/cluster/init").await;
-    //     let res = self
-    //         .client
-    //         .post(url)
-    //         .header(HEADER_NAME_SECRET, self.api_secret())
-    //         .send()
-    //         .await
-    //         .unwrap();
-    //
-    //     if res.status().is_success() {
-    //         Ok(())
-    //     } else {
-    //         Err(res.json().await.unwrap())
-    //     }
-    // }
-
-    // pub async fn add_learner(&self, req: LearnerReq) -> Result<RaftWriteResponse, Error> {
-    //     self.send_with_retry("/cluster/add_learner", Some(&req))
-    //         .await
-    // }
-
-    // pub async fn change_membership(
-    //     &self,
-    //     req: &BTreeSet<NodeId>,
-    // ) -> Result<RaftWriteResponse, Error> {
-    //     self.send_with_retry("/cluster/membership", Some(req)).await
-    // }
-
     #[cfg(feature = "sqlite")]
     pub async fn metrics_db(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
         if let Some(state) = &self.inner.state {

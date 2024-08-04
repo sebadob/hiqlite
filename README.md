@@ -94,6 +94,10 @@ in case of any errors or problems.
 
 ### TODOs before v0.1.0
 
-- fully capable remote client in case you don't embed Hiqlite
+- fully implemented remote client in case you don't embed Hiqlite -> currently missing:
+    - GET cache entry
+    - get distributed lock
+    - listen / notify?
+    - query_* fn's
 - proper documentation
 - more examples
