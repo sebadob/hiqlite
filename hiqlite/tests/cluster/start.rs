@@ -64,6 +64,7 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         secret_api: "qweqweqweqweqweqwe".to_string(),
         enc_keys_from: hiqlite::s3::EncKeysFrom::Env,
         s3_config: hiqlite::s3::S3Config::try_from_env(),
+        #[cfg(feature = "dashboard")]
         password_dashboard: "DoesNotMatterHere".to_string(),
     }
 }

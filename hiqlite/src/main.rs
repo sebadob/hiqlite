@@ -3,13 +3,15 @@
 #[cfg(feature = "server")]
 mod server;
 
+#[cfg(feature = "server")]
 #[tokio::main]
 async fn main() -> Result<(), hiqlite::Error> {
-    #[cfg(feature = "server")]
     server::server().await?;
 
-    #[cfg(not(feature = "server"))]
-    panic!("If you want to compile as binary, you need to enable the 'server' feature");
-
     Ok(())
+}
+
+#[cfg(not(feature = "server"))]
+fn main() {
+    panic!("If you want to compile as binary, you need to enable the 'server' feature");
 }
