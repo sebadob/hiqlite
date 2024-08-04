@@ -47,7 +47,7 @@ pub(crate) async fn start_raft_db(
         node_config.node_id,
         node_config.log_statements,
         #[cfg(feature = "s3")]
-        node_config.s3_config.map(Arc::new),
+        node_config.s3_config,
     )
     .await
     .unwrap();

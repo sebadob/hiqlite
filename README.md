@@ -68,7 +68,7 @@ in case of any errors or problems.
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
-- fully encrypted backups to s3 (
+- fully encrypted backups to s3, cron job or manual (
   with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr) )
 - restore from remote backup (with log index roll-over)
 - strongly consistent, replicated `execute` queries
@@ -97,4 +97,3 @@ in case of any errors or problems.
 - fully capable remote client in case you don't embed Hiqlite
 - proper documentation
 - more examples
-- default auto-backup task

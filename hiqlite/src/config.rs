@@ -59,7 +59,7 @@ pub struct NodeConfig {
     pub enc_keys_from: EncKeysFrom,
     /// If an `S3Config` is given, it will be used to push backups to the S3 bucket. feature `s3`
     #[cfg(feature = "s3")]
-    pub s3_config: Option<crate::s3::S3Config>,
+    pub s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
     /// Set the password for the integrated dashboard. Must be given as argon2id hash. feature `dashboard`
     #[cfg(feature = "dashboard")]
     pub password_dashboard: String,
@@ -104,15 +104,15 @@ impl NodeConfig {
     }
 
     /// Tries to build up the config from the following sources in order:
-    /// - read from `./config`
-    /// - read from given `filename`
-    /// - read from env vars
+    /// 1. read from `./config`
+    /// 2. read from given `filename`
+    /// 3. read from env vars
     pub fn from_env_all(filename: &str) -> Self {
-        dotenvy::dotenv().ok();
         dotenvy::from_filename("config").ok();
-        if dotenvy::from_filename(filename).is_err() {
+        if dotenvy::from_filename_override(filename).is_err() {
             warn!("Error reading config from file {}", filename);
         }
+        // dotenvy::dotenv_override().ok();
         Self::from_env_parse()
     }
 
@@ -136,7 +136,7 @@ impl NodeConfig {
         let slf = Self {
             node_id: env::var("HQL_NODE_ID")
                 .expect("Node ID not found")
-                .parse()
+                .parse::<u64>()
                 .expect("Cannot parse HQL_NODE_ID to u64"),
             nodes: Node::all_from_env(),
             data_dir: env::var("HQL_DATA_DIR")
@@ -159,7 +159,7 @@ impl NodeConfig {
             #[cfg(feature = "s3")]
             enc_keys_from,
             #[cfg(feature = "s3")]
-            s3_config: crate::s3::S3Config::try_from_env(),
+            s3_config: crate::s3::S3Config::try_from_env().map(std::sync::Arc::new),
             #[cfg(feature = "dashboard")]
             password_dashboard: DashboardState::from_env().password_dashboard,
         };
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(c.secret_raft, "asdasdasdasdasdasd");
         assert_eq!(c.secret_api, "qweqweqweqweqweqwe");
 
-        let bucket = c.s3_config.unwrap().bucket;
+        let bucket = &c.s3_config.unwrap().bucket;
         assert_eq!(bucket.host, "https://s3.example.com".parse().unwrap());
         assert_eq!(bucket.name, "my_bucket");
         assert_eq!(bucket.region.0, "example");

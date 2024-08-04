@@ -268,8 +268,12 @@ where
         tx_shutdown,
     );
 
-    #[cfg(feature = "backup")]
-    backup::start_cron(client.clone(), node_config.backup_config);
+    #[cfg(all(feature = "backup", feature = "s3"))]
+    backup::start_cron(
+        client.clone(),
+        node_config.s3_config.unwrap(),
+        node_config.backup_config,
+    );
 
     Ok(client)
 }

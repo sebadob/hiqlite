@@ -1,11 +1,14 @@
 use crate::app_state::AppState;
+use crate::s3::S3Config;
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{
     PathBackups, PathDb, PathLockFile, PathSnapshots, QueryWrite, StateMachineData,
     StateMachineSqlite,
 };
 use crate::{Client, Error, NodeConfig};
+use chrono::{DateTime, Utc};
 use std::env;
+use std::ops::Sub;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,8 +59,109 @@ impl BackupConfig {
     }
 }
 
-pub fn start_cron(_client: Client, _config: BackupConfig) {
-    todo!()
+pub fn start_cron(client: Client, s3_config: Arc<S3Config>, backup_config: BackupConfig) {
+    task::spawn(async move {
+        info!("Backup cron task started");
+
+        loop {
+            let dur = {
+                let now = chrono::Local::now();
+                let next = backup_config
+                    .cron_schedule
+                    .upcoming(chrono::Local)
+                    .next()
+                    .expect("No next cron task found");
+                if next <= now {
+                    // don't set it to 0 to not go crazy in case of a bad config or timing
+                    Duration::from_secs(1)
+                } else {
+                    Duration::from_secs((next.timestamp() - now.timestamp()) as u64)
+                }
+            };
+
+            time::sleep(dur).await;
+            info!("Executing backup now");
+            loop {
+                match backup_cron_job(&client, &s3_config, backup_config.keep_days).await {
+                    Ok(_) => {
+                        info!("Backup task finished successfully");
+                        break;
+                    }
+                    Err(err) => {
+                        if err.is_forward_to_leader().is_some() {
+                            warn!("Raft leader voting in progress - retrying in 10 seconds");
+                            time::sleep(Duration::from_secs(10)).await;
+                        } else {
+                            error!("Error during backup task execution: {}", err);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+async fn backup_cron_job(
+    client: &Client,
+    s3_config: &Arc<S3Config>,
+    keep_days: u16,
+) -> Result<(), Error> {
+    client.backup().await?;
+
+    // the backup task will be async in the background, but we can start cleaning up already
+    let threshold = Utc::now().sub(chrono::Duration::days(keep_days as i64));
+
+    let list = s3_config.bucket.list("", None).await?;
+    for bucket in list {
+        if bucket.name != s3_config.bucket.name {
+            info!("Found non-configured bucket {} - skipping", bucket.name);
+            continue;
+        }
+
+        for object in bucket.contents.iter() {
+            if let Some(dt) = dt_from_backup_name(&object.key) {
+                if dt < threshold {
+                    info!("Deleting expired backup: {}", object.key);
+                    s3_config.bucket.delete(object.key.clone()).await?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn dt_from_backup_name(name: &str) -> Option<DateTime<Utc>> {
+    if let Some(backup) = name.strip_prefix("backup_node_") {
+        let (_, rest) = match backup.split_once("_") {
+            None => {
+                error!("Invalid backup filename format on S3: {}", name);
+                return None;
+            }
+            Some(s) => s,
+        };
+        let ts = match rest.strip_suffix(".sqlite") {
+            None => {
+                error!(
+                    "Invalid backup filename on S3 - '.sqlite' suffix missing: {}",
+                    name
+                );
+                return None;
+            }
+            Some(ts) => ts,
+        };
+
+        match ts.parse::<i64>() {
+            Ok(ts) => DateTime::from_timestamp(ts, 0),
+            Err(err) => {
+                error!("Error parsing TS from remote backup as i64: {}", err);
+                None
+            }
+        }
+    } else {
+        None
+    }
 }
 
 /// Check if the env var `HIQLITE_BACKUP_RESTORE` is set and restores the given backup if so.

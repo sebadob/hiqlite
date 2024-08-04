@@ -263,6 +263,14 @@ impl From<flume::RecvError> for Error {
     }
 }
 
+#[cfg(any(feature = "backup", feature = "s3"))]
+impl From<cryptr::stream::s3::S3Error> for Error {
+    fn from(value: cryptr::stream::s3::S3Error) -> Self {
+        trace!("cryptr::stream::s3::S3Error: {}", value);
+        Self::S3(value.to_string())
+    }
+}
+
 #[cfg(any(feature = "dashboard", feature = "s3"))]
 impl From<cryptr::CryptrError> for Error {
     fn from(value: cryptr::CryptrError) -> Self {
