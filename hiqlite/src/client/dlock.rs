@@ -92,7 +92,8 @@ impl Client {
                 .expect("to always get an answer from the kv handler");
             Ok(state)
         } else {
-            todo!("lock_await() for remote clients")
+            self.lock_req_retry(CacheRequest::LockAwait((key.clone(), id)))
+                .await
         }
     }
 
@@ -136,7 +137,7 @@ impl Client {
                     CacheResponse::Lock(state) => Ok(state),
                     _ => unreachable!(),
                 },
-                #[cfg(feature = "sqlite")]
+                #[cfg(any(feature = "sqlite", feature = "dlock"))]
                 _ => unreachable!(),
             }
         }

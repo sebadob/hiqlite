@@ -14,6 +14,11 @@ use crate::store::state_machine::memory::{
     state_machine::{CacheRequest, CacheResponse},
 };
 
+#[cfg(feature = "dlock")]
+use crate::store::state_machine::memory::dlock_handler::{
+    LockAwaitPayload, LockRequest, LockState,
+};
+
 #[cfg(feature = "sqlite")]
 use crate::{
     migration::Migration,
@@ -242,8 +247,8 @@ pub(crate) enum ApiStreamRequestPayload {
     Query(Query),
     #[cfg(feature = "cache")]
     KVGet(CacheRequest),
-    #[cfg(feature = "cache")]
-    Lock,
+    #[cfg(feature = "dlock")]
+    LockAwait(CacheRequest),
     // Listen,
     // Notify,
 }
@@ -274,6 +279,9 @@ pub(crate) enum ApiStreamResponsePayload {
 
     #[cfg(feature = "cache")]
     KV(Result<CacheResponse, Error>),
+
+    #[cfg(feature = "dlock")]
+    Lock(LockState),
 }
 
 #[derive(Debug)]
@@ -644,9 +652,27 @@ async fn handle_socket_concurrent(
                             }
                         }
 
-                        #[cfg(feature = "cache")]
-                        ApiStreamRequestPayload::Lock => {
-                            todo!()
+                        #[cfg(feature = "dlock")]
+                        ApiStreamRequestPayload::LockAwait(cache_req) => {
+                            let (key, id) = match cache_req {
+                                CacheRequest::LockAwait((key, id)) => (key, id),
+                                _ => unreachable!(),
+                            };
+
+                            let (ack, rx) = tokio::sync::oneshot::channel();
+                            state
+                                .raft_cache
+                                .tx_dlock
+                                .send(LockRequest::Await(LockAwaitPayload { key, id, ack }))
+                                .expect("kv handler to always be running");
+                            let lock_state = rx
+                                .await
+                                .expect("to always get an answer from the kv handler");
+
+                            ApiStreamResponse {
+                                request_id: req.request_id,
+                                result: ApiStreamResponsePayload::Lock(lock_state),
+                            }
                         }
                     };
 

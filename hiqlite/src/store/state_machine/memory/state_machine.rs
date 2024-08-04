@@ -55,6 +55,8 @@ pub enum CacheRequest {
     #[cfg(feature = "dlock")]
     Lock((Cow<'static, str>, Option<u64>)),
     #[cfg(feature = "dlock")]
+    LockAwait((Cow<'static, str>, u64)),
+    #[cfg(feature = "dlock")]
     LockRelease((Cow<'static, str>, u64)),
 }
 
@@ -324,6 +326,11 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             .expect("To always get a response from dlock handler");
 
                         CacheResponse::Lock(state)
+                    }
+
+                    #[cfg(feature = "dlock")]
+                    CacheRequest::LockAwait(..) => {
+                        unreachable!("Lock Awaits should never come through the Raft")
                     }
 
                     #[cfg(feature = "dlock")]
