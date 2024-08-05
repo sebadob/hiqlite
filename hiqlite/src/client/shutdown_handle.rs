@@ -7,7 +7,10 @@ use tracing::info;
 
 pub struct ShutdownHandle {
     state: Arc<AppState>,
-    tx_client: flume::Sender<ClientStreamReq>,
+    #[cfg(feature = "cache")]
+    tx_client_cache: flume::Sender<ClientStreamReq>,
+    #[cfg(feature = "sqlite")]
+    tx_client_db: flume::Sender<ClientStreamReq>,
     tx_shutdown: Option<watch::Sender<bool>>,
     rx_shutdown: watch::Receiver<bool>,
 }
@@ -16,7 +19,15 @@ impl ShutdownHandle {
     pub async fn wait(&mut self) -> Result<(), Error> {
         let _ = self.rx_shutdown.changed().await;
         info!("ShutdownHandle received shutdown signal - shutting down the Raft node now");
-        Client::shutdown_execute(&self.state, &self.tx_client, &self.tx_shutdown).await
+        Client::shutdown_execute(
+            &self.state,
+            #[cfg(feature = "cache")]
+            &self.tx_client_cache,
+            #[cfg(feature = "sqlite")]
+            &self.tx_client_db,
+            &self.tx_shutdown,
+        )
+        .await
     }
 }
 
@@ -33,7 +44,10 @@ impl Client {
 
             Ok(ShutdownHandle {
                 state,
-                tx_client: self.inner.tx_client_db.clone(),
+                #[cfg(feature = "cache")]
+                tx_client_cache: self.inner.tx_client_cache.clone(),
+                #[cfg(feature = "sqlite")]
+                tx_client_db: self.inner.tx_client_db.clone(),
                 tx_shutdown: self.inner.tx_shutdown.clone(),
                 rx_shutdown,
             })
