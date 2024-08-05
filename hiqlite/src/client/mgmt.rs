@@ -24,7 +24,7 @@ impl Client {
             let metrics = state.raft_db.raft.metrics().borrow().clone();
             Ok(metrics)
         } else {
-            self.send_with_retry("/cluster/metrics/sqlite", None::<String>.as_ref())
+            self.send_with_retry_db("/cluster/metrics/sqlite", None::<String>.as_ref())
                 .await
         }
     }
@@ -35,7 +35,7 @@ impl Client {
             let metrics = state.raft_cache.raft.metrics().borrow().clone();
             Ok(metrics)
         } else {
-            self.send_with_retry("/cluster/metrics/cache", None::<String>.as_ref())
+            self.send_with_retry_cache("/cluster/metrics/cache", None::<String>.as_ref())
                 .await
         }
     }
@@ -88,7 +88,15 @@ impl Client {
     /// Works on local clients only and can't shut down remote nodes.
     pub async fn shutdown(&self) -> Result<(), Error> {
         if let Some(state) = &self.inner.state {
-            Self::shutdown_execute(state, &self.inner.tx_client, &self.inner.tx_shutdown).await
+            Self::shutdown_execute(
+                state,
+                #[cfg(feature = "cache")]
+                &self.inner.tx_client_cache,
+                #[cfg(feature = "sqlite")]
+                &self.inner.tx_client_db,
+                &self.inner.tx_shutdown,
+            )
+            .await
         } else {
             Err(Error::Error(
                 "Shutdown for remote Raft clients is not yet implemented".into(),
@@ -98,14 +106,17 @@ impl Client {
 
     pub(crate) async fn shutdown_execute(
         state: &Arc<AppState>,
-        tx_client: &flume::Sender<ClientStreamReq>,
+        #[cfg(feature = "cache")] tx_client_cache: &flume::Sender<ClientStreamReq>,
+        #[cfg(feature = "sqlite")] tx_client_db: &flume::Sender<ClientStreamReq>,
         tx_shutdown: &Option<watch::Sender<bool>>,
     ) -> Result<(), Error> {
         #[cfg(feature = "cache")]
-        match state.raft_cache.raft.shutdown().await {
-            Ok(_) => {}
-            Err(err) => {
-                return Err(Error::Error(err.to_string().into()));
+        {
+            match state.raft_cache.raft.shutdown().await {
+                Ok(_) => {}
+                Err(err) => {
+                    return Err(Error::Error(err.to_string().into()));
+                }
             }
         }
 
@@ -139,7 +150,10 @@ impl Client {
             }
         }
 
-        let _ = tx_client.send_async(ClientStreamReq::Shutdown).await;
+        #[cfg(feature = "sqlite")]
+        let _ = tx_client_db.send_async(ClientStreamReq::Shutdown).await;
+        #[cfg(feature = "cache")]
+        let _ = tx_client_cache.send_async(ClientStreamReq::Shutdown).await;
 
         if let Some(tx) = tx_shutdown {
             tx.send(true).unwrap();

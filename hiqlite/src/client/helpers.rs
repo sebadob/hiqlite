@@ -1,10 +1,11 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
 use crate::network::HEADER_NAME_SECRET;
-use crate::{Client, Error};
+use crate::{Client, Error, NodeId};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::debug;
 
 impl Client {
@@ -18,24 +19,40 @@ impl Client {
     }
 
     #[inline(always)]
-    pub(crate) async fn build_addr(&self, path: &str) -> String {
+    pub(crate) async fn build_addr(
+        &self,
+        path: &str,
+        leader: &Arc<RwLock<(NodeId, String)>>,
+    ) -> String {
         let scheme = if self.inner.tls_config.is_some() {
             "https"
         } else {
             "http"
         };
         let url = {
-            let lock = self.inner.leader.read().await;
+            let lock = leader.read().await;
             format!("{}://{}{}", scheme, lock.1, path)
         };
         debug!("request url: {}", url);
         url
     }
 
+    #[cfg(feature = "sqlite")]
     #[inline(always)]
-    pub(crate) async fn is_this_local_leader(&self) -> Option<&Arc<AppState>> {
+    pub(crate) async fn is_leader_db(&self) -> Option<&Arc<AppState>> {
         if let Some(state) = &self.inner.state {
-            if state.id == self.inner.leader.read().await.0 {
+            if state.id == self.inner.leader_db.read().await.0 {
+                return Some(state);
+            }
+        }
+        None
+    }
+
+    #[cfg(feature = "cache")]
+    #[inline(always)]
+    pub(crate) async fn is_leader_cache(&self) -> Option<&Arc<AppState>> {
+        if let Some(state) = &self.inner.state {
+            if state.id == self.inner.leader_cache.read().await.0 {
                 return Some(state);
             }
         }
@@ -59,7 +76,12 @@ impl Client {
     }
 
     #[inline]
-    pub(crate) async fn was_leader_update_error(&self, err: &Error) -> bool {
+    pub(crate) async fn was_leader_update_error(
+        &self,
+        err: &Error,
+        lock: &Arc<RwLock<(NodeId, String)>>,
+        tx: &flume::Sender<ClientStreamReq>,
+    ) -> bool {
         let mut has_changed = false;
 
         if let Some((id, node)) = err.is_forward_to_leader() {
@@ -67,7 +89,7 @@ impl Client {
                 let api_addr = node.as_ref().unwrap().addr_api.clone();
                 let leader_id = id.unwrap();
                 {
-                    let mut lock = self.inner.leader.write().await;
+                    let mut lock = lock.write().await;
                     // we check additionally to prevent race conditions and multiple
                     // re-connect triggers
                     if lock.0 != leader_id {
@@ -77,9 +99,7 @@ impl Client {
                 }
 
                 if has_changed {
-                    self.inner
-                        .tx_client
-                        .send_async(ClientStreamReq::LeaderChange((id, node.clone())))
+                    tx.send_async(ClientStreamReq::LeaderChange((id, node.clone())))
                         .await
                         .expect("the Client API WebSocket Manager to always be running");
                 }
@@ -89,19 +109,48 @@ impl Client {
         has_changed
     }
 
-    pub(crate) async fn send_with_retry<B: Serialize, Resp: for<'a> Deserialize<'a>>(
+    #[cfg(feature = "cache")]
+    pub(crate) async fn send_with_retry_cache<B: Serialize, Resp: for<'a> Deserialize<'a>>(
         &self,
         path: &str,
         body: Option<&B>,
     ) -> Result<Resp, Error> {
+        let url = self.build_addr(path, &self.inner.leader_cache).await;
+        self.send_with_retry(
+            url,
+            &self.inner.leader_cache,
+            &self.inner.tx_client_cache,
+            body,
+        )
+        .await
+    }
+
+    #[cfg(feature = "sqlite")]
+    pub(crate) async fn send_with_retry_db<B: Serialize, Resp: for<'a> Deserialize<'a>>(
+        &self,
+        path: &str,
+        body: Option<&B>,
+    ) -> Result<Resp, Error> {
+        let url = self.build_addr(path, &self.inner.leader_db).await;
+        self.send_with_retry(url, &self.inner.leader_db, &self.inner.tx_client_db, body)
+            .await
+    }
+
+    #[inline]
+    async fn send_with_retry<B: Serialize, Resp: for<'a> Deserialize<'a>>(
+        &self,
+        url: String,
+        leader: &Arc<RwLock<(NodeId, String)>>,
+        tx_client: &flume::Sender<ClientStreamReq>,
+        body: Option<&B>,
+    ) -> Result<Resp, Error> {
         let mut i = 0;
         loop {
-            let url = self.build_addr(path).await;
             let res = if let Some(body) = body {
                 let body = bincode::serialize(body).unwrap();
-                self.inner.client.post(url).body(body)
+                self.inner.client.post(url.clone()).body(body)
             } else {
-                self.inner.client.get(url)
+                self.inner.client.get(url.clone())
             }
             .header(HEADER_NAME_SECRET, self.api_secret())
             .send()
@@ -123,7 +172,8 @@ impl Client {
                 return Ok(resp);
             } else {
                 let err = res.json::<Error>().await?;
-                self.was_leader_update_error(&err).await;
+                // TODO do we ever use this with cache? if not - feature gate!
+                self.was_leader_update_error(&err, leader, tx_client).await;
 
                 if i >= 2 {
                     return Err(err);

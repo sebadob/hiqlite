@@ -10,7 +10,10 @@ impl Client {
         match self.backup_execute().await {
             Ok(res) => Ok(res),
             Err(err) => {
-                if self.was_leader_update_error(&err).await {
+                if self
+                    .was_leader_update_error(&err, &self.inner.leader_db, &self.inner.tx_client_db)
+                    .await
+                {
                     self.backup_execute().await
                 } else {
                     Err(err)
@@ -21,9 +24,9 @@ impl Client {
 
     #[cold]
     async fn backup_execute(&self) -> Result<(), Error> {
-        let current_leader = self.inner.leader.read().await.0;
+        let current_leader = self.inner.leader_db.read().await.0;
 
-        if let Some(state) = self.is_this_local_leader().await {
+        if let Some(state) = self.is_leader_db().await {
             let res = state
                 .raft_db
                 .raft
@@ -37,7 +40,7 @@ impl Client {
         } else {
             let (ack, rx) = oneshot::channel();
             self.inner
-                .tx_client
+                .tx_client_db
                 .send_async(ClientStreamReq::Backup(ClientBackupPayload {
                     request_id: self.new_request_id(),
                     node_id: current_leader,

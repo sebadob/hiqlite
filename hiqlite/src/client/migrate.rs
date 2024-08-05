@@ -12,7 +12,10 @@ impl Client {
         match self.migrate_execute(Migrations::build::<T>()).await {
             Ok(res) => Ok(res),
             Err(err) => {
-                if self.was_leader_update_error(&err).await {
+                if self
+                    .was_leader_update_error(&err, &self.inner.leader_db, &self.inner.tx_client_db)
+                    .await
+                {
                     self.migrate_execute(Migrations::build::<T>()).await
                 } else {
                     Err(err)
@@ -23,7 +26,7 @@ impl Client {
 
     #[cold]
     async fn migrate_execute(&self, migrations: Vec<Migration>) -> Result<(), Error> {
-        if let Some(state) = self.is_this_local_leader().await {
+        if let Some(state) = self.is_leader_db().await {
             let res = state
                 .raft_db
                 .raft
@@ -37,7 +40,7 @@ impl Client {
         } else {
             let (ack, rx) = oneshot::channel();
             self.inner
-                .tx_client
+                .tx_client_db
                 .send_async(ClientStreamReq::Migrate(ClientMigratePayload {
                     request_id: self.new_request_id(),
                     migrations,

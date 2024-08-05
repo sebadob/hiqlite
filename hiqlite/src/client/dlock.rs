@@ -101,7 +101,14 @@ impl Client {
         match self.lock_req(cache_req.clone()).await {
             Ok(state) => Ok(state),
             Err(err) => {
-                if self.was_leader_update_error(&err).await {
+                if self
+                    .was_leader_update_error(
+                        &err,
+                        &self.inner.leader_cache,
+                        &self.inner.tx_client_cache,
+                    )
+                    .await
+                {
                     self.lock_req(cache_req).await
                 } else {
                     Err(err)
@@ -111,7 +118,7 @@ impl Client {
     }
 
     async fn lock_req(&self, cache_req: CacheRequest) -> Result<LockState, Error> {
-        if let Some(state) = self.is_this_local_leader().await {
+        if let Some(state) = self.is_leader_cache().await {
             let res = state.raft_cache.raft.client_write(cache_req).await?;
             let data: CacheResponse = res.data;
             match data {
@@ -121,7 +128,7 @@ impl Client {
         } else {
             let (ack, rx) = oneshot::channel();
             self.inner
-                .tx_client
+                .tx_client_cache
                 .send_async(ClientStreamReq::KV(ClientKVPayload {
                     request_id: self.new_request_id(),
                     cache_req,

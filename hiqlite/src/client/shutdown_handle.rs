@@ -33,7 +33,7 @@ impl Client {
 
             Ok(ShutdownHandle {
                 state,
-                tx_client: self.inner.tx_client.clone(),
+                tx_client: self.inner.tx_client_db.clone(),
                 tx_shutdown: self.inner.tx_shutdown.clone(),
                 rx_shutdown,
             })

@@ -106,7 +106,14 @@ impl Client {
         match self.cache_req(cache_req.clone(), is_remote_get).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
-                if self.was_leader_update_error(&err).await {
+                if self
+                    .was_leader_update_error(
+                        &err,
+                        &self.inner.leader_cache,
+                        &self.inner.tx_client_cache,
+                    )
+                    .await
+                {
                     self.cache_req(cache_req, is_remote_get).await
                 } else {
                     Err(err)
@@ -120,7 +127,7 @@ impl Client {
         cache_req: CacheRequest,
         is_remote_get: bool,
     ) -> Result<CacheResponse, Error> {
-        if let Some(state) = self.is_this_local_leader().await {
+        if let Some(state) = self.is_leader_cache().await {
             let res = state.raft_cache.raft.client_write(cache_req).await?;
             Ok(res.data)
         } else {
@@ -140,7 +147,7 @@ impl Client {
             };
 
             self.inner
-                .tx_client
+                .tx_client_cache
                 .send_async(payload)
                 .await
                 .expect("Client Stream Manager to always be running");

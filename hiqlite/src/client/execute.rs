@@ -23,7 +23,10 @@ impl Client {
         match self.execute_req(sql.clone()).await {
             Ok(res) => Ok(res),
             Err(err) => {
-                if self.was_leader_update_error(&err).await {
+                if self
+                    .was_leader_update_error(&err, &self.inner.leader_db, &self.inner.tx_client_db)
+                    .await
+                {
                     self.execute_req(sql).await
                 } else {
                     Err(err)
@@ -34,7 +37,7 @@ impl Client {
 
     #[inline(always)]
     async fn execute_req(&self, sql: Query) -> Result<usize, Error> {
-        if let Some(state) = self.is_this_local_leader().await {
+        if let Some(state) = self.is_leader_db().await {
             let res = state
                 .raft_db
                 .raft
@@ -48,7 +51,7 @@ impl Client {
         } else {
             let (ack, rx) = oneshot::channel();
             self.inner
-                .tx_client
+                .tx_client_db
                 .send_async(ClientStreamReq::Execute(ClientExecutePayload {
                     request_id: self.new_request_id(),
                     sql,
@@ -95,7 +98,10 @@ impl Client {
         let rows = match self.execute_returning_req(sql.clone()).await {
             Ok(res) => res,
             Err(err) => {
-                if self.was_leader_update_error(&err).await {
+                if self
+                    .was_leader_update_error(&err, &self.inner.leader_db, &self.inner.tx_client_db)
+                    .await
+                {
                     self.execute_returning_req(sql).await?
                 } else {
                     return Err(err);
@@ -112,7 +118,7 @@ impl Client {
 
     #[inline]
     async fn execute_returning_req(&self, sql: Query) -> Result<Vec<RowOwned>, Error> {
-        if let Some(state) = self.is_this_local_leader().await {
+        if let Some(state) = self.is_leader_db().await {
             let res = state
                 .raft_db
                 .raft
@@ -126,7 +132,7 @@ impl Client {
         } else {
             let (ack, rx) = oneshot::channel();
             self.inner
-                .tx_client
+                .tx_client_db
                 .send_async(ClientStreamReq::ExecuteReturning(ClientExecutePayload {
                     request_id: self.new_request_id(),
                     sql,

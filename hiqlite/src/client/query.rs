@@ -138,27 +138,14 @@ impl Client {
             sql: stmt.into(),
             params,
         };
-        //
-        // let rows = match self.query_remote_req(query.clone(), consistent).await {
-        //     Ok(res) => res,
-        //     Err(err) => {
-        //         if self.was_leader_update_error(&err).await {
-        //             self.query_remote_req(query, consistent).await?
-        //         } else {
-        //             return Err(err);
-        //         }
-        //     }
-        // };
 
-        // let mut res: Vec<crate::Row> = Vec::with_capacity(rows.len());
-        // for row in rows {
-        //     res.push(crate::Row::Owned(row))
-        // }
-        // Ok(res)
         let res = match self.query_remote_req(query.clone(), consistent).await {
             Ok(res) => Ok(res),
             Err(err) => {
-                if self.was_leader_update_error(&err).await {
+                if self
+                    .was_leader_update_error(&err, &self.inner.leader_db, &self.inner.tx_client_db)
+                    .await
+                {
                     self.query_remote_req(query, consistent).await
                 } else {
                     return Err(err);
@@ -168,6 +155,7 @@ impl Client {
         .into_iter()
         .map(crate::Row::Owned)
         .collect();
+
         Ok(res)
     }
 
@@ -193,7 +181,7 @@ impl Client {
         };
 
         self.inner
-            .tx_client
+            .tx_client_db
             .send_async(payload)
             .await
             .expect("Client Stream Manager to always be running");

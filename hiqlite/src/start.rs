@@ -78,6 +78,7 @@ where
         client_buffers.insert(node.id, (tx, rx));
     }
 
+    #[cfg(feature = "sqlite")]
     let (tx_client_stream, rx_client_stream) = flume::unbounded();
 
     let state = Arc::new(AppState {
@@ -264,7 +265,9 @@ where
     let client = Client::new_local(
         state,
         tls_api_client_config,
+        #[cfg(feature = "sqlite")]
         tx_client_stream,
+        #[cfg(feature = "sqlite")]
         rx_client_stream,
         tx_shutdown,
     );

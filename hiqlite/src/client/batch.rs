@@ -15,7 +15,10 @@ impl Client {
         match self.batch_execute(sql.clone()).await {
             Ok(res) => Ok(res),
             Err(err) => {
-                if self.was_leader_update_error(&err).await {
+                if self
+                    .was_leader_update_error(&err, &self.inner.leader_db, &self.inner.tx_client_db)
+                    .await
+                {
                     self.batch_execute(sql).await
                 } else {
                     Err(err)
@@ -28,7 +31,7 @@ impl Client {
         &self,
         sql: Cow<'static, str>,
     ) -> Result<Vec<Result<usize, Error>>, Error> {
-        if let Some(state) = self.is_this_local_leader().await {
+        if let Some(state) = self.is_leader_db().await {
             let res = state
                 .raft_db
                 .raft
@@ -42,7 +45,7 @@ impl Client {
         } else {
             let (ack, rx) = oneshot::channel();
             self.inner
-                .tx_client
+                .tx_client_db
                 .send_async(ClientStreamReq::Batch(ClientBatchPayload {
                     request_id: self.new_request_id(),
                     sql,
