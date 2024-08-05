@@ -96,7 +96,7 @@ pub struct StateMachineMemory {
 
 impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfigKV>, StorageError<NodeId>> {
-        let (last_log_id, last_membership, kv_bytes) = {
+        let (last_log_id, last_membership, snapshot_bytes) = {
             let data = self.data.read().await;
 
             // TODO should we include notifications in snapshots as well? -> unsure if it makes sense or not
@@ -160,7 +160,7 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
                 last_membership,
                 snapshot_id,
             },
-            snapshot: Box::new(Cursor::new(kv_bytes)),
+            snapshot: Box::new(Cursor::new(snapshot_bytes)),
         };
 
         {
@@ -374,6 +374,8 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         meta: &SnapshotMeta<NodeId, Node>,
         snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
+        let mut current_snapshot = self.snapshot.lock().await;
+
         let (kvs, ttls, locks) = bincode::deserialize::<SnapshotDataInner>(snapshot.get_ref())
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
 
@@ -414,8 +416,15 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                 .expect("to always get an answer from locks handler");
         }
 
+        let snapshot_new = Snapshot {
+            meta: meta.clone(),
+            snapshot: snapshot.clone(),
+        };
+
         data.last_applied_log_id = meta.last_log_id;
         data.last_membership = meta.last_membership.clone();
+
+        *current_snapshot = Some(snapshot_new);
 
         Ok(())
     }
