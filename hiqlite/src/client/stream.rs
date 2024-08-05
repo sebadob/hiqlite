@@ -53,6 +53,8 @@ pub enum ClientStreamReq {
 
     #[cfg(feature = "cache")]
     KV(ClientKVPayload),
+    #[cfg(feature = "cache")]
+    KVGet(ClientKVPayload),
 
     // coming from the WebSocket reader
     StreamResponse(ApiStreamResponse),
@@ -170,20 +172,22 @@ async fn client_stream(
         )
         .await
         {
-            None => {
-                time::sleep(Duration::from_millis(250)).await;
-                warn!(
-                    "Could not connect Client API WebSocket to {}",
-                    leader.read().await.1
-                );
-                continue;
-            }
-            Some(ws) => {
+            Ok(ws) => {
                 info!(
                     "Client API WebSocket to {} opened successfully",
                     leader.read().await.1
                 );
                 ws
+            }
+            Err(err) => {
+                time::sleep(Duration::from_millis(250)).await;
+                // TODO the test deployment got stuck here for some reason
+                error!(
+                    "Could not connect Client API WebSocket to {}: {}",
+                    leader.read().await.1,
+                    err
+                );
+                continue;
             }
         };
 
@@ -211,179 +215,136 @@ async fn client_stream(
             let req = match res {
                 Ok(req) => req,
                 Err(err) => {
-                    // We end up here if the WS Reader errored and closed the sender
-                    error!("Client stream reader error: {}", err);
+                    error!("Client stream reader error: {}", err,);
+
+                    if rx_req.is_disconnected() {
+                        let _ = tx_write.send_async(WritePayload::Close).await;
+                        shutdown = true;
+                        break;
+                    }
+
                     break;
                 }
             };
 
-            match req {
+            let payload = match req {
                 #[cfg(feature = "sqlite")]
-                ClientStreamReq::Execute(exec) => {
+                ClientStreamReq::Execute(ClientExecutePayload {
+                    request_id,
+                    sql,
+                    ack,
+                }) => {
                     let req = ApiStreamRequest {
-                        request_id: exec.request_id,
-                        payload: ApiStreamRequestPayload::Execute(exec.sql),
+                        request_id,
+                        payload: ApiStreamRequestPayload::Execute(sql),
                     };
-
-                    match tx_write
-                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
-                        .await
-                    {
-                        Ok(_) => {
-                            in_flight.insert(exec.request_id, exec.ack);
-                        }
-                        Err(err) => {
-                            error!("Error sending request to writer: {}", err);
-                            let _ = exec
-                                .ack
-                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
-                            break;
-                        }
-                    }
+                    Some((
+                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        req.request_id,
+                        ack,
+                    ))
                 }
 
                 #[cfg(feature = "sqlite")]
-                ClientStreamReq::ExecuteReturning(exec) => {
+                ClientStreamReq::ExecuteReturning(ClientExecutePayload {
+                    request_id,
+                    sql,
+                    ack,
+                }) => {
                     let req = ApiStreamRequest {
-                        request_id: exec.request_id,
-                        payload: ApiStreamRequestPayload::ExecuteReturning(exec.sql),
+                        request_id,
+                        payload: ApiStreamRequestPayload::ExecuteReturning(sql),
                     };
-
-                    match tx_write
-                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
-                        .await
-                    {
-                        Ok(_) => {
-                            in_flight.insert(exec.request_id, exec.ack);
-                        }
-                        Err(err) => {
-                            error!("Error sending request to writer: {}", err);
-                            let _ = exec
-                                .ack
-                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
-                            break;
-                        }
-                    }
+                    Some((
+                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        request_id,
+                        ack,
+                    ))
                 }
 
                 #[cfg(feature = "sqlite")]
-                ClientStreamReq::Transaction(txn) => {
+                ClientStreamReq::Transaction(ClientTransactionPayload {
+                    request_id,
+                    queries,
+                    ack,
+                }) => {
                     let req = ApiStreamRequest {
-                        request_id: txn.request_id,
-                        payload: ApiStreamRequestPayload::Transaction(txn.queries),
+                        request_id,
+                        payload: ApiStreamRequestPayload::Transaction(queries),
                     };
-
-                    match tx_write
-                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
-                        .await
-                    {
-                        Ok(_) => {
-                            in_flight.insert(txn.request_id, txn.ack);
-                        }
-                        Err(err) => {
-                            error!("Error sending txn request to writer: {}", err);
-                            let _ = txn
-                                .ack
-                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
-                            break;
-                        }
-                    }
+                    Some((
+                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        request_id,
+                        ack,
+                    ))
                 }
 
                 #[cfg(feature = "sqlite")]
-                ClientStreamReq::Query(query) => {
+                ClientStreamReq::Query(ClientQueryPayload {
+                    request_id,
+                    query,
+                    ack,
+                }) => {
                     let req = ApiStreamRequest {
-                        request_id: query.request_id,
-                        payload: ApiStreamRequestPayload::Query(query.query),
+                        request_id,
+                        payload: ApiStreamRequestPayload::Query(query),
                     };
-
-                    match tx_write
-                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
-                        .await
-                    {
-                        Ok(_) => {
-                            in_flight.insert(query.request_id, query.ack);
-                        }
-                        Err(err) => {
-                            error!("Error sending txn request to writer: {}", err);
-                            let _ = query
-                                .ack
-                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
-                            break;
-                        }
-                    }
+                    Some((
+                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        request_id,
+                        ack,
+                    ))
                 }
 
                 #[cfg(feature = "sqlite")]
-                ClientStreamReq::QueryConsistent(query) => {
+                ClientStreamReq::QueryConsistent(ClientQueryPayload {
+                    request_id,
+                    query,
+                    ack,
+                }) => {
                     let req = ApiStreamRequest {
-                        request_id: query.request_id,
-                        payload: ApiStreamRequestPayload::QueryConsistent(query.query),
+                        request_id,
+                        payload: ApiStreamRequestPayload::QueryConsistent(query),
                     };
-
-                    match tx_write
-                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
-                        .await
-                    {
-                        Ok(_) => {
-                            in_flight.insert(query.request_id, query.ack);
-                        }
-                        Err(err) => {
-                            error!("Error sending txn request to writer: {}", err);
-                            let _ = query
-                                .ack
-                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
-                            break;
-                        }
-                    }
+                    Some((
+                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        request_id,
+                        ack,
+                    ))
                 }
 
                 #[cfg(feature = "sqlite")]
-                ClientStreamReq::Batch(batch) => {
+                ClientStreamReq::Batch(ClientBatchPayload {
+                    request_id,
+                    sql,
+                    ack,
+                }) => {
                     let req = ApiStreamRequest {
-                        request_id: batch.request_id,
-                        payload: ApiStreamRequestPayload::Batch(batch.sql),
+                        request_id,
+                        payload: ApiStreamRequestPayload::Batch(sql),
                     };
-
-                    match tx_write
-                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
-                        .await
-                    {
-                        Ok(_) => {
-                            in_flight.insert(req.request_id, batch.ack);
-                        }
-                        Err(err) => {
-                            error!("Error sending txn request to writer: {}", err);
-                            let _ = batch
-                                .ack
-                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
-                            break;
-                        }
-                    }
+                    Some((
+                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        request_id,
+                        ack,
+                    ))
                 }
 
                 #[cfg(feature = "sqlite")]
-                ClientStreamReq::Migrate(migrate) => {
+                ClientStreamReq::Migrate(ClientMigratePayload {
+                    request_id,
+                    migrations,
+                    ack,
+                }) => {
                     let req = ApiStreamRequest {
-                        request_id: migrate.request_id,
-                        payload: ApiStreamRequestPayload::Migrate(migrate.migrations),
+                        request_id,
+                        payload: ApiStreamRequestPayload::Migrate(migrations),
                     };
-
-                    match tx_write
-                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
-                        .await
-                    {
-                        Ok(_) => {
-                            in_flight.insert(req.request_id, migrate.ack);
-                        }
-                        Err(err) => {
-                            error!("Error sending txn request to writer: {}", err);
-                            let _ = migrate
-                                .ack
-                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
-                            break;
-                        }
-                    }
+                    Some((
+                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        request_id,
+                        ack,
+                    ))
                 }
 
                 #[cfg(feature = "backup")]
@@ -396,21 +357,11 @@ async fn client_stream(
                         request_id,
                         payload: ApiStreamRequestPayload::Backup(node_id),
                     };
-
-                    match tx_write
-                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
-                        .await
-                    {
-                        Ok(_) => {
-                            in_flight.insert(req.request_id, ack);
-                        }
-                        Err(err) => {
-                            error!("Error sending txn request to writer: {}", err);
-                            let _ = ack
-                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
-                            break;
-                        }
-                    }
+                    Some((
+                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        request_id,
+                        ack,
+                    ))
                 }
 
                 #[cfg(feature = "cache")]
@@ -423,21 +374,28 @@ async fn client_stream(
                         request_id,
                         payload: ApiStreamRequestPayload::KV(cache_req),
                     };
+                    Some((
+                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        request_id,
+                        ack,
+                    ))
+                }
 
-                    match tx_write
-                        .send_async(WritePayload::Payload(bincode::serialize(&req).unwrap()))
-                        .await
-                    {
-                        Ok(_) => {
-                            in_flight.insert(req.request_id, ack);
-                        }
-                        Err(err) => {
-                            error!("Error sending txn request to writer: {}", err);
-                            let _ = ack
-                                .send(Err(Error::Connect("Connection to Raft leader lost".into())));
-                            break;
-                        }
-                    }
+                #[cfg(feature = "cache")]
+                ClientStreamReq::KVGet(ClientKVPayload {
+                    request_id,
+                    cache_req,
+                    ack,
+                }) => {
+                    let req = ApiStreamRequest {
+                        request_id,
+                        payload: ApiStreamRequestPayload::KVGet(cache_req),
+                    };
+                    Some((
+                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        request_id,
+                        ack,
+                    ))
                 }
 
                 ClientStreamReq::LeaderChange((node_id, node)) => {
@@ -466,16 +424,32 @@ async fn client_stream(
                         resp,
                     )
                     .await;
+                    None
                 }
 
                 ClientStreamReq::CleanupBuffer => {
                     in_flight_buf = HashMap::new();
                     awaiting_timeout = false;
+                    None
                 }
 
                 ClientStreamReq::Shutdown => {
                     shutdown = true;
                     break;
+                }
+            };
+
+            if let Some((payload, request_id, ack)) = payload {
+                match tx_write.send_async(payload).await {
+                    Ok(_) => {
+                        in_flight.insert(request_id, ack);
+                    }
+                    Err(err) => {
+                        error!("Error sending txn request to writer: {}", err);
+                        let _ =
+                            ack.send(Err(Error::Connect("Connection to Raft leader lost".into())));
+                        break;
+                    }
                 }
             }
         }
@@ -531,6 +505,10 @@ async fn client_stream(
                 #[cfg(feature = "cache")]
                 ClientStreamReq::KV(_) => {
                     unreachable!("we should never receive ClientStreamReq::KV from WS reader")
+                }
+                #[cfg(feature = "cache")]
+                ClientStreamReq::KVGet(_) => {
+                    unreachable!("we should never receive ClientStreamReq::KVGet from WS reader")
                 }
                 ClientStreamReq::Shutdown => {
                     unreachable!("we should never receive ClientStreamReq::Shutdown from WS reader")
@@ -685,6 +663,8 @@ async fn stream_writer(
             }
         }
     }
+
+    warn!("Exiting Client Stream Writer");
 }
 
 struct SpawnExecutor;
@@ -704,7 +684,7 @@ async fn try_connect(
     addr: &str,
     tls_config: Option<Arc<rustls::ClientConfig>>,
     secret: &[u8],
-) -> Option<WebSocket<TokioIo<Upgraded>>> {
+) -> Result<WebSocket<TokioIo<Upgraded>>, Error> {
     let uri = if tls_config.is_some() {
         format!("https://{}/stream", addr)
     } else {
@@ -722,31 +702,16 @@ async fn try_connect(
         )
         .header("Sec-WebSocket-Version", "13")
         .body(Empty::<Bytes>::new())
-        .ok()?;
+        .map_err(|err| Error::Connect(err.to_string()))?;
 
-    let stream = TcpStream::connect(addr).await.ok()?;
+    let stream = TcpStream::connect(addr).await?;
     let (mut ws, _) = if let Some(config) = tls_config {
         let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
-        let tls_stream = match tls::into_tls_stream(addr, stream, config).await {
-            Ok(s) => s,
-            Err(err) => {
-                error!("Error opening TLS stream to {}: {}", addr, err);
-                return None;
-            }
-        };
-
-        match fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await {
-            Ok((ws, r)) => (ws, r),
-            Err(err) => {
-                error!("{}", err);
-                return None;
-            }
-        }
+        let tls_stream = tls::into_tls_stream(addr, stream, config).await?;
+        fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await
     } else {
-        fastwebsockets::handshake::client(&SpawnExecutor, req, stream)
-            .await
-            .ok()?
-    };
+        fastwebsockets::handshake::client(&SpawnExecutor, req, stream).await
+    }?;
 
     if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
         let _ = ws
@@ -757,5 +722,5 @@ async fn try_connect(
         panic!("Error during API WebSocket handshake: {}", err);
     }
 
-    Some(ws)
+    Ok(ws)
 }

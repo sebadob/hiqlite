@@ -152,7 +152,8 @@ where
                 .route(
                     "/membership/:raft_type",
                     get(management::get_membership).post(management::post_membership),
-                ), // .route("/metrics", get(management::metrics)),
+                )
+                .route("/metrics/:raft_type", get(management::metrics)),
         )
         // TODO
         // .route("/execute", post(api::execute))

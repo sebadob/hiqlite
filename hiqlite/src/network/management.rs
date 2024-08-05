@@ -247,10 +247,14 @@ pub(crate) async fn post_membership(
 //     }
 // }
 
-// /// Get the latest metrics of the cluster
-// pub(crate) async fn metrics(state: AppStateExt, headers: HeaderMap) -> Result<Response, Error> {
-//     validate_secret(&state, &headers)?;
-//
-//     let metrics = state.raft_db.raft.metrics().borrow().clone();
-//     fmt_ok(headers, &metrics)
-// }
+/// Get the latest metrics of the cluster
+pub(crate) async fn metrics(
+    state: AppStateExt,
+    headers: HeaderMap,
+    Path(raft_type): Path<RaftType>,
+) -> Result<Response, Error> {
+    validate_secret(&state, &headers)?;
+
+    let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+    fmt_ok(headers, &metrics)
+}

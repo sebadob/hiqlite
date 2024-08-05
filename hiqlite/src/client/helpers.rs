@@ -108,8 +108,17 @@ impl Client {
             .await?;
             debug!("request status: {}", res.status());
 
+            // let content_type = res.headers().get(CONTENT_TYPE);
+            // let is_json =
+            //     content_type.map(|v| v.to_str().unwrap_or_default()) == Some("application/json");
+
             if res.status().is_success() {
                 let bytes = res.bytes().await?;
+                // let resp = if is_json {
+                //     serde_json::from_slice(&bytes)?
+                // } else {
+                //     bincode::deserialize(bytes.as_ref())?
+                // };
                 let resp = bincode::deserialize(bytes.as_ref())?;
                 return Ok(resp);
             } else {

@@ -9,15 +9,13 @@ use hyper::header::{CONNECTION, UPGRADE};
 use hyper::upgrade::Upgraded;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
-use openraft::error::NetworkError;
 use openraft::error::RPCError;
+use openraft::error::{NetworkError, Unreachable};
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tokio::time;
 use tracing::{error, info, warn};
 
 #[cfg(feature = "cache")]
@@ -125,104 +123,168 @@ impl NetworkStreaming {
     ) where
         Err: std::error::Error + 'static + Clone,
     {
-        let mut ws = Self::try_connect(
-            this_node,
-            &node.addr_raft,
-            path,
-            tls_config.clone(),
-            &secret,
-        )
-        .await;
-        let mut req: Option<RaftStreamRequest> = None;
-        let mut ack: Option<
-            oneshot::Sender<Result<RaftStreamResponse, RPCError<NodeId, Node, Err>>>,
-        > = None;
+        let mut ws = None;
+        // let mut req: Option<RaftStreamRequest> = None;
+        // let mut ack: Option<
+        //     oneshot::Sender<Result<RaftStreamResponse, RPCError<NodeId, Node, Err>>>,
+        // > = None;
 
-        // TODO maybe add retry counter or internal timeout
-        loop {
+        'main: while let Ok((req, ack)) = rx.recv_async().await {
+            if ack.is_closed() {
+                continue;
+            }
+
             while ws.is_none() {
                 info!("WsHandler trying to connect to {}", node.addr_raft);
-                time::sleep(Duration::from_secs(1)).await;
-                ws = Self::try_connect(
+                // TODO we probably don't need the sleep since the Raft reqs will throttle passively
+                // time::sleep(Duration::from_millis(100)).await;
+
+                match Self::try_connect(
                     this_node,
                     &node.addr_raft,
                     path,
                     tls_config.clone(),
                     &secret,
                 )
-                .await;
+                .await
+                {
+                    Ok(socket) => {
+                        ws = Some(socket);
+                    }
+                    Err(err) => {
+                        error!("{:?}", err);
 
-                // openraft does cancel these requests internally when
-                // they take longer than the configured heartbeat
-                let is_closed = if let Some(ack) = &ack {
-                    ack.is_closed()
-                } else {
-                    false
-                };
-                if is_closed {
-                    req = None;
-                    ack = None;
-                    break;
+                        ack.send(Err(RPCError::Unreachable(Unreachable::new(&err))))
+                            .unwrap();
+                        continue 'main;
+                    }
                 }
             }
 
-            if let Some(r) = &req {
-                let socket = ws.as_mut().unwrap();
-                let ack_tx = ack.unwrap();
-
-                match socket.write_frame(r.as_payload()).await {
-                    Ok(_) => match socket.read_frame().await {
-                        Ok(frame) => match frame.opcode {
-                            OpCode::Binary => {
-                                let bytes = frame.payload.to_vec();
-                                let resp = RaftStreamResponse::from(bytes);
-                                if let Err(err) = ack_tx.send(Ok(resp)) {
-                                    error!(
-                                        "Error forwarding response from Node {}: {:?}",
-                                        node.id, err
-                                    );
-                                }
+            let socket = ws.as_mut().unwrap();
+            match socket.write_frame(req.as_payload()).await {
+                Ok(_) => match socket.read_frame().await {
+                    Ok(frame) => match frame.opcode {
+                        OpCode::Binary => {
+                            let bytes = frame.payload.to_vec();
+                            let resp = RaftStreamResponse::from(bytes);
+                            if let Err(err) = ack.send(Ok(resp)) {
+                                error!(
+                                    "Error forwarding response from Node {}: {:?}",
+                                    node.id, err
+                                );
                             }
-                            _ => unreachable!(),
-                        },
-                        Err(err) => {
-                            error!("Error receiving RPC response: {}", err);
-                            ack_tx
-                                .send(Err(RPCError::Network(NetworkError::new(&err))))
-                                .unwrap();
-                            ws = None;
                         }
+                        _ => unreachable!(),
                     },
                     Err(err) => {
-                        error!("Error sending RPC request: {}", err);
-                        ack_tx
-                            .send(Err(RPCError::Network(NetworkError::new(&err))))
+                        error!("Error receiving RPC response: {}", err);
+                        ack.send(Err(RPCError::Network(NetworkError::new(&err))))
                             .unwrap();
                         ws = None;
                     }
-                }
-
-                ack = None;
-            }
-
-            loop {
-                match rx.recv_async().await.ok() {
-                    None => {
-                        warn!("Raft Client shut down, tx closed, exiting WsHandler");
-                        break;
-                    }
-                    Some((r, a)) => {
-                        // we need the loop and closed check in case of long-running
-                        // re-connect loops to other nodes
-                        if !a.is_closed() {
-                            req = Some(r);
-                            ack = Some(a);
-                            break;
-                        }
-                    }
+                },
+                Err(err) => {
+                    error!("Error sending RPC request: {}", err);
+                    ack.send(Err(RPCError::Network(NetworkError::new(&err))))
+                        .unwrap();
+                    ws = None;
                 }
             }
         }
+
+        warn!("Raft Client shut down, tx closed, exiting WsHandler");
+
+        // 'main: loop {
+        //     while ws.is_none() {
+        //         info!("WsHandler trying to connect to {}", node.addr_raft);
+        //         // TODO we probably don't need the sleep since the Raft reqs will throttle passively
+        //         // time::sleep(Duration::from_millis(100)).await;
+        //
+        //         match Self::try_connect(
+        //             this_node,
+        //             &node.addr_raft,
+        //             path,
+        //             tls_config.clone(),
+        //             &secret,
+        //         )
+        //         .await
+        //         {
+        //             Ok(socket) => {
+        //                 ws = Some(socket);
+        //             }
+        //             Err(err) => {
+        //                 error!("{:?}", err);
+        //                 if let Some(tx) = ack {
+        //                     tx.send(Err(RPCError::Unreachable(Unreachable::new(&err))))
+        //                         .unwrap()
+        //                 }
+        //                 ack = None;
+        //                 req = None;
+        //                 // we want to break here to get the next raft request,
+        //                 // so the channel never fills up
+        //                 break;
+        //             }
+        //         }
+        //     }
+        //
+        //     if let Some(r) = &req {
+        //         let socket = ws.as_mut().unwrap();
+        //         let ack_tx = ack.unwrap();
+        //
+        //         match socket.write_frame(r.as_payload()).await {
+        //             Ok(_) => match socket.read_frame().await {
+        //                 Ok(frame) => match frame.opcode {
+        //                     OpCode::Binary => {
+        //                         let bytes = frame.payload.to_vec();
+        //                         let resp = RaftStreamResponse::from(bytes);
+        //                         if let Err(err) = ack_tx.send(Ok(resp)) {
+        //                             error!(
+        //                                 "Error forwarding response from Node {}: {:?}",
+        //                                 node.id, err
+        //                             );
+        //                         }
+        //                     }
+        //                     _ => unreachable!(),
+        //                 },
+        //                 Err(err) => {
+        //                     error!("Error receiving RPC response: {}", err);
+        //                     ack_tx
+        //                         .send(Err(RPCError::Network(NetworkError::new(&err))))
+        //                         .unwrap();
+        //                     ws = None;
+        //                 }
+        //             },
+        //             Err(err) => {
+        //                 error!("Error sending RPC request: {}", err);
+        //                 ack_tx
+        //                     .send(Err(RPCError::Network(NetworkError::new(&err))))
+        //                     .unwrap();
+        //                 ws = None;
+        //             }
+        //         }
+        //
+        //         ack = None;
+        //     }
+        //
+        //     loop {
+        //         match rx.recv_async().await.ok() {
+        //             None => {
+        //                 warn!("Raft Client shut down, tx closed, exiting WsHandler");
+        //                 break 'main;
+        //             }
+        //             Some((r, a)) => {
+        //                 // we need the loop and closed check in case of long-running
+        //                 // re-connect loops to other nodes
+        //                 if !a.is_closed() {
+        //                     req = Some(r);
+        //                     ack = Some(a);
+        //                     break;
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
     }
 
     async fn try_connect(
@@ -231,7 +293,7 @@ impl NetworkStreaming {
         path: &str,
         tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: &[u8],
-    ) -> Option<WebSocket<TokioIo<Upgraded>>> {
+    ) -> Result<WebSocket<TokioIo<Upgraded>>, Error> {
         let uri = if tls_config.is_some() {
             format!("https://{}{}", addr, path)
         } else {
@@ -249,31 +311,16 @@ impl NetworkStreaming {
             )
             .header("Sec-WebSocket-Version", "13")
             .body(Empty::<Bytes>::new())
-            .ok()?;
+            .map_err(|err| Error::Connect(err.to_string()))?;
 
-        let stream = TcpStream::connect(addr).await.ok()?;
+        let stream = TcpStream::connect(addr).await?;
         let (mut ws, _) = if let Some(config) = tls_config {
             let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
-            let tls_stream = match tls::into_tls_stream(addr, stream, config).await {
-                Ok(s) => s,
-                Err(err) => {
-                    error!("Error opening TLS stream to {}: {}", addr, err);
-                    return None;
-                }
-            };
-
-            match fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await {
-                Ok((ws, r)) => (ws, r),
-                Err(err) => {
-                    error!("{}", err);
-                    return None;
-                }
-            }
+            let tls_stream = tls::into_tls_stream(addr, stream, config).await?;
+            fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await
         } else {
-            fastwebsockets::handshake::client(&SpawnExecutor, req, stream)
-                .await
-                .ok()?
-        };
+            fastwebsockets::handshake::client(&SpawnExecutor, req, stream).await
+        }?;
 
         if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
             let _ = ws
@@ -281,10 +328,44 @@ impl NetworkStreaming {
                 .await;
             // TODO what should be do in this case? This handler should never exit.
             // panic is the best option in case of misconfiguration?
-            panic!("Error during WebSocket handshake: {}", err);
+            panic!("Error during API WebSocket handshake: {}", err);
         }
 
-        Some(ws)
+        Ok(ws)
+        //
+        // let (mut ws, _) = if let Some(config) = tls_config {
+        //     let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
+        //     let tls_stream = match tls::into_tls_stream(addr, stream, config).await {
+        //         Ok(s) => s,
+        //         Err(err) => {
+        //             error!("Error opening TLS stream to {}: {}", addr, err);
+        //             return None;
+        //         }
+        //     };
+        //
+        //     match fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await {
+        //         Ok((ws, r)) => (ws, r),
+        //         Err(err) => {
+        //             error!("{}", err);
+        //             return None;
+        //         }
+        //     }
+        // } else {
+        //     fastwebsockets::handshake::client(&SpawnExecutor, req, stream)
+        //         .await
+        //         .ok()?
+        // };
+        //
+        // if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
+        //     let _ = ws
+        //         .write_frame(Frame::close(1000, b"Invalid Handshake"))
+        //         .await;
+        //     // TODO what should be do in this case? This handler should never exit.
+        //     // panic is the best option in case of misconfiguration?
+        //     panic!("Error during WebSocket handshake: {}", err);
+        // }
+        //
+        // Some(ws)
     }
 }
 

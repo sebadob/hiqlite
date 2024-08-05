@@ -55,12 +55,11 @@ impl Client {
 
     /// Create a remote client
     ///
-    /// TODO remote-only clients are not fully implemented yet, they will panic for certain
-    /// operations!
-    pub fn new(
+    /// Provide any node as address. As long as all nodes can be reached,
+    /// leader changes will happen automatically.
+    pub fn remote(
         node_id: NodeId,
-        leader_id: NodeId,
-        leader_addr: String,
+        node_addr: String,
         tls: bool,
         tls_no_verify: bool,
         api_secret: String,
@@ -71,7 +70,7 @@ impl Client {
             None
         };
 
-        let leader = Arc::new(RwLock::new((leader_id, leader_addr)));
+        let leader = Arc::new(RwLock::new((node_id, node_addr)));
         let (tx_client, rx_client) = flume::unbounded();
         Self::open_stream(
             node_id,

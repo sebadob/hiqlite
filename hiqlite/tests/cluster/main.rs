@@ -21,6 +21,7 @@ mod transaction;
 mod cache;
 mod dlock;
 mod listen_notify;
+mod remote_only;
 
 pub const TEST_DATA_DIR: &str = "tests/data_test";
 
@@ -97,6 +98,10 @@ async fn exec_tests() -> Result<(), Error> {
     dlock::test_dlock(&client_1, &client_2, &client_3).await?;
     log("Distributed locks tests finished");
 
+    log("Test remote-only client");
+    remote_only::test_remote_only_client().await?;
+    log("Temote-only client tests finished");
+
     log("Test shutdown and restart");
     client_1.shutdown().await?;
     log("client_1 shutdown complete");
@@ -117,9 +122,9 @@ async fn exec_tests() -> Result<(), Error> {
     cache::insert_test_value_cache(&client_1).await?;
 
     log("Make sure all data is ok");
-    check::is_client_db_healthy(&client_1).await?;
-    check::is_client_db_healthy(&client_2).await?;
-    check::is_client_db_healthy(&client_3).await?;
+    check::is_client_db_healthy(&client_1, Some(1)).await?;
+    check::is_client_db_healthy(&client_2, Some(1)).await?;
+    check::is_client_db_healthy(&client_3, Some(1)).await?;
     log("All client DB's are healthy after restart");
 
     log("Starting backup tests");

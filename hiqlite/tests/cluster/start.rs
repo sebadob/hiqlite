@@ -3,6 +3,8 @@ use hiqlite::{start_node, Client, Error, Node, NodeConfig};
 use std::time::Duration;
 use tokio::{fs, task, time};
 
+pub const SECRET_API: &str = "qweqweqweqweqweqwe";
+
 pub async fn start_test_cluster() -> Result<(Client, Client, Client), Error> {
     let handle_client_1 = task::spawn(start_node::<Cache>(build_config(1).await));
     let handle_client_2 = task::spawn(start_node::<Cache>(build_config(2).await));
@@ -15,16 +17,8 @@ pub async fn start_test_cluster() -> Result<(Client, Client, Client), Error> {
     Ok((client_1, client_2, client_3))
 }
 
-pub async fn build_config(node_id: u64) -> NodeConfig {
-    let dir_1 = format!("{}/node_1", TEST_DATA_DIR);
-    let dir_2 = format!("{}/node_2", TEST_DATA_DIR);
-    let dir_3 = format!("{}/node_3", TEST_DATA_DIR);
-
-    fs::create_dir_all(&dir_1).await.unwrap();
-    fs::create_dir_all(&dir_2).await.unwrap();
-    fs::create_dir_all(&dir_3).await.unwrap();
-
-    let nodes = vec![
+pub fn nodes() -> Vec<Node> {
+    vec![
         Node {
             id: 1,
             addr_raft: "127.0.0.1:32001".to_string(),
@@ -40,7 +34,18 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
             addr_raft: "127.0.0.1:32003".to_string(),
             addr_api: "127.0.0.1:31003".to_string(),
         },
-    ];
+    ]
+}
+
+pub async fn build_config(node_id: u64) -> NodeConfig {
+    let dir_1 = format!("{}/node_1", TEST_DATA_DIR);
+    let dir_2 = format!("{}/node_2", TEST_DATA_DIR);
+    let dir_3 = format!("{}/node_3", TEST_DATA_DIR);
+
+    fs::create_dir_all(&dir_1).await.unwrap();
+    fs::create_dir_all(&dir_2).await.unwrap();
+    fs::create_dir_all(&dir_3).await.unwrap();
+
     let data_dir = match node_id {
         1 => dir_1.to_string().into(),
         2 => dir_2.to_string().into(),
@@ -50,7 +55,7 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
 
     NodeConfig {
         node_id,
-        nodes,
+        nodes: nodes(),
         data_dir,
         filename_db: "hiqlite".into(),
         log_statements: true,
@@ -61,7 +66,7 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         tls_raft: None,
         tls_api: None,
         secret_raft: "asdasdasdasdasdasd".to_string(),
-        secret_api: "qweqweqweqweqweqwe".to_string(),
+        secret_api: SECRET_API.to_string(),
         backup_config: Default::default(),
         enc_keys_from: hiqlite::s3::EncKeysFrom::Env,
         s3_config: hiqlite::s3::S3Config::try_from_env(),

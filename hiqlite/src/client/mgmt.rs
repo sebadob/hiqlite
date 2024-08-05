@@ -24,7 +24,7 @@ impl Client {
             let metrics = state.raft_db.raft.metrics().borrow().clone();
             Ok(metrics)
         } else {
-            self.send_with_retry("/cluster/metrics", None::<String>.as_ref())
+            self.send_with_retry("/cluster/metrics/sqlite", None::<String>.as_ref())
                 .await
         }
     }
@@ -35,7 +35,7 @@ impl Client {
             let metrics = state.raft_cache.raft.metrics().borrow().clone();
             Ok(metrics)
         } else {
-            self.send_with_retry("/cluster/metrics", None::<String>.as_ref())
+            self.send_with_retry("/cluster/metrics/cache", None::<String>.as_ref())
                 .await
         }
     }

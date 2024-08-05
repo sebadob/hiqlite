@@ -1,14 +1,26 @@
-use crate::debug;
 use crate::execute_query::TestData;
+use crate::{debug, log};
 use hiqlite::{params, Client, Error, Param};
 
 use crate::cache::{KEY, KEY_2, VALUE, VALUE_2};
 use crate::Cache;
 
-pub async fn is_client_db_healthy(client: &Client) -> Result<(), Error> {
-    let is_healthy = client.is_healthy_db().await;
-    debug(&is_healthy);
-    assert!(is_healthy.is_ok());
+pub async fn is_client_db_healthy(client: &Client, id: Option<u64>) -> Result<(), Error> {
+    client.wait_until_healthy_db().await;
+    // let is_healthy = client.is_healthy_db().await;
+    // debug(&is_healthy);
+    // assert!(is_healthy.is_ok());
+
+    log(format!("Checking DB health Node {:?}", id));
+    let metrics = client.metrics_db().await?;
+    let members = metrics.membership_config.nodes().count();
+    assert_eq!(members, 3);
+
+    log(format!("Checking Cache health {:?}", id));
+    client.wait_until_healthy_cache().await;
+    let metrics = client.metrics_cache().await?;
+    let members = metrics.membership_config.nodes().count();
+    assert_eq!(members, 3);
 
     // we will do the select 1 to catch leader switches that may have
     // happened in between and trigger a client stream switch that way
@@ -29,6 +41,8 @@ pub async fn is_client_db_healthy(client: &Client) -> Result<(), Error> {
     assert_eq!(data[4].id, 22);
     assert_eq!(data[5].id, 23);
 
+    log(format!("Database healthy {:?}", id));
+
     let v: String = client.get(Cache::One, KEY).await?.unwrap();
     assert_eq!(&v, VALUE);
     let v: String = client.get(Cache::Two, KEY_2).await?.unwrap();
@@ -38,6 +52,8 @@ pub async fn is_client_db_healthy(client: &Client) -> Result<(), Error> {
     assert!(v.is_none());
     let v: Option<String> = client.get(Cache::Two, KEY).await?;
     assert!(v.is_none());
+
+    log(format!("Cache healthy {:?}", id));
 
     Ok(())
 }

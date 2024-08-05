@@ -9,9 +9,9 @@ pub async fn test_self_healing(
     mut client_2: Client,
     client_3: Client,
 ) -> Result<(), Error> {
-    check::is_client_db_healthy(&client_1).await?;
-    check::is_client_db_healthy(&client_2).await?;
-    check::is_client_db_healthy(&client_3).await?;
+    check::is_client_db_healthy(&client_1, Some(1)).await?;
+    check::is_client_db_healthy(&client_2, Some(2)).await?;
+    check::is_client_db_healthy(&client_3, Some(3)).await?;
 
     log("Test cache recovery from snapshot + logs");
     let metrics = client_1.metrics_cache().await?;
@@ -24,10 +24,11 @@ pub async fn test_self_healing(
         client_2 = modify_cache_restart_after_purge(client_2, 2).await?;
         &client_2
     };
-    check::is_client_db_healthy(&client_healed).await?;
-    check::is_client_db_healthy(&client_1).await?;
-    check::is_client_db_healthy(&client_2).await?;
-    check::is_client_db_healthy(&client_3).await?;
+    client_healed.wait_until_healthy_db().await;
+    check::is_client_db_healthy(&client_healed, None).await?;
+    check::is_client_db_healthy(&client_1, Some(1)).await?;
+    check::is_client_db_healthy(&client_2, Some(2)).await?;
+    check::is_client_db_healthy(&client_3, Some(3)).await?;
     log("Client has self-healed successfully");
 
     log("Test recovery in case of state machine crash on non-leader");
@@ -38,10 +39,11 @@ pub async fn test_self_healing(
         client_2 = shutdown_lock_sm_db_restart(client_2, 2).await?;
         &client_2
     };
-    check::is_client_db_healthy(&client_healed).await?;
-    check::is_client_db_healthy(&client_1).await?;
-    check::is_client_db_healthy(&client_2).await?;
-    check::is_client_db_healthy(&client_3).await?;
+    client_healed.is_healthy_db().await?;
+    check::is_client_db_healthy(&client_healed, None).await?;
+    check::is_client_db_healthy(&client_1, Some(1)).await?;
+    check::is_client_db_healthy(&client_2, Some(2)).await?;
+    check::is_client_db_healthy(&client_3, Some(3)).await?;
     log("Client has self-healed successfully");
 
     log("Test recovery from state machine data loss on non-leader");
@@ -52,10 +54,11 @@ pub async fn test_self_healing(
         client_2 = shutdown_remove_sm_db_restart(client_2, 2).await?;
         &client_2
     };
-    check::is_client_db_healthy(&client_healed).await?;
-    check::is_client_db_healthy(&client_1).await?;
-    check::is_client_db_healthy(&client_2).await?;
-    check::is_client_db_healthy(&client_3).await?;
+    client_healed.wait_until_healthy_db().await;
+    check::is_client_db_healthy(&client_healed, None).await?;
+    check::is_client_db_healthy(&client_1, Some(1)).await?;
+    check::is_client_db_healthy(&client_2, Some(2)).await?;
+    check::is_client_db_healthy(&client_3, Some(3)).await?;
     log("Client has self-healed successfully");
 
     // TODO the auto-heal-logs feature does not work here -> implement a manual check and rebuild?
@@ -71,6 +74,7 @@ pub async fn test_self_healing(
     // time::sleep(Duration::from_millis(200)).await;
     // check::is_client_db_healthy(client_healed).await?;
     // log("Client has self-healed successfully");
+    // let metrics_before = client_1.metrics_db().await?.clone();
 
     // TODO this test fails with `cache` enabled -> a valid update can never set matching to None
     log("Check recovery from full volume loss");
@@ -81,12 +85,16 @@ pub async fn test_self_healing(
         client_2 = shutdown_remove_all_restart(client_2, 2).await?;
         &client_2
     };
+    // let metrics_after = client_1.metrics_db().await?.clone();
+    // debug(&metrics_before);
+    // debug(&metrics_after);
+    // assert_eq!(1, 2);
     // full replication will take a few moments, vote takes a bit longer sometimes
-    time::sleep(Duration::from_millis(100)).await;
-    check::is_client_db_healthy(client_healed).await?;
-    check::is_client_db_healthy(&client_1).await?;
-    check::is_client_db_healthy(&client_2).await?;
-    check::is_client_db_healthy(&client_3).await?;
+    client_healed.wait_until_healthy_db().await;
+    check::is_client_db_healthy(client_healed, None).await?;
+    check::is_client_db_healthy(&client_1, Some(1)).await?;
+    check::is_client_db_healthy(&client_2, Some(2)).await?;
+    check::is_client_db_healthy(&client_3, Some(3)).await?;
     log("Client has self-healed successfully");
 
     // Node 1 is a bit special, as it assumes that it will be responsible for a very first
@@ -100,13 +108,38 @@ pub async fn test_self_healing(
     // full replication will take a few moments, vote takes a bit longer sometimes
     log("Waiting for cluster to become healthy again");
     client_1.wait_until_healthy_db().await;
-    check::is_client_db_healthy(&client_1).await?;
+    check::is_client_db_healthy(&client_1, Some(1)).await?;
     log("Client has self-healed and re-joined successfully");
 
+    log("Make sure restarts are fine when the current leader shuts down");
+    if is_leader(&client_1, 1).await? {
+        let metrics = client_1.metrics_db().await?;
+        let nodes = metrics.membership_config.nodes().count();
+        assert_eq!(nodes, 3);
+        client_1.shutdown().await?;
+
+        // even though it has been shut down, it should still be a member
+        let metrics = client_2.metrics_db().await?;
+        let nodes = metrics.membership_config.nodes().count();
+        assert_eq!(nodes, 3);
+        client_2.shutdown().await?;
+    } else {
+        let metrics = client_2.metrics_db().await?;
+        let nodes = metrics.membership_config.nodes().count();
+        assert_eq!(nodes, 3);
+        client_2.shutdown().await?;
+
+        // even though it has been shut down, it should still be a member
+        let metrics = client_1.metrics_db().await?;
+        let nodes = metrics.membership_config.nodes().count();
+        assert_eq!(nodes, 3);
+        client_1.shutdown().await?;
+    }
+
     // since we took ownership, we need to shut down the clients here
-    client_1.shutdown().await?;
+    // client_1.shutdown().await?;
     log("client_1 shutdown complete after self heal tests");
-    client_2.shutdown().await?;
+    // client_2.shutdown().await?;
     log("client_2 shutdown complete after self heal tests");
     client_3.shutdown().await?;
     log("client_3 shutdown complete after self heal tests");
@@ -133,7 +166,7 @@ async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Resul
     let client = start_node::<Cache>(build_config(node_id).await).await?;
     time::sleep(Duration::from_millis(100)).await;
 
-    check::is_client_db_healthy(&client).await?;
+    check::is_client_db_healthy(&client, Some(node_id)).await?;
 
     time::sleep(Duration::from_millis(100)).await;
     let v: String = client.get(Cache::One, key).await?.unwrap();
