@@ -50,13 +50,12 @@ impl RemoteListener {
                     .build()
             };
 
-            // TODO do we need a select!() between stream events and a possible leader switch?
-
-            while let Some(res) = client.stream().next().await {
+            let mut stream = client.stream();
+            while let Some(res) = stream.next().await {
                 match res {
                     Ok(sse) => match sse {
-                        SSE::Connected(_) => {
-                            info!("Opened /listen events stream");
+                        SSE::Connected(c) => {
+                            info!("Opened /listen events stream: {:?}", c);
                         }
                         SSE::Event(event) => {
                             let (ts, data) = event
@@ -74,7 +73,9 @@ impl RemoteListener {
                                 break 'main;
                             }
                         }
-                        SSE::Comment(_) => {}
+                        SSE::Comment(c) => {
+                            info!("SSE Event comment: {}", c);
+                        }
                     },
                     Err(err) => {
                         error!("{:?}", err);

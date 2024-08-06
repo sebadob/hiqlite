@@ -10,12 +10,29 @@ pub async fn test_remote_only_client() -> Result<(), Error> {
     log("Make sure remote clients work fine with any member node, even if none leader");
 
     let client_1 = build_client(1);
+
+    time::sleep(Duration::from_millis(100)).await;
     let client_2 = build_client(2);
     let client_3 = build_client(3);
 
     check_client(&client_1, 1).await?;
     check_client(&client_2, 2).await?;
     check_client(&client_3, 3).await?;
+
+    log("Test Listen / Notify with remote clients");
+    let msg = TestData {
+        id: 12345,
+        ts: Utc::now().timestamp(),
+        description: Some("Some Message".to_string()),
+    };
+    client_1.notify(&msg).await?;
+
+    let res = client_1.listen::<TestData>().await?;
+    assert_eq!(res, msg);
+    let res = client_2.listen::<TestData>().await?;
+    assert_eq!(res, msg);
+    let res = client_3.listen::<TestData>().await?;
+    assert_eq!(res, msg);
 
     Ok(())
 }

@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::time;
 
 // serde derives are mandatory if we want to use the `query_as()`
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestData {
     pub id: i64,
     pub ts: i64,
