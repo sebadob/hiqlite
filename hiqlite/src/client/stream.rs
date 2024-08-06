@@ -55,8 +55,12 @@ pub enum ClientStreamReq {
     KV(ClientKVPayload),
     #[cfg(feature = "cache")]
     KVGet(ClientKVPayload),
+
     #[cfg(feature = "dlock")]
     LockAwait(ClientKVPayload),
+
+    #[cfg(feature = "listen_notify")]
+    Notify(ClientKVPayload),
 
     // coming from the WebSocket reader
     StreamResponse(ApiStreamResponse),
@@ -417,6 +421,23 @@ async fn client_stream(
                     ))
                 }
 
+                #[cfg(feature = "listen_notify")]
+                ClientStreamReq::Notify(ClientKVPayload {
+                    request_id,
+                    cache_req,
+                    ack,
+                }) => {
+                    let req = ApiStreamRequest {
+                        request_id,
+                        payload: ApiStreamRequestPayload::Notify(cache_req),
+                    };
+                    Some((
+                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        request_id,
+                        ack,
+                    ))
+                }
+
                 ClientStreamReq::LeaderChange((node_id, node)) => {
                     // ignore result just in case the writer has already exited anyway
                     let _ = tx_write.send_async(WritePayload::Close).await;
@@ -534,6 +555,10 @@ async fn client_stream(
                     unreachable!(
                         "we should never receive ClientStreamReq::LockAwait from WS reader"
                     )
+                }
+                #[cfg(feature = "listen_notify")]
+                ClientStreamReq::Notify(_) => {
+                    unreachable!("we should never receive ClientStreamReq::Notify from WS reader")
                 }
                 ClientStreamReq::Shutdown => {
                     unreachable!("we should never receive ClientStreamReq::Shutdown from WS reader")

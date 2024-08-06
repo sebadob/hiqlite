@@ -156,7 +156,7 @@ impl Client {
                 .expect("To always receive an answer from Client Stream Manager")?;
             match res {
                 ApiStreamResponsePayload::KV(res) => res,
-                #[cfg(any(feature = "sqlite", feature = "dlock"))]
+                #[cfg(any(feature = "sqlite", feature = "dlock", feature = "listen_notify"))]
                 _ => unreachable!(),
             }
         }

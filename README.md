@@ -99,5 +99,6 @@ in case of any errors or problems.
     - [x] cache operations
     - [x] get distributed lock
     - [ ] listen / notify
+    - [ ] auto remote failover for the client based on a given list of nodes in case of leader unreachable
 - proper documentation
 - more examples

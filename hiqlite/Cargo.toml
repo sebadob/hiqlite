@@ -18,7 +18,7 @@ features = ["cache", "dashboard", "dlock", "shutdown-handle", "sqlite"]
 default = ["auto-heal", "backup", "sqlite"]
 
 auto-heal = []
-backup = ["cron", "s3"]
+backup = ["dep:cron", "s3"]
 # TODO we should not need the "openraft/loosen-follower-log-revert" here -> conflict in self-healing tests
 cache = ["openraft/loosen-follower-log-revert"]
 dashboard = [
@@ -31,10 +31,21 @@ dashboard = [
     "sqlite",
 ]
 dlock = ["cache"]
-full = ["auto-heal", "backup", "cache", "dashboard", "dlock", "s3", "shutdown-handle", "sqlite", "webpki-roots"]
-listen_notify = ["dep:cryptr", "dep:futures-util", "cache"]
-#io-uring = ["rocksdb/io-uring"]
-#jemalloc = ["rocksdb/jemalloc"]
+full = [
+    "auto-heal",
+    "backup",
+    "cache",
+    "dashboard",
+    "dlock",
+    "listen_notify",
+    "io-uring",
+    "s3",
+    "shutdown-handle",
+    "sqlite",
+    "webpki-roots",
+]
+listen_notify = ["dep:cryptr", "dep:eventsource-client", "dep:futures-util", "cache"]
+io-uring = ["rocksdb/io-uring"]
 s3 = ["dep:cryptr", "backup"]
 server = ["dep:clap", "dep:home", "dep:tracing-subscriber", "full", "tokio/macros"]
 shutdown-handle = ["dep:ctrlc"]
@@ -56,6 +67,7 @@ cryptr = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
 deadpool = { workspace = true, optional = true }
 dotenvy.workspace = true
+eventsource-client = { workspace = true, optional = true }
 fastwebsockets.workspace = true
 flume.workspace = true
 futures-util = { workspace = true, optional = true }

@@ -56,4 +56,6 @@ pub(crate) struct DbClient {
     pub(crate) tx_shutdown: Option<watch::Sender<bool>>,
     #[cfg(feature = "listen_notify")]
     pub(crate) app_start: i64,
+    #[cfg(feature = "listen_notify")]
+    pub(crate) rx_notify: Option<flume::Receiver<(i64, Vec<u8>)>>,
 }

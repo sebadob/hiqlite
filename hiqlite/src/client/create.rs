@@ -5,6 +5,9 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::sync::{watch, RwLock};
 
+#[cfg(feature = "listen_notify")]
+use crate::client::listen_notify::RemoteListener;
+
 #[cfg(feature = "sqlite")]
 use crate::client::stream::ClientStreamReq;
 
@@ -72,6 +75,8 @@ impl Client {
             tx_shutdown: Some(tx_shutdown),
             #[cfg(feature = "listen_notify")]
             app_start: chrono::Utc::now().timestamp_micros(),
+            #[cfg(feature = "listen_notify")]
+            rx_notify: None,
         };
 
         Self {
@@ -105,6 +110,13 @@ impl Client {
         let (tx_client_db, rx_client_db) = flume::unbounded();
         #[cfg(feature = "cache")]
         let (tx_client_cache, rx_client_cache) = flume::unbounded();
+
+        #[cfg(feature = "listen_notify")]
+        let rx_notify = Some(RemoteListener::spawn(
+            leader_cache.clone(),
+            tls,
+            api_secret.clone(),
+        ));
 
         #[cfg(feature = "cache")]
         Self::open_stream(
@@ -147,6 +159,8 @@ impl Client {
             tx_shutdown: None,
             #[cfg(feature = "listen_notify")]
             app_start: chrono::Utc::now().timestamp_micros(),
+            #[cfg(feature = "listen_notify")]
+            rx_notify,
         };
 
         Self {

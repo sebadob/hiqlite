@@ -33,6 +33,7 @@ use crate::{
     query::{query_consistent_local, query_owned_local, rows::RowOwned},
     store::state_machine::sqlite::state_machine::{Query, QueryWrite},
 };
+
 // pub(crate) async fn write(
 //     state: AppStateExt,
 //     headers: HeaderMap,
@@ -283,8 +284,8 @@ pub(crate) enum ApiStreamRequestPayload {
     KVGet(CacheRequest),
     #[cfg(feature = "dlock")]
     LockAwait(CacheRequest),
-    // Listen,
-    // Notify,
+    #[cfg(feature = "listen_notify")]
+    Notify(CacheRequest),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -318,6 +319,9 @@ pub(crate) enum ApiStreamResponsePayload {
 
     #[cfg(feature = "dlock")]
     Lock(LockState),
+
+    #[cfg(feature = "listen_notify")]
+    Notify(Result<(), Error>),
 }
 
 #[derive(Debug)]
@@ -712,6 +716,30 @@ async fn handle_socket_concurrent(
                     ApiStreamResponse {
                         request_id,
                         result: ApiStreamResponsePayload::Lock(lock_state),
+                    }
+                }
+
+                #[cfg(feature = "listen_notify")]
+                ApiStreamRequestPayload::Notify(cache_req) => {
+                    let (ts, data) = match cache_req {
+                        CacheRequest::Notify((ts, data)) => (ts, data),
+                        _ => unreachable!(),
+                    };
+
+                    match state
+                        .raft_cache
+                        .raft
+                        .client_write(CacheRequest::Notify((ts, data)))
+                        .await
+                    {
+                        Ok(_) => ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::Notify(Ok(())),
+                        },
+                        Err(err) => ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::Notify(Err(Error::from(err))),
+                        },
                     }
                 }
             };

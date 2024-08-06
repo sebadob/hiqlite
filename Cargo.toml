@@ -36,6 +36,7 @@ cryptr = { version = "0.5.1", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"
+eventsource-client = "0.13.0"
 fastwebsockets = { version = "0.8.0", features = [
     "upgrade",
     "with_axum",
