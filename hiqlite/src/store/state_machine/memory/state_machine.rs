@@ -27,6 +27,9 @@ use uuid::Uuid;
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::{self, *};
 
+#[cfg(feature = "listen_notify")]
+use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
+
 type Entry = openraft::Entry<TypeConfigKV>;
 type SnapshotData = Cursor<Vec<u8>>;
 
@@ -51,6 +54,7 @@ pub enum CacheRequest {
         cache_idx: usize,
         key: Cow<'static, str>,
     },
+    #[cfg(feature = "listen_notify")]
     Notify((i64, Vec<u8>)),
     #[cfg(feature = "dlock")]
     Lock((Cow<'static, str>, Option<u64>)),
@@ -87,7 +91,9 @@ pub struct StateMachineMemory {
     pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     tx_ttls: Vec<flume::Sender<TtlRequest>>,
 
-    tx_notify: flume::Sender<(i64, Vec<u8>)>,
+    #[cfg(feature = "listen_notify")]
+    pub(crate) tx_notify: flume::Sender<NotifyRequest>,
+    #[cfg(feature = "listen_notify")]
     pub(crate) rx_notify: flume::Receiver<(i64, Vec<u8>)>,
 
     #[cfg(feature = "dlock")]
@@ -203,7 +209,8 @@ impl StateMachineMemory {
         #[cfg(feature = "dlock")]
         let tx_dlock = dlock_handler::spawn();
 
-        let (tx_notify, rx_notify) = flume::unbounded();
+        #[cfg(feature = "listen_notify")]
+        let (tx_notify, rx_notify) = notify_handler::spawn();
 
         Ok(Self {
             data: Default::default(),
@@ -211,7 +218,9 @@ impl StateMachineMemory {
             snapshot: Default::default(),
             tx_caches,
             tx_ttls,
+            #[cfg(feature = "listen_notify")]
             tx_notify,
+            #[cfg(feature = "listen_notify")]
             rx_notify,
             #[cfg(feature = "dlock")]
             tx_dlock,
@@ -291,9 +300,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         CacheResponse::Ok
                     }
 
+                    #[cfg(feature = "listen_notify")]
                     CacheRequest::Notify(payload) => {
                         self.tx_notify
-                            .send(payload)
+                            .send(NotifyRequest::Notify(payload))
                             // this channel can never be closed - we have both sides
                             .unwrap();
                         CacheResponse::Ok

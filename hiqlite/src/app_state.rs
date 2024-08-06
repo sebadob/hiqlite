@@ -6,11 +6,6 @@ use std::fmt::Debug;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::{kv_handler::CacheRequestHandler, TypeConfigKV};
 
-#[cfg(feature = "sqlite")]
-use crate::store::state_machine::sqlite::{
-    state_machine::SqlitePool, writer::WriterRequest, TypeConfigSqlite,
-};
-
 #[cfg(feature = "dashboard")]
 use crate::client::stream::ClientStreamReq;
 #[cfg(feature = "dashboard")]
@@ -20,6 +15,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::LockRequest;
+
+#[cfg(feature = "listen_notify")]
+use crate::store::state_machine::memory::notify_handler::NotifyRequest;
+
+#[cfg(feature = "sqlite")]
+use crate::store::state_machine::sqlite::{
+    state_machine::SqlitePool, writer::WriterRequest, TypeConfigSqlite,
+};
 
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -88,6 +91,9 @@ pub struct StateRaftCache {
     pub raft: openraft::Raft<TypeConfigKV>,
     pub lock: tokio::sync::Mutex<()>,
     pub tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
+    #[cfg(feature = "listen_notify")]
+    pub tx_notify: flume::Sender<NotifyRequest>,
+    #[cfg(feature = "listen_notify")]
     pub rx_notify: flume::Receiver<(i64, Vec<u8>)>,
     #[cfg(feature = "dlock")]
     pub tx_dlock: flume::Sender<LockRequest>,

@@ -5,31 +5,30 @@ use std::sync::Arc;
 use stream::ClientStreamReq;
 use tokio::sync::{watch, RwLock};
 
+#[cfg(feature = "backup")]
+mod backup;
 #[cfg(feature = "sqlite")]
 mod batch;
+#[cfg(feature = "cache")]
+mod cache;
 mod create;
+#[cfg(feature = "dlock")]
+pub mod dlock;
 #[cfg(feature = "sqlite")]
 mod execute;
 mod helpers;
+#[cfg(feature = "listen_notify")]
+mod listen_notify;
 mod mgmt;
 #[cfg(feature = "sqlite")]
 mod migrate;
 #[cfg(feature = "sqlite")]
 mod query;
+#[cfg(feature = "shutdown-handle")]
+mod shutdown_handle;
 pub mod stream;
 #[cfg(feature = "sqlite")]
 mod transaction;
-
-#[cfg(feature = "backup")]
-mod backup;
-#[cfg(feature = "cache")]
-mod cache;
-#[cfg(feature = "dlock")]
-pub mod dlock;
-#[cfg(feature = "cache")]
-mod listen_notify;
-#[cfg(feature = "shutdown-handle")]
-mod shutdown_handle;
 
 /// This is the main database client.
 /// It will handle all things you need to work with the Database / Cache / Event Bus / Distributed Locks.
@@ -55,6 +54,6 @@ pub(crate) struct DbClient {
     pub(crate) api_secret: Option<String>,
     pub(crate) request_id: AtomicUsize,
     pub(crate) tx_shutdown: Option<watch::Sender<bool>>,
-    #[cfg(feature = "cache")]
+    #[cfg(feature = "listen_notify")]
     pub(crate) app_start: i64,
 }

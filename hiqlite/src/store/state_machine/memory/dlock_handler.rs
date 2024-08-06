@@ -56,11 +56,11 @@ pub struct LockQueue {
 
 pub fn spawn() -> flume::Sender<LockRequest> {
     let (tx, rx) = flume::unbounded();
-    task::spawn(lock_handler(rx));
+    task::spawn(handler(rx));
     tx
 }
 
-async fn lock_handler(rx: flume::Receiver<LockRequest>) {
+async fn handler(rx: flume::Receiver<LockRequest>) {
     let mut locks: HashMap<String, LockQueue> = HashMap::new();
     let mut queues: HashMap<String, Vec<(u64, oneshot::Sender<LockState>)>> = HashMap::new();
 
@@ -204,4 +204,6 @@ async fn lock_handler(rx: flume::Receiver<LockRequest>) {
             }
         }
     }
+
+    warn!("DLock handler exiting");
 }

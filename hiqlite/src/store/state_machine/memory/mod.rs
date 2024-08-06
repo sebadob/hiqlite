@@ -9,6 +9,9 @@ pub mod state_machine;
 #[cfg(feature = "dlock")]
 pub mod dlock_handler;
 
+#[cfg(feature = "listen_notify")]
+pub mod notify_handler;
+
 openraft::declare_raft_types!(
     pub TypeConfigKV:
         D = CacheRequest,

@@ -19,13 +19,21 @@ use crate::store::state_machine::memory::dlock_handler::{
     LockAwaitPayload, LockRequest, LockState,
 };
 
+#[cfg(feature = "listen_notify")]
+use crate::store::state_machine::memory::notify_handler::NotifyRequest;
+#[cfg(feature = "listen_notify")]
+use axum::response::sse;
+#[cfg(feature = "listen_notify")]
+use futures_util::stream::{self, Stream};
+#[cfg(feature = "listen_notify")]
+use tokio_stream::StreamExt as _;
+
 #[cfg(feature = "sqlite")]
 use crate::{
     migration::Migration,
     query::{query_consistent_local, query_owned_local, rows::RowOwned},
     store::state_machine::sqlite::state_machine::{Query, QueryWrite},
 };
-
 // pub(crate) async fn write(
 //     state: AppStateExt,
 //     headers: HeaderMap,
@@ -115,6 +123,20 @@ pub async fn health(state: AppStateExt) -> impl IntoResponse {
 }
 
 pub async fn ping() {}
+
+#[cfg(feature = "listen_notify")]
+pub async fn listen(
+    state: AppStateExt,
+) -> Result<sse::Sse<impl Stream<Item = Result<sse::Event, std::convert::Infallible>>>, Error> {
+    let (tx, rx) = flume::unbounded();
+    state
+        .raft_cache
+        .tx_notify
+        .send_async(NotifyRequest::Listen(tx))
+        .await?;
+
+    Ok(sse::Sse::new(rx.stream()).keep_alive(sse::KeepAlive::default()))
+}
 
 // TODO maybe remove this endpoint in favor or a generic REST endpoint which chooses the
 // the correct sub-method on its own? -> way better UX and response will be just `text` anyway?

@@ -70,7 +70,7 @@ impl Client {
             api_secret: None,
             request_id: AtomicUsize::new(0),
             tx_shutdown: Some(tx_shutdown),
-            #[cfg(feature = "cache")]
+            #[cfg(feature = "listen_notify")]
             app_start: chrono::Utc::now().timestamp_micros(),
         };
 
@@ -145,7 +145,7 @@ impl Client {
             api_secret: Some(api_secret),
             request_id: AtomicUsize::new(0),
             tx_shutdown: None,
-            #[cfg(feature = "cache")]
+            #[cfg(feature = "listen_notify")]
             app_start: chrono::Utc::now().timestamp_micros(),
         };
 
