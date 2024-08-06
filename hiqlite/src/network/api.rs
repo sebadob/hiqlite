@@ -1,5 +1,6 @@
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{AppStateExt, Error};
+use crate::network::{validate_secret, AppStateExt, Error};
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use serde::{Deserialize, Serialize};
@@ -96,7 +97,9 @@ use crate::{
 //     // Ok(state.kv_store.read().await.get(key).cloned())
 // }
 
-pub async fn health(state: AppStateExt) -> impl IntoResponse {
+pub async fn health(state: AppStateExt, headers: HeaderMap) -> impl IntoResponse {
+    validate_secret(&state, &headers)?;
+
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
     panic!("neither `sqlite` nor `cache` feature enabled");
 
@@ -127,7 +130,10 @@ pub async fn ping() {}
 #[cfg(feature = "listen_notify")]
 pub async fn listen(
     state: AppStateExt,
+    headers: HeaderMap,
 ) -> Result<sse::Sse<impl Stream<Item = Result<sse::Event, std::convert::Infallible>>>, Error> {
+    validate_secret(&state, &headers)?;
+
     let (tx, rx) = flume::unbounded();
     state
         .raft_cache
