@@ -2,7 +2,7 @@ use crate::Error;
 use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter};
 use std::env;
 use std::sync::Arc;
-use tracing::warn;
+use tracing::debug;
 
 pub use crate::config::EncKeysFrom;
 pub use cryptr::stream::s3::*;
@@ -108,7 +108,7 @@ pub(crate) fn init_enc_keys(enc_keys_from: &EncKeysFrom) -> Result<(), Error> {
     .map_err(|err| Error::Error(err.to_string().into()))?
     .init()
     {
-        warn!("{}", err);
+        debug!("{}", err);
     };
     Ok(())
 }

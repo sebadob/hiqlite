@@ -12,6 +12,7 @@ use rusqlite::backup::Progress;
 use rusqlite::{Batch, DatabaseName, Transaction};
 use std::borrow::Cow;
 use std::default::Default;
+use std::ops::Sub;
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -137,6 +138,7 @@ pub fn spawn_writer(
 
     task::spawn_blocking(move || {
         let mut sm_data = StateMachineData::default();
+        let mut ts_last_backup = None;
 
         // TODO should we maybe save a backup task handle in case of shutdown overlap?
 
@@ -477,6 +479,15 @@ pub fn spawn_writer(
                     sm_data.last_applied_log_id = req.last_applied_log_id;
 
                     if this_node == req.node_id {
+                        let now = Utc::now();
+
+                        if let Some(ts) = ts_last_backup {
+                            if ts > now.sub(chrono::Duration::seconds(60)) {
+                                info!("Received duplicate backup request within the last 60 seconds - ignoring it");
+                                continue;
+                            }
+                        }
+
                         if let Err(err) = create_backup(
                             &conn,
                             req.node_id,
@@ -488,6 +499,8 @@ pub fn spawn_writer(
                             req.ack.send(Err(err));
                             continue;
                         }
+
+                        ts_last_backup = Some(now);
                     }
 
                     req.ack.send(Ok(()));
