@@ -32,7 +32,7 @@ dashboard = [
 ]
 dlock = ["cache"]
 full = ["auto-heal", "backup", "cache", "dashboard", "dlock", "s3", "shutdown-handle", "sqlite", "webpki-roots"]
-listen_notify = ["dep:futures-util", "dep:tokio-stream", "cache"]
+listen_notify = ["dep:cryptr", "dep:futures-util", "cache"]
 #io-uring = ["rocksdb/io-uring"]
 #jemalloc = ["rocksdb/jemalloc"]
 s3 = ["dep:cryptr", "backup"]
@@ -85,7 +85,6 @@ strum.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
-tokio-stream = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 tracing.workspace = true

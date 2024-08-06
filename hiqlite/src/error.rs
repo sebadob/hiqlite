@@ -12,6 +12,9 @@ use thiserror::Error;
 use tokio::task::JoinError;
 use tracing::trace;
 
+#[cfg(feature = "listen_notify")]
+use crate::store::state_machine::memory::notify_handler::NotifyRequest;
+
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum Error {
     #[error("BadRequest: {0}")]
@@ -259,6 +262,14 @@ impl From<JoinError> for Error {
 impl From<flume::RecvError> for Error {
     fn from(value: flume::RecvError) -> Self {
         trace!("flume::RecvError: {}", value);
+        Self::Channel(value.to_string())
+    }
+}
+
+#[cfg(feature = "listen_notify")]
+impl From<flume::SendError<NotifyRequest>> for Error {
+    fn from(value: flume::SendError<NotifyRequest>) -> Self {
+        trace!("flume::SendError<NotifyRequest>: {}", value);
         Self::Channel(value.to_string())
     }
 }

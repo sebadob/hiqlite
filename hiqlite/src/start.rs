@@ -162,6 +162,7 @@ where
         // .route("/query", post(api::query))
         // TODO
         // .route("/query/consistent", post(api::query))
+        .route("/listen", get(api::listen))
         .route("/stream", get(api::stream))
         .route("/health", get(api::health))
         .route("/ping", get(api::ping));

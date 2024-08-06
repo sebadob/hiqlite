@@ -25,9 +25,7 @@ use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 #[cfg(feature = "listen_notify")]
 use axum::response::sse;
 #[cfg(feature = "listen_notify")]
-use futures_util::stream::{self, Stream};
-#[cfg(feature = "listen_notify")]
-use tokio_stream::StreamExt as _;
+use futures_util::stream::Stream;
 
 #[cfg(feature = "sqlite")]
 use crate::{
@@ -131,7 +129,7 @@ pub async fn ping() {}
 pub async fn listen(
     state: AppStateExt,
     headers: HeaderMap,
-) -> Result<sse::Sse<impl Stream<Item = Result<sse::Event, std::convert::Infallible>>>, Error> {
+) -> Result<sse::Sse<impl Stream<Item = Result<sse::Event, Error>>>, Error> {
     validate_secret(&state, &headers)?;
 
     let (tx, rx) = flume::unbounded();
@@ -141,7 +139,15 @@ pub async fn listen(
         .send_async(NotifyRequest::Listen(tx))
         .await?;
 
-    Ok(sse::Sse::new(rx.stream()).keep_alive(sse::KeepAlive::default()))
+    Ok(sse::Sse::new(rx.into_stream()).keep_alive(sse::KeepAlive::default()))
+}
+
+#[cfg(not(feature = "listen_notify"))]
+pub async fn listen(state: AppStateExt, headers: HeaderMap) -> Result<(), Error> {
+    validate_secret(&state, &headers)?;
+    Err(Error::Config(
+        "'listen_notify' feature is not active".into(),
+    ))
 }
 
 // TODO maybe remove this endpoint in favor or a generic REST endpoint which chooses the
