@@ -26,7 +26,7 @@ impl Drop for Lock {
 
         task::spawn(async move {
             if let Err(err) = client
-                .lock_req_retry(CacheRequest::LockRelease((key.clone(), id)))
+                .lock_req_retry(CacheRequest::LockRelease((key.clone(), id)), false)
                 .await
             {
                 error!(
@@ -48,7 +48,7 @@ impl Client {
     {
         let key = key.into();
         let state = self
-            .lock_req_retry(CacheRequest::Lock((key.clone(), None)))
+            .lock_req_retry(CacheRequest::Lock((key.clone(), None)), false)
             .await?;
         match state {
             LockState::Locked(id) => Ok(Lock {
@@ -61,7 +61,7 @@ impl Client {
                 match res {
                     LockState::Released => {
                         let state = self
-                            .lock_req_retry(CacheRequest::Lock((key.clone(), Some(id))))
+                            .lock_req_retry(CacheRequest::Lock((key.clone(), Some(id))), false)
                             .await?;
                         match state {
                             LockState::Locked(id) => Ok(Lock {
@@ -92,13 +92,17 @@ impl Client {
                 .expect("to always get an answer from the kv handler");
             Ok(state)
         } else {
-            self.lock_req_retry(CacheRequest::LockAwait((key.clone(), id)))
+            self.lock_req_retry(CacheRequest::LockAwait((key.clone(), id)), true)
                 .await
         }
     }
 
-    async fn lock_req_retry(&self, cache_req: CacheRequest) -> Result<LockState, Error> {
-        match self.lock_req(cache_req.clone()).await {
+    async fn lock_req_retry(
+        &self,
+        cache_req: CacheRequest,
+        is_remote_await: bool,
+    ) -> Result<LockState, Error> {
+        match self.lock_req(cache_req.clone(), is_remote_await).await {
             Ok(state) => Ok(state),
             Err(err) => {
                 if self
@@ -109,7 +113,7 @@ impl Client {
                     )
                     .await
                 {
-                    self.lock_req(cache_req).await
+                    self.lock_req(cache_req, is_remote_await).await
                 } else {
                     Err(err)
                 }
@@ -117,7 +121,11 @@ impl Client {
         }
     }
 
-    async fn lock_req(&self, cache_req: CacheRequest) -> Result<LockState, Error> {
+    async fn lock_req(
+        &self,
+        cache_req: CacheRequest,
+        is_remote_await: bool,
+    ) -> Result<LockState, Error> {
         if let Some(state) = self.is_leader_cache().await {
             let res = state.raft_cache.raft.client_write(cache_req).await?;
             let data: CacheResponse = res.data;
@@ -127,13 +135,24 @@ impl Client {
             }
         } else {
             let (ack, rx) = oneshot::channel();
-            self.inner
-                .tx_client_cache
-                .send_async(ClientStreamReq::KV(ClientKVPayload {
+
+            let payload = if is_remote_await {
+                ClientStreamReq::LockAwait(ClientKVPayload {
                     request_id: self.new_request_id(),
                     cache_req,
                     ack,
-                }))
+                })
+            } else {
+                ClientStreamReq::KV(ClientKVPayload {
+                    request_id: self.new_request_id(),
+                    cache_req,
+                    ack,
+                })
+            };
+
+            self.inner
+                .tx_client_cache
+                .send_async(payload)
                 .await
                 .expect("Client Stream Manager to always be running");
             let res = rx
@@ -141,9 +160,16 @@ impl Client {
                 .expect("To always receive an answer from Client Stream Manager")?;
             match res {
                 ApiStreamResponsePayload::KV(res) => match res? {
-                    CacheResponse::Lock(state) => Ok(state),
+                    CacheResponse::Lock(state) => {
+                        assert!(!is_remote_await);
+                        Ok(state)
+                    }
                     _ => unreachable!(),
                 },
+                ApiStreamResponsePayload::Lock(LockState::Released) => {
+                    assert!(is_remote_await);
+                    Ok(LockState::Released)
+                }
                 #[cfg(any(feature = "sqlite", feature = "dlock"))]
                 _ => unreachable!(),
             }

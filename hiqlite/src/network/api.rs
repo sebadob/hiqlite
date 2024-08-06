@@ -603,6 +603,22 @@ async fn handle_socket_concurrent(
                     }
                 }
 
+                #[cfg(feature = "sqlite")]
+                ApiStreamRequestPayload::Query(Query { sql, params }) => {
+                    let res = query_owned_local(
+                        state.raft_db.log_statements,
+                        state.raft_db.read_pool.clone(),
+                        sql,
+                        params,
+                    )
+                    .await;
+
+                    ApiStreamResponse {
+                        request_id,
+                        result: ApiStreamResponsePayload::Query(res),
+                    }
+                }
+
                 #[cfg(feature = "cache")]
                 ApiStreamRequestPayload::KV(cache_req) => {
                     match state.raft_cache.raft.client_write(cache_req).await {
@@ -617,22 +633,6 @@ async fn handle_socket_concurrent(
                             request_id,
                             result: ApiStreamResponsePayload::KV(Err(Error::from(err))),
                         },
-                    }
-                }
-
-                #[cfg(feature = "sqlite")]
-                ApiStreamRequestPayload::Query(Query { sql, params }) => {
-                    let res = query_owned_local(
-                        state.raft_db.log_statements,
-                        state.raft_db.read_pool.clone(),
-                        sql,
-                        params,
-                    )
-                    .await;
-
-                    ApiStreamResponse {
-                        request_id,
-                        result: ApiStreamResponsePayload::Query(res),
                     }
                 }
 

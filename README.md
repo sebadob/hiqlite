@@ -95,8 +95,9 @@ in case of any errors or problems.
 ### TODOs before v0.1.0
 
 - fully implemented remote client in case you don't embed Hiqlite -> currently missing:
-    - get distributed lock
-    - listen / notify?
-    - query_* fn's
+    - [x] query_* fn's
+    - [x] cache operations
+    - [x] get distributed lock
+    - [ ] listen / notify
 - proper documentation
 - more examples

@@ -24,6 +24,7 @@ pub async fn test_transactions(
         ])
         // The first result returned is for the whole transaction commit
         .await?;
+    assert_eq!(results.iter().len(), 3);
 
     for res in results {
         // each result in the returned vector is for
