@@ -104,7 +104,8 @@ test:
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
-    cargo test --features cache,dlock,listen_notify
+    # we need to run the tests with nightly to not get an error for docs auto cfg
+    cargo +nightly test --features cache,dlock,listen_notify
 
 
 # builds the code
