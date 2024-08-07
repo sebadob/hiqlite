@@ -371,6 +371,11 @@ pub fn spawn_writer(
 
                     // TODO should be maybe always panic if migrations throw an error?
                     let res = migrate(&mut conn, req.migrations).map_err(Error::from);
+
+                    if let Err(err) = conn.pragma_update(None, "optimize", None::<String>) {
+                        error!("Error during 'PRAGMA optimize': {}", err);
+                    }
+
                     req.tx.send(res).unwrap();
                 }
 
@@ -387,7 +392,13 @@ pub fn spawn_writer(
                         sm_data.last_applied_log_id,
                         sm_data.last_membership.clone(),
                     ) {
-                        Ok(meta) => ack.send(Ok(SnapshotResponse { meta })),
+                        Ok(meta) => {
+                            if let Err(err) = conn.pragma_update(None, "optimize", None::<String>) {
+                                error!("Error during 'PRAGMA optimize': {}", err);
+                            }
+
+                            ack.send(Ok(SnapshotResponse { meta }))
+                        }
                         Err(err) => {
                             error!("Error creating new snapshot: {:?}", err);
                             ack.send(Err(StorageError::IO {
@@ -409,6 +420,11 @@ pub fn spawn_writer(
                         }),
                     )
                     .expect("SnapshotApply to always succeed in sql writer");
+
+                    if let Err(err) = conn.pragma_update(None, "optimize", None::<String>) {
+                        error!("Error during 'PRAGMA optimize': {}", err);
+                    }
+
                     info!(
                         "Snapshot restore finished after {} ms",
                         start.elapsed().as_millis()
@@ -445,6 +461,10 @@ pub fn spawn_writer(
                     let data = bincode::serialize(&sm_data).unwrap();
                     stmt.execute([data])
                         .expect("Metadata persist to never fail");
+
+                    if let Err(err) = conn.pragma_update(None, "optimize", None::<String>) {
+                        error!("Error during 'PRAGMA optimize': {}", err);
+                    }
 
                     StateMachineSqlite::remove_lock_file(&path_lock_file);
 
@@ -502,6 +522,10 @@ pub fn spawn_writer(
                         }
 
                         ts_last_backup = Some(now);
+                    }
+
+                    if let Err(err) = conn.pragma_update(None, "optimize", None::<String>) {
+                        error!("Error during 'PRAGMA optimize': {}", err);
                     }
 
                     req.ack.send(Ok(()));
