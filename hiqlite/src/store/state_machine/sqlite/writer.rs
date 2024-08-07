@@ -498,6 +498,15 @@ pub fn spawn_writer(
                 WriterRequest::Backup(req) => {
                     sm_data.last_applied_log_id = req.last_applied_log_id;
 
+                    info!("VACUUMing the database before creating a backup");
+                    let start = Instant::now();
+                    match conn.execute("VACUUM", ()) {
+                        Ok(_) => {
+                            info!("VACUUM finished after {} ms", start.elapsed().as_millis());
+                        }
+                        Err(err) => error!("Error during VACUUM: {}", err),
+                    }
+
                     if this_node == req.node_id {
                         let now = Utc::now();
 
