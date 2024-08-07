@@ -12,7 +12,8 @@ readme = "../README.md"
 repository = "https://github.com/sebadob/hiqlite"
 
 [package.metadata.docs.rs]
-features = ["cache", "dashboard", "dlock", "shutdown-handle", "sqlite"]
+#features = ["cache", "dashboard", "dlock", "shutdown-handle", "sqlite"]
+all-features = true
 
 [features]
 default = ["auto-heal", "backup", "sqlite"]
@@ -105,8 +106,6 @@ webpki-roots = { workspace = true, optional = true }
 # make minimal versions happy
 lazy_static.workspace = true
 lz4-sys.workspace = true
-
-[build-dependencies]
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }

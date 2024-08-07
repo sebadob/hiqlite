@@ -94,6 +94,11 @@ clippy-features:
     cargo clippy --no-default-features --features shutdown-handle
 
 
+# build and open the docs
+docs:
+    cargo +nightly doc --all-features --no-deps --open
+
+
 # runs the full set of tests
 test:
     #!/usr/bin/env bash
@@ -195,23 +200,8 @@ release: verfiy-is-clean
     git push origin "v$TAG"
 
 
-# dry-run publishing the latest version
-publish-dry: verfiy-is-clean
-    #!/usr/bin/env bash
-    set -euxo pipefail
-    cargo publish --dry-run -p hiqlite
-    #cargo publish --dry-run -p hiqlite-server
-
-
 # publishes the current lib version to cargo.io
 publish: verfiy-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish -p hiqlite
-
-
-# publishes the hiqlite-server to cargo.io
-publish-server: verfiy-is-clean
-    #!/usr/bin/env bash
-    set -euxo pipefail
-    cargo publish -p hiqlite-server

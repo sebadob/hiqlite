@@ -1,4 +1,3 @@
-
 use crate::client::stream::{ClientExecutePayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::RowOwned;
@@ -7,10 +6,8 @@ use crate::{Client, Error, Params, Response};
 use std::borrow::Cow;
 use tokio::sync::oneshot;
 
-#[cfg_attr(docsrs, doc(cfg(feature = "sqlite")))]
 impl Client {
     /// `EXECUTE` a modifying query
-    #[cfg_attr(docsrs, doc(cfg(feature = "sqlite")))]
     pub async fn execute<S>(&self, sql: S, params: Params) -> Result<usize, Error>
     where
         S: Into<Cow<'static, str>>,
@@ -69,7 +66,6 @@ impl Client {
         }
     }
 
-    #[cfg_attr(docsrs, doc(cfg(feature = "sqlite")))]
     pub async fn execute_returning_map<S, T>(&self, sql: S, params: Params) -> Result<Vec<T>, Error>
     where
         S: Into<Cow<'static, str>>,
@@ -83,7 +79,6 @@ impl Client {
         Ok(res)
     }
 
-    #[cfg_attr(docsrs, doc(cfg(feature = "sqlite")))]
     pub async fn execute_returning<S>(
         &self,
         sql: S,

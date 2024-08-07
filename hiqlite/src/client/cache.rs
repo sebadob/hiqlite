@@ -11,9 +11,7 @@ use std::fmt::Debug;
 use strum::IntoEnumIterator;
 use tokio::sync::oneshot;
 
-#[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
 impl Client {
-    #[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
     pub async fn get<C, K, V>(&self, cache: C, key: K) -> Result<Option<V>, Error>
     where
         C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
@@ -54,7 +52,6 @@ impl Client {
 
     /// `Put` a value into the cache.
     /// The optional `ttl` is the lifetime of the value in seconds from *now* on.
-    #[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
     pub async fn put<C, K, V>(
         &self,
         cache: C,
@@ -83,7 +80,6 @@ impl Client {
     }
 
     /// `Delete` a value from the cache.
-    #[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
     pub async fn delete<C, K>(&self, cache: C, key: K) -> Result<(), Error>
     where
         C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
