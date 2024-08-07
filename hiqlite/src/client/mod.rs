@@ -44,7 +44,8 @@ pub(crate) struct DbClient {
     pub(crate) leader_cache: Arc<RwLock<(NodeId, String)>>,
     #[cfg(feature = "sqlite")]
     pub(crate) leader_db: Arc<RwLock<(NodeId, String)>>,
-    pub(crate) client: reqwest::Client,
+    pub(crate) nodes: Vec<String>,
+    pub(crate) client: Option<reqwest::Client>,
     #[cfg(feature = "cache")]
     pub(crate) tx_client_cache: flume::Sender<ClientStreamReq>,
     #[cfg(feature = "sqlite")]

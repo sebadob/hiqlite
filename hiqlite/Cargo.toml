@@ -38,14 +38,12 @@ full = [
     "dashboard",
     "dlock",
     "listen_notify",
-    "io-uring",
     "s3",
     "shutdown-handle",
     "sqlite",
     "webpki-roots",
 ]
 listen_notify = ["dep:cryptr", "dep:eventsource-client", "dep:futures-util", "cache"]
-io-uring = ["rocksdb/io-uring"]
 s3 = ["dep:cryptr", "backup"]
 server = ["dep:clap", "dep:home", "dep:tracing-subscriber", "full", "tokio/macros"]
 shutdown-handle = ["dep:ctrlc"]

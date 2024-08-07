@@ -2,22 +2,23 @@ use crate::execute_query::TestData;
 use crate::start::SECRET_API;
 use crate::{check, log, start, Cache};
 use chrono::Utc;
-use hiqlite::{params, Client, Error, Lock, Node, Param};
+use hiqlite::{params, Client, Error, Lock, Param};
 use std::time::Duration;
 use tokio::{task, time};
 
 pub async fn test_remote_only_client() -> Result<(), Error> {
     log("Make sure remote clients work fine with any member node, even if none leader");
 
-    let client_1 = build_client(1);
+    let nodes = start::nodes()
+        .into_iter()
+        .map(|n| n.addr_api)
+        .collect::<Vec<_>>();
 
-    time::sleep(Duration::from_millis(100)).await;
-    let client_2 = build_client(2);
-    let client_3 = build_client(3);
-
+    let client_1 = Client::remote(nodes.clone(), false, false, SECRET_API.to_string()).await?;
     check_client(&client_1, 1).await?;
+
+    let client_2 = Client::remote(nodes, false, false, SECRET_API.to_string()).await?;
     check_client(&client_2, 2).await?;
-    check_client(&client_3, 3).await?;
 
     log("Test Listen / Notify with remote clients");
     let msg = TestData {
@@ -30,8 +31,6 @@ pub async fn test_remote_only_client() -> Result<(), Error> {
     let res = client_1.listen::<TestData>().await?;
     assert_eq!(res, msg);
     let res = client_2.listen::<TestData>().await?;
-    assert_eq!(res, msg);
-    let res = client_3.listen::<TestData>().await?;
     assert_eq!(res, msg);
 
     Ok(())
@@ -163,15 +162,4 @@ async fn check_client(client: &Client, id: u64) -> Result<(), Error> {
     let _lock_handle = handle.await??;
 
     Ok(())
-}
-
-fn build_client(node_id: u64) -> Client {
-    let addr = start::nodes()
-        .into_iter()
-        .filter(|n| n.id == node_id)
-        .collect::<Vec<Node>>()
-        .swap_remove(0)
-        .addr_api;
-
-    Client::remote(node_id, addr, false, false, SECRET_API.to_string())
 }

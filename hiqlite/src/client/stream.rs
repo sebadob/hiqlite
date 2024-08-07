@@ -134,15 +134,15 @@ enum WritePayload {
 
 impl Client {
     pub(crate) fn open_stream(
-        node_id: NodeId,
-        tls_config: Option<Arc<rustls::ClientConfig>>,
+        &self,
+        // client: Client,
+        // tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: Vec<u8>,
         leader: Arc<RwLock<(NodeId, String)>>,
         rx_client_stream: flume::Receiver<ClientStreamReq>,
     ) {
         task::spawn(client_stream(
-            node_id,
-            tls_config,
+            self.clone(),
             secret,
             leader,
             rx_client_stream,
@@ -153,8 +153,8 @@ impl Client {
 /// Manager task which handles connection creation, split into sender / receiver, keeps the state,
 /// handles reconnects and leader switches.
 async fn client_stream(
-    node_id: NodeId,
-    tls_config: Option<Arc<rustls::ClientConfig>>,
+    client: Client,
+    // tls_config: Option<Arc<rustls::ClientConfig>>,
     secret: Vec<u8>,
     leader: Arc<RwLock<(NodeId, String)>>,
     rx_req: flume::Receiver<ClientStreamReq>,
@@ -170,14 +170,7 @@ async fn client_stream(
     let mut shutdown = false;
 
     loop {
-        let ws = match try_connect(
-            node_id,
-            &leader.read().await.1.clone(),
-            tls_config.clone(),
-            &secret,
-        )
-        .await
-        {
+        let ws = match try_connect(&leader, client.inner.tls_config.clone(), &secret).await {
             Ok(ws) => {
                 info!(
                     "Client API WebSocket to {} opened successfully",
@@ -186,6 +179,10 @@ async fn client_stream(
                 ws
             }
             Err(err) => {
+                if let Error::Connect(_) = &err {
+                    client.find_set_active_leader().await;
+                }
+
                 time::sleep(Duration::from_millis(250)).await;
                 // TODO the test deployment got stuck here for some reason
                 error!(
@@ -730,11 +727,15 @@ where
 }
 
 async fn try_connect(
-    node_id: NodeId,
-    addr: &str,
+    leader: &Arc<RwLock<(NodeId, String)>>,
     tls_config: Option<Arc<rustls::ClientConfig>>,
     secret: &[u8],
 ) -> Result<WebSocket<TokioIo<Upgraded>>, Error> {
+    let (node_id, addr) = {
+        let lock = leader.read().await;
+        (lock.0, lock.1.clone())
+    };
+
     let uri = if tls_config.is_some() {
         format!("https://{}/stream", addr)
     } else {
@@ -752,16 +753,27 @@ async fn try_connect(
         )
         .header("Sec-WebSocket-Version", "13")
         .body(Empty::<Bytes>::new())
-        .map_err(|err| Error::Connect(err.to_string()))?;
+        .map_err(|err| Error::Error(err.to_string().into()))?;
 
-    let stream = TcpStream::connect(addr).await?;
-    let (mut ws, _) = if let Some(config) = tls_config {
-        let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
+    let stream = match TcpStream::connect(&addr).await {
+        Ok(s) => s,
+        Err(err) => {
+            return Err(Error::Connect(err.to_string()));
+        }
+    };
+
+    let (mut ws, _) = match if let Some(config) = tls_config {
+        let (addr, _) = addr.split_once(':').unwrap_or((&addr, ""));
         let tls_stream = tls::into_tls_stream(addr, stream, config).await?;
         fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await
     } else {
         fastwebsockets::handshake::client(&SpawnExecutor, req, stream).await
-    }?;
+    } {
+        Ok(conn) => conn,
+        Err(err) => {
+            return Err(Error::Connect(err.to_string()));
+        }
+    };
 
     if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
         let _ = ws

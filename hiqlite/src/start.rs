@@ -271,7 +271,8 @@ where
         #[cfg(feature = "sqlite")]
         rx_client_stream,
         tx_shutdown,
-    );
+    )
+    .await;
 
     #[cfg(all(feature = "backup", feature = "s3"))]
     if let Some(s3_config) = node_config.s3_config {
