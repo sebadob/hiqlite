@@ -1,3 +1,5 @@
+#![allow(clippy::upper_case_acronyms)]
+
 use crate::migration::Migration;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::param::Param;
@@ -47,7 +49,6 @@ pub enum QueryWrite {
     Migration(Vec<Migration>),
     #[cfg(feature = "backup")]
     Backup(NodeId),
-    #[allow(clippy::upper_case_acronyms)]
     RTT,
 }
 

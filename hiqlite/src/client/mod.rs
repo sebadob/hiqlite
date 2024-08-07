@@ -51,7 +51,6 @@ pub(crate) struct DbClient {
     #[cfg(feature = "sqlite")]
     pub(crate) tx_client_db: flume::Sender<ClientStreamReq>,
     pub(crate) tls_config: Option<Arc<rustls::ClientConfig>>,
-    // Only remote clients will have `Some(_)` here -> local ones have the state
     pub(crate) api_secret: Option<String>,
     pub(crate) request_id: AtomicUsize,
     pub(crate) tx_shutdown: Option<watch::Sender<bool>>,

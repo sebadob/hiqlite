@@ -5,8 +5,10 @@ use crate::{Client, Error, Response};
 use std::borrow::Cow;
 use tokio::sync::oneshot;
 
+#[cfg_attr(docsrs, doc(cfg(feature = "sqlite")))]
 impl Client {
     /// Takes an arbitrary SQL String with multiple queries and executes all of them as a batch
+    #[cfg_attr(docsrs, doc(cfg(feature = "sqlite")))]
     pub async fn batch<S>(&self, sql: S) -> Result<Vec<Result<usize, Error>>, Error>
     where
         S: Into<Cow<'static, str>>,

@@ -6,30 +6,40 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 
+#[cfg(feature = "sqlite")]
+use crate::store::state_machine::sqlite::state_machine::Response;
+
+pub use openraft::SnapshotPolicy;
+
 #[cfg(any(feature = "sqlite", feature = "cache"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "sqlite", feature = "cache"))))]
 pub use crate::{client::Client, error::Error};
+#[cfg_attr(docsrs, doc(cfg(any(feature = "sqlite", feature = "cache"))))]
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use config::{NodeConfig, RaftConfig};
-pub use openraft::SnapshotPolicy;
+#[cfg_attr(docsrs, doc(cfg(any(feature = "sqlite", feature = "cache"))))]
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use tls::ServerTlsConfig;
 
-#[cfg(feature = "dlock")]
-pub use client::dlock::Lock;
-
 #[cfg(feature = "cache")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
 pub use num_derive::ToPrimitive;
 #[cfg(feature = "cache")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
 pub use strum::EnumIter;
 
+#[cfg(feature = "dlock")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dlock")))]
+pub use client::dlock::Lock;
+
 #[cfg(feature = "sqlite")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sqlite")))]
 pub use crate::query::rows::Row;
 #[cfg(feature = "sqlite")]
-pub use crate::store::state_machine::sqlite::{
-    param::Param,
-    state_machine::{Params, Response},
-};
+#[cfg_attr(docsrs, doc(cfg(feature = "sqlite")))]
+pub use crate::store::state_machine::sqlite::{param::Param, state_machine::Params};
 #[cfg(feature = "sqlite")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sqlite")))]
 pub use migration::AppliedMigration;
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
@@ -65,6 +75,7 @@ mod query;
 /// Exports and types to set up a connection to an S3 storage bucket.
 /// Needs the feature `s3` enabled.
 #[cfg(all(feature = "s3", any(feature = "cache", feature = "sqlite")))]
+#[cfg_attr(docsrs, doc(cfg(feature = "s3")))]
 pub mod s3;
 
 type NodeId = u64;

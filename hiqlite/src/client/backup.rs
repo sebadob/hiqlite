@@ -4,8 +4,10 @@ use crate::store::state_machine::sqlite::state_machine::QueryWrite;
 use crate::{Client, Error, Response};
 use tokio::sync::oneshot;
 
+#[cfg_attr(docsrs, doc(cfg(feature = "backup")))]
 impl Client {
     #[cold]
+    #[cfg_attr(docsrs, doc(cfg(feature = "backup")))]
     pub async fn backup(&self) -> Result<(), Error> {
         match self.backup_execute().await {
             Ok(res) => Ok(res),

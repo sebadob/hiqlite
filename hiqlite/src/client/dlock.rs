@@ -11,6 +11,7 @@ use tokio::task;
 use tracing::error;
 
 /// A distributed lock with the feature `dlock`. Releases on drop automatically.
+#[cfg_attr(docsrs, doc(cfg(feature = "dlock")))]
 #[derive(Clone)]
 pub struct Lock {
     id: u64,
@@ -38,10 +39,12 @@ impl Drop for Lock {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "dlock")))]
 impl Client {
     // TODO
     // - lock_timeout
 
+    #[cfg_attr(docsrs, doc(cfg(feature = "dlock")))]
     pub async fn lock<K>(&self, key: K) -> Result<Lock, Error>
     where
         K: Into<Cow<'static, str>>,
