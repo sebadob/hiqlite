@@ -3,7 +3,7 @@ use crate::{Error, Node, NodeId};
 use openraft::SnapshotPolicy;
 use std::borrow::Cow;
 use std::env;
-use tracing::warn;
+use tracing::debug;
 
 pub use openraft::Config as RaftConfig;
 
@@ -109,10 +109,10 @@ impl NodeConfig {
     /// 3. read from env vars
     pub fn from_env_all(filename: &str) -> Self {
         if dotenvy::from_filename("config").is_err() {
-            warn!("config file './config' not found");
+            debug!("config file './config' not found");
         }
         if dotenvy::from_filename_override(filename).is_err() {
-            warn!("config file '{}' not found", filename);
+            debug!("config file '{}' not found", filename);
         }
         dotenvy::dotenv_override().ok();
         Self::from_env_parse()

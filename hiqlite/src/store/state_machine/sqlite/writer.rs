@@ -372,7 +372,7 @@ pub fn spawn_writer(
                     // TODO should be maybe always panic if migrations throw an error?
                     let res = migrate(&mut conn, req.migrations).map_err(Error::from);
 
-                    if let Err(err) = conn.pragma_update(None, "optimize", None::<String>) {
+                    if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
                     }
 

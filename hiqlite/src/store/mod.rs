@@ -207,8 +207,6 @@ fn apply_pragmas(conn: &rusqlite::Connection, read_only: bool) -> Result<(), rus
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
 
-    conn.pragma_update(None, "optimize", "0x10002")?;
-
     // the default is 4096, but increasing makes sense if you write bigger rows
     // conn.pragma_update(None, "page_size", 4096).unwrap();
 

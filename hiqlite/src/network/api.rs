@@ -6,7 +6,8 @@ use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::ops::Deref;
-use tokio::task;
+use std::time::Duration;
+use tokio::{task, time};
 use tracing::{error, info, warn};
 
 #[cfg(feature = "cache")]
@@ -96,32 +97,46 @@ use crate::{
 //     // Ok(state.kv_store.read().await.get(key).cloned())
 // }
 
-pub async fn health(state: AppStateExt, headers: HeaderMap) -> impl IntoResponse {
-    validate_secret(&state, &headers)?;
-
+pub async fn health(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
     panic!("neither `sqlite` nor `cache` feature enabled");
 
     #[cfg(any(feature = "sqlite", feature = "cache"))]
     {
-        #[cfg(feature = "sqlite")]
-        let metrics = state.raft_db.raft.metrics().borrow().clone();
-
-        #[cfg(all(not(feature = "sqlite"), feature = "cache"))]
-        let metrics = state.raft_cache.raft.metrics().borrow().clone();
-
-        metrics.running_state?;
-
-        // TODO maybe add a check for remote nodes as well via membership config
-
-        if metrics.current_leader.is_some() {
-            Ok(())
-        } else {
-            Err(Error::LeaderChange(
-                "The leader voting process has not finished yet".into(),
-            ))
+        if check_health(&state).await.is_err() {
+            // after at least 3 seconds, we should have a new leader
+            time::sleep(Duration::from_secs(3)).await;
+            check_health(&state).await?;
         }
     }
+
+    Ok(())
+}
+
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+async fn check_health(state: &AppStateExt) -> Result<(), Error> {
+    #[cfg(feature = "sqlite")]
+    {
+        let metrics = state.raft_db.raft.metrics().borrow().clone();
+        metrics.running_state?;
+        if metrics.current_leader.is_none() {
+            return Err(Error::LeaderChange(
+                "The leader voting process has not finished yet for Raft DB".into(),
+            ));
+        }
+    }
+    #[cfg(feature = "cache")]
+    {
+        let metrics = state.raft_cache.raft.metrics().borrow().clone();
+        metrics.running_state?;
+        if metrics.current_leader.is_none() {
+            return Err(Error::LeaderChange(
+                "The leader voting process has not finished yet Raft Cache".into(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn ping() {}
