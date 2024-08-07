@@ -44,7 +44,7 @@ pub async fn test_execute_query(
     assert_eq!(rows_affected, 1);
 
     log("Making sure clients 2 and 3 can read the same data");
-    time::sleep(Duration::from_millis(100)).await;
+    time::sleep(Duration::from_millis(500)).await;
 
     let res: TestData = client_2
         .query_as_one("SELECT * FROM test WHERE id = $1", params!(1))
