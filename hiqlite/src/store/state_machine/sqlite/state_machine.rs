@@ -388,6 +388,8 @@ impl StateMachineSqlite {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
 
+        conn.pragma_update(None, "optimize", "0x10002")?;
+
         // TODO maybe add a 'paranoid' level to sync absolutely everything all the time
         // TODO req / s would go down to ~300 / s for a single thread though
         // conn.pragma_update(None, "synchronous", "FULL")?;
