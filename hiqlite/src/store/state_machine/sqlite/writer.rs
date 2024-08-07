@@ -484,6 +484,7 @@ pub fn spawn_writer(
                         if let Some(ts) = ts_last_backup {
                             if ts > now.sub(chrono::Duration::seconds(60)) {
                                 info!("Received duplicate backup request within the last 60 seconds - ignoring it");
+                                req.ack.send(Ok(()));
                                 continue;
                             }
                         }
@@ -548,7 +549,6 @@ fn create_backup(
     target_folder: String,
     #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
 ) -> Result<(), Error> {
-    // TODO
     // - build target db file name with node id and timestamp
     // - vacuum into target file
     // - connect to vacuumed db and remove metadata
