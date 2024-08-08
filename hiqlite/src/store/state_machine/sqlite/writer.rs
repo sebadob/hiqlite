@@ -498,7 +498,16 @@ pub fn spawn_writer(
                 WriterRequest::Backup(req) => {
                     sm_data.last_applied_log_id = req.last_applied_log_id;
 
-                    info!("VACUUMing the database before creating a backup");
+                    let now = Utc::now();
+                    if let Some(ts) = ts_last_backup {
+                        if ts > now.sub(chrono::Duration::seconds(60)) {
+                            info!("Received duplicate backup request within the last 60 seconds - ignoring it");
+                            req.ack.send(Ok(()));
+                            continue;
+                        }
+                    }
+
+                    info!("VACUUMing the database");
                     let start = Instant::now();
                     match conn.execute("VACUUM", ()) {
                         Ok(_) => {
@@ -508,16 +517,6 @@ pub fn spawn_writer(
                     }
 
                     if this_node == req.node_id {
-                        let now = Utc::now();
-
-                        if let Some(ts) = ts_last_backup {
-                            if ts > now.sub(chrono::Duration::seconds(60)) {
-                                info!("Received duplicate backup request within the last 60 seconds - ignoring it");
-                                req.ack.send(Ok(()));
-                                continue;
-                            }
-                        }
-
                         if let Err(err) = create_backup(
                             &conn,
                             req.node_id,
@@ -529,14 +528,18 @@ pub fn spawn_writer(
                             req.ack.send(Err(err));
                             continue;
                         }
-
-                        ts_last_backup = Some(now);
+                    } else {
+                        info!(
+                            "Backup to external storage will be handled by the leader node: {}",
+                            req.node_id
+                        );
                     }
 
                     if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
                     }
 
+                    ts_last_backup = Some(now);
                     req.ack.send(Ok(()));
                 }
 
