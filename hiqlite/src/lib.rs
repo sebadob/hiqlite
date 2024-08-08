@@ -112,43 +112,26 @@ impl Display for Node {
     }
 }
 
-// /// The main entry function to start a Raft / Hiqlite node.
-// /// # Panics
-// /// If an incorrect `node_config` was given.
-// #[cfg(all(feature = "sqlite", not(feature = "cache")))]
-// pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
-//     #[derive(
-//         Debug, serde::Serialize, serde::Deserialize, strum::EnumIter, num_derive::ToPrimitive,
-//     )]
-//     enum Empty {}
-//
-//     start::start_node_inner::<Empty>(node_config).await
-// }
+/// The main entry function to start a Raft / Hiqlite node.
+/// # Panics
+/// If an incorrect `node_config` was given.
+#[cfg(all(feature = "sqlite", not(feature = "cache")))]
+pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
+    #[derive(
+        Debug, serde::Serialize, serde::Deserialize, strum::EnumIter, num_derive::ToPrimitive,
+    )]
+    enum Empty {}
 
-// /// The main entry function to start a Raft / Hiqlite node.
-// /// With the `cache` feature enabled, you need to provide the generic enum which
-// /// will function as the Cache Index value to decide between multiple caches.
-// /// # Panics
-// /// If an incorrect `node_config` was given.
-// #[cfg(feature = "cache")]
-// pub async fn start_node<C>(node_config: NodeConfig) -> Result<Client, Error>
-// where
-//     C: Debug
-//         + Serialize
-//         + for<'a> Deserialize<'a>
-//         + strum::IntoEnumIterator
-//         + num_traits::ToPrimitive,
-// {
-//     start::start_node_inner::<C>(node_config).await
-// }
+    start::start_node_inner::<Empty>(node_config).await
+}
 
 /// The main entry function to start a Raft / Hiqlite node.
 /// With the `cache` feature enabled, you need to provide the generic enum which
 /// will function as the Cache Index value to decide between multiple caches.
 /// # Panics
 /// If an incorrect `node_config` was given.
-#[cfg(any(feature = "cache", feature = "sqlite"))]
-pub async fn start_node<C>(node_config: NodeConfig) -> Result<Client, Error>
+#[cfg(feature = "cache")]
+pub async fn start_node_with_cache<C>(node_config: NodeConfig) -> Result<Client, Error>
 where
     C: Debug
         + Serialize
@@ -156,16 +139,5 @@ where
         + strum::IntoEnumIterator
         + num_traits::ToPrimitive,
 {
-    cfg_if::cfg_if! {
-        if #[cfg(all(feature = "sqlite", not(feature = "cache")))] {
-            #[derive(
-                Debug, serde::Serialize, serde::Deserialize, strum::EnumIter, num_derive::ToPrimitive,
-            )]
-            enum Empty {}
-
-            start::start_node_inner::<Empty>(node_config).await
-        } else {
-            start::start_node_inner::<C>(node_config).await
-        }
-    }
+    start::start_node_inner::<C>(node_config).await
 }

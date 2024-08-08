@@ -30,7 +30,6 @@ chrono = { version = "0.4.38", default-features = false, features = [
     "clock",
     "now",
 ] }
-cfg-if = "1.0.0"
 clap = { version = "4.1.11", features = ["derive", "env"] }
 cron = { version = "0.12.1" }
 cryptr = { version = "0.5.1", features = ["s3"] }

@@ -1,5 +1,7 @@
 use clap::Parser;
-use hiqlite::{params, start_node, Error, Node, NodeConfig, Param, Row, ServerTlsConfig};
+use hiqlite::{
+    params, start_node_with_cache, Error, Node, NodeConfig, Param, Row, ServerTlsConfig,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
@@ -30,18 +32,18 @@ fn test_nodes() -> Vec<Node> {
     vec![
         Node {
             id: 1,
-            addr_api: "127.0.0.1:10001".to_string(),
-            addr_raft: "127.0.0.1:20001".to_string(),
+            addr_api: "127.0.0.1:8100".to_string(),
+            addr_raft: "127.0.0.1:8200".to_string(),
         },
         Node {
             id: 2,
-            addr_api: "127.0.0.1:10002".to_string(),
-            addr_raft: "127.0.0.1:20002".to_string(),
+            addr_api: "127.0.0.1:8100".to_string(),
+            addr_raft: "127.0.0.1:8200".to_string(),
         },
         Node {
             id: 3,
-            addr_api: "127.0.0.1:10003".to_string(),
-            addr_raft: "127.0.0.1:20003".to_string(),
+            addr_api: "127.0.0.1:8100".to_string(),
+            addr_raft: "127.0.0.1:8200".to_string(),
         },
     ]
 }
@@ -69,7 +71,7 @@ fn node_config(node_id: u64, nodes: Vec<Node>) -> NodeConfig {
 
 /// Matches our test table for this example.
 /// serde derives are needed if you want to use the `query_as()` fn.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct Entity {
     pub id: String,
     pub num: i64,
@@ -136,7 +138,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
     // the others will go to sleep
     let is_node_1 = config.node_id == 1;
 
-    let client = start_node::<Cache>(config).await?;
+    let client = start_node_with_cache::<Cache>(config).await?;
     let mut shutdown_handle = client.shutdown_handle()?;
 
     // give the client some time to initialize everything
@@ -263,6 +265,51 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
 
         let rows_affected = results.remove(0)?;
         assert_eq!(rows_affected, 1);
+
+        log("Inserting a value into the in-memory cache");
+        let key = "my cache key";
+        let value = "Some Cache Value".to_string();
+        client.put(Cache::One, key, &value, None).await?;
+        let value_ret: String = client
+            .get(Cache::One, key)
+            .await?
+            .expect("It will be Some(_) for sure");
+        assert_eq!(value_ret, value);
+
+        log("Testing listen / notify");
+        // If you have a client with local data replication, you get a guaranteed once delivery
+        // for listen / notify, as long as your node is online. A remote-only client may lose
+        // some messages during network issues, and it behaves the same as PG listen / notify.
+        let msg = Entity {
+            id: "id_1337".to_string(),
+            num: 23,
+            description: Some(
+                "You can send anything which implementes Serialize / Deserialize".to_string(),
+            ),
+        };
+        client.notify(&msg).await?;
+
+        // Let's listen for messages. These will be replicated to all cluster members.
+        let msg_ret = client.listen::<Entity>().await?;
+        debug(&msg_ret);
+        assert_eq!(msg, msg_ret);
+
+        log("Testing distributed locking");
+        // In some cases, you need to make sure you get some lock for either longer running actions
+        // or ones that need retrieving data, manipulating it and then sending it back to the DB.
+        // In these cases you might not be able to do all at once in a SQL query.
+        // Hiqlite has distributed locks (feature `dlock`) to achieve this.
+        let lock = client.lock("my lock key").await?;
+
+        // A lock key can be any String to provide the most flexibility.
+        // It behaves the same as any other lock - it will be released on drop and as long as it
+        // exists, other locks will have to wait.
+        //
+        // In the current implementation, distributed locks have an internal timeout of 10 seconds.
+        // When this time expires, a lock will be considered "dead" because of network issues, just
+        // in case it has not been possible to release the lock properly. This prevents deadlocks
+        // just because some client or server crashed.
+        drop(lock);
 
         log("All tests successful");
         log("You can exit with CTRL + C now and the shutdown handler will clean up");

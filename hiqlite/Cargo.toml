@@ -61,7 +61,6 @@ bincode.workspace = true
 byteorder.workspace = true
 bytes.workspace = true
 chrono.workspace = true
-cfg-if.workspace = true
 clap = { workspace = true, optional = true }
 cron = { workspace = true, optional = true }
 cryptr = { workspace = true, optional = true }
