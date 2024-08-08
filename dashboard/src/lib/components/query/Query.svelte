@@ -15,12 +15,13 @@
     } = $props();
     let rows: IRow[] = $state([]);
 
+    let error = $state('');
+
     $effect(() => {
         if (query.query.startsWith(AUTO_QUERY)) {
+            query.query = query.query.replace(`${AUTO_QUERY}\n`, '');
             execute();
         }
-        query.query = query.query.replace(AUTO_QUERY, '');
-        query.query = query.query.replace('\n', '');
     });
 
     function onKeyDown(ev: KeyboardEvent) {
@@ -33,6 +34,7 @@
 
     async function execute() {
         rows = [];
+        error = '';
 
         let q = [];
         for (let line of query.query.split(/\r?\n/)) {
@@ -46,7 +48,8 @@
         if (res.status === 200) {
             rows = await res.json();
         } else {
-            console.error(await res.json());
+            let json = await res.json();
+            error = JSON.stringify(json);
         }
     }
 </script>
@@ -57,6 +60,12 @@
         onkeydown={onKeyDown}
 >
 </textarea>
+
+{#if error}
+    <div class="err">
+        {error}
+    </div>
+{/if}
 
 <Results bind:rows/>
 

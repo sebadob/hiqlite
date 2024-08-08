@@ -132,15 +132,11 @@ pub async fn set_session_verify(
     headers: &HeaderMap,
     login: LoginRequest,
 ) -> Result<Response, Error> {
-    info!("before check_csrf");
     check_csrf(&method, headers).await?;
-    info!("csrf valid");
     password::verify_password(login.password, state.dashboard.password_dashboard.clone()).await?;
-    info!("password valid");
 
     let session = Session::new();
     let cookie = session.as_cookie()?;
-    info!("all good");
     Ok(([(SET_COOKIE, cookie)], Json(session)).into_response())
 }
 
