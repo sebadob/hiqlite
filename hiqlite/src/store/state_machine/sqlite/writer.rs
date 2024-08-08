@@ -393,7 +393,7 @@ pub fn spawn_writer(
                         sm_data.last_membership.clone(),
                     ) {
                         Ok(meta) => {
-                            if let Err(err) = conn.pragma_update(None, "optimize", None::<String>) {
+                            if let Err(err) = conn.execute("PRAGMA optimize", []) {
                                 error!("Error during 'PRAGMA optimize': {}", err);
                             }
 
@@ -421,7 +421,7 @@ pub fn spawn_writer(
                     )
                     .expect("SnapshotApply to always succeed in sql writer");
 
-                    if let Err(err) = conn.pragma_update(None, "optimize", None::<String>) {
+                    if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
                     }
 
@@ -462,7 +462,7 @@ pub fn spawn_writer(
                     stmt.execute([data])
                         .expect("Metadata persist to never fail");
 
-                    if let Err(err) = conn.pragma_update(None, "optimize", None::<String>) {
+                    if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
                     }
 
@@ -533,7 +533,7 @@ pub fn spawn_writer(
                         ts_last_backup = Some(now);
                     }
 
-                    if let Err(err) = conn.pragma_update(None, "optimize", None::<String>) {
+                    if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
                     }
 
