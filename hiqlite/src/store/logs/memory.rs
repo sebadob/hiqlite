@@ -29,6 +29,7 @@ struct LogData {
 
 #[derive(Debug, Clone)]
 pub struct LogStoreMemory {
+    // TODO migrate from BTreeMap to VecDeque with additional offset -> no hashing required
     logs: Arc<RwLock<BTreeMap<u64, Entry<TypeConfigKV>>>>,
     data: Arc<Mutex<LogData>>,
 }

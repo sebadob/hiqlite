@@ -110,4 +110,4 @@ lazy_static.workspace = true
 lz4-sys.workspace = true
 
 [dev-dependencies]
-tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }
+tracing-subscriber.workspace = true
