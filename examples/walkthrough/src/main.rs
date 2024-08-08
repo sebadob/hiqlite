@@ -125,7 +125,8 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
         cleanup(config.data_dir.as_ref()).await;
         config
     } else {
-        let config = node_config(1, vec![test_nodes()[0].clone()]);
+        let mut config = node_config(1, vec![test_nodes()[0].clone()]);
+        config.data_dir = "data/node_1".into();
         cleanup(config.data_dir.as_ref()).await;
         config
     };
