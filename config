@@ -22,17 +22,15 @@ HQL_NODE_ID=1
 # 2 nodes must be separated by 2 `\n`
 HQL_NODES="
 1 localhost:8100 localhost:8200
-2 localhost:8100 localhost:8200
-3 localhost:8100 localhost:8200
 "
 
 # The data dir hiqlite will store raft logs and state machine data in.
 # default: data
-HQL_DATA_DIR=my_hiqlite
+#HQL_DATA_DIR=my_hiqlite
 
 # The file name of the SQLite database in the state machine folder.
 # default: hiqlite.db
-HQL_FILENAME_DB=my_hiqlite.db
+#HQL_FILENAME_DB=my_hiqlite.db
 
 # If set to `true`, all SQL statements will be logged for debugging
 # purposes.
@@ -50,19 +48,19 @@ HQL_LOGS_UNTIL_SNAPSHOT=10000
 
 # If given, these keys / certificates will be used to establish
 # TLS connections between nodes.
-HQL_TLS_RAFT_KEY=tls/key.pem
-HQL_TLS_RAFT_CERT=tls/cert-chain.pem
-HQL_TLS_RAFT_DANGER_TLS_NO_VERIFY=true
+#HQL_TLS_RAFT_KEY=tls/key.pem
+#HQL_TLS_RAFT_CERT=tls/cert-chain.pem
+#HQL_TLS_RAFT_DANGER_TLS_NO_VERIFY=true
 
-HQL_TLS_API_KEY=tls/key.pem
-HQL_TLS_API_CERT=tls/cert-chain.pem
-HQL_TLS_API_DANGER_TLS_NO_VERIFY=true
+#HQL_TLS_API_KEY=tls/key.pem
+#HQL_TLS_API_CERT=tls/cert-chain.pem
+#HQL_TLS_API_DANGER_TLS_NO_VERIFY=true
 
 # Secrets for Raft internal authentication as well as for the API.
 # These must be at least 16 characters long and you should provide
 # different ones for both variables.
-HQL_SECRET_RAFT=asdasdasdasdasdasd
-HQL_SECRET_API=qweqweqweqweqweqwe
+HQL_SECRET_RAFT=SuperSecureSecret1337
+HQL_SECRET_API=SuperSecureSecret1337
 
 # You can either parse `ENC_KEYS` and `ENC_KEY_ACTIVE` from the
 # environment with setting this value to `env`, or parse them from
@@ -82,11 +80,11 @@ HQL_BACKUP_CRON="0 30 2 * * * *"
 HQL_BACKUP_KEEP_DAYS=30
 
 # Access values for the S3 bucket where backups will be pushed to.
-HQL_S3_URL=https://s3.example.com
-HQL_S3_BUCKET=my_bucket
-HQL_S3_REGION=example
-HQL_S3_KEY=s3_key
-HQL_S3_SECRET=s3_secret
+#HQL_S3_URL=https://s3.example.com
+#HQL_S3_BUCKET=my_bucket
+#HQL_S3_REGION=example
+#HQL_S3_KEY=s3_key
+#HQL_S3_SECRET=s3_secret
 
 # You need to define at least one valid encryption key.
 # These keys are used to encrypt the database backups that will
@@ -122,6 +120,7 @@ bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ=
 ENC_KEY_ACTIVE=bVCyTsGaggVy5yqQ
 
 # The password for the dashboard as Argon2ID hash
+# '123SuperMegaSafe' in this example
 HQL_PASSWORD_DASHBOARD=JGFyZ29uMmlkJHY9MTkkbT0xOTQ1Nix0PTIscD0xJGQ2RlJDYTBtaS9OUnkvL1RubmZNa0EkVzJMeTQrc1dxZ0FGd0RyQjBZKy9iWjBQUlZlOTdUMURwQkk5QUoxeW1wRQ==
 
 # Can be set to `true` during local dev and testing to issue

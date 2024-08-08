@@ -14,7 +14,7 @@ use cryptr::EncValue;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::LazyLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 const COOKIE_NAME: &str = "__Host-Hiqlite-Session";
 const COOKIE_NAME_DEV: &str = "Hiqlite-Session";
@@ -132,11 +132,15 @@ pub async fn set_session_verify(
     headers: &HeaderMap,
     login: LoginRequest,
 ) -> Result<Response, Error> {
+    info!("before check_csrf");
     check_csrf(&method, headers).await?;
+    info!("csrf valid");
     password::verify_password(login.password, state.dashboard.password_dashboard.clone()).await?;
+    info!("password valid");
 
     let session = Session::new();
     let cookie = session.as_cookie()?;
+    info!("all good");
     Ok(([(SET_COOKIE, cookie)], Json(session)).into_response())
 }
 

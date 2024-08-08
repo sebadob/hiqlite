@@ -31,6 +31,7 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn post_session(
     state: AppStateExt,
     headers: HeaderMap,

@@ -19,6 +19,8 @@
         if (query.query.startsWith(AUTO_QUERY)) {
             execute();
         }
+        query.query = query.query.replace(AUTO_QUERY, '');
+        query.query = query.query.replace('\n', '');
     });
 
     function onKeyDown(ev: KeyboardEvent) {
