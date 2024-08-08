@@ -1,4 +1,7 @@
+use crate::Error;
 use cryptr::utils::b64_decode;
+use cryptr::EncKeys;
+use spow::pow::Pow;
 use std::env;
 use std::fmt::Debug;
 
@@ -32,6 +35,13 @@ impl DashboardState {
             // insecure_cookie,
         }
     }
+}
+
+pub fn init() -> Result<(), Error> {
+    let enc_key_active = EncKeys::get_key_active()?;
+    Pow::init_bytes(enc_key_active);
+
+    Ok(())
 }
 
 // #[async_trait]

@@ -49,6 +49,9 @@ where
     #[cfg(feature = "s3")]
     s3::init_enc_keys(&node_config.enc_keys_from)?;
 
+    #[cfg(feature = "dashboard")]
+    dashboard::init()?;
+
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     let backup_applied = backup::restore_backup_start(&node_config).await?;
 
@@ -180,6 +183,7 @@ where
                     "/api",
                     Router::new()
                         .route("/metrics", get(dashboard::handlers::get_metrics))
+                        .route("/pow", get(dashboard::handlers::get_pow))
                         .route("/query", post(dashboard::handlers::post_query))
                         .route(
                             "/session",

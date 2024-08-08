@@ -1,4 +1,4 @@
-use crate::dashboard::session::Session;
+use crate::dashboard::session::{Session, INSECURE_COOKIES};
 use crate::dashboard::table::Table;
 use crate::dashboard::{query, session};
 use crate::network::AppStateExt;
@@ -13,6 +13,7 @@ use axum::{body, Form, Json};
 use hyper::StatusCode;
 use openraft::RaftMetrics;
 use serde::Deserialize;
+use spow::pow::Pow;
 
 pub async fn redirect_to_index() -> Response {
     Response::builder()
@@ -28,7 +29,8 @@ pub async fn get_session(s: Session) -> Result<Json<Session>, Error> {
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
-    pub password: String,
+    password: String,
+    pow: String,
 }
 
 #[tracing::instrument(skip_all)]
@@ -37,7 +39,16 @@ pub async fn post_session(
     headers: HeaderMap,
     Form(login): Form<LoginRequest>,
 ) -> Result<Response, Error> {
-    session::set_session_verify(&state, Method::POST, &headers, login).await
+    Pow::validate(&login.pow).map_err(|err| Error::Unauthorized(err.to_string().into()))?;
+    session::set_session_verify(&state, Method::POST, &headers, login.password).await
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn get_pow() -> Result<String, Error> {
+    let difficulty = if *INSECURE_COOKIES { 10 } else { 20 };
+    let pow =
+        Pow::with_difficulty(difficulty, 5).map_err(|err| Error::Config(err.to_string().into()))?;
+    Ok(pow.to_string())
 }
 
 pub async fn get_tables(state: AppStateExt, _: Session) -> Result<Json<Vec<Table>>, Error> {
@@ -74,6 +85,7 @@ pub async fn get_tables_filtered(
     Ok(Json(tables))
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn post_query(
     state: AppStateExt,
     _: Session,

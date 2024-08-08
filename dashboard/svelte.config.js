@@ -23,8 +23,7 @@ const config = {
             directives: {
                 'default-src': ['none'],
                 'connect-src': ['self'],
-                'script-src': ['self'],
-                // 'script-src': ['self', 'wasm-unsafe-eval'],
+                'script-src': ['self', 'wasm-unsafe-eval'],
                 'style-src': ['self', 'unsafe-inline'],
                 'img-src': ['self'],
             },

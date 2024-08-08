@@ -6,8 +6,8 @@
         type = 'button',
         level = 1,
         width = 'inherit',
-        isDisabled = false,
-        isLoading = false,
+        isDisabled = $bindable(false),
+        isLoading = $bindable(false),
         onclick,
     }: {
         type?: "button" | "submit" | "reset" | null | undefined,

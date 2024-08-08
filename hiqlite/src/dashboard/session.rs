@@ -1,4 +1,3 @@
-use crate::dashboard::handlers::LoginRequest;
 use crate::dashboard::password;
 use crate::network::AppStateExt;
 use crate::Error;
@@ -14,13 +13,13 @@ use cryptr::EncValue;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::LazyLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 const COOKIE_NAME: &str = "__Host-Hiqlite-Session";
 const COOKIE_NAME_DEV: &str = "Hiqlite-Session";
 const SESSION_LIFETIME: i64 = 3600;
 
-static INSECURE_COOKIES: LazyLock<bool> = LazyLock::new(|| {
+pub static INSECURE_COOKIES: LazyLock<bool> = LazyLock::new(|| {
     env::var("HQL_INSECURE_COOKIE")
         .unwrap_or_else(|_| "false".to_string())
         .parse::<bool>()
@@ -130,10 +129,10 @@ pub async fn set_session_verify(
     state: &AppStateExt,
     method: Method,
     headers: &HeaderMap,
-    login: LoginRequest,
+    password: String,
 ) -> Result<Response, Error> {
     check_csrf(&method, headers).await?;
-    password::verify_password(login.password, state.dashboard.password_dashboard.clone()).await?;
+    password::verify_password(password, state.dashboard.password_dashboard.clone()).await?;
 
     let session = Session::new();
     let cookie = session.as_cookie()?;
