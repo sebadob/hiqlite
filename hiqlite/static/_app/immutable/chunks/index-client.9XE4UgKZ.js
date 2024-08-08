@@ -1,0 +1,1 @@
+import{c as u,l as r,u as t,a as l}from"./runtime.DkIe4pcg.js";function a(o){u===null&&r(),u.l!==null?c(u).m.push(o):t(()=>{const n=l(o);if(typeof n=="function")return n})}function c(o){var n=o.l;return n.u??(n.u={a:[],b:[],m:[]})}export{a as o};

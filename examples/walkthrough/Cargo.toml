@@ -1,0 +1,16 @@
+[package]
+name = "walkthrough"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hiqlite = { path = "../../hiqlite", features = ["cache", "shutdown-handle"] }
+
+clap = { version = "4.1.11", features = ["derive", "env"] }
+num-traits = "0.2.19"
+rust-embed = { version = "8.5.0", features = ["compression"] }
+serde = { version = "1.0.203", features = ["derive"] }
+strum = { version = "0.26.3", features = ["derive"] }
+tokio = { version = "1.35.1", features = ["fs", "rt-multi-thread"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }

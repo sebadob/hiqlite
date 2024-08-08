@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["hiqlite"]
+members = ["hiqlite", "examples/*"]
 
 [workspace.package]
 version = "0.0.5"
