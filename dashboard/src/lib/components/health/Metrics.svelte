@@ -19,7 +19,6 @@
         let res = await fetchGet('/metrics');
         if (res.status === 200) {
             metrics = await res.json();
-
         } else {
             console.error(await res.json());
         }

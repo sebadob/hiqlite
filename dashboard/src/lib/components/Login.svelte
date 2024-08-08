@@ -5,10 +5,14 @@
     import {API_PREFIX} from "$lib/utils/fetch";
     import {storeSession} from "$lib/stores/session";
 
+    let error = $state('');
+
     async function onResponse(res: Response) {
+        let resp = await res.json();
         if (res.status === 200) {
-            let s = await res.json();
-            storeSession.set(s);
+            storeSession.set(resp);
+        } else {
+            error = Object.values(resp)[0] as string;
         }
     }
 </script>
@@ -32,6 +36,12 @@
             <Button type="submit">
                 Login
             </Button>
+
+            {#if error}
+                <div class="err">
+                    {error}
+                </div>
+            {/if}
         </Form>
     </div>
 </div>

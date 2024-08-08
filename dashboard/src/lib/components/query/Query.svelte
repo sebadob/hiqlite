@@ -49,7 +49,7 @@
             rows = await res.json();
         } else {
             let json = await res.json();
-            error = JSON.stringify(json);
+            error = Object.values(json)[0] as string;
         }
     }
 </script>
