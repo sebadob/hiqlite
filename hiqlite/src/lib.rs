@@ -4,11 +4,10 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(doc, feature(doc_auto_cfg))]
 
-use serde::{Deserialize, Serialize};
-use std::fmt::{Debug, Display};
-
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::state_machine::Response;
+use serde::{Deserialize, Serialize};
+use std::fmt::{Debug, Display};
 
 pub use openraft::SnapshotPolicy;
 
@@ -55,7 +54,7 @@ mod store;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 mod tls;
 
-#[cfg(all(feature = "backup", any(feature = "cache", feature = "sqlite")))]
+#[cfg(feature = "backup")]
 mod backup;
 #[cfg(feature = "dashboard")]
 mod dashboard;
@@ -66,7 +65,7 @@ mod query;
 
 /// Exports and types to set up a connection to an S3 storage bucket.
 /// Needs the feature `s3` enabled.
-#[cfg(all(feature = "s3", any(feature = "cache", feature = "sqlite")))]
+#[cfg(feature = "s3")]
 pub mod s3;
 
 type NodeId = u64;
@@ -113,25 +112,42 @@ impl Display for Node {
     }
 }
 
-/// The main entry function to start a Raft / Hiqlite node.
-/// # Panics
-/// If an incorrect `node_config` was given.
-#[cfg(all(feature = "sqlite", not(feature = "cache")))]
-pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
-    #[derive(
-        Debug, serde::Serialize, serde::Deserialize, strum::EnumIter, num_derive::ToPrimitive,
-    )]
-    enum Empty {}
+// /// The main entry function to start a Raft / Hiqlite node.
+// /// # Panics
+// /// If an incorrect `node_config` was given.
+// #[cfg(all(feature = "sqlite", not(feature = "cache")))]
+// pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
+//     #[derive(
+//         Debug, serde::Serialize, serde::Deserialize, strum::EnumIter, num_derive::ToPrimitive,
+//     )]
+//     enum Empty {}
+//
+//     start::start_node_inner::<Empty>(node_config).await
+// }
 
-    start::start_node_inner::<Empty>(node_config).await
-}
+// /// The main entry function to start a Raft / Hiqlite node.
+// /// With the `cache` feature enabled, you need to provide the generic enum which
+// /// will function as the Cache Index value to decide between multiple caches.
+// /// # Panics
+// /// If an incorrect `node_config` was given.
+// #[cfg(feature = "cache")]
+// pub async fn start_node<C>(node_config: NodeConfig) -> Result<Client, Error>
+// where
+//     C: Debug
+//         + Serialize
+//         + for<'a> Deserialize<'a>
+//         + strum::IntoEnumIterator
+//         + num_traits::ToPrimitive,
+// {
+//     start::start_node_inner::<C>(node_config).await
+// }
 
 /// The main entry function to start a Raft / Hiqlite node.
 /// With the `cache` feature enabled, you need to provide the generic enum which
 /// will function as the Cache Index value to decide between multiple caches.
 /// # Panics
 /// If an incorrect `node_config` was given.
-#[cfg(feature = "cache")]
+#[cfg(any(feature = "cache", feature = "sqlite"))]
 pub async fn start_node<C>(node_config: NodeConfig) -> Result<Client, Error>
 where
     C: Debug
@@ -140,5 +156,16 @@ where
         + strum::IntoEnumIterator
         + num_traits::ToPrimitive,
 {
-    start::start_node_inner::<C>(node_config).await
+    cfg_if::cfg_if! {
+        if #[cfg(all(feature = "sqlite", not(feature = "cache")))] {
+            #[derive(
+                Debug, serde::Serialize, serde::Deserialize, strum::EnumIter, num_derive::ToPrimitive,
+            )]
+            enum Empty {}
+
+            start::start_node_inner::<Empty>(node_config).await
+        } else {
+            start::start_node_inner::<C>(node_config).await
+        }
+    }
 }

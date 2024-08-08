@@ -68,7 +68,7 @@ check:
 
 
 # checks all combinations of features with clippy
-clippy-features:
+clippy:
     #!/usr/bin/env bash
     set -euxo pipefail
     clear

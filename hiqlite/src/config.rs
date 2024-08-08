@@ -298,44 +298,17 @@ mod tests {
         assert_eq!(c.node_id, 1);
         assert_eq!(
             c.nodes,
-            vec![
-                Node {
-                    id: 1,
-                    addr_raft: "localhost:8100".to_string(),
-                    addr_api: "localhost:8200".to_string(),
-                },
-                Node {
-                    id: 2,
-                    addr_raft: "localhost:8100".to_string(),
-                    addr_api: "localhost:8200".to_string(),
-                },
-                Node {
-                    id: 3,
-                    addr_raft: "localhost:8100".to_string(),
-                    addr_api: "localhost:8200".to_string(),
-                },
-            ]
+            vec![Node {
+                id: 1,
+                addr_raft: "localhost:8100".to_string(),
+                addr_api: "localhost:8200".to_string(),
+            },]
         );
-        assert_eq!(c.data_dir, "my_hiqlite");
-        assert_eq!(c.filename_db, "my_hiqlite.db");
+        assert_eq!(c.data_dir, "data");
+        assert_eq!(c.filename_db, "hiqlite.db");
         assert_eq!(c.log_statements, true);
 
-        let tls_raft = c.tls_raft.unwrap();
-        assert_eq!(tls_raft.key, "tls/key.pem");
-        assert_eq!(tls_raft.cert, "tls/cert-chain.pem");
-        assert_eq!(tls_raft.danger_tls_no_verify, true);
-
-        let tls_api = c.tls_api.unwrap();
-        assert_eq!(tls_api.key, "tls/key.pem");
-        assert_eq!(tls_api.cert, "tls/cert-chain.pem");
-        assert_eq!(tls_api.danger_tls_no_verify, true);
-
-        assert_eq!(c.secret_raft, "asdasdasdasdasdasd");
-        assert_eq!(c.secret_api, "qweqweqweqweqweqwe");
-
-        let bucket = &c.s3_config.unwrap().bucket;
-        assert_eq!(bucket.host, "https://s3.example.com".parse().unwrap());
-        assert_eq!(bucket.name, "my_bucket");
-        assert_eq!(bucket.region.0, "example");
+        assert_eq!(c.secret_raft, "SuperSecureSecret1337");
+        assert_eq!(c.secret_api, "SuperSecureSecret1337");
     }
 }

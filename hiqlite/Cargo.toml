@@ -19,7 +19,7 @@ all-features = true
 default = ["auto-heal", "backup", "sqlite"]
 
 auto-heal = []
-backup = ["dep:cron", "s3"]
+backup = ["dep:cron", "s3", "sqlite"]
 # TODO we should not need the "openraft/loosen-follower-log-revert" here -> conflict in self-healing tests
 cache = ["openraft/loosen-follower-log-revert"]
 dashboard = [
@@ -61,6 +61,7 @@ bincode.workspace = true
 byteorder.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+cfg-if.workspace = true
 clap = { workspace = true, optional = true }
 cron = { workspace = true, optional = true }
 cryptr = { workspace = true, optional = true }
