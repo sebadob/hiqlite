@@ -28,13 +28,19 @@
 
 <b>Metrics</b>
 
-<Metric label="Node">
+<div class="space"></div>
+
+<Metric label="This Node">
     {metrics?.id}
     {metrics?.state}
 </Metric>
 
 <Metric label="Current Leader">
     {metrics?.current_leader}
+</Metric>
+
+<Metric label="Vote Leader">
+    {metrics?.vote.leader_id.node_id}
 </Metric>
 
 <Metric label="Last Log Index">
@@ -49,20 +55,22 @@
     {metrics?.last_applied?.index}
 </Metric>
 
-<Metric label="Snapshot">
+<Metric label="Last Snapshot">
     {metrics?.snapshot?.leader_id}
     -
     {metrics?.snapshot?.index}
 </Metric>
 
-<Metric label="Vote Leader">
-    {metrics?.vote.leader_id.node_id}
+<Metric label="Members">
+    {members}
 </Metric>
 
 <Metric label="Millis Quorum Ack">
     {metrics?.millis_since_quorum_ack}
 </Metric>
 
-<Metric label="Members">
-    {members}
-</Metric>
+<style>
+    .space {
+        height: .5rem;
+    }
+</style>
