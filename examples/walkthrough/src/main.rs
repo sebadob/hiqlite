@@ -168,7 +168,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
 
         log("Let's get the data back from the DB in easy mode");
 
-        // The `.query_as` can be used for types that implement serde::Serialize / ::Deserialze.
+        // The `.query_as` can be used for types that implement serde::Serialize / ::Deserialize.
         // This is easier and less work to implement, but a bit less efficient and slower than a
         // manual implementation of `From<Row>`.
 
