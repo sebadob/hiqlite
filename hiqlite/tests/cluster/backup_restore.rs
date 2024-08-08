@@ -1,7 +1,7 @@
 use crate::execute_query::TestData;
 use crate::start::build_config;
 use crate::{backup, log, Cache};
-use hiqlite::{params, start_node, Client, Error, Param};
+use hiqlite::{params, start_node_with_cache, Client, Error, Param};
 use std::env;
 use tokio::task;
 
@@ -10,9 +10,9 @@ pub async fn start_test_cluster_with_backup() -> Result<(Client, Client, Client)
     let (_path, backup_name) = path.rsplit_once('/').unwrap();
     env::set_var("HIQLITE_BACKUP_RESTORE", backup_name);
 
-    let handle_client_2 = task::spawn(start_node::<Cache>(build_config(2).await));
-    let handle_client_3 = task::spawn(start_node::<Cache>(build_config(3).await));
-    let handle_client_1 = task::spawn(start_node::<Cache>(build_config(1).await));
+    let handle_client_2 = task::spawn(start_node_with_cache::<Cache>(build_config(2).await));
+    let handle_client_3 = task::spawn(start_node_with_cache::<Cache>(build_config(3).await));
+    let handle_client_1 = task::spawn(start_node_with_cache::<Cache>(build_config(1).await));
 
     let client_1 = handle_client_1.await??;
     let client_2 = handle_client_2.await??;

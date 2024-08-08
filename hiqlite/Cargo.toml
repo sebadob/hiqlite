@@ -49,7 +49,7 @@ listen_notify = ["dep:cryptr", "dep:eventsource-client", "dep:futures-util", "ca
 s3 = ["dep:cryptr", "backup"]
 server = ["dep:clap", "dep:home", "dep:tracing-subscriber", "full", "tokio/macros"]
 shutdown-handle = ["dep:ctrlc"]
-sqlite = ["dep:deadpool", "dep:rusqlite", "dep:serde_rusqlite"]
+sqlite = ["dep:deadpool", "dep:rusqlite", "dep:rocksdb", "dep:serde_rusqlite"]
 webpki-roots = ["dep:webpki-roots", "reqwest/rustls-tls-webpki-roots"]
 
 [dependencies]
@@ -85,7 +85,7 @@ openraft.workspace = true
 # TODO not competitive for logs right now, maybe get rid of it in the future
 #redb.workspace = true
 reqwest.workspace = true
-rocksdb.workspace = true
+rocksdb = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 rust-embed.workspace = true
 rustls.workspace = true

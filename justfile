@@ -66,6 +66,9 @@ check:
     cargo +nightly clippy -- -D warnings
     cargo minimal-versions check -p hiqlite --all-features
 
+    # just update at the end again for following clippy and testing
+    cargo update
+
 
 # checks all combinations of features with clippy
 clippy:
@@ -93,6 +96,19 @@ clippy:
     cargo clippy --no-default-features --features dashboard
     cargo clippy --no-default-features --features shutdown-handle
 
+
+clippy-examples:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    clear
+
+    cd examples
+    for example in */; do
+      cd $example
+      cargo clippy
+      cd ..
+    done
+    cd ..
 
 # build and open the docs
 docs:
@@ -175,7 +191,7 @@ msrv-find:
 
 
 # verify thats everything is good
-verify: check test build msrv-verify
+verify: check clippy clippy-examples test msrv-verify
 
 
 # makes sure everything is fine

@@ -14,7 +14,7 @@ pub async fn server() -> Result<(), Error> {
             logging::init_logging(&args.log_level);
 
             let node_config = config::build_node_config(args)?;
-            let client = hiqlite::start_node::<cache::Cache>(node_config).await?;
+            let client = hiqlite::start_node_with_cache::<cache::Cache>(node_config).await?;
 
             let mut shutdown_handle = client.shutdown_handle()?;
             shutdown_handle.wait().await?;
