@@ -14,33 +14,34 @@ use openraft::{LeaderId, LogId};
 use std::collections::{BTreeMap, Bound, VecDeque};
 use std::fmt::Debug;
 use std::ops::{Deref, RangeBounds};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::time::Instant;
 use tokio::{fs, task};
+use tracing::info;
+use tracing::log::__private_api::log;
+
+type Logs = Arc<RwLock<VecDeque<Entry<TypeConfigKV>>>>;
 
 #[derive(Debug, Clone)]
 struct LogData {
-    last_log_id: Option<LogId<u64>>,
     last_purged: Option<LogId<u64>>,
-    // commited: Option<LogId<NodeId>>,
     vote: Option<Vote<NodeId>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct LogStoreMemory {
-    // TODO migrate from BTreeMap to VecDeque with additional offset -> no hashing required
-    logs: Arc<RwLock<BTreeMap<u64, Entry<TypeConfigKV>>>>,
+    logs: Logs,
     data: Arc<Mutex<LogData>>,
 }
 
 impl LogStoreMemory {
     pub fn new() -> Self {
-        let logs = Arc::new(RwLock::new(BTreeMap::new()));
+        // TODO we could initialize with the correct amount of when to take snapshots and purge logs
+        let logs = Arc::new(RwLock::new(VecDeque::with_capacity(1000)));
         let data = LogData {
-            last_log_id: None,
             last_purged: None,
-            // commited: None,
             vote: None,
         };
 
@@ -70,12 +71,40 @@ impl RaftLogReader<TypeConfigKV> for LogStoreMemory {
             return Ok(Vec::default());
         }
 
-        let mut res = Vec::with_capacity((end - start) as usize);
-        let lock = self.logs.read().await;
+        let logs = self.logs.read().await;
 
-        for (_, entry) in lock.range(start..=end) {
+        debug_assert!(end > 0);
+        let first_log_id = logs
+            .get(0)
+            .expect("to have at least 1 entry in logs as long as end > 0")
+            .log_id
+            .index;
+        debug_assert!(start >= first_log_id);
+
+        let range_start = (start - first_log_id) as usize;
+        let range_end = (end - first_log_id) as usize;
+        debug_assert!(if !logs.is_empty() {
+            logs.get(range_start).unwrap().log_id.index == start
+        } else {
+            range_start == 0
+        });
+        debug_assert!(if !logs.is_empty() {
+            logs.get(range_end).unwrap().log_id.index == end
+        } else {
+            range_end == 0
+        });
+
+        let mut res = Vec::with_capacity((end - start) as usize);
+        for entry in logs.range(range_start..=range_end) {
             res.push((*entry).clone());
         }
+
+        debug_assert!(if !res.is_empty() {
+            res.get(0).unwrap().log_id.index == start
+                && res.get(res.len() - 1).unwrap().log_id.index == end
+        } else {
+            start == end
+        });
 
         Ok(res)
     }
@@ -87,7 +116,11 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
     async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfigKV>> {
         let lock = self.data.lock().await;
         let last_purged_log_id = lock.last_purged;
-        let last_log_id = lock.last_log_id;
+
+        let last_log_id = {
+            let logs = self.logs.read().await;
+            logs.get(logs.len()).map(|entry| entry.log_id)
+        };
 
         Ok(LogState {
             last_purged_log_id,
@@ -131,17 +164,8 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
     {
         {
             let mut logs = self.logs.write().await;
-            let mut data = self.data.lock().await;
-
-            let mut last_log_id = None;
             for entry in entries {
-                last_log_id = Some(entry.log_id);
-                logs.insert(entry.log_id.index, entry);
-            }
-
-            if let Some(id) = last_log_id {
-                data.last_log_id = Some(id);
-                // data.commited = Some(id);
+                logs.push_back(entry);
             }
         }
 
@@ -152,15 +176,49 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
 
     #[tracing::instrument(level = "debug", skip(self))]
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> StorageResult<()> {
-        let mut lock = self.logs.write().await;
-        lock.retain(|id, _| id < &log_id.index);
+        let mut logs = self.logs.write().await;
+
+        if logs.is_empty() {
+            info!("Logs are empty - nothing to truncate");
+            return Ok(());
+        }
+
+        let first_offset = logs.get(0).unwrap().log_id.index;
+        debug_assert!(log_id.index >= first_offset);
+        let truncate_from = (log_id.index - first_offset) as usize;
+        debug_assert!(truncate_from == logs.get(truncate_from).unwrap().log_id.index as usize);
+
+        logs.truncate(truncate_from);
+
         Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
     async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
-        let mut lock = self.logs.write().await;
-        lock.retain(|id, _| *id > log_id.index);
+        let mut logs = self.logs.write().await;
+
+        if logs.is_empty() {
+            info!("Logs are empty - nothing to purge");
+            return Ok(());
+        }
+
+        let first_offset = logs.get(0).unwrap().log_id.index;
+        debug_assert!(
+            first_offset <= log_id.index,
+            "first_offset <= log_id.index -> {} >= {}",
+            first_offset,
+            log_id.index
+        );
+        let purge_until = (log_id.index - first_offset) as usize;
+        debug_assert!(
+            logs.len() >= purge_until,
+            "lock.len() >= purge_until -> {} >= {}",
+            logs.len(),
+            purge_until
+        );
+
+        logs.drain(..purge_until);
+
         Ok(())
     }
 
