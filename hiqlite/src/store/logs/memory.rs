@@ -75,7 +75,7 @@ impl RaftLogReader<TypeConfigKV> for LogStoreMemory {
 
         debug_assert!(end > 0);
         let first_log_id = logs
-            .get(0)
+            .front()
             .expect("to have at least 1 entry in logs as long as end > 0")
             .log_id
             .index;
@@ -100,8 +100,7 @@ impl RaftLogReader<TypeConfigKV> for LogStoreMemory {
         }
 
         debug_assert!(if !res.is_empty() {
-            res.get(0).unwrap().log_id.index == start
-                && res.get(res.len() - 1).unwrap().log_id.index == end
+            res.first().unwrap().log_id.index == start && res.last().unwrap().log_id.index == end
         } else {
             start == end
         });
@@ -183,7 +182,7 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
             return Ok(());
         }
 
-        let first_offset = logs.get(0).unwrap().log_id.index;
+        let first_offset = logs.front().unwrap().log_id.index;
         debug_assert!(log_id.index >= first_offset);
         let truncate_from = (log_id.index - first_offset) as usize;
         debug_assert!(truncate_from == logs.get(truncate_from).unwrap().log_id.index as usize);
@@ -202,7 +201,7 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
             return Ok(());
         }
 
-        let first_offset = logs.get(0).unwrap().log_id.index;
+        let first_offset = logs.front().unwrap().log_id.index;
         debug_assert!(
             first_offset <= log_id.index,
             "first_offset <= log_id.index -> {} >= {}",

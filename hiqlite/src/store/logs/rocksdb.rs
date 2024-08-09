@@ -437,8 +437,8 @@ impl LogStoreRocksdb {
         opts.set_enable_pipelined_write(true);
 
         // WAL for metadata
-        opts.set_write_buffer_size(1 * 1024 * 1024);
-        opts.set_max_total_wal_size(1 * 1024 * 1024);
+        opts.set_write_buffer_size(1024 * 1024);
+        opts.set_max_total_wal_size(1024 * 1024);
         opts.set_wal_size_limit_mb(1);
         let meta = ColumnFamilyDescriptor::new("meta", opts.clone());
 
