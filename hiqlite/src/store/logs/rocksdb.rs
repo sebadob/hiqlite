@@ -431,21 +431,18 @@ impl LogStoreRocksdb {
         opts.set_compression_type(DBCompressionType::None);
         // TODO maybe disable auto compaction and do it after every purge / truncate manually?
         opts.set_periodic_compaction_seconds(24 * 60 * 60);
-        opts.set_compression_type(DBCompressionType::None);
-        // db_opts.set_compression_type(DBCompressionType::Snappy);
-        // db_opts.optimize_level_style_compaction(100 * 1024 * 1024);
         opts.set_max_manifest_file_size(4 * 1024 * 1024);
         opts.set_enable_pipelined_write(true);
 
-        // TODO configurable max wal sizes
-        opts.set_write_buffer_size(4 * 1024 * 1024);
-        // db_opts.set_max_total_wal_size(4 * 1024 * 1024);
-        opts.set_wal_size_limit_mb(4);
+        // WAL for metadata
+        opts.set_write_buffer_size(1 * 1024 * 1024);
+        opts.set_max_total_wal_size(1 * 1024 * 1024);
+        opts.set_wal_size_limit_mb(1);
         let meta = ColumnFamilyDescriptor::new("meta", opts.clone());
 
-        opts.set_write_buffer_size(64 * 1024 * 1024);
+        // WAL for the logs
+        opts.set_write_buffer_size(4 * 1024 * 1024);
         // default: 64mb
-        // db_opts.set_max_total_wal_size(32 * 1024 * 1024);
         // TODO maybe super high wal size limit and handle it via snapshot policy is better?
         opts.set_wal_size_limit_mb(64);
         let logs = ColumnFamilyDescriptor::new("logs", opts.clone());
