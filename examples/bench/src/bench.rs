@@ -1,4 +1,4 @@
-use crate::{log, Options};
+use crate::{log, Cache, Options};
 use chrono::Utc;
 use hiqlite::{params, Client, Error, Param, Params, Row};
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,16 @@ pub async fn start_benchmark(client: Client, options: Options) -> Result<(), Err
         rows, concurrency, elapsed, per_second
     ));
 
-    select_timings(client).await?;
+    select_timings(client.clone()).await?;
+
+    let elapsed = put_cache(client.clone(), &options, data).await?;
+    let per_second = rows * 1000 / elapsed as usize;
+    log(format!(
+        "{} single cache PUTs with concurrency {} took:\n{} ms -> {} inserts / s",
+        rows, concurrency, elapsed, per_second
+    ));
+
+    get_timings(client.clone()).await?;
 
     Ok(())
 }
@@ -138,6 +147,49 @@ async fn select_timings(client: Client) -> Result<(), Error> {
         "SELECT all rows using `query_as` took:\n{} micros",
         start.elapsed().as_micros()
     ));
+
+    Ok(())
+}
+
+async fn put_cache(
+    client: Client,
+    options: &Options,
+    sets: Vec<Vec<Entity>>,
+) -> Result<u128, Error> {
+    let concurrency = options.concurrency;
+
+    let mut handles = Vec::with_capacity(concurrency);
+    let start = Instant::now();
+    for set in sets {
+        let client = client.clone();
+
+        let handle = task::spawn(async move {
+            for entity in set {
+                client
+                    .put(Cache::One, entity.name.clone(), &entity, None)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        handles.push(handle);
+    }
+    for handle in handles {
+        handle.await?;
+    }
+
+    Ok(start.elapsed().as_millis())
+}
+
+async fn get_timings(client: Client) -> Result<(), Error> {
+    let key = "Name 1";
+
+    log("Cache GET for a single entry :");
+    for _ in 0..10 {
+        let start = Instant::now();
+        let _: Entity = client.get(Cache::One, key).await?.unwrap();
+        println!("{} micros", start.elapsed().as_micros());
+    }
 
     Ok(())
 }
