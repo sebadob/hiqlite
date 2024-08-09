@@ -95,7 +95,7 @@ async fn insert_concurrent(
                     let rows_affected = client
                         .execute(
                             "INSERT INTO test (id, ts, name) VALUES ($1, $2, $3)",
-                            params!(entity.id.clone(), entity.ts, entity.name.clone()),
+                            params!(entity.id, entity.ts, entity.name.clone()),
                         )
                         .await
                         .unwrap();
