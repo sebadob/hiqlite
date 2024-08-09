@@ -78,18 +78,25 @@ pub fn start_cron(client: Client, s3_config: Arc<S3Config>, backup_config: Backu
                     Duration::from_secs((next.timestamp() - now.timestamp()) as u64)
                 }
             };
-
             time::sleep(dur).await;
+
             info!("Executing backup now");
-            loop {
+            let mut success = false;
+            let retries = 5;
+
+            for _ in 0..retries {
                 match backup_cron_job(&client, &s3_config, backup_config.keep_days).await {
                     Ok(_) => {
                         info!("Backup task finished successfully");
+                        success = true;
                         break;
                     }
                     Err(err) => {
                         if err.is_forward_to_leader().is_some() {
-                            warn!("Raft leader voting in progress - retrying in 10 seconds");
+                            warn!(
+                                "Raft currently has no leader - retrying in 10 seconds\n{:?}",
+                                err
+                            );
                             time::sleep(Duration::from_secs(10)).await;
                         } else {
                             error!("Error during backup task execution: {}", err);
@@ -97,6 +104,10 @@ pub fn start_cron(client: Client, s3_config: Arc<S3Config>, backup_config: Backu
                         }
                     }
                 }
+            }
+
+            if !success {
+                warn!("Backup task failed after {} retries", retries);
             }
         }
     });
