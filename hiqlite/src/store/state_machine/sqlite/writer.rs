@@ -7,6 +7,7 @@ use crate::store::state_machine::sqlite::state_machine::{
 };
 use crate::{AppliedMigration, Error, Node, NodeId};
 use chrono::Utc;
+use flume::RecvError;
 use openraft::{LogId, SnapshotMeta, StorageError, StorageIOError, StoredMembership};
 use rusqlite::backup::Progress;
 use rusqlite::{Batch, DatabaseName, Transaction};
@@ -156,19 +157,7 @@ pub fn spawn_writer(
         )
         .expect("_metadata table creation to always succeed");
 
-        'main: loop {
-            let req = match rx.recv() {
-                Ok(r) => r,
-                Err(err) => {
-                    // TODO This should actually only ever happen on shutdown.
-                    // TODO remove after enough testing
-                    error!("SQLite write handler channel recv error: {:?}", err);
-                    thread::sleep(Duration::from_millis(250));
-                    continue;
-                }
-            };
-            debug!("Query in Write handler: {:?}", req);
-
+        'main: while let Ok(req) = rx.recv() {
             match req {
                 WriterRequest::Query(query) => match query {
                     Query::Execute(q) => {

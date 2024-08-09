@@ -1,4 +1,4 @@
-# Basic Example
+# Cache Only
 
 This examples only uses the Cache only.  
 It will start a single node. For a full cluster start see the `walkthrough` example.

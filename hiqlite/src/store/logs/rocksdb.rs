@@ -44,7 +44,7 @@ use tokio::time::Interval;
 use tokio::{fs, task, time};
 use tracing::{error, info, trace, warn};
 
-static KEY_COMMITTED: &[u8] = b"committed";
+// static KEY_COMMITTED: &[u8] = b"committed";
 static KEY_LAST_PURGED: &[u8] = b"last_purged";
 static KEY_VOTE: &[u8] = b"vote";
 
@@ -224,7 +224,7 @@ impl LogStoreWriter {
             }
 
             db.flush_wal(true);
-            warn!("Logs Writer exiting!");
+            warn!("Logs Writer exiting");
         });
 
         tx
@@ -390,6 +390,8 @@ impl LogStoreReader {
                     }
                 }
             }
+
+            warn!("Logs Reader exiting");
         });
 
         tx

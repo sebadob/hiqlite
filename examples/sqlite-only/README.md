@@ -1,4 +1,4 @@
-# Basic Example
+# SQLite Only
 
 This examples only uses the SQLite an no other features like cache, distributed locks or listen / notify.   
 It will start a single node. For a full cluster start see the `walkthrough` example.
