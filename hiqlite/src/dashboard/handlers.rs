@@ -39,7 +39,9 @@ pub async fn post_session(
     headers: HeaderMap,
     Form(login): Form<LoginRequest>,
 ) -> Result<Response, Error> {
-    Pow::validate(&login.pow).map_err(|err| Error::Unauthorized(err.to_string().into()))?;
+    // TODO currently, svelte 5 preview produces an error when loading the WASM in production.
+    // Request PoW again when this is resolved in the future -> check
+    // Pow::validate(&login.pow).map_err(|err| Error::Unauthorized(err.to_string().into()))?;
     session::set_session_verify(&state, Method::POST, &headers, login.password).await
 }
 

@@ -132,6 +132,7 @@ build ty="server":
     if [[ {{ty}} == "server" ]]; then
           cargo build
     elif [[ {{ty}} == "ui" ]]; then
+      rm -rf hiqlite/static
       cd dashboard
       rm -rf build
       npm run build
@@ -144,6 +145,7 @@ build-image name="cr.sebastiandobe.de/hiqlite/hiqlite":
     #!/usr/bin/env bash
     set -euxo pipefail
 
+    rm -rf hiqlite/static
     cd dashboard
     npm run build
     cd ..

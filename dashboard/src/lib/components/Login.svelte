@@ -2,9 +2,9 @@
     import Form from "$lib/components/form/Form.svelte";
     import Button from "$lib/components/Button.svelte";
     import InputPassword from "$lib/components/form/InputPassword.svelte";
-    import {API_PREFIX, fetchGet, fetchPost} from "$lib/utils/fetch";
+    import {API_PREFIX, fetchGet} from "$lib/utils/fetch";
     import {storeSession} from "$lib/stores/session";
-    import {pow_work_wasm} from "../../spow/spow-wasm";
+    // import {pow_work_wasm} from "../../spow/spow-wasm";
 
     const action = `${API_PREFIX}/session`;
 
@@ -15,23 +15,30 @@
         error = '';
         isLoading = true;
 
-        let resPow = await fetchGet('/pow');
-        if (resPow.status !== 200) {
-            let resp = await resPow.json();
-            error = Object.values(resp)[0] as string;
-            isLoading = false;
-            return;
-        }
+        // TODO the PoW WASM produces an error when built into html right now:
+        // Node.appendChild: Cannot add children to a Comment
+        // As soon as we get rid of the `pow_work_wasm` import, the error goes away.
+        // Probably a bug with the svelte 5 preview release right now.
+        // -> check in the future if it's resolved and use a PoW again
 
-        let challenge = await resPow.text();
-        let pow = await pow_work_wasm(challenge);
-
-        if (!pow) {
-            error = 'Error calculating pow';
-            isLoading = false;
-            return;
-        }
-        params.append('pow', pow);
+        // let resPow = await fetchGet('/pow');
+        // if (resPow.status !== 200) {
+        //     let resp = await resPow.json();
+        //     error = Object.values(resp)[0] as string;
+        //     isLoading = false;
+        //     return;
+        // }
+        //
+        // let challenge = await resPow.text();
+        // console.log('pow challenge: ' + challenge);
+        // let pow = await pow_work_wasm(challenge);
+        //
+        // if (!pow) {
+        //     error = 'Error calculating pow';
+        //     isLoading = false;
+        //     return;
+        // }
+        params.append('pow', "NoPowUntilSvelte5ErrorFixed");
 
         const res = await fetch(action, {
             method: 'POST',
