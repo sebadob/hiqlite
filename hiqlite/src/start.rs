@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::network::raft_server;
 use crate::network::{api, management};
-use crate::{init, store, Client, Error, NodeConfig};
+use crate::{init, split_brain_check, store, Client, Error, NodeConfig};
 use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
@@ -103,6 +103,13 @@ where
         #[cfg(feature = "dashboard")]
         tx_client_stream: tx_client_stream.clone(),
     });
+
+    #[cfg(any(feature = "sqlite", feature = "cache"))]
+    split_brain_check::spawn(
+        state.clone(),
+        node_config.nodes.clone(),
+        node_config.tls_api.is_some(),
+    );
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     if backup_applied {
@@ -249,6 +256,7 @@ where
     let member_cache = {
         let st = state.clone();
         let nodes = node_config.nodes.clone();
+
         task::spawn(async move {
             init::become_cluster_member(
                 st,

@@ -48,9 +48,15 @@ pub async fn handler(uri: Uri, req: Request) -> response::Response {
         }
     };
 
+    let cache_ctrl = if path.starts_with("_app/") {
+        CACHE_CTRL_VAL
+    } else {
+        "max-age=3600, public"
+    };
+
     match DashboardHtml::get(path.as_ref()) {
         Some(content) => Response::builder()
-            .header(header::CACHE_CONTROL, CACHE_CTRL_VAL)
+            .header(header::CACHE_CONTROL, cache_ctrl)
             .header(header::CONTENT_TYPE, mime.first_or_octet_stream().as_ref())
             .header(header::CONTENT_ENCODING, encoding)
             .body(Body::from(content.data))

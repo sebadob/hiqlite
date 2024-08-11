@@ -26,8 +26,9 @@ pub enum WriterRequest {
     Query(Query),
     Migrate(Migrate),
     Snapshot(SnapshotRequest),
-    SnapshotApply((String, oneshot::Sender<StateMachineData>)),
-    MetadataPersist(MetaPersistRequest),
+    SnapshotApply((String, oneshot::Sender<()>)),
+    // SnapshotApply((String, oneshot::Sender<StateMachineData>)),
+    // MetadataPersist(MetaPersistRequest),
     MetadataRead(oneshot::Sender<StateMachineData>),
     MetadataMembership(MetaMembershipRequest),
     Backup(BackupRequest),
@@ -97,13 +98,15 @@ pub struct SnapshotResponse {
 
 #[derive(Debug)]
 pub struct MetaPersistRequest {
-    pub data: Vec<u8>,
+    pub data: StateMachineData,
+    // pub data: Vec<u8>,
     pub ack: flume::Sender<()>, // TODO flume only needed for sync `drop()` -> convert to oneshot after being fixed
 }
 
 #[derive(Debug)]
 pub struct MetaMembershipRequest {
     pub last_membership: StoredMembership<NodeId, Node>,
+    pub last_applied_log_id: Option<LogId<NodeId>>,
     pub ack: oneshot::Sender<()>,
 }
 
@@ -267,6 +270,8 @@ pub fn spawn_writer(
                     }
 
                     Query::Transaction(req) => {
+                        sm_data.last_applied_log_id = req.last_applied_log_id;
+
                         let txn = match conn.transaction() {
                             Ok(txn) => txn,
                             Err(err) => {
@@ -277,8 +282,6 @@ pub fn spawn_writer(
                                 continue;
                             }
                         };
-
-                        sm_data.last_applied_log_id = req.last_applied_log_id;
 
                         let mut results = Vec::with_capacity(req.queries.len());
                         'outer: for state_machine::Query { sql, params } in req.queries {
@@ -329,6 +332,8 @@ pub fn spawn_writer(
                     }
 
                     Query::Batch(req) => {
+                        sm_data.last_applied_log_id = req.last_applied_log_id;
+
                         if log_statements {
                             info!("Query::Batch:\n{}", req.sql);
                         }
@@ -350,7 +355,6 @@ pub fn spawn_writer(
                             }
                         }
 
-                        sm_data.last_applied_log_id = req.last_applied_log_id;
                         req.tx.send(res).expect("oneshot tx to never be dropped");
                     }
                 },
@@ -419,7 +423,7 @@ pub fn spawn_writer(
                         start.elapsed().as_millis()
                     );
 
-                    let metadata = conn
+                    sm_data = conn
                         .query_row("SELECT data FROM _metadata WHERE key = 'meta'", (), |row| {
                             let meta_bytes: Vec<u8> = row.get(0)?;
                             let metadata: StateMachineData = bincode::deserialize(&meta_bytes)
@@ -428,59 +432,39 @@ pub fn spawn_writer(
                         })
                         .expect("Metadata query to always succeed");
 
-                    ack.send(metadata).unwrap()
-                }
-
-                WriterRequest::MetadataPersist(MetaPersistRequest { data, ack }) => {
-                    let mut stmt = conn
-                        .prepare_cached("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")
-                        .expect("Metadata persist prepare to never fail");
-
-                    stmt.execute([data])
-                        .expect("Metadata persist to never fail");
-
-                    ack.send(()).unwrap();
+                    ack.send(()).unwrap()
                 }
 
                 WriterRequest::Shutdown(ack) => {
-                    let mut stmt = conn
-                        .prepare_cached("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")
-                        .expect("Metadata persist prepare to never fail");
-
-                    let data = bincode::serialize(&sm_data).unwrap();
-                    stmt.execute([data])
-                        .expect("Metadata persist to never fail");
-
-                    if let Err(err) = conn.execute("PRAGMA optimize", []) {
-                        error!("Error during 'PRAGMA optimize': {}", err);
-                    }
-
-                    StateMachineSqlite::remove_lock_file(&path_lock_file);
-
-                    ack.send(()).unwrap();
-
-                    info!("Received shutdown signal. Metadata persisted successfully.");
+                    let _ = ack.send(());
                     break;
                 }
 
                 WriterRequest::MetadataRead(ack) => {
-                    let mut stmt = conn
-                        .prepare_cached("SELECT data FROM _metadata WHERE key = 'meta'")
-                        .expect("Metadata read prepare to always succeed");
+                    if sm_data.last_applied_log_id.is_none() {
+                        let mut stmt = conn
+                            .prepare_cached("SELECT data FROM _metadata WHERE key = 'meta'")
+                            .expect("Metadata read prepare to always succeed");
 
-                    let bytes = stmt
-                        .query_row((), |row| {
+                        match stmt.query_row((), |row| {
                             let bytes: Vec<u8> = row.get(0)?;
                             Ok(bytes)
-                        })
-                        .expect("Database to always have at least default metadata");
+                        }) {
+                            Ok(bytes) => {
+                                sm_data = bincode::deserialize(&bytes).unwrap();
+                            }
+                            Err(err) => {
+                                warn!("No metadata exists inside the DB yet");
+                            }
+                        }
+                    }
 
-                    let meta: StateMachineData = bincode::deserialize(&bytes).unwrap();
-                    ack.send(meta).unwrap();
+                    ack.send(sm_data.clone()).unwrap();
                 }
 
                 WriterRequest::MetadataMembership(req) => {
                     sm_data.last_membership = req.last_membership;
+                    sm_data.last_applied_log_id = req.last_applied_log_id;
                     req.ack.send(()).unwrap();
                 }
 
@@ -540,6 +524,21 @@ pub fn spawn_writer(
         }
 
         warn!("SQL writer is shutting down");
+
+        // make sure metadata is persisted before shutting down
+        let mut stmt = conn
+            .prepare_cached("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")
+            .expect("Metadata persist prepare to never fail");
+
+        let data = bincode::serialize(&sm_data).unwrap();
+        stmt.execute([data])
+            .expect("Metadata persist to never fail");
+
+        if let Err(err) = conn.execute("PRAGMA optimize", []) {
+            error!("Error during 'PRAGMA optimize': {}", err);
+        }
+
+        StateMachineSqlite::remove_lock_file(&path_lock_file);
     });
 
     tx

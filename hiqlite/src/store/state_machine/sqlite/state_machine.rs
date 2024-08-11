@@ -101,8 +101,7 @@ pub struct StateMachineData {
 
 #[derive(Debug, Clone)]
 pub struct StateMachineSqlite {
-    pub data: StateMachineData,
-
+    // pub data: StateMachineData,
     this_node: NodeId,
     path_snapshots: String,
     #[cfg(feature = "backup")]
@@ -116,32 +115,41 @@ pub struct StateMachineSqlite {
     pub(crate) write_tx: flume::Sender<WriterRequest>,
 }
 
-impl Drop for StateMachineSqlite {
-    fn drop(&mut self) {
-        info!("StateMachineSqlite is being dropped");
-
-        let (ack, rx) = flume::unbounded();
-        if let Err(err) = self
-            .write_tx
-            .send(WriterRequest::MetadataPersist(MetaPersistRequest {
-                data: bincode::serialize(&self.data).unwrap(),
-                ack,
-            }))
-        {
-            error!(
-                "Error sending metadata persist request to SQL writer: {}",
-                err
-            );
-        } else {
-            rx.recv().unwrap();
-        }
-
-        Self::remove_lock_file(&self.path_lock_file);
-
-        info!("StateMachineSqlite has been dropped");
-        // self.handle.abort();
-    }
-}
+// impl Drop for StateMachineSqlite {
+//     fn drop(&mut self) {
+//         info!("StateMachineSqlite is being dropped");
+//
+//         // let (ack, rx) = flume::unbounded();
+//         // if let Err(err) = self
+//         //     .write_tx
+//         //     .send(WriterRequest::MetadataPersist(MetaPersistRequest {
+//         //         // data: bincode::serialize(&self.data).unwrap(),
+//         //         data: self.data.clone(),
+//         //         ack,
+//         //     }))
+//         // {
+//         //     error!(
+//         //         "Error sending metadata persist request to SQL writer: {}",
+//         //         err
+//         //     );
+//         // } else {
+//         //     rx.recv().unwrap();
+//         // }
+//         //
+//         // Self::remove_lock_file(&self.path_lock_file);
+//
+//         let (ack, _rx) = oneshot::channel();
+//         if let Err(err) = self.write_tx.send(WriterRequest::Shutdown(ack)) {
+//             error!(
+//                 "Error sending metadata persist request to SQL writer: {}",
+//                 err
+//             );
+//         }
+//
+//         info!("StateMachineSqlite has been dropped");
+//         // self.handle.abort();
+//     }
+// }
 
 impl StateMachineSqlite {
     pub(crate) async fn new(
@@ -154,6 +162,7 @@ impl StateMachineSqlite {
         // IMPORTANT: Do NOT change the order of the db exists check!
         // DB recovery will fail otherwise!
         let mut db_exists = Self::db_exists(data_dir, filename_db).await;
+        info!("db_exists in stage_machine::new(): {}", db_exists);
 
         let (
             PathDb(path_db),
@@ -179,38 +188,57 @@ impl StateMachineSqlite {
                 source: StorageIOError::read(&err),
             })?;
 
-        let state_machine_data: StateMachineData = if db_exists {
-            let (ack, rx) = oneshot::channel();
-            write_tx
-                .send_async(WriterRequest::MetadataRead(ack))
-                .await
-                .map_err(|err| StorageError::IO {
-                    source: StorageIOError::read(&err),
-                })?;
-            rx.await.expect("To always get Metadata from DB")
-        } else {
-            let metadata = StateMachineData::default();
-            let data = bincode::serialize(&metadata).unwrap();
+        // // we always want to have at least the default StateMachineData inside the DB to avoid
+        // // wrapping it in Option<_> all the time
+        // if !db_exists {
+        //     let (ack, rx) = flume::unbounded();
+        //     write_tx
+        //         .send_async(WriterRequest::MetadataPersist(MetaPersistRequest {
+        //             data: StateMachineData::default(),
+        //             ack,
+        //         }))
+        //         .await
+        //         .map_err(|err| StorageError::IO {
+        //             source: StorageIOError::write(&err),
+        //         })?;
+        //     rx.recv_async().await.map_err(|err| StorageError::IO {
+        //         source: StorageIOError::write(&err),
+        //     })?;
+        // }
 
-            let (ack, rx) = flume::unbounded();
-            write_tx
-                .send_async(WriterRequest::MetadataPersist(MetaPersistRequest {
-                    data,
-                    ack,
-                }))
-                .await
-                .map_err(|err| StorageError::IO {
-                    source: StorageIOError::write(&err),
-                })?;
-            rx.recv_async().await.map_err(|err| StorageError::IO {
-                source: StorageIOError::write(&err),
-            })?;
-
-            metadata
-        };
+        // let state_machine_data: StateMachineData = if db_exists {
+        //     let (ack, rx) = oneshot::channel();
+        //     write_tx
+        //         .send_async(WriterRequest::MetadataRead(ack))
+        //         .await
+        //         .map_err(|err| StorageError::IO {
+        //             source: StorageIOError::read(&err),
+        //         })?;
+        //     rx.await.expect("To always get Metadata from DB")
+        // } else {
+        //     let data = StateMachineData::default();
+        //     // let data = bincode::serialize(&metadata).unwrap();
+        //
+        //     let (ack, rx) = flume::unbounded();
+        //     write_tx
+        //         .send_async(WriterRequest::MetadataPersist(MetaPersistRequest {
+        //             data: data.clone(),
+        //             ack,
+        //         }))
+        //         .await
+        //         .map_err(|err| StorageError::IO {
+        //             source: StorageIOError::write(&err),
+        //         })?;
+        //     rx.recv_async().await.map_err(|err| StorageError::IO {
+        //         source: StorageIOError::write(&err),
+        //     })?;
+        //
+        //     data
+        // };
+        // info!("Initial StateMachineData: {:?}", state_machine_data);
 
         let mut slf = Self {
-            data: state_machine_data,
+            // data: state_machine_data,
             this_node,
             path_snapshots,
             #[cfg(feature = "backup")]
@@ -426,7 +454,8 @@ impl StateMachineSqlite {
             .await
             .expect("SQLite Writer rx to always be listening");
 
-        self.data = rx.await.expect("Snapshot installation to succeed");
+        // self.data = rx.await.expect("Snapshot installation to succeed");
+        rx.await.expect("Snapshot installation to succeed");
 
         Ok(())
     }
@@ -537,10 +566,18 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     async fn applied_state(
         &mut self,
     ) -> Result<(Option<LogId<NodeId>>, StoredMembership<NodeId, Node>), StorageError<NodeId>> {
-        Ok((
-            self.data.last_applied_log_id,
-            self.data.last_membership.clone(),
-        ))
+        let (ack, rx) = oneshot::channel();
+        self.write_tx
+            .send_async(WriterRequest::MetadataRead(ack))
+            .await
+            .map_err(|err| StorageError::IO {
+                source: StorageIOError::read(&err),
+            })?;
+        let data = rx.await.expect("To always get Metadata from DB");
+
+        info!("applied_state: {:?}", data);
+
+        Ok((data.last_applied_log_id, data.last_membership))
     }
 
     async fn apply<I>(&mut self, entries: I) -> Result<Vec<Response>, StorageError<NodeId>>
@@ -549,11 +586,16 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         I::IntoIter: OptionalSend,
     {
         let entries = entries.into_iter();
-        let mut replies = Vec::with_capacity(entries.size_hint().0);
 
-        let mut log_id;
+        let (bound_lower, bound_upper) = entries.size_hint();
+        let entries_len = bound_upper
+            .expect("We always expect an upper bound to entries in apply()")
+            - bound_lower
+            + 1;
+        let mut replies = Vec::with_capacity(entries_len);
+
         for entry in entries {
-            log_id = Some(entry.log_id);
+            let last_applied_log_id = Some(entry.log_id);
 
             let resp = match entry.payload {
                 EntryPayload::Blank => Response::Empty,
@@ -563,7 +605,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     let query = writer::Query::Execute(writer::SqlExecute {
                         sql,
                         params,
-                        last_applied_log_id: log_id,
+                        last_applied_log_id,
                         tx,
                     });
 
@@ -584,7 +626,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     let query = writer::Query::ExecuteReturning(writer::SqlExecuteReturning {
                         sql,
                         params,
-                        last_applied_log_id: log_id,
+                        last_applied_log_id,
                         tx,
                     });
 
@@ -604,7 +646,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     let (tx, rx) = oneshot::channel();
                     let req = WriterRequest::Query(writer::Query::Transaction(SqlTransaction {
                         queries,
-                        last_applied_log_id: log_id,
+                        last_applied_log_id,
                         tx,
                     }));
 
@@ -633,7 +675,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     let (tx, rx) = oneshot::channel();
                     let req = WriterRequest::Query(writer::Query::Batch(SqlBatch {
                         sql,
-                        last_applied_log_id: log_id,
+                        last_applied_log_id,
                         tx,
                     }));
 
@@ -654,7 +696,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                         target_folder: self.path_backups.clone(),
                         #[cfg(feature = "s3")]
                         s3_config: self.s3_config.clone(),
-                        last_applied_log_id: log_id,
+                        last_applied_log_id,
                         ack,
                     });
 
@@ -671,7 +713,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     let (tx, rx) = oneshot::channel();
                     let req = WriterRequest::Migrate(writer::Migrate {
                         migrations,
-                        last_applied_log_id: log_id,
+                        last_applied_log_id,
                         tx,
                     });
 
@@ -687,7 +729,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                 EntryPayload::Normal(QueryWrite::RTT) => {
                     let (ack, rx) = oneshot::channel();
                     let req = WriterRequest::RTT(writer::RTTRequest {
-                        last_applied_log_id: log_id,
+                        last_applied_log_id,
                         ack,
                     });
 
@@ -701,11 +743,10 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                 }
 
                 EntryPayload::Membership(mem) => {
-                    self.data.last_membership = StoredMembership::new(Some(entry.log_id), mem);
-
                     let (ack, rx) = oneshot::channel();
                     let req = WriterRequest::MetadataMembership(writer::MetaMembershipRequest {
-                        last_membership: self.data.last_membership.clone(),
+                        last_membership: StoredMembership::new(Some(entry.log_id.clone()), mem),
+                        last_applied_log_id,
                         ack,
                     });
 
@@ -721,7 +762,6 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
             };
 
             replies.push(resp);
-            self.data.last_applied_log_id = log_id;
         }
 
         Ok(replies)

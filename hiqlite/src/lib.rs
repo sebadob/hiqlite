@@ -33,6 +33,11 @@ pub use crate::store::state_machine::sqlite::{param::Param, state_machine::Param
 #[cfg(feature = "sqlite")]
 pub use migration::AppliedMigration;
 
+// TODO remove after enough crash testing and making sure we can never get into a
+// split brain situation
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+mod split_brain_check;
+
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 mod app_state;
 #[cfg(any(feature = "sqlite", feature = "cache"))]

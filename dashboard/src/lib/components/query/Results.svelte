@@ -89,8 +89,6 @@
     .col {
         display: flex;
         flex-direction: column;
-        max-width: 10rem;
-        word-wrap: break-word;
         border-right: 1px solid rgba(0, 0, 0, .1);
     }
 </style>

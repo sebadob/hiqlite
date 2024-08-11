@@ -50,7 +50,25 @@ pub(crate) async fn dashboard_query_dynamic(
         };
 
         // TODO check for `RETURNING` to execute `query` instead
-        let rows_affected = execute_dynamic(&state, sql.clone()).await?;
+        let rows_affected = match execute_dynamic(&state, sql.clone()).await {
+            Ok(r) => r,
+            Err(err) => {
+                if let Some((id, node)) = err.is_forward_to_leader() {
+                    state
+                        .tx_client_stream
+                        .send_async(crate::client::stream::ClientStreamReq::LeaderChange((
+                            id,
+                            node.clone(),
+                        )))
+                        .await
+                        .expect("Client Stream Manager to always be running");
+                    execute_dynamic(&state, sql.clone()).await?
+                } else {
+                    return Err(err);
+                }
+            }
+        };
+
         let affected = if rows_affected > i64::MAX as usize {
             i64::MAX
         } else {
@@ -68,6 +86,7 @@ pub(crate) async fn dashboard_query_dynamic(
 #[inline]
 async fn execute_dynamic(state: &AppStateExt, sql: Query) -> Result<usize, Error> {
     if is_this_local_leader(state).await? {
+        info!("Executing dynamic dashboard query as local leader");
         let res = state
             .raft_db
             .raft
@@ -79,6 +98,7 @@ async fn execute_dynamic(state: &AppStateExt, sql: Query) -> Result<usize, Error
             _ => unreachable!(),
         }
     } else {
+        info!("Executing dynamic dashboard query on remote leader");
         let (ack, rx) = oneshot::channel();
         state
             .tx_client_stream

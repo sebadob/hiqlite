@@ -13,6 +13,7 @@ use openraft::error::RPCError;
 use openraft::error::{NetworkError, Unreachable};
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -35,6 +36,7 @@ use openraft::{
         InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
 };
+use tokio::time;
 
 struct SpawnExecutor;
 
@@ -123,22 +125,15 @@ impl NetworkStreaming {
     ) where
         Err: std::error::Error + 'static + Clone,
     {
-        let mut ws = None;
-        // let mut req: Option<RaftStreamRequest> = None;
+        // let mut ws = None;
+
         // let mut ack: Option<
-        //     oneshot::Sender<Result<RaftStreamResponse, RPCError<NodeId, Node, Err>>>,
+        //     flume::Sender<Result<RaftStreamResponse, RPCError<NodeId, Node, Err>>>,
         // > = None;
 
-        'main: while let Ok((req, ack)) = rx.recv_async().await {
-            if ack.is_closed() {
-                continue;
-            }
-
-            while ws.is_none() {
+        'connect: loop {
+            let mut socket = {
                 info!("WsHandler trying to connect to {}", node.addr_raft);
-                // TODO we probably don't need the sleep since the Raft reqs will throttle passively
-                // time::sleep(Duration::from_millis(100)).await;
-
                 match Self::try_connect(
                     this_node,
                     &node.addr_raft,
@@ -148,54 +143,67 @@ impl NetworkStreaming {
                 )
                 .await
                 {
-                    Ok(socket) => {
-                        ws = Some(socket);
-                    }
+                    Ok(socket) => socket,
                     Err(err) => {
                         error!("{:?}", err);
+                        // if let Some(a) = ack {
+                        //     let _ = a.send(Err(RPCError::Unreachable(Unreachable::new(&err))));
+                        // }
+                        // ack = None;
 
-                        ack.send(Err(RPCError::Unreachable(Unreachable::new(&err))))
-                            .unwrap();
-                        continue 'main;
+                        // make sure messages don't pile up
+                        rx.drain().into_iter().for_each(|(_, ack)| {
+                            let _ = ack.send(Err(RPCError::Unreachable(Unreachable::new(&err))));
+                        });
+
+                        time::sleep(Duration::from_millis(500)).await;
+                        continue;
                     }
                 }
-            }
+            };
 
-            let socket = ws.as_mut().unwrap();
-            match socket.write_frame(req.as_payload()).await {
-                Ok(_) => match socket.read_frame().await {
-                    Ok(frame) => match frame.opcode {
-                        OpCode::Binary => {
-                            let bytes = frame.payload.to_vec();
-                            let resp = RaftStreamResponse::from(bytes);
-                            if let Err(err) = ack.send(Ok(resp)) {
-                                error!(
-                                    "Error forwarding response from Node {}: {:?}",
-                                    node.id, err
-                                );
+            while let Ok((req, ack)) = rx.recv_async().await {
+                if ack.is_closed() {
+                    continue;
+                }
+
+                match socket.write_frame(req.as_payload()).await {
+                    Ok(_) => match socket.read_frame().await {
+                        Ok(frame) => match frame.opcode {
+                            OpCode::Binary => {
+                                let bytes = frame.payload.to_vec();
+                                let resp = RaftStreamResponse::from(bytes);
+                                if let Err(err) = ack.send(Ok(resp)) {
+                                    error!(
+                                        "Error forwarding response from Node {}: {:?}",
+                                        node.id, err
+                                    );
+                                }
                             }
+                            _ => unreachable!(),
+                        },
+                        Err(err) => {
+                            error!("Error receiving RPC response: {}", err);
+                            let _ = ack.send(Err(RPCError::Unreachable(Unreachable::new(&err))));
+                            continue 'connect;
                         }
-                        _ => unreachable!(),
                     },
                     Err(err) => {
-                        error!("Error receiving RPC response: {}", err);
-                        ack.send(Err(RPCError::Network(NetworkError::new(&err))))
-                            .unwrap();
-                        ws = None;
+                        error!("Error sending RPC request: {}", err);
+                        let _ = ack.send(Err(RPCError::Unreachable(Unreachable::new(&err))));
+                        continue 'connect;
                     }
-                },
-                Err(err) => {
-                    error!("Error sending RPC request: {}", err);
-                    ack.send(Err(RPCError::Network(NetworkError::new(&err))))
-                        .unwrap();
-                    ws = None;
                 }
             }
+
+            break;
         }
 
-        warn!("Raft Client shut down, tx closed, exiting WsHandler");
-
-        // 'main: loop {
+        // 'main: while let Ok((req, ack)) = rx.recv_async().await {
+        //     if ack.is_closed() {
+        //         continue;
+        //     }
+        //
         //     while ws.is_none() {
         //         info!("WsHandler trying to connect to {}", node.addr_raft);
         //         // TODO we probably don't need the sleep since the Raft reqs will throttle passively
@@ -215,76 +223,45 @@ impl NetworkStreaming {
         //             }
         //             Err(err) => {
         //                 error!("{:?}", err);
-        //                 if let Some(tx) = ack {
-        //                     tx.send(Err(RPCError::Unreachable(Unreachable::new(&err))))
-        //                         .unwrap()
-        //                 }
-        //                 ack = None;
-        //                 req = None;
-        //                 // we want to break here to get the next raft request,
-        //                 // so the channel never fills up
-        //                 break;
+        //                 let _ = ack.send(Err(RPCError::Unreachable(Unreachable::new(&err))));
+        //                 continue 'main;
         //             }
         //         }
         //     }
         //
-        //     if let Some(r) = &req {
-        //         let socket = ws.as_mut().unwrap();
-        //         let ack_tx = ack.unwrap();
-        //
-        //         match socket.write_frame(r.as_payload()).await {
-        //             Ok(_) => match socket.read_frame().await {
-        //                 Ok(frame) => match frame.opcode {
-        //                     OpCode::Binary => {
-        //                         let bytes = frame.payload.to_vec();
-        //                         let resp = RaftStreamResponse::from(bytes);
-        //                         if let Err(err) = ack_tx.send(Ok(resp)) {
-        //                             error!(
-        //                                 "Error forwarding response from Node {}: {:?}",
-        //                                 node.id, err
-        //                             );
-        //                         }
+        //     let socket = ws.as_mut().unwrap();
+        //     match socket.write_frame(req.as_payload()).await {
+        //         Ok(_) => match socket.read_frame().await {
+        //             Ok(frame) => match frame.opcode {
+        //                 OpCode::Binary => {
+        //                     let bytes = frame.payload.to_vec();
+        //                     let resp = RaftStreamResponse::from(bytes);
+        //                     if let Err(err) = ack.send(Ok(resp)) {
+        //                         error!(
+        //                             "Error forwarding response from Node {}: {:?}",
+        //                             node.id, err
+        //                         );
         //                     }
-        //                     _ => unreachable!(),
-        //                 },
-        //                 Err(err) => {
-        //                     error!("Error receiving RPC response: {}", err);
-        //                     ack_tx
-        //                         .send(Err(RPCError::Network(NetworkError::new(&err))))
-        //                         .unwrap();
-        //                     ws = None;
         //                 }
+        //                 _ => unreachable!(),
         //             },
         //             Err(err) => {
-        //                 error!("Error sending RPC request: {}", err);
-        //                 ack_tx
-        //                     .send(Err(RPCError::Network(NetworkError::new(&err))))
+        //                 error!("Error receiving RPC response: {}", err);
+        //                 ack.send(Err(RPCError::Network(NetworkError::new(&err))))
         //                     .unwrap();
         //                 ws = None;
         //             }
-        //         }
-        //
-        //         ack = None;
-        //     }
-        //
-        //     loop {
-        //         match rx.recv_async().await.ok() {
-        //             None => {
-        //                 warn!("Raft Client shut down, tx closed, exiting WsHandler");
-        //                 break 'main;
-        //             }
-        //             Some((r, a)) => {
-        //                 // we need the loop and closed check in case of long-running
-        //                 // re-connect loops to other nodes
-        //                 if !a.is_closed() {
-        //                     req = Some(r);
-        //                     ack = Some(a);
-        //                     break;
-        //                 }
-        //             }
+        //         },
+        //         Err(err) => {
+        //             error!("Error sending RPC request: {}", err);
+        //             ack.send(Err(RPCError::Network(NetworkError::new(&err))))
+        //                 .unwrap();
+        //             ws = None;
         //         }
         //     }
         // }
+
+        warn!("Raft Client shut down, tx closed, exiting WsHandler");
     }
 
     async fn try_connect(

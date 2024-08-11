@@ -26,6 +26,8 @@
     section {
         padding: .15rem .25rem;
         border-top: 1px solid var(--col-mid-a);
+        max-height: 33dvh;
+        overflow-y: auto;
     }
 
     .sql {

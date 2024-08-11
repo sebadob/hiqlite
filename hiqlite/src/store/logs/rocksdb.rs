@@ -529,6 +529,19 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
         }
     }
 
+    // async fn save_committed(
+    //     &mut self,
+    //     committed: Option<LogId<NodeId>>,
+    // ) -> Result<(), StorageError<NodeId>> {
+    //     let mut lock = self.data.lock().await;
+    //     lock.commited = committed;
+    //     Ok(())
+    // }
+    //
+    // async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
+    //     Ok(self.data.lock().await.commited)
+    // }
+
     #[tracing::instrument(level = "trace", skip(self))]
     async fn save_vote(&mut self, vote: &Vote<NodeId>) -> Result<(), StorageError<NodeId>> {
         let (ack, rx) = oneshot::channel();

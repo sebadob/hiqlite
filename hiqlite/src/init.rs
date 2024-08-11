@@ -33,6 +33,7 @@ pub async fn init_pristine_node_1_db(
         let this_node = get_this_node(this_node, nodes);
 
         if is_initialized_timeout_sqlite(raft).await? {
+            info!("node 1 raft is already initialized");
             return Ok(());
         }
 
@@ -42,6 +43,7 @@ pub async fn init_pristine_node_1_db(
             return Ok(());
         }
 
+        info!("initializing pristine node 1 raft");
         let mut nodes_set = BTreeMap::new();
         nodes_set.insert(this_node.id, this_node);
         raft.initialize(nodes_set).await?;
@@ -198,6 +200,10 @@ pub async fn become_cluster_member(
     tls_no_verify: bool,
 ) -> Result<(), Error> {
     if is_initialized_timeout(&state, raft_type).await? {
+        info!(
+            "{} raft is already initialized - skipping become_cluster_member()",
+            raft_type.as_str()
+        );
         return Ok(());
     }
 
@@ -220,6 +226,7 @@ pub async fn become_cluster_member(
     })
     .unwrap();
 
+    info!("Trying to become {} raft learner", raft_type.as_str());
     try_become(
         &state,
         raft_type,
@@ -232,7 +239,9 @@ pub async fn become_cluster_member(
         true,
     )
     .await?;
+    info!("Successfully became {} raft learner", raft_type.as_str());
 
+    info!("Trying to become {} raft member", raft_type.as_str());
     try_become(
         &state,
         raft_type,
@@ -245,6 +254,7 @@ pub async fn become_cluster_member(
         false,
     )
     .await?;
+    info!("Successfully became {} raft member", raft_type.as_str());
 
     Ok(())
 }
