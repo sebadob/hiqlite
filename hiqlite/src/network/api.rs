@@ -366,7 +366,7 @@ async fn handle_socket_concurrent(
 
     // make sure to NEVER lose the result of an execute from remote!
     // if we received one which is being executed and the TCP stream dies in between, we MUST ENSURE
-    // that in case it was an Ok(_), the result gets to the client! Otherwise with retry logic we might
+    // that in case it was an Ok(_), the result gets to the client! Otherwise, with retry logic we might
     // end up modifying something twice!
     let (buf_tx, buf_rx) = state
         .client_buffers
@@ -400,7 +400,7 @@ async fn handle_socket_concurrent(
                     let bytes = bincode::serialize(&resp).unwrap();
                     let frame = Frame::binary(Payload::Borrowed(&bytes));
                     if let Err(err) = write.write_frame(frame).await {
-                        error!("Error during WebSocket handshake: {}", err);
+                        error!("Error during WebSocket write: {}", err);
                         // if we have a WebSocket error, save all open requests into the client_buffer
                         let payload = bincode::serialize(&resp).unwrap();
                         buf_tx
@@ -441,7 +441,7 @@ async fn handle_socket_concurrent(
         .read_frame(&mut |frame| async move {
             // TODO obligated sends should be auto ping / pong / close ? -> verify!
             warn!(
-                "Received obligated send in stream client: OpCode: {:?}: {:?}",
+                "\n\nReceived obligated send in stream client: OpCode: {:?}: {:?}\n\n",
                 frame.opcode.clone(),
                 frame.payload
             );
@@ -556,7 +556,7 @@ async fn handle_socket_concurrent(
                         }
                         Err(err) => ApiStreamResponse {
                             request_id,
-                            result: ApiStreamResponsePayload::Execute(Err(Error::from(err))),
+                            result: ApiStreamResponsePayload::Transaction(Err(Error::from(err))),
                         },
                     }
                 }
@@ -625,7 +625,7 @@ async fn handle_socket_concurrent(
                         }
                         Err(err) => ApiStreamResponse {
                             request_id,
-                            result: ApiStreamResponsePayload::Execute(Err(Error::from(err))),
+                            result: ApiStreamResponsePayload::Migrate(Err(Error::from(err))),
                         },
                     }
                 }
