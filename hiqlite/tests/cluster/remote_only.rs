@@ -14,10 +14,11 @@ pub async fn test_remote_only_client() -> Result<(), Error> {
         .map(|n| n.addr_api)
         .collect::<Vec<_>>();
 
-    let client_1 = Client::remote(nodes.clone(), false, false, SECRET_API.to_string()).await?;
+    let client_1 =
+        Client::remote(nodes.clone(), false, false, SECRET_API.to_string(), false).await?;
     check_client(&client_1, 1).await?;
 
-    let client_2 = Client::remote(nodes, false, false, SECRET_API.to_string()).await?;
+    let client_2 = Client::remote(nodes, false, false, SECRET_API.to_string(), false).await?;
     check_client(&client_2, 2).await?;
 
     log("Test Listen / Notify with remote clients");
