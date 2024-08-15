@@ -1,7 +1,7 @@
 use crate::server::args::{ArgsConfig, ArgsGenerate};
 use crate::server::password;
+use crate::{Error, NodeConfig};
 use cryptr::{utils, EncKeys};
-use hiqlite::{Error, NodeConfig};
 use tokio::fs;
 
 pub fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {

@@ -6,6 +6,10 @@ pub enum Args {
     /// Start a Hiqlite server
     Serve(ArgsConfig),
 
+    /// Start a Hiqlite proxy, which acts as a single connection point for a remote client and
+    /// load-balances requests to all cluster nodes.
+    Proxy(ArgsProxy),
+
     /// Generate a new default config with safe values for testing
     GenerateConfig(ArgsGenerate),
 }
@@ -24,7 +28,18 @@ pub struct ArgsConfig {
     #[clap(long)]
     pub log_statements: Option<bool>,
 
-    /// Enable SQL statement logging
+    /// Server Log Level
+    #[clap(short, long, default_value = "info")]
+    pub log_level: LogLevel,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct ArgsProxy {
+    /// The optional config file name to parse
+    #[clap(short, long, default_value = "$HOME/.hiqlite/config")]
+    pub config_file: String,
+
+    /// Server Log Level
     #[clap(short, long, default_value = "info")]
     pub log_level: LogLevel,
 }
