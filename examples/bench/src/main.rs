@@ -20,6 +20,9 @@ enum Args {
     Cluster(Options),
     /// Start tests with a Single Node
     Single(Options),
+    /// Run the benchmark with a pure remote client on an already running cluster.
+    /// CAUTION: This may overwrite existing data, depending on your setup and config!
+    Remote(OptionsRemote),
 }
 
 #[derive(Debug, Clone, PartialEq, Parser)]
@@ -37,6 +40,37 @@ pub struct Options {
     /// old logs.
     #[clap(short, long, default_value = "10000")]
     pub logs_until_snapshot: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Parser)]
+pub struct OptionsRemote {
+    /// How many concurrent threads should be started for inserts
+    #[clap(short, long)]
+    pub concurrency: usize,
+
+    /// How many rows should be generated and inserted
+    #[clap(short, long)]
+    pub rows: usize,
+
+    /// The remote cluster nodes
+    #[clap(short, long)]
+    pub nodes: Vec<String>,
+
+    /// If TLS should be used for the connection
+    #[clap(short, long, default_value = "false")]
+    pub tls: bool,
+
+    /// Disable TLS certificate validation
+    #[clap(long = "no-verify", default_value = "false")]
+    pub tls_no_verify: bool,
+
+    /// The API secret to access the remote cluster
+    #[clap(short = 's', long = "secret")]
+    pub api_secret: String,
+
+    /// Set to true to connect to the DB cluster through a Hiqlite proxy
+    #[clap(short = 'p', long = "proxy")]
+    pub proxy: bool,
 }
 
 fn test_nodes() -> Vec<Node> {
@@ -109,27 +143,51 @@ async fn main() -> Result<(), Error> {
         .with_env_filter(EnvFilter::from("error"))
         .init();
 
-    let (full_cluster, options) = match Args::parse() {
-        Args::Cluster(opts) => (true, opts),
-        Args::Single(opts) => (false, opts),
-    };
+    let args = Args::parse();
+    if let Args::Remote(opts) = args {
+        log(format!("Connecting to remote cluster: {:?}", opts.nodes));
+        let client = Client::remote(
+            opts.nodes,
+            opts.tls,
+            opts.tls_no_verify,
+            opts.api_secret,
+            true,
+        )
+        .await?;
 
-    let (client_1, client_2, _client_3) =
-        start_cluster(full_cluster, options.logs_until_snapshot).await?;
+        let options = Options {
+            concurrency: opts.concurrency,
+            rows: opts.rows,
+            logs_until_snapshot: 10_000,
+        };
 
-    let leader = {
-        let metrics = client_1.metrics_db().await?;
-        let leader = metrics.current_leader.unwrap();
-        if leader == 1 {
-            client_1
-        } else {
-            client_2.unwrap()
-        }
-    };
+        client.migrate::<Migrations>().await?;
 
-    leader.migrate::<Migrations>().await?;
+        bench::start_benchmark(client, options, true).await?;
+    } else {
+        let (full_cluster, options) = match Args::parse() {
+            Args::Cluster(opts) => (true, opts),
+            Args::Single(opts) => (false, opts),
+            Args::Remote(_) => unreachable!(),
+        };
 
-    bench::start_benchmark(leader, options).await?;
+        let (client_1, client_2, _client_3) =
+            start_cluster(full_cluster, options.logs_until_snapshot).await?;
+
+        let leader = {
+            let metrics = client_1.metrics_db().await?;
+            let leader = metrics.current_leader.unwrap();
+            if leader == 1 {
+                client_1
+            } else {
+                client_2.unwrap()
+            }
+        };
+
+        leader.migrate::<Migrations>().await?;
+
+        bench::start_benchmark(leader, options, false).await?;
+    }
 
     time::sleep(Duration::from_secs(3)).await;
 

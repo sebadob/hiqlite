@@ -25,10 +25,13 @@ impl<'r> From<Row<'r>> for Entity {
     }
 }
 
-pub async fn start_benchmark(client: Client, options: Options) -> Result<(), Error> {
+pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> Result<(), Error> {
     let data = prepare_data(&options);
     let concurrency = options.concurrency;
     let rows = options.rows;
+
+    // make sure everything is clean
+    client.execute("DELETE FROM _bench", params!()).await?;
 
     let elapsed = insert_concurrent(client.clone(), &options, data.clone(), false).await?;
     let per_second = rows * 1000 / elapsed as usize;
@@ -46,7 +49,7 @@ pub async fn start_benchmark(client: Client, options: Options) -> Result<(), Err
         rows, concurrency, elapsed, per_second
     ));
 
-    select_timings(client.clone()).await?;
+    select_timings(client.clone(), remote).await?;
 
     let elapsed = put_cache(client.clone(), &options, data).await?;
     let per_second = rows * 1000 / elapsed as usize;
@@ -79,7 +82,7 @@ async fn insert_concurrent(
                     .into_iter()
                     .map(|t| {
                         (
-                            "INSERT INTO test (id, ts, name) VALUES ($1, $2, $3)",
+                            "INSERT INTO _bench (id, ts, name) VALUES ($1, $2, $3)",
                             params!(t.id, t.ts, t.name),
                         )
                     })
@@ -94,7 +97,7 @@ async fn insert_concurrent(
                 for entity in set {
                     let rows_affected = client
                         .execute(
-                            "INSERT INTO test (id, ts, name) VALUES ($1, $2, $3)",
+                            "INSERT INTO _bench (id, ts, name) VALUES ($1, $2, $3)",
                             params!(entity.id, entity.ts, entity.name.clone()),
                         )
                         .await
@@ -113,8 +116,8 @@ async fn insert_concurrent(
     Ok(start.elapsed().as_millis())
 }
 
-async fn select_timings(client: Client) -> Result<(), Error> {
-    let select = "SELECT * FROM test WHERE id = $1";
+async fn select_timings(client: Client, remote: bool) -> Result<(), Error> {
+    let select = "SELECT * FROM _bench WHERE id = $1";
 
     let start = Instant::now();
     let _: Entity = client.query_map_one(select, params!(1)).await?;
@@ -127,26 +130,34 @@ async fn select_timings(client: Client) -> Result<(), Error> {
         println!("{} micros", start.elapsed().as_micros());
     }
 
-    log("SELECT a single row with a cached prepared statement using `query_as_one`:");
-    for _ in 0..10 {
-        let start = Instant::now();
-        let _: Entity = client.query_as_one(select, params!(1)).await?;
-        println!("{} micros", start.elapsed().as_micros());
+    if remote {
+        log("Skipping `query_as_one` as it does only work with local clients");
+    } else {
+        log("SELECT a single row with a cached prepared statement using `query_as_one`:");
+        for _ in 0..10 {
+            let start = Instant::now();
+            let _: Entity = client.query_as_one(select, params!(1)).await?;
+            println!("{} micros", start.elapsed().as_micros());
+        }
     }
 
     let start = Instant::now();
-    let _: Vec<Entity> = client.query_map("SELECT * FROM test", params!()).await?;
+    let _: Vec<Entity> = client.query_map("SELECT * FROM _bench", params!()).await?;
     log(format!(
         "SELECT all rows using `query_map` took:\n{} micros",
         start.elapsed().as_micros()
     ));
 
-    let start = Instant::now();
-    let _: Vec<Entity> = client.query_as("SELECT * FROM test", params!()).await?;
-    log(format!(
-        "SELECT all rows using `query_as` took:\n{} micros",
-        start.elapsed().as_micros()
-    ));
+    if remote {
+        log("Skipping `query_as` as it does only work with local clients");
+    } else {
+        let start = Instant::now();
+        let _: Vec<Entity> = client.query_as("SELECT * FROM _bench", params!()).await?;
+        log(format!(
+            "SELECT all rows using `query_as` took:\n{} micros",
+            start.elapsed().as_micros()
+        ));
+    }
 
     Ok(())
 }
@@ -195,7 +206,7 @@ async fn get_timings(client: Client) -> Result<(), Error> {
 }
 
 async fn cleanup(client: &Client) -> Result<(), Error> {
-    client.execute("DELETE FROM test", params!()).await?;
+    client.execute("DELETE FROM _bench", params!()).await?;
     Ok(())
 }
 
