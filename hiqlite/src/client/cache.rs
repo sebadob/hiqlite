@@ -12,11 +12,24 @@ use strum::IntoEnumIterator;
 use tokio::sync::oneshot;
 
 impl Client {
+    /// GET a value from the cache
     pub async fn get<C, K, V>(&self, cache: C, key: K) -> Result<Option<V>, Error>
     where
         C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
         K: Into<String>,
         V: for<'a> Deserialize<'a>,
+    {
+        match self.get_bytes(cache, key).await {
+            Ok(value) => Ok(value.map(|v| bincode::deserialize(&v).unwrap())),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// GET a raw bytes value from the cache
+    pub async fn get_bytes<C, K>(&self, cache: C, key: K) -> Result<Option<Vec<u8>>, Error>
+    where
+        C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+        K: Into<String>,
     {
         if let Some(state) = &self.inner.state {
             let (ack, rx) = oneshot::channel();
@@ -30,7 +43,7 @@ impl Client {
             let value = rx
                 .await
                 .expect("to always get an answer from the kv handler");
-            Ok(value.map(|b| bincode::deserialize(&b).unwrap()))
+            Ok(value)
         } else {
             let res = self
                 .cache_req_retry(
@@ -44,7 +57,7 @@ impl Client {
                 )
                 .await?;
             match res {
-                CacheResponse::Value(opt) => Ok(opt.map(|v| bincode::deserialize(&v).unwrap())),
+                CacheResponse::Value(opt) => Ok(opt),
                 _ => unreachable!(),
             }
         }
@@ -98,7 +111,7 @@ impl Client {
         Ok(())
     }
 
-    async fn cache_req_retry(
+    pub(crate) async fn cache_req_retry(
         &self,
         cache_req: CacheRequest,
         is_remote_get: bool,

@@ -271,7 +271,7 @@ impl From<&str> for Node {
 }
 
 impl Node {
-    fn all_from_env() -> Vec<Self> {
+    pub fn all_from_env() -> Vec<Self> {
         let mut res = Vec::new();
 
         let value = env::var("HQL_NODES").expect("HQL_NODES does not exist");

@@ -73,6 +73,12 @@ mod query;
 #[cfg(feature = "s3")]
 pub mod s3;
 
+/// Contains everything to start the server binary.
+/// Changes inside this module are not considered breaking changes.
+/// They should only be used internally to compile the standalone binary.
+#[cfg(feature = "server")]
+pub mod server;
+
 type NodeId = u64;
 
 /// Helper macro to created Owned Params which can be serialized and sent

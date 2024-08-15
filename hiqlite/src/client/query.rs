@@ -125,7 +125,9 @@ impl Client {
         }
     }
 
-    async fn query_remote<S>(
+    /// Executes a query on remote host and returns raw rows.
+    /// This is mostly used internally and not directly.
+    pub(crate) async fn query_remote<S>(
         &self,
         stmt: S,
         params: Params,
@@ -159,7 +161,7 @@ impl Client {
         Ok(res)
     }
 
-    async fn query_remote_req(
+    pub(crate) async fn query_remote_req(
         &self,
         query: Query,
         consistent: bool,

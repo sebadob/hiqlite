@@ -1,6 +1,6 @@
 use crate::dashboard::handlers::TableFilterRequest;
 use crate::network::AppStateExt;
-use crate::query::{query_map, query_map_one};
+use crate::query::query_map;
 use crate::{params, Error, Param, Row};
 use serde::Serialize;
 
@@ -45,14 +45,14 @@ impl<'r> From<crate::Row<'r>> for Table {
 }
 
 impl Table {
-    pub async fn find(state: &AppStateExt, name: String) -> Result<Self, Error> {
-        query_map_one(
-            state,
-            "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name = $1",
-            params!(name),
-        )
-        .await
-    }
+    // pub async fn find(state: &AppStateExt, name: String) -> Result<Self, Error> {
+    //     query_map_one(
+    //         state,
+    //         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name = $1",
+    //         params!(name),
+    //     )
+    //     .await
+    // }
 
     pub async fn find_all(state: &AppStateExt) -> Result<Vec<Self>, Error> {
         let res: Vec<Self> = query_map(

@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::network::raft_server;
+use crate::network::raft_server_split;
 use crate::network::{api, management};
 use crate::{init, split_brain_check, store, Client, Error, NodeConfig};
 use axum::routing::{get, post};
@@ -119,8 +119,9 @@ where
     let (tx_shutdown, rx_shutdown) = tokio::sync::watch::channel(false);
 
     let router_internal = Router::new()
-        .route("/stream/db", get(raft_server::stream))
-        .route("/stream/cache", get(raft_server::stream))
+        .route("/stream", get(raft_server_split::stream))
+        .route("/stream/db", get(raft_server_split::stream))
+        .route("/stream/cache", get(raft_server_split::stream))
         .route("/health", get(api::health))
         .route("/ping", get(api::ping))
         // .layer(compression_middleware.clone().into_inner())

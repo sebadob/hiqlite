@@ -114,7 +114,7 @@ impl Client {
     }
 
     #[inline]
-    async fn execute_returning_req(&self, sql: Query) -> Result<Vec<RowOwned>, Error> {
+    pub(crate) async fn execute_returning_req(&self, sql: Query) -> Result<Vec<RowOwned>, Error> {
         if let Some(state) = self.is_leader_db().await {
             let res = state
                 .raft_db

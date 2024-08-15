@@ -183,7 +183,7 @@ async fn client_stream(
                     client.find_set_active_leader().await;
                 }
 
-                time::sleep(Duration::from_millis(250)).await;
+                time::sleep(Duration::from_millis(1000)).await;
                 // TODO the test deployment got stuck here for some reason
                 error!(
                     "Could not connect Client API WebSocket to {}: {}",
@@ -209,7 +209,6 @@ async fn client_stream(
         let handle_buf = cleanup_buffer_timeout(tx_read, 10);
         let mut awaiting_timeout = true;
 
-        // default working loop
         loop {
             let res = select! {
                 res = rx_read.recv_async() => res,

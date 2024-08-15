@@ -105,6 +105,7 @@ impl Client {
         tls: bool,
         tls_no_verify: bool,
         api_secret: String,
+        with_proxy: bool,
     ) -> Result<Self, Error> {
         if nodes.is_empty() {
             return Err(Error::Config(
@@ -191,7 +192,11 @@ impl Client {
             inner: Arc::new(db_client),
         };
 
-        slf.find_set_active_leader().await;
+        // It should be enough to check for DB proxy here. When running, the forward to leader
+        // errors should never be forwarded through the proxy.
+        if !with_proxy {
+            slf.find_set_active_leader().await;
+        }
 
         #[cfg(feature = "cache")]
         slf.open_stream(

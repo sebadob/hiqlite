@@ -79,7 +79,11 @@ impl Client {
         }
     }
 
-    async fn lock_await(&self, key: Cow<'static, str>, id: u64) -> Result<LockState, Error> {
+    pub(crate) async fn lock_await(
+        &self,
+        key: Cow<'static, str>,
+        id: u64,
+    ) -> Result<LockState, Error> {
         if let Some(state) = &self.inner.state {
             let (ack, rx) = oneshot::channel();
             state
@@ -97,7 +101,7 @@ impl Client {
         }
     }
 
-    async fn lock_req_retry(
+    pub(crate) async fn lock_req_retry(
         &self,
         cache_req: CacheRequest,
         is_remote_await: bool,

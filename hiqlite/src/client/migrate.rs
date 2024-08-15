@@ -25,7 +25,7 @@ impl Client {
     }
 
     #[cold]
-    async fn migrate_execute(&self, migrations: Vec<Migration>) -> Result<(), Error> {
+    pub(crate) async fn migrate_execute(&self, migrations: Vec<Migration>) -> Result<(), Error> {
         if let Some(state) = self.is_leader_db().await {
             let res = state
                 .raft_db

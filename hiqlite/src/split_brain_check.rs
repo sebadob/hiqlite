@@ -20,7 +20,7 @@ pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
 
 async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     loop {
-        time::sleep(Duration::from_secs(30)).await;
+        time::sleep(Duration::from_secs(600)).await;
 
         #[cfg(feature = "sqlite")]
         match state.raft_db.raft.current_leader().await {
@@ -31,7 +31,6 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
             Some(leader_expected) => {
                 let metrics = state.raft_db.raft.metrics().borrow().clone();
                 let membership = metrics.membership_config;
-                info!("Expected leader for DB: {}", leader_expected);
 
                 check_nodes_in_members(&nodes, &membership);
 
@@ -46,6 +45,8 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 .await
                 {
                     error!("Error during check_compare_membership: {}", err);
+                } else {
+                    info!("Raft DB Leader: {}", leader_expected);
                 }
             }
         };
@@ -59,7 +60,6 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
             Some(leader_expected) => {
                 let metrics = state.raft_cache.raft.metrics().borrow().clone();
                 let membership = metrics.membership_config;
-                info!("Expected leader for Cache: {}", leader_expected);
 
                 if let Err(err) = check_compare_membership(
                     &state,
@@ -72,6 +72,8 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 .await
                 {
                     error!("Error during check_compare_membership: {}", err);
+                } else {
+                    info!("Raft Cache Leader: {}", leader_expected);
                 }
             }
         };
@@ -126,7 +128,7 @@ async fn check_compare_membership(
         // let metrics = res.json::<RaftMetrics<u64, Node>>().await?;
         let members = metrics.membership_config;
 
-        check_nodes_in_members(&nodes, &members);
+        check_nodes_in_members(nodes, &members);
 
         if members != membership {
             error!(

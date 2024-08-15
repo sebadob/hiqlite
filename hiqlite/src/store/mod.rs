@@ -29,7 +29,6 @@ use crate::{
     },
 };
 
-// pub mod state_machine_memory;
 pub mod logs;
 pub mod state_machine;
 

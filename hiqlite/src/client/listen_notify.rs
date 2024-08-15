@@ -73,9 +73,7 @@ impl RemoteListener {
                                 break 'main;
                             }
                         }
-                        SSE::Comment(c) => {
-                            info!("SSE Event comment: {}", c);
-                        }
+                        SSE::Comment(_) => {}
                     },
                     Err(err) => {
                         error!("{:?}", err);
@@ -100,6 +98,11 @@ impl Client {
         let (_ts, bytes) = self.listen_rx().recv_async().await?;
         let res = bincode::deserialize(&bytes).unwrap();
         Ok(res)
+    }
+
+    /// Listen to events on the distributed event bus and get the raw bytes response
+    pub async fn listen_bytes(&self) -> Result<(i64, Vec<u8>), Error> {
+        Ok(self.listen_rx().recv_async().await?)
     }
 
     /// Tries to receive an event and returns immediately, is non is currently waiting.
@@ -189,7 +192,7 @@ impl Client {
         }
     }
 
-    async fn notify_req(&self, cache_req: CacheRequest) -> Result<(), Error> {
+    pub(crate) async fn notify_req(&self, cache_req: CacheRequest) -> Result<(), Error> {
         if let Some(state) = self.is_leader_cache().await {
             state.raft_cache.raft.client_write(cache_req).await?;
             Ok(())

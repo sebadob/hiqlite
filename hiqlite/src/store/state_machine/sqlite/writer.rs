@@ -132,6 +132,7 @@ pub struct RTTRequest {
 //     pub ack: oneshot::Sender<Result<(), Error>>,
 // }
 
+#[allow(clippy::blocks_in_conditions)]
 pub fn spawn_writer(
     mut conn: rusqlite::Connection,
     this_node: NodeId,

@@ -745,7 +745,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                 EntryPayload::Membership(mem) => {
                     let (ack, rx) = oneshot::channel();
                     let req = WriterRequest::MetadataMembership(writer::MetaMembershipRequest {
-                        last_membership: StoredMembership::new(Some(entry.log_id.clone()), mem),
+                        last_membership: StoredMembership::new(Some(entry.log_id), mem),
                         last_applied_log_id,
                         ack,
                     });

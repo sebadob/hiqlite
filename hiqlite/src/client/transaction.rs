@@ -36,7 +36,10 @@ impl Client {
     }
 
     #[inline(always)]
-    async fn txn_execute(&self, queries: Vec<Query>) -> Result<Vec<Result<usize, Error>>, Error> {
+    pub(crate) async fn txn_execute(
+        &self,
+        queries: Vec<Query>,
+    ) -> Result<Vec<Result<usize, Error>>, Error> {
         if let Some(state) = self.is_leader_db().await {
             let res = state
                 .raft_db

@@ -26,7 +26,7 @@ impl ServerTlsConfig {
         }
     }
 
-    pub(crate) fn from_env(variant: &str) -> Option<Self> {
+    pub fn from_env(variant: &str) -> Option<Self> {
         let key = env::var(format!("HQL_TLS_{}_KEY", variant)).ok();
         let cert = env::var(format!("HQL_TLS_{}_CERT", variant)).ok();
         let no_verify = env::var(format!("HQL_TLS_{}_DANGER_TLS_NO_VERIFY", variant))
@@ -48,7 +48,7 @@ impl ServerTlsConfig {
         }
     }
 
-    pub(crate) async fn server_config(&self) -> axum_server::tls_rustls::RustlsConfig {
+    pub async fn server_config(&self) -> axum_server::tls_rustls::RustlsConfig {
         RustlsConfig::from_pem_file(
             PathBuf::from(self.cert.as_ref()),
             PathBuf::from(self.key.as_ref()),
@@ -57,7 +57,7 @@ impl ServerTlsConfig {
         .expect("valid TLS certificate")
     }
 
-    pub(crate) fn client_config(&self) -> Arc<ClientConfig> {
+    pub fn client_config(&self) -> Arc<ClientConfig> {
         build_tls_config(self.danger_tls_no_verify)
     }
 }
