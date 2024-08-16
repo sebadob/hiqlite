@@ -16,7 +16,7 @@ an inconsistent state.
 
 Issues and discussions are not available on purpose in this early stage. It would simply not make any sense before
 v0.1.0. I will also push directly to `main` until it's hitting the first release, which will most probably break the
-examples from time to time. There is a working [0.0.3 Tag](https://github.com/sebadob/hiqlite/tree/v0.0.3), just in
+examples from time to time. There is a working [0.0.6 Tag](https://github.com/sebadob/hiqlite/tree/v0.0.6), just in
 case I do break them.
 
 The project itself is pretty useable by now. The TODO's are mainly about documentation, more examples and making
