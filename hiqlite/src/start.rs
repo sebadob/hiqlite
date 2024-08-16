@@ -5,7 +5,6 @@ use crate::{init, split_brain_check, store, Client, Error, NodeConfig};
 use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -75,14 +74,14 @@ where
     };
 
     // TODO put behind Mutex to make it dynamic?
-    let mut client_buffers = HashMap::new();
-    for node in &node_config.nodes {
-        let (tx, rx) = flume::unbounded();
-        client_buffers.insert(node.id, (tx, rx));
-    }
+    // let mut client_buffers = Default::default();
+    // for node in &node_config.nodes {
+    //     let (tx, rx) = flume::unbounded();
+    //     client_buffers.insert(node.id, (tx, rx));
+    // }
 
     #[cfg(feature = "sqlite")]
-    let (tx_client_stream, rx_client_stream) = flume::unbounded();
+    let (tx_client_stream, rx_client_stream) = flume::bounded(2);
 
     let state = Arc::new(AppState {
         id: node_config.node_id,
@@ -93,7 +92,10 @@ where
         raft_cache,
         secret_api: node_config.secret_api,
         secret_raft: node_config.secret_raft,
-        client_buffers,
+        #[cfg(feature = "sqlite")]
+        client_buffers_db: Default::default(),
+        #[cfg(feature = "cache")]
+        client_buffers_cache: Default::default(),
         #[cfg(feature = "dashboard")]
         dashboard: dashboard::DashboardState {
             password_dashboard: node_config.password_dashboard,
@@ -119,8 +121,8 @@ where
     let (tx_shutdown, rx_shutdown) = tokio::sync::watch::channel(false);
 
     let router_internal = Router::new()
-        .route("/stream", get(raft_server_split::stream))
-        .route("/stream/db", get(raft_server_split::stream))
+        // .route("/stream", get(raft_server_split::stream))
+        .route("/stream/sqlite", get(raft_server_split::stream))
         .route("/stream/cache", get(raft_server_split::stream))
         .route("/health", get(api::health))
         .route("/ping", get(api::ping))
@@ -174,7 +176,7 @@ where
         // TODO
         // .route("/query/consistent", post(api::query))
         .route("/listen", get(api::listen))
-        .route("/stream", get(api::stream))
+        .route("/stream/:raft_type", get(api::stream))
         .route("/health", get(api::health))
         .route("/ping", get(api::ping));
 

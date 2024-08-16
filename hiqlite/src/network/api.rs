@@ -1,9 +1,11 @@
 use crate::network::handshake::HandshakeSecret;
 use crate::network::{validate_secret, AppStateExt, Error};
+use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::Deref;
 use std::time::Duration;
@@ -21,20 +23,19 @@ use crate::store::state_machine::memory::dlock_handler::{
     LockAwaitPayload, LockRequest, LockState,
 };
 
+use crate::app_state::RaftType;
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
-#[cfg(feature = "listen_notify")]
-use axum::response::sse;
-#[cfg(feature = "listen_notify")]
-use futures_util::stream::Stream;
-
 #[cfg(feature = "sqlite")]
 use crate::{
     migration::Migration,
     query::{query_consistent_local, query_owned_local, rows::RowOwned},
     store::state_machine::sqlite::state_machine::{Query, QueryWrite},
 };
-
+#[cfg(feature = "listen_notify")]
+use axum::response::sse;
+#[cfg(feature = "listen_notify")]
+use futures_util::stream::Stream;
 // pub(crate) async fn write(
 //     state: AppStateExt,
 //     headers: HeaderMap,
@@ -148,7 +149,7 @@ pub async fn listen(
 ) -> Result<sse::Sse<impl Stream<Item = Result<sse::Event, Error>>>, Error> {
     validate_secret(&state, &headers)?;
 
-    let (tx, rx) = flume::unbounded();
+    let (tx, rx) = flume::bounded(2);
     state
         .raft_cache
         .tx_notify
@@ -251,12 +252,13 @@ pub async fn listen(state: AppStateExt, headers: HeaderMap) -> Result<(), Error>
 
 pub async fn stream(
     state: AppStateExt,
+    Path(raft_type): Path<RaftType>,
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
     let (response, socket) = ws.upgrade()?;
 
     tokio::task::spawn(async move {
-        if let Err(err) = handle_socket_concurrent(state, socket).await {
+        if let Err(err) = handle_socket_concurrent(state, raft_type, socket).await {
             // if let Err(err) = handle_socket_sequential(state, socket).await {
             error!("Error in websocket connection: {}", err);
         }
@@ -347,6 +349,7 @@ pub(crate) enum WsWriteMsg {
 
 async fn handle_socket_concurrent(
     state: AppStateExt,
+    raft_type: RaftType,
     socket: upgrade::UpgradeFut,
 ) -> Result<(), fastwebsockets::WebSocketError> {
     let mut ws = socket.await?;
@@ -364,36 +367,39 @@ async fn handle_socket_concurrent(
         }
     };
 
-    // make sure to NEVER lose the result of an execute from remote!
-    // if we received one which is being executed and the TCP stream dies in between, we MUST ENSURE
-    // that in case it was an Ok(_), the result gets to the client! Otherwise, with retry logic we might
-    // end up modifying something twice!
-    let (buf_tx, buf_rx) = state
-        .client_buffers
-        .get(&client_id)
-        .expect("Client ID to always be in client_buffers");
-
-    let (tx_write, rx_write) = flume::unbounded::<WsWriteMsg>();
-    // let (tx_read, rx_read) = flume::unbounded();
-
+    let (tx_write, rx_write) = flume::bounded::<WsWriteMsg>(2);
     // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
     let (rx, mut write) = ws.split(tokio::io::split);
     // IMPORTANT: the reader is NOT CANCEL SAFE in v0.8!
     let mut read = FragmentCollectorRead::new(rx);
 
-    info!("Emptying buffered Client Stream responses");
-    while let Ok(payload) = buf_rx.try_recv() {
-        let frame = Frame::binary(Payload::Borrowed(&payload));
-        if let Err(err) = write.write_frame(frame).await {
-            // if we error again, put the payload back into the buffer and exit
-            let _ = buf_tx.send_async(payload).await;
-            error!("Error during WebSocket handshake: {}", err);
-            return Ok(());
+    {
+        // make sure to NEVER lose the result of an execute from remote!
+        // if we received one which is being executed and the TCP stream dies in between, we MUST ENSURE
+        // that in case it was an Ok(_), the result gets to the client! Otherwise, with retry logic we might
+        // end up modifying something twice!
+        let mut buf = {
+            let mut map = state.get_buf_lock(&raft_type).await;
+            map.remove(&client_id).unwrap_or_default()
+        };
+
+        info!("Emptying buffered Client Stream responses");
+        while let Some(payload) = buf.pop_front() {
+            let frame = Frame::binary(Payload::Owned(payload));
+            if let Err(err) = write.write_frame(frame).await {
+                // if we error again, we will throw the buffer away, since the problem is bigger for sure
+                // and messages will most probably not be relevant anymore when we are back online
+                error!("Error during WebSocket handshake: {}", err);
+                return Ok(());
+            }
         }
     }
 
-    let buf_tx = buf_tx.clone();
+    // let buf_tx = buf_tx.clone();
+    let st = state.clone();
     let handle_write = task::spawn(async move {
+        let mut buf = VecDeque::default();
+
         while let Ok(req) = rx_write.recv_async().await {
             match req {
                 WsWriteMsg::Payload(resp) => {
@@ -403,20 +409,13 @@ async fn handle_socket_concurrent(
                         error!("Error during WebSocket write: {}", err);
                         // if we have a WebSocket error, save all open requests into the client_buffer
                         let payload = bincode::serialize(&resp).unwrap();
-                        buf_tx
-                            .send_async(payload)
-                            .await
-                            .expect("client_buffer to always be working");
-
+                        buf.push_back(payload);
                         break;
                     }
                 }
                 WsWriteMsg::Break => {
                     // we ignore any errors here since it may be possible that the reader
                     // has closed already - we just try a graceful connection close
-                    let _ = write
-                        .write_frame(Frame::close(1000, b"Invalid Request"))
-                        .await;
                     warn!("server stream break message");
                     break;
                 }
@@ -427,12 +426,24 @@ async fn handle_socket_concurrent(
         while let Ok(req) = rx_write.recv_async().await {
             if let WsWriteMsg::Payload(resp) = req {
                 let payload = bincode::serialize(&resp).unwrap();
-                buf_tx
-                    .send_async(payload)
-                    .await
-                    .expect("client_buffer to always be working");
+                buf.push_back(payload);
             }
         }
+
+        {
+            let mut lock = st.get_buf_lock(&raft_type).await;
+            let old = lock.insert(client_id, buf);
+            assert!(
+                old.is_none() || old == Some(VecDeque::default()),
+                "client buffer for {} should never exist already when we insert a new one:\n{:?}",
+                raft_type.as_str(),
+                old
+            );
+        }
+
+        let _ = write
+            .write_frame(Frame::close(1000, b"Invalid Request"))
+            .await;
 
         warn!("server stream exiting");
     });

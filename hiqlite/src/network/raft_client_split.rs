@@ -30,6 +30,7 @@ use crate::store::state_machine::memory::TypeConfigKV;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
+use crate::app_state::RaftType;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use crate::Error;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
@@ -58,6 +59,7 @@ pub struct NetworkStreaming {
     pub node_id: NodeId,
     pub tls_config: Option<Arc<rustls::ClientConfig>>,
     pub secret_raft: Vec<u8>,
+    pub raft_type: RaftType,
     // pub sender: flume::Sender<RaftRequest>,
 }
 
@@ -69,10 +71,11 @@ impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
         info!("Building new Raft Cache client with target {}", node);
 
-        let (sender, rx) = flume::unbounded();
+        let (sender, rx) = flume::bounded(2);
 
         tokio::task::spawn(Self::ws_handler(
             self.node_id,
+            self.raft_type.clone(),
             node.clone(),
             self.tls_config.clone(),
             self.secret_raft.clone(),
@@ -94,10 +97,11 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
         info!("Building new Raft DB client with target {}", node);
 
-        let (sender, rx) = flume::unbounded();
+        let (sender, rx) = flume::bounded(2);
 
         tokio::task::spawn(Self::ws_handler(
             self.node_id,
+            self.raft_type.clone(),
             node.clone(),
             self.tls_config.clone(),
             self.secret_raft.clone(),
@@ -183,6 +187,7 @@ impl NetworkStreaming {
 
     async fn ws_handler(
         this_node: NodeId,
+        raft_type: RaftType,
         node: Node,
         tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: Vec<u8>,
@@ -194,14 +199,20 @@ impl NetworkStreaming {
         let mut in_flight: HashMap<
             usize,
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-        > = HashMap::new();
+        > = HashMap::with_capacity(32);
         let mut shutdown = false;
 
         loop {
             let socket = {
                 info!("WsHandler trying to connect to {}", node.addr_raft);
-                match Self::try_connect(this_node, &node.addr_raft, tls_config.clone(), &secret)
-                    .await
+                match Self::try_connect(
+                    this_node,
+                    &node.addr_raft,
+                    &raft_type,
+                    tls_config.clone(),
+                    &secret,
+                )
+                .await
                 {
                     Ok(socket) => socket,
                     Err(err) => {
@@ -234,14 +245,19 @@ impl NetworkStreaming {
                             }
                         });
 
+                        // TODO this sleep seems to be ignored on remote node not available?
                         time::sleep(Duration::from_millis(500)).await;
                         continue;
                     }
                 }
             };
+            assert!(
+                in_flight.is_empty(),
+                "raft in flight buffer should always be empty when restoring a connection"
+            );
 
-            let (tx_write, rx_write) = flume::unbounded();
-            let (tx_read, rx_read) = flume::unbounded();
+            let (tx_write, rx_write) = flume::bounded(2);
+            let (tx_read, rx_read) = flume::bounded(2);
 
             // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
             let (read, write) = socket.split(tokio::io::split);
@@ -341,6 +357,7 @@ impl NetworkStreaming {
             for (_, ack) in in_flight.drain() {
                 let _ = ack.send(Err(Error::Connect("Raft WebSocket stream ended".into())));
             }
+            in_flight = HashMap::with_capacity(32);
 
             if shutdown {
                 break;
@@ -415,6 +432,7 @@ impl NetworkStreaming {
     async fn try_connect(
         node_id: NodeId,
         addr: &str,
+        raft_type: &RaftType,
         tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: &[u8],
     ) -> Result<WebSocket<TokioIo<Upgraded>>, Error> {
@@ -423,7 +441,7 @@ impl NetworkStreaming {
         } else {
             "http"
         };
-        let uri = format!("{}://{}/stream", scheme, addr);
+        let uri = format!("{}://{}/stream/{}", scheme, addr, raft_type.as_str());
 
         let req = Request::builder()
             .method("GET")

@@ -25,7 +25,8 @@ pub async fn handle_socket(
         return Ok(());
     };
 
-    let (tx_write, rx_write) = flume::unbounded::<WsWriteMsg>();
+    let (tx_write, rx_write) = flume::bounded::<WsWriteMsg>(2);
+    // let (tx_write, rx_write) = flume::unbounded::<WsWriteMsg>();
     // let (tx_read, rx_read) = flume::unbounded();
 
     // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
@@ -272,10 +273,7 @@ pub async fn handle_socket(
             };
 
             if let Err(err) = tx_write.send_async(WsWriteMsg::Payload(res)).await {
-                panic!(
-                    "Error sending payload to tx_write - this should never happen: {}",
-                    err
-                );
+                error!("Error sending payload to tx_write: {}", err);
             }
         });
     }

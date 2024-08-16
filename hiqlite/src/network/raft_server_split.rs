@@ -115,7 +115,7 @@ async fn handle_socket(
         return Ok(());
     }
 
-    let (tx_write, rx_write) = flume::unbounded::<WsWriteMsg>();
+    let (tx_write, rx_write) = flume::bounded::<WsWriteMsg>(2);
     let (rx, mut write) = ws.split(tokio::io::split);
     // IMPORTANT: the reader is NOT CANCEL SAFE in v0.8!
     let mut read = FragmentCollectorRead::new(rx);

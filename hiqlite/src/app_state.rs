@@ -1,7 +1,8 @@
 use crate::NodeId;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
+use tokio::sync::{Mutex, MutexGuard};
 
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::{kv_handler::CacheRequestHandler, TypeConfigKV};
@@ -10,21 +11,18 @@ use crate::store::state_machine::memory::{kv_handler::CacheRequestHandler, TypeC
 use crate::client::stream::ClientStreamReq;
 #[cfg(feature = "dashboard")]
 use crate::dashboard::DashboardState;
-#[cfg(feature = "dashboard")]
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::LockRequest;
-
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
-
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::{
     state_machine::SqlitePool, writer::WriterRequest, TypeConfigSqlite,
 };
+#[cfg(feature = "dashboard")]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RaftType {
     #[cfg(feature = "sqlite")]
@@ -57,15 +55,31 @@ pub struct AppState {
     pub raft_cache: StateRaftCache,
     pub secret_raft: String,
     pub secret_api: String,
-    // TODO this should become dynamic at some point to make dynamic cluster changes possible in the future
-    #[allow(clippy::type_complexity)]
-    pub client_buffers: HashMap<NodeId, (flume::Sender<Vec<u8>>, flume::Receiver<Vec<u8>>)>,
+    #[cfg(feature = "sqlite")]
+    pub client_buffers_db: Mutex<HashMap<NodeId, VecDeque<Vec<u8>>>>,
+    #[cfg(feature = "cache")]
+    pub client_buffers_cache: Mutex<HashMap<NodeId, VecDeque<Vec<u8>>>>,
     #[cfg(feature = "dashboard")]
     pub dashboard: DashboardState,
     #[cfg(feature = "dashboard")]
     pub client_request_id: AtomicUsize,
     #[cfg(feature = "dashboard")]
     pub tx_client_stream: flume::Sender<ClientStreamReq>,
+}
+
+impl AppState {
+    pub async fn get_buf_lock(
+        &self,
+        raft_type: &RaftType,
+    ) -> MutexGuard<HashMap<NodeId, VecDeque<Vec<u8>>>> {
+        match raft_type {
+            #[cfg(feature = "sqlite")]
+            RaftType::Sqlite => self.client_buffers_db.lock().await,
+            #[cfg(feature = "cache")]
+            RaftType::Cache => self.client_buffers_cache.lock().await,
+            RaftType::Unknown => unreachable!("Invalid RaftType"),
+        }
+    }
 }
 
 #[cfg(feature = "dashboard")]
