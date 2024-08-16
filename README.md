@@ -94,11 +94,6 @@ in case of any errors or problems.
 
 ### TODOs before v0.1.0
 
-- fully implemented remote client in case you don't embed Hiqlite -> currently missing:
-    - [x] query_* fn's
-    - [x] cache operations
-    - [x] get distributed lock
-    - [x] listen / notify
-    - [x] auto remote failover for the client based on a given list of nodes in case of leader unreachable
+- real world stability testing and fixes
 - proper documentation
 - more examples
