@@ -97,4 +97,3 @@ in case of any errors or problems.
 
 - real world stability testing and fixes
 - proper documentation
-- more examples
