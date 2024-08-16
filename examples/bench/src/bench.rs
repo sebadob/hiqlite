@@ -40,8 +40,10 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
         rows, concurrency, elapsed, per_second
     ));
 
+    // The batch sizes here heavily influence the WebSocket buffers. If we send batches of ~10k
+    // queries at once, it is very fast, but the internal buffers will grow up to a size that can
+    // hold these big messages.
     cleanup(&client).await?;
-
     let elapsed = insert_concurrent(client.clone(), &options, data.clone(), true).await?;
     let per_second = rows * 1000 / elapsed as usize;
     log(format!(
@@ -177,7 +179,7 @@ async fn put_cache(
         let handle = task::spawn(async move {
             for entity in set {
                 client
-                    .put(Cache::One, entity.name.clone(), &entity, None)
+                    .put(Cache::One, entity.name.clone(), &entity, Some(30))
                     .await
                     .unwrap();
             }
