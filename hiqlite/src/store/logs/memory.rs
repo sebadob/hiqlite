@@ -20,7 +20,6 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::time::Instant;
 use tokio::{fs, task};
 use tracing::info;
-use tracing::log::__private_api::log;
 
 type Logs = Arc<RwLock<VecDeque<Entry<TypeConfigKV>>>>;
 
