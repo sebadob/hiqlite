@@ -10,7 +10,7 @@ them checks all boxes. They either require an additional independent process run
 replication, need a special file system, or are running as a server.
 
 I don't think that running SQLite as a server is a good solution. Yes, it is very resource friendly and it may
-be a good solution when you are heavily resource constrained, but you loose its biggest strength when doing this: having
+be a good solution when you are heavily resource constrained, but you lose its biggest strength when doing this: having
 all you data local, which makes reads superfast without network latency.  
 Hiqlite builds on top of `rusqlite` and provides an async wrapper around it to make it easy usable with `tokio`. For the
 Raft logic, it builds on top of`openraft` while providing its own storage and network implementations.
@@ -48,7 +48,7 @@ in case of any errors or problems.
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
-- fully encrypted backups to s3 (
+- fully encrypted backups to s3, cron job or manual (
   with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr) )
 - restore from remote backup (with log index roll-over)
 - strongly consistent, replicated `execute` queries
@@ -70,10 +70,10 @@ in case of any errors or problems.
 - `dlock` feature provides access to distributed locks
 - integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
   done
+  ![dashboard screenshot](https://raw.githubusercontent.com/sebadob/hiqlite/main/dashboard/screenshot.png)
 
 ### TODOs before v0.1.0
 
-- fully capable remote client in case you don't embed Hiqlite
+- real world stability testing and fixes
 - proper documentation
 - more examples
-- default auto-backup task
