@@ -16,7 +16,7 @@ struct Entity {
     pub description: Option<String>,
 }
 
-// This impl is needed for the more efficient and faster `query_map()`
+// This impl is needed for `query_map()` which gives you more control
 impl<'r> From<Row<'r>> for Entity {
     fn from(mut row: Row<'r>) -> Self {
         Self {
@@ -60,8 +60,8 @@ async fn main() -> Result<(), Error> {
     log("Let's get the data back from the DB in easy mode");
 
     // The `.query_as` can be used for types that implement serde::Serialize / ::Deserialize.
-    // This is easier and less work to implement, but a bit less efficient and slower than a
-    // manual implementation of `From<Row>`.
+    // This is easier and less work to implement, but you have less control compared to a manual
+    // `impl<'r> From<Row<'r>>`
 
     let res: Entity = client
         .query_as_one("SELECT * FROM test WHERE id = $1", params!("id1"))
@@ -76,10 +76,6 @@ async fn main() -> Result<(), Error> {
 
     log("Let's get the data back from the DB in a more efficient and faster way with more manual work");
 
-    // The `.query_one` can be used for types that implement `impl<'r> From<&'r hiqlite::Row<'r>>``.
-    // This requires an additional manual step (no derive macro exists so far), but it is a
-    // more efficient and faster way to map a query result to a `struct`.
-
     let res: Entity = client
         .query_map_one("SELECT * FROM test WHERE id = $1", params!("id1"))
         .await?;
@@ -92,7 +88,6 @@ async fn main() -> Result<(), Error> {
     );
 
     // Instead of the *_one queries, you can leave it out to retrieve multiple rows
-
     let res: Vec<Entity> = client
         .query_map("SELECT * FROM test WHERE id = $1", params!("id1"))
         .await?;
