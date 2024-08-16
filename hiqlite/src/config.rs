@@ -203,10 +203,10 @@ impl NodeConfig {
             election_timeout_min: 750,
             election_timeout_max: 1500,
             heartbeat_interval: 150,
-            install_snapshot_timeout: 5000,
+            install_snapshot_timeout: 10_000,
             send_snapshot_timeout: 0,
             max_payload_entries: 128,
-            replication_lag_threshold: 5000,
+            replication_lag_threshold: logs_until_snapshot * 2,
             snapshot_policy: SnapshotPolicy::LogsSinceLast(logs_until_snapshot),
             snapshot_max_chunk_size: 3 * 1024 * 1024,
             // be careful when adjusting this because of `backup::restore_backup_cleanup_task()`
