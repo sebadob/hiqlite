@@ -101,7 +101,7 @@ impl Client {
                         return metrics;
                     }
                     Err(err) => {
-                        error!("Error looking up metrics: {}", err);
+                        error!("Error looking up Cache metrics: {}", err);
                     }
                 }
             }
@@ -123,11 +123,11 @@ impl Client {
                         return metrics;
                     }
                     Err(err) => {
-                        error!("Error looking up metrics: {}", err);
+                        error!("Error looking up DB metrics: {}", err);
                     }
                 }
             }
-            time::sleep(Duration::from_secs(1)).await;
+            time::sleep(Duration::from_millis(500)).await;
         }
     }
 

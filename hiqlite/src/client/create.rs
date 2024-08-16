@@ -1,4 +1,4 @@
-use crate::app_state::AppState;
+use crate::app_state::{AppState, RaftType};
 use crate::client::DbClient;
 use crate::{tls, Client, Error};
 use std::sync::atomic::AtomicUsize;
@@ -31,7 +31,7 @@ impl Client {
         let leader_db = Arc::new(RwLock::new((leader_id, leader_addr)));
 
         #[cfg(feature = "cache")]
-        let (tx_client_cache, rx_client_cache) = flume::unbounded();
+        let (tx_client_cache, rx_client_cache) = flume::bounded(2);
 
         // #[cfg(feature = "cache")]
         // Self::open_stream(
@@ -89,9 +89,15 @@ impl Client {
             secret.clone(),
             slf.inner.leader_cache.clone(),
             rx_client_cache,
+            RaftType::Cache,
         );
         #[cfg(feature = "sqlite")]
-        slf.open_stream(secret, slf.inner.leader_db.clone(), rx_client_db);
+        slf.open_stream(
+            secret,
+            slf.inner.leader_db.clone(),
+            rx_client_db,
+            RaftType::Sqlite,
+        );
 
         slf
     }
@@ -129,9 +135,9 @@ impl Client {
         let leader_db = Arc::new(RwLock::new((node_id, node_addr)));
 
         #[cfg(feature = "sqlite")]
-        let (tx_client_db, rx_client_db) = flume::unbounded();
+        let (tx_client_db, rx_client_db) = flume::bounded(2);
         #[cfg(feature = "cache")]
-        let (tx_client_cache, rx_client_cache) = flume::unbounded();
+        let (tx_client_cache, rx_client_cache) = flume::bounded(2);
 
         #[cfg(feature = "listen_notify")]
         let rx_notify = Some(RemoteListener::spawn(
@@ -203,9 +209,15 @@ impl Client {
             api_secret_bytes.clone(),
             slf.inner.leader_cache.clone(),
             rx_client_cache,
+            RaftType::Cache,
         );
         #[cfg(feature = "sqlite")]
-        slf.open_stream(api_secret_bytes, slf.inner.leader_db.clone(), rx_client_db);
+        slf.open_stream(
+            api_secret_bytes,
+            slf.inner.leader_db.clone(),
+            rx_client_db,
+            RaftType::Sqlite,
+        );
 
         Ok(slf)
     }

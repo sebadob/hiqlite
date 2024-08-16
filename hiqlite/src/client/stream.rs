@@ -24,11 +24,11 @@ use tracing::{debug, error, info, warn};
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::state_machine::CacheRequest;
 
-#[cfg(feature = "sqlite")]
-use crate::{migration::Migration, store::state_machine::sqlite::state_machine::Query};
-
+use crate::app_state::RaftType;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use crate::network::api::{ApiStreamRequest, ApiStreamRequestPayload};
+#[cfg(feature = "sqlite")]
+use crate::{migration::Migration, store::state_machine::sqlite::state_machine::Query};
 
 #[derive(Debug)]
 pub enum ClientStreamReq {
@@ -140,12 +140,14 @@ impl Client {
         secret: Vec<u8>,
         leader: Arc<RwLock<(NodeId, String)>>,
         rx_client_stream: flume::Receiver<ClientStreamReq>,
+        raft_type: RaftType,
     ) {
         task::spawn(client_stream(
             self.clone(),
             secret,
             leader,
             rx_client_stream,
+            raft_type,
         ));
     }
 }
@@ -154,14 +156,14 @@ impl Client {
 /// handles reconnects and leader switches.
 async fn client_stream(
     client: Client,
-    // tls_config: Option<Arc<rustls::ClientConfig>>,
     secret: Vec<u8>,
     leader: Arc<RwLock<(NodeId, String)>>,
     rx_req: flume::Receiver<ClientStreamReq>,
+    raft_type: RaftType,
 ) {
     // HashMap vs Vec here: map in favor if we have typically more than ~20 in flight requests
     let mut in_flight: HashMap<usize, oneshot::Sender<Result<ApiStreamResponsePayload, Error>>> =
-        HashMap::new();
+        HashMap::with_capacity(32);
     let mut in_flight_buf: HashMap<
         usize,
         oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
@@ -170,7 +172,14 @@ async fn client_stream(
     let mut shutdown = false;
 
     loop {
-        let ws = match try_connect(&leader, client.inner.tls_config.clone(), &secret).await {
+        let ws = match try_connect(
+            &leader,
+            &raft_type,
+            client.inner.tls_config.clone(),
+            &secret,
+        )
+        .await
+        {
             Ok(ws) => {
                 info!(
                     "Client API WebSocket to {} opened successfully",
@@ -195,8 +204,8 @@ async fn client_stream(
         };
 
         // TODO should we make this bounded to prevent stuff like overloading the leader?
-        let (tx_write, rx_write) = flume::unbounded();
-        let (tx_read, rx_read) = flume::unbounded();
+        let (tx_write, rx_write) = flume::bounded(2);
+        let (tx_read, rx_read) = flume::bounded(2);
 
         // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
         let (rx, write) = ws.split(tokio::io::split);
@@ -464,6 +473,9 @@ async fn client_stream(
                 }
 
                 ClientStreamReq::CleanupBuffer => {
+                    for (_, ack) in in_flight_buf {
+                        let _ = ack.send(Err(Error::Connect("request timed out".to_string())));
+                    }
                     in_flight_buf = HashMap::new();
                     awaiting_timeout = false;
                     None
@@ -581,6 +593,8 @@ async fn client_stream(
         for (req_id, ack) in in_flight.drain() {
             in_flight_buf.insert(req_id, ack);
         }
+        assert!(in_flight.is_empty());
+        in_flight = HashMap::with_capacity(32);
 
         info!("tasks killed - re-connect");
     }
@@ -727,6 +741,7 @@ where
 
 async fn try_connect(
     leader: &Arc<RwLock<(NodeId, String)>>,
+    raft_type: &RaftType,
     tls_config: Option<Arc<rustls::ClientConfig>>,
     secret: &[u8],
 ) -> Result<WebSocket<TokioIo<Upgraded>>, Error> {
@@ -735,11 +750,12 @@ async fn try_connect(
         (lock.0, lock.1.clone())
     };
 
-    let uri = if tls_config.is_some() {
-        format!("https://{}/stream", addr)
+    let scheme = if tls_config.is_some() {
+        "https"
     } else {
-        format!("http://{}/stream", addr)
+        "http"
     };
+    let uri = format!("{}://{}/stream/{}", scheme, addr, raft_type.as_str());
 
     let req = Request::builder()
         .method("GET")
