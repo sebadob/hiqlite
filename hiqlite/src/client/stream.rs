@@ -47,9 +47,9 @@ pub enum ClientStreamReq {
     Batch(ClientBatchPayload),
     #[cfg(feature = "sqlite")]
     Migrate(ClientMigratePayload),
+
     #[cfg(feature = "backup")]
     Backup(ClientBackupPayload),
-    Shutdown,
 
     #[cfg(feature = "cache")]
     KV(ClientKVPayload),
@@ -61,6 +61,8 @@ pub enum ClientStreamReq {
 
     #[cfg(feature = "listen_notify")]
     Notify(ClientKVPayload),
+
+    Shutdown,
 
     // coming from the WebSocket reader
     StreamResponse(ApiStreamResponse),
@@ -161,7 +163,6 @@ async fn client_stream(
     rx_req: flume::Receiver<ClientStreamReq>,
     raft_type: RaftType,
 ) {
-    // HashMap vs Vec here: map in favor if we have typically more than ~20 in flight requests
     let mut in_flight: HashMap<usize, oneshot::Sender<Result<ApiStreamResponsePayload, Error>>> =
         HashMap::with_capacity(32);
     let mut in_flight_buf: HashMap<
@@ -189,11 +190,11 @@ async fn client_stream(
             }
             Err(err) => {
                 if let Error::Connect(_) = &err {
+                    // TODO keep track if we are connected through a proxy and skip ?
                     client.find_set_active_leader().await;
                 }
 
                 time::sleep(Duration::from_millis(1000)).await;
-                // TODO the test deployment got stuck here for some reason
                 error!(
                     "Could not connect Client API WebSocket to {}: {}",
                     leader.read().await.1,
@@ -203,7 +204,6 @@ async fn client_stream(
             }
         };
 
-        // TODO should we make this bounded to prevent stuff like overloading the leader?
         let (tx_write, rx_write) = flume::bounded(2);
         let (tx_read, rx_read) = flume::bounded(2);
 
@@ -227,13 +227,10 @@ async fn client_stream(
                 Ok(req) => req,
                 Err(err) => {
                     error!("Client stream reader error: {}", err,);
-
                     if rx_req.is_disconnected() {
                         let _ = tx_write.send_async(WritePayload::Close).await;
                         shutdown = true;
-                        break;
                     }
-
                     break;
                 }
             };
@@ -578,7 +575,7 @@ async fn client_stream(
                     try_forward_response(&mut in_flight, &mut in_flight_buf, false, resp).await;
                 }
                 ClientStreamReq::CleanupBuffer => {
-                    // ignore in this case
+                    // ignore - we are re-connecting anyway
                 }
             }
         }
@@ -594,9 +591,10 @@ async fn client_stream(
             in_flight_buf.insert(req_id, ack);
         }
         assert!(in_flight.is_empty());
+        // reset to a reasonable size for the next start to keep memory usage under control
         in_flight = HashMap::with_capacity(32);
 
-        info!("tasks killed - re-connect");
+        info!("client stream tasks killed - re-connecting now");
     }
 }
 

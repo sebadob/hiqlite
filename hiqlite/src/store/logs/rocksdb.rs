@@ -416,11 +416,9 @@ impl LogStoreRocksdb {
         opts.create_missing_column_families(true);
         opts.create_if_missing(true);
 
-        // TODO accept 2 config decisions: Efficiency + Performance
         // opts.set_use_direct_io_for_flush_and_compaction(true);
         // opts.set_use_direct_reads(true);
         // opts.set_enable_pipelined_write(true);
-
         // opts.increase_parallelism(2);
 
         opts.set_log_level(LogLevel::Warn);
@@ -490,7 +488,7 @@ impl RaftLogReader<TypeConfigSqlite> for LogStoreRocksdb {
         let from = id_to_bin(start);
         // let until = id_to_bin(end);
 
-        let (ack, rx) = flume::unbounded();
+        let (ack, rx) = flume::bounded(2);
         self.tx_reader
             .send_async(ActionRead::Logs(ActionReadLogs { from, until, ack }))
             .await
@@ -622,7 +620,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
         tracing::debug!("delete_log: [{:?}, +oo)", log_id);
 
         let from = id_to_bin(log_id.index);
-        let until = id_to_bin(0xff_ff_ff_ff_ff_ff_ff_ff);
+        let until = id_to_bin(u64::MAX);
 
         let (ack, rx) = oneshot::channel();
         self.tx_writer

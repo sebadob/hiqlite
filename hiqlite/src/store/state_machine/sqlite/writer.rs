@@ -436,11 +436,6 @@ pub fn spawn_writer(
                     ack.send(()).unwrap()
                 }
 
-                WriterRequest::Shutdown(ack) => {
-                    let _ = ack.send(());
-                    break;
-                }
-
                 WriterRequest::MetadataRead(ack) => {
                     if sm_data.last_applied_log_id.is_none() {
                         let mut stmt = conn
@@ -522,6 +517,11 @@ pub fn spawn_writer(
                 WriterRequest::RTT(req) => {
                     sm_data.last_applied_log_id = req.last_applied_log_id;
                     req.ack.send(()).unwrap();
+                }
+
+                WriterRequest::Shutdown(ack) => {
+                    let _ = ack.send(());
+                    break;
                 }
             }
         }

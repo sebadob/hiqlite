@@ -1,3 +1,4 @@
+use crate::app_state::RaftType;
 use crate::network::handshake::HandshakeSecret;
 use crate::network::{validate_secret, AppStateExt, Error};
 use axum::extract::Path;
@@ -23,15 +24,15 @@ use crate::store::state_machine::memory::dlock_handler::{
     LockAwaitPayload, LockRequest, LockState,
 };
 
-use crate::app_state::RaftType;
-#[cfg(feature = "listen_notify")]
-use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 #[cfg(feature = "sqlite")]
 use crate::{
     migration::Migration,
     query::{query_consistent_local, query_owned_local, rows::RowOwned},
     store::state_machine::sqlite::state_machine::{Query, QueryWrite},
 };
+
+#[cfg(feature = "listen_notify")]
+use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 #[cfg(feature = "listen_notify")]
 use axum::response::sse;
 #[cfg(feature = "listen_notify")]
@@ -355,8 +356,6 @@ async fn handle_socket_concurrent(
     let mut ws = socket.await?;
     ws.set_auto_close(true);
 
-    // let mut ws = fastwebsockets::FragmentCollector::new(socket.await?);
-
     let client_id = match HandshakeSecret::server(&mut ws, state.secret_api.as_bytes()).await {
         Ok(id) => id,
         Err(err) => {
@@ -375,9 +374,9 @@ async fn handle_socket_concurrent(
 
     {
         // make sure to NEVER lose the result of an execute from remote!
-        // if we received one which is being executed and the TCP stream dies in between, we MUST ENSURE
-        // that in case it was an Ok(_), the result gets to the client! Otherwise, with retry logic we might
-        // end up modifying something twice!
+        // if we received one which is being executed and the TCP stream dies in between, we MUST
+        // ENSURE that in case it was an Ok(_), the result gets to the client! Otherwise, with retry
+        // logic we might end up modifying something twice!
         let mut buf = {
             let mut map = state.get_buf_lock(&raft_type).await;
             map.remove(&client_id).unwrap_or_default()
@@ -387,15 +386,15 @@ async fn handle_socket_concurrent(
         while let Some(payload) = buf.pop_front() {
             let frame = Frame::binary(Payload::Owned(payload));
             if let Err(err) = write.write_frame(frame).await {
-                // if we error again, we will throw the buffer away, since the problem is bigger for sure
-                // and messages will most probably not be relevant anymore when we are back online
+                // if we error again, we will throw the buffer away, since the problem is bigger
+                // for sure and messages will most probably not be relevant anymore when we are
+                // back online
                 error!("Error during WebSocket handshake: {}", err);
                 return Ok(());
             }
         }
     }
 
-    // let buf_tx = buf_tx.clone();
     let st = state.clone();
     let handle_write = task::spawn(async move {
         let mut buf = VecDeque::default();
@@ -471,8 +470,6 @@ async fn handle_socket_concurrent(
                     Ok(req) => req,
                     Err(err) => {
                         error!("Error deserializing ApiStreamRequest: {:?}", err);
-                        // ws.write_frame(Frame::close(1000, b"Error deserializing ApiStreamRequest"))
-                        //     .await?;
                         let _ = tx_write.send_async(WsWriteMsg::Break).await;
                         break;
                     }
@@ -480,8 +477,6 @@ async fn handle_socket_concurrent(
             }
             _ => {
                 let _ = tx_write.send_async(WsWriteMsg::Break).await;
-                // ws.write_frame(Frame::close(1000, b"Invalid Request"))
-                //     .await?;
                 break;
             }
         };

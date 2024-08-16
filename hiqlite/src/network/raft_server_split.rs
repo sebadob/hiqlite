@@ -179,6 +179,7 @@ async fn handle_socket(
 
         let tx_write = tx_write.clone();
         let state = state.clone();
+        // TODO wrap this spawn in a timeout to prevent possible leaks?
         task::spawn(async move {
             let bytes = match req {
                 #[cfg(feature = "sqlite")]

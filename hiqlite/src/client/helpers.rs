@@ -31,7 +31,6 @@ impl Client {
     }
 
     pub(crate) async fn find_set_active_leader(&self) {
-        // pub(crate) async fn find_set_active_leader(&self) -> Result<(), Error> {
         if let Some(state) = &self.inner.state {
             // we never need to do any remote lookups for metrics -> get can never fail
             #[cfg(feature = "sqlite")]

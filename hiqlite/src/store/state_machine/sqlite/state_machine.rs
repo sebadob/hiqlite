@@ -361,6 +361,7 @@ impl StateMachineSqlite {
     async fn connect_read_pool(path: &str, filename_db: &str) -> Result<SqlitePool, Error> {
         let path_full = format!("{}/{}", path, filename_db);
 
+        // TODO configurable read pool size
         let amount = 4;
         let mut conns = Vec::with_capacity(amount);
         for _ in 0..amount {
@@ -439,7 +440,7 @@ impl StateMachineSqlite {
             // conn.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
         }
 
-        // TODO make this configurable
+        // TODO make configurable
         conn.set_prepared_statement_cache_capacity(1024);
 
         Ok(())
@@ -455,7 +456,6 @@ impl StateMachineSqlite {
             .await
             .expect("SQLite Writer rx to always be listening");
 
-        // self.data = rx.await.expect("Snapshot installation to succeed");
         rx.await.expect("Snapshot installation to succeed");
 
         Ok(())
@@ -619,7 +619,12 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         for entry in entries {
             let last_applied_log_id = Some(entry.log_id);
 
+            // TODO if we always collect 1 in-flight req in a temp var to always have 1 req prepared
+            // before we await the rx before, we could probably improve the throughput here a bit
+            // in exchange for a more complicated logic -> test!
+
             let resp = match entry.payload {
+                // TODO we probably need to update the log id in writer in case of ::Empty?
                 EntryPayload::Blank => Response::Empty,
 
                 EntryPayload::Normal(QueryWrite::Execute(Query { sql, params })) => {

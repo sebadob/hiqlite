@@ -120,7 +120,7 @@ pub async fn handle_socket(
         let tx_write = tx_write.clone();
         task::spawn(async move {
             let client = &state.client;
-            // TODO exchange orig req id for our own to avoid conflicts and match in WS Reader
+            // exchange orig req id for our own to avoid conflicts
             let request_id = req.request_id;
 
             let res = match req.payload {

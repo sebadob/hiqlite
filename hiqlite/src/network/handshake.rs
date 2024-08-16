@@ -15,8 +15,8 @@ impl HandshakeSecret {
         let frame = ws.read_frame().await?;
         let challenge_response = match frame.opcode {
             OpCode::Binary => {
-                let bytes = frame.payload.to_vec();
-                let challenge: Challenge = bincode::deserialize(&bytes)?;
+                let bytes = frame.payload.as_ref();
+                let challenge: Challenge = bincode::deserialize(bytes)?;
                 ChallengeResponse::new(node_id, &challenge, secret)?
             }
             _ => {
@@ -32,8 +32,8 @@ impl HandshakeSecret {
         let frame = ws.read_frame().await?;
         match frame.opcode {
             OpCode::Binary => {
-                let bytes = frame.payload.to_vec();
-                let response: ResponseFinal = bincode::deserialize(&bytes)?;
+                let bytes = frame.payload.as_ref();
+                let response: ResponseFinal = bincode::deserialize(bytes)?;
                 response.verify(&challenge_response, secret)?;
             }
             _ => {
@@ -60,8 +60,8 @@ impl HandshakeSecret {
         let frame = ws.read_frame().await?;
         let (node_id, response) = match frame.opcode {
             OpCode::Binary => {
-                let bytes = frame.payload.to_vec();
-                let challenge_response: ChallengeResponse = bincode::deserialize(&bytes)?;
+                let bytes = frame.payload.as_ref();
+                let challenge_response: ChallengeResponse = bincode::deserialize(bytes)?;
                 let resp = challenge_response.verify(&challenge, secret)?;
                 (challenge_response.node_id, resp)
             }

@@ -1,22 +1,21 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
+use crate::network::HEADER_NAME_SECRET;
 use crate::{Client, Error};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
+use tracing::info;
 
 #[cfg(feature = "sqlite")]
 use crate::store::{logs::rocksdb::ActionWrite, state_machine::sqlite::writer::WriterRequest};
-
-use crate::network::HEADER_NAME_SECRET;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use crate::{Node, NodeId};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use openraft::RaftMetrics;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use std::clone::Clone;
-use tracing::info;
 
 impl Client {
     #[cfg(feature = "sqlite")]

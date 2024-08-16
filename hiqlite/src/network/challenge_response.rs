@@ -55,7 +55,7 @@ impl ChallengeResponse {
             .to_vec();
 
         if self.response != verify {
-            return Err(Error::BadRequest("Invalid ChallengeResposne".into()));
+            return Err(Error::BadRequest("Invalid ChallengeResponse".into()));
         }
 
         let response_new = Sha256::new()
@@ -84,7 +84,7 @@ impl ResponseFinal {
             .to_vec();
 
         if self.0 != verify {
-            Err(Error::BadRequest("Invalid ChallengeResposne".into()))
+            Err(Error::BadRequest("Invalid ChallengeResponse".into()))
         } else {
             Ok(())
         }
