@@ -472,6 +472,8 @@ pub fn spawn_writer(
                 WriterRequest::Backup(req) => {
                     sm_data.last_applied_log_id = req.last_applied_log_id;
 
+                    // TODO include a TS in the req to skip backups if they are replayed after
+                    // a restart
                     let now = Utc::now();
                     if let Some(ts) = ts_last_backup {
                         if ts > now.sub(chrono::Duration::seconds(60)) {

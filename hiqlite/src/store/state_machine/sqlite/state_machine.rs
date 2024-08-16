@@ -411,24 +411,25 @@ impl StateMachineSqlite {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "journal_size_limit", 16384)?;
         conn.pragma_update(None, "wal_autocheckpoint", 4_000)?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        // conn.pragma_update(None, "busy_timeout", "5000")?;
+
         conn.pragma_update(None, "temp_store", "memory")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
 
         conn.pragma_update(None, "optimize", "0x10002")?;
 
-        // TODO maybe add a 'paranoid' level to sync absolutely everything all the time
-        // TODO req / s would go down to ~300 / s for a single thread though
-        // conn.pragma_update(None, "synchronous", "FULL")?;
+        // synchronous set to OFF is not an issue in our case.
+        // If the OS crashes before it could flush any buffers to disk, we will rebuild the DB
+        // anyway from the logs store just to be 100% sure that all cluster members are in a
+        // consistent state. Setting it to OFF here gives us an ~18% boost compared to NORMAL while
+        // not having any disadvantage with the Raft setup.
+        conn.pragma_update(None, "synchronous", "OFF")?;
 
-        // the default is 4096, but increasing makes sense if you write bigger rows
-        // conn.pragma_update(None, "page_size", 4096).unwrap();
+        conn.pragma_update(None, "page_size", 4096).unwrap();
 
         // if set, it will try to keep the whole DB cached in memory, if it fits
         // not set currently for better comparison to sqlx
-        // conn.pragma_update(None, "mmap_size", "30000000000")
+        // conn.pragma_update(None, "mmap_size", (16i64 * 1024 * 1024 * 1024).to_string())
         //     .unwrap();
 
         // only allow select statements
@@ -518,8 +519,14 @@ impl StateMachineSqlite {
         let metadata = task::spawn_blocking(move || {
             let mut stmt = conn
                 .prepare("SELECT data FROM _metadata WHERE key = 'meta'")
-                .map_err(|err| StorageError::IO {
-                    source: StorageIOError::write(&err),
+                .map_err(|err| {
+                    error!(
+                        "Error preparing metadata read stmt in read from snapshot: {}",
+                        err
+                    );
+                    StorageError::IO {
+                        source: StorageIOError::write(&err),
+                    }
                 })?;
             let mut metadata = stmt
                 .query_row((), |row| {
@@ -528,8 +535,11 @@ impl StateMachineSqlite {
                         bincode::deserialize(&meta_bytes).expect("Metadata to deserialize ok");
                     Ok(metadata)
                 })
-                .map_err(|err| StorageError::IO {
-                    source: StorageIOError::write(&err),
+                .map_err(|err| {
+                    error!("Error reading metadata from Snapshot: {}", err);
+                    StorageError::IO {
+                        source: StorageIOError::write(&err),
+                    }
                 })?;
 
             Ok::<StateMachineData, StorageError<NodeId>>(metadata)
@@ -537,10 +547,22 @@ impl StateMachineSqlite {
         .await
         .map_err(|err| StorageError::IO {
             source: StorageIOError::write(&err),
-        })??;
+        })?;
 
+        if metadata.is_err() {
+            // this may happen if the whole node / OS crashes and the DB got corrupted
+            // -> delete snapshot and fetch from remote
+            error!(
+                "Found corrupted snapshot file, removing it: {}",
+                path_snapshot
+            );
+            if let Err(err) = fs::remove_file(path_snapshot).await {
+                error!("Error deleting corrupted snapshot: {}", err);
+            }
+            return Ok(None);
+        }
+        let metadata = metadata?;
         let snapshot_id = id.to_string();
-
         assert_eq!(
             Some(snapshot_id.as_str()),
             metadata.last_snapshot_id.as_deref()

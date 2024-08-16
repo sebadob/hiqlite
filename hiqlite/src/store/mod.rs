@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, RaftType};
 use crate::network::NetworkStreaming;
 use crate::{init, Error, NodeConfig, NodeId, RaftConfig};
 use num_traits::ToPrimitive;
@@ -61,6 +61,7 @@ pub(crate) async fn start_raft_db(
         node_id: node_config.node_id,
         tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
+        raft_type: RaftType::Sqlite,
     };
 
     // Create a local raft instance.
@@ -113,6 +114,7 @@ where
         node_id: node_config.node_id,
         tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
+        raft_type: RaftType::Cache,
     };
 
     let tx_caches = state_machine_store.tx_caches.clone();

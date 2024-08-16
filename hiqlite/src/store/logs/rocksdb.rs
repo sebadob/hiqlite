@@ -416,9 +416,12 @@ impl LogStoreRocksdb {
         opts.create_missing_column_families(true);
         opts.create_if_missing(true);
 
-        opts.set_use_direct_io_for_flush_and_compaction(true);
-        opts.set_use_direct_reads(true);
-        opts.increase_parallelism(2);
+        // TODO accept 2 config decisions: Efficiency + Performance
+        // opts.set_use_direct_io_for_flush_and_compaction(true);
+        // opts.set_use_direct_reads(true);
+        // opts.set_enable_pipelined_write(true);
+
+        // opts.increase_parallelism(2);
 
         opts.set_log_level(LogLevel::Warn);
         opts.set_max_log_file_size(2 * 1024 * 1024);
@@ -427,26 +430,26 @@ impl LogStoreRocksdb {
         // TODO check if we can have a setup that never writes SST files and only ever uses a WAL
         // with rollover -> maybe manual wal compaction on purge?
         // TODO needs fine-tuning https://github.com/facebook/rocksdb/wiki/Write-Ahead-Log-(WAL)
-        // TODO double check that our own LocsSyncer does everything properly or if we can optimize
-        opts.set_manual_wal_flush(true);
+        // TODO double check that our own LogsSyncer does everything properly or if we can optimize
+        // opts.set_manual_wal_flush(true);
 
         opts.set_compression_type(DBCompressionType::None);
         // TODO maybe disable auto compaction and do it after every purge / truncate manually?
         opts.set_periodic_compaction_seconds(24 * 60 * 60);
         opts.set_max_manifest_file_size(4 * 1024 * 1024);
-        opts.set_enable_pipelined_write(true);
 
-        // WAL for metadata
-        opts.set_write_buffer_size(1024 * 1024);
+        opts.set_write_buffer_size(128 * 1024);
         opts.set_max_total_wal_size(1024 * 1024);
         opts.set_wal_size_limit_mb(1);
         let meta = ColumnFamilyDescriptor::new("meta", opts.clone());
 
-        // WAL for the logs
-        opts.set_write_buffer_size(4 * 1024 * 1024);
-        // default: 64mb
-        // TODO maybe super high wal size limit and handle it via snapshot policy is better?
-        opts.set_wal_size_limit_mb(64);
+        // 2MB is absolutely enough here after testing,
+        // as long as SQLite is the SM and the limiting factor
+        opts.set_write_buffer_size(2 * 1024 * 1024);
+
+        let wal_mb_logs = 64;
+        opts.set_max_total_wal_size(wal_mb_logs * 1024 * 1024);
+        opts.set_wal_size_limit_mb(wal_mb_logs);
         let logs = ColumnFamilyDescriptor::new("logs", opts.clone());
 
         let db = DB::open_cf_descriptors(&opts, dir, vec![meta, logs]).unwrap();
