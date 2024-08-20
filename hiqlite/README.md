@@ -252,7 +252,7 @@ when you don't even have one inside your minimal docker container.
 
 ## Known Issues
 
-There are currently 2 known issues, which I was not able to reproduce easily for debugging:
+There are currently some known issues:
 
 1. Sometimes a node can hang on shutdown. In this case it needs to be killed manually.
    As mentioned already, I was not able to reproduce this so far. It happens to me somewhere in the range of 1 out of
