@@ -29,7 +29,7 @@ Why another SQLite replication solution? Other projects exist already that can d
 them checks all boxes. They either require an additional independent process running on the side which can do async
 replication, need a special file system, or are running as a server.
 
-I don't think that running SQLite as a server is a good solution. Yes, it is very resource friendly and it may
+I don't think that running SQLite as a server is a good solution. Yes, it is very resource friendly, and it may
 be a good solution when you are heavily resource constrained, but you loose its biggest strength when doing this: having
 all you data local, which makes reads superfast without network latency.
 Hiqlite builds on top of `rusqlite` and provides an async wrapper around it to make it easy usable with `tokio`. For the
