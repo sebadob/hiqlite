@@ -52,7 +52,52 @@ At the end, the goal is that you can have the simplicity and all the advantages 
 able to run your application highly available (which is almost always mandatory for me) and having automatic fail-over
 in case of any errors or problems.
 
-## Features
+## Currently implemented and working features
+
+- full Raft cluster setup
+- everything a Raft is expected to do (thanks to [openraft](https://github.com/datafuselabs/openraft))
+- persistent storage for Raft logs (with [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb)) and SQLite state
+  machine
+- "magic" auto setup, no need to do any manual init or management for the Raft
+- self-healing - each node can automatically recover from:
+    - lost cached WAL buffers for the state machine
+    - lost cached WAL buffer for the logs store
+    - complete loss of the state machine DB (SQLite)
+    - complete loss of the logs storage (rocksdb)
+    - complete loss of the whole volume itself
+- automatic database migrations
+- fully authenticated networking
+- optional TLS everywhere for a zero-trust philosophy
+- fully encrypted backups to s3, cron job or manual (
+  with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr) )
+- restore from remote backup (with log index roll-over)
+- strongly consistent, replicated `execute` queries
+    - on a leader node, the client will not even bother with using networking
+    - on a non-leader node, it will automatically switch over to a network connection so the request
+      is forwarded and initiated on the current Raft leader
+- strongly consistent, replicated `execute` queries with returning statement through the Raft
+    - you can either get a raw handle to the custom `RowOwned` struct
+    - or you can map the `RETURNING` statement to an existing struct
+- consistent read / select queries on leader
+- transaction executes
+- simple `String` batch executes
+- `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
+  This will end up behind a `serde` feature in the future which is not implemented yet.
+- `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
+  faster method with more manual work
+- in addition to SQLite - multiple in-memory K/V caches with optional independent TTL per entry per cache
+- listen / notify to send real-time messages through the Raft
+- `dlock` feature provides access to distributed locks
+- standalone binary with the `server` feature which can run as a single node, cluster, or proxy to an existing cluster
+- integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
+  done
+
+## TODOs before v0.1.0
+
+- real world stability testing and fixes
+- proper documentation
+
+## Crate Features
 
 ### `default`
 
@@ -225,51 +270,6 @@ need any volume attached to your container in that case.
 This feature will simply enable baked-in TLS ROOT CA's to be independent of any OS trust store, like for instance
 when you don't even have one inside your minimal docker container.
 
-## Currently implemented and working features
-
-- full Raft cluster setup
-- everything a Raft is expected to do (thanks to [openraft](https://github.com/datafuselabs/openraft))
-- persistent storage for Raft logs (with [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb)) and SQLite state
-  machine
-- "magic" auto setup, no need to do any manual init or management for the Raft
-- self-healing - each node can automatically recover from:
-    - lost cached WAL buffers for the state machine
-    - lost cached WAL buffer for the logs store
-    - complete loss of the state machine DB (SQLite)
-    - complete loss of the logs storage (rocksdb)
-    - complete loss of the whole volume itself
-- automatic database migrations
-- fully authenticated networking
-- optional TLS everywhere for a zero-trust philosophy
-- fully encrypted backups to s3, cron job or manual (
-  with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr) )
-- restore from remote backup (with log index roll-over)
-- strongly consistent, replicated `execute` queries
-    - on a leader node, the client will not even bother with using networking
-    - on a non-leader node, it will automatically switch over to a network connection so the request
-      is forwarded and initiated on the current Raft leader
-- strongly consistent, replicated `execute` queries with returning statement through the Raft
-    - you can either get a raw handle to the custom `RowOwned` struct
-    - or you can map the `RETURNING` statement to an existing struct
-- consistent read / select queries on leader
-- transaction executes
-- simple `String` batch executes
-- `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
-  This will end up behind a `serde` feature in the future which is not implemented yet.
-- `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
-  faster method with more manual work
-- in addition to SQLite - multiple in-memory K/V caches with optional independent TTL per entry per cache
-- listen / notify to send real-time messages through the Raft
-- `dlock` feature provides access to distributed locks
-- standalone binary with the `server` feature which can run as a single node, cluster, or proxy to an existing cluster
-- integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
-  done
-
-## TODOs before v0.1.0
-
-- real world stability testing and fixes
-- proper documentation
-
 ## Known Issues
 
 There are currently some known issues:
@@ -279,11 +279,7 @@ There are currently some known issues:
    50 - 100 shutdowns. This could be solved by simply adding a timeout to the shutdown handler, but I did not do that
    on purpose at the current stage. I would rather find the issue and fix it, even if it takes time because of not
    being easily reproducible than ignoring the issue with a timeout.
-2. I have seen some "snapshot does not exist" errors in some very rare cases, when I did tests with generated, very
-   high throughput data during benchmarks. The error went away after a node restart and I could not figure out so far
-   what causes this, because this is again not reproducible so far. This happened a few times during throughput tests
-   that you would probably never achieve in a real scenario. They happened beyond 20k single insert TPS.
-3. When creating synthetic benchmarks for testing write throughput at the absolute max, you will see error logs because
+2. When creating synthetic benchmarks for testing write throughput at the absolute max, you will see error logs because
    of missed Raft heartbeats and leader switches, even though the network and everything else is fine. The reason is
    simply that the Raft heartbeats in the current implementation come in-order with the Raft data replication. So, if
    you generate an insane amount of Raft data which takes time to replicate, because you end up being effectively I/O

@@ -516,6 +516,7 @@ impl StateMachineSqlite {
             })?;
 
         // let path_snapshot_clone = path_snapshot.clone();
+        let path_dbg = path_snapshot.clone();
         let metadata = task::spawn_blocking(move || {
             let mut stmt = conn
                 .prepare("SELECT data FROM _metadata WHERE key = 'meta'")
@@ -536,7 +537,10 @@ impl StateMachineSqlite {
                     Ok(metadata)
                 })
                 .map_err(|err| {
-                    error!("Error reading metadata from Snapshot: {}", err);
+                    error!(
+                        "Error reading metadata from Snapshot '{}': {}",
+                        path_dbg, err
+                    );
                     StorageError::IO {
                         source: StorageIOError::write(&err),
                     }
@@ -549,18 +553,18 @@ impl StateMachineSqlite {
             source: StorageIOError::write(&err),
         })?;
 
-        if metadata.is_err() {
-            // this may happen if the whole node / OS crashes and the DB got corrupted
-            // -> delete snapshot and fetch from remote
-            error!(
-                "Found corrupted snapshot file, removing it: {}",
-                path_snapshot
-            );
-            if let Err(err) = fs::remove_file(path_snapshot).await {
-                error!("Error deleting corrupted snapshot: {}", err);
-            }
-            return Ok(None);
-        }
+        // if metadata.is_err() {
+        //     // this may happen if the whole node / OS crashes and the DB got corrupted
+        //     // -> delete snapshot and fetch from remote
+        //     error!(
+        //         "Found corrupted snapshot file, removing it: {}",
+        //         path_snapshot
+        //     );
+        //     if let Err(err) = fs::remove_file(path_snapshot).await {
+        //         error!("Error deleting corrupted snapshot: {}", err);
+        //     }
+        //     return Ok(None);
+        // }
         let metadata = metadata?;
         let snapshot_id = id.to_string();
         assert_eq!(
