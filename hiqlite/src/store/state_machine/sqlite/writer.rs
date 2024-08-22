@@ -379,6 +379,7 @@ pub fn spawn_writer(
                     // last_membership,
                     ack,
                 }) => {
+                    sm_data.last_snapshot_id = Some(snapshot_id.to_string());
                     persist_metadata(&conn, &sm_data).expect("Metadata persist to never fail");
 
                     match create_snapshot(
