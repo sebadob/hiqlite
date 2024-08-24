@@ -285,6 +285,8 @@ pub fn spawn_writer(
                         };
 
                         let mut results = Vec::with_capacity(req.queries.len());
+                        let mut query_err = None;
+
                         'outer: for state_machine::Query { sql, params } in req.queries {
                             if log_statements {
                                 info!("Query::Transaction:\n{}\n{:?}", sql, params);
@@ -293,41 +295,56 @@ pub fn spawn_writer(
                             let mut stmt = match txn.prepare_cached(sql.as_ref()) {
                                 Ok(stmt) => stmt,
                                 Err(err) => {
-                                    error!("Preparing cached query {}: {:?}", sql, err);
-                                    results
-                                        .push(Err(Error::PrepareStatement(err.to_string().into())));
-                                    continue;
+                                    let err = format!("Preparing cached query {}: {:?}", sql, err);
+                                    query_err =
+                                        Some(Error::PrepareStatement(err.to_string().into()));
+                                    break;
                                 }
                             };
 
                             let mut idx = 1;
                             for param in params {
                                 if let Err(err) = stmt.raw_bind_parameter(idx, param.into_sql()) {
-                                    error!(
+                                    let err = format!(
                                         "Error binding param on position {} to query {}: {:?}",
                                         idx, sql, err
                                     );
-                                    results.push(Err(Error::QueryParams(err.to_string().into())));
-                                    continue 'outer;
+                                    query_err = Some(Error::QueryParams(err.to_string().into()));
+                                    break 'outer;
                                 }
 
                                 idx += 1;
                             }
 
                             let res = stmt.raw_execute().map_err(Error::from);
-                            results.push(res);
+                            match res {
+                                Ok(r) => results.push(Ok(r)),
+                                Err(err) => {
+                                    query_err = Some(Error::Transaction(err.to_string().into()));
+                                    break;
+                                }
+                            }
                         }
 
-                        match txn.commit() {
-                            Ok(()) => {
-                                req.tx
-                                    .send(Ok(results))
-                                    .expect("oneshot tx to never be dropped");
+                        if let Some(err) = query_err {
+                            if let Err(e) = txn.rollback() {
+                                error!("Error during txn rollback: {:?}", e);
                             }
-                            Err(err) => {
-                                req.tx
-                                    .send(Err(Error::Transaction(err.to_string().into())))
-                                    .expect("oneshot tx to never be dropped");
+                            req.tx
+                                .send(Err(err))
+                                .expect("oneshot tx to never be dropped");
+                        } else {
+                            match txn.commit() {
+                                Ok(()) => {
+                                    req.tx
+                                        .send(Ok(results))
+                                        .expect("oneshot tx to never be dropped");
+                                }
+                                Err(err) => {
+                                    req.tx
+                                        .send(Err(Error::Transaction(err.to_string().into())))
+                                        .expect("oneshot tx to never be dropped");
+                                }
                             }
                         }
                     }

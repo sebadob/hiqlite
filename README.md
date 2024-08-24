@@ -521,7 +521,7 @@ spec:
           requests:
             storage: 256Mi
         # In case you want to specify the storage class.
-        # You should always(!) prefer local over some replicated abstraction layer. 
+        # You should always(!) prefer local over some replicated abstraction layer.
         # Hiqlite cares about replication itself already.
         #storageClassName: local-path
 ```
@@ -635,7 +635,7 @@ spec:
 
 After `kubectl apply -f` this deployment, you can use a remote Client to connect via this proxy with
 
-```
+```rust, notest
 hiqlite::Client::remote()
 ```
 

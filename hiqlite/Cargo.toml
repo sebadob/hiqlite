@@ -11,6 +11,9 @@ description = "Hiqlite - highly-available, embeddable, raft-based SQLite + cache
 readme = "../README.md"
 repository = "https://github.com/sebadob/hiqlite"
 
+[lib]
+doctest = false
+
 [package.metadata.docs.rs]
 #features = ["cache", "dashboard", "dlock", "shutdown-handle", "sqlite"]
 all-features = true
@@ -45,9 +48,20 @@ full = [
     "sqlite",
     "webpki-roots",
 ]
-listen_notify = ["dep:cryptr", "dep:eventsource-client", "dep:futures-util", "cache"]
+listen_notify = [
+    "dep:cryptr",
+    "dep:eventsource-client",
+    "dep:futures-util",
+    "cache",
+]
 s3 = ["dep:cryptr", "backup"]
-server = ["dep:clap", "dep:home", "dep:tracing-subscriber", "full", "tokio/macros"]
+server = [
+    "dep:clap",
+    "dep:home",
+    "dep:tracing-subscriber",
+    "full",
+    "tokio/macros",
+]
 shutdown-handle = ["dep:ctrlc"]
 sqlite = ["dep:deadpool", "dep:rusqlite", "dep:rocksdb", "dep:serde_rusqlite"]
 webpki-roots = ["dep:webpki-roots", "reqwest/rustls-tls-webpki-roots"]

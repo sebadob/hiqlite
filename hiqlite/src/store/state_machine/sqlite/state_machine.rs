@@ -410,17 +410,6 @@ impl StateMachineSqlite {
 
     fn apply_pragmas(conn: &rusqlite::Connection, read_only: bool) -> Result<(), rusqlite::Error> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "journal_size_limit", 16384)?;
-        conn.pragma_update(None, "wal_autocheckpoint", 4_000)?;
-
-        // setting in-memory temp_store actually slows down SELECTs a little bit
-        // conn.pragma_update(None, "temp_store", "memory")?;
-
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
-
-        conn.pragma_update(None, "optimize", "0x10002")?;
-
         // synchronous set to OFF is not an issue in our case.
         // If the OS crashes before it could flush any buffers to disk, we will rebuild the DB
         // anyway from the logs store just to be 100% sure that all cluster members are in a
@@ -429,11 +418,15 @@ impl StateMachineSqlite {
         conn.pragma_update(None, "synchronous", "OFF")?;
 
         conn.pragma_update(None, "page_size", 4096).unwrap();
+        conn.pragma_update(None, "journal_size_limit", 16384)?;
+        conn.pragma_update(None, "wal_autocheckpoint", 4_000)?;
 
-        // if set, it will try to keep the whole DB cached in memory, if it fits
-        // not set currently for better comparison to sqlx
-        // conn.pragma_update(None, "mmap_size", (16i64 * 1024 * 1024 * 1024).to_string())
-        //     .unwrap();
+        // setting in-memory temp_store actually slows down SELECTs a little bit
+        // conn.pragma_update(None, "temp_store", "memory")?;
+
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+        conn.pragma_update(None, "optimize", "0x10002")?;
 
         // only allow select statements
         if read_only {
@@ -844,8 +837,6 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         })?;
 
         self.update_state_machine_(tar).await?;
-
-        // TODO cleanup of possibly existing backup restore files
 
         Ok(())
     }
