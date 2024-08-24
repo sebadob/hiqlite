@@ -585,11 +585,7 @@ fn create_backup(
     // make sure connection is dropped before starting encrypt + push
     {
         let conn_bkp = rusqlite::Connection::open(&path_full)?;
-        persist_metadata(&conn, &StateMachineData::default());
-        // let mut stmt =
-        //     conn_bkp.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
-        // let data = bincode::serialize(&StateMachineData::default())?;
-        // stmt.execute([data])?;
+        persist_metadata(conn, &StateMachineData::default());
     }
 
     info!("Database backup finished");

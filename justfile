@@ -151,9 +151,9 @@ build-image name="cr.sebastiandobe.de/hiqlite/hiqlite":
     cd ..
     git add hiqlite/static
 
-    cargo build --features server --release
-    mkdir -p out
-    cp target/release/hiqlite out/
+    #cargo build --features server --release
+    #mkdir -p out
+    #cp target/release/hiqlite out/
 
     docker build -t {{name}} .
     docker push {{name}}

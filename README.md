@@ -381,7 +381,7 @@ stringData:
 #### StatefulSet
 
 The last one for testing (leaving Ingress out for this simple example) will create a StatefulSet, a load balanced
-Service you could access via a `NodePort` for accessing the dashboard, and a headless Service to the nodes can create
+Service you could access via a `NodePort` to reach the dashboard, and a headless Service to the nodes can create
 direct connections to each other. Create an `sts.yaml`:
 
 ```yaml
