@@ -111,7 +111,7 @@ pub struct StateMachineSqlite {
     #[cfg(feature = "s3")]
     s3_config: Option<Arc<crate::s3::S3Config>>,
 
-    pub read_pool: Arc<SqlitePool>,
+    pub read_pool: SqlitePool,
     pub(crate) write_tx: flume::Sender<WriterRequest>,
 }
 
@@ -246,7 +246,7 @@ impl StateMachineSqlite {
             path_lock_file,
             #[cfg(feature = "s3")]
             s3_config,
-            read_pool: Arc::new(read_pool),
+            read_pool,
             write_tx,
         };
 
