@@ -638,3 +638,5 @@ There are currently some known issues:
    bound by your physical disk, these heartbeats can get lost, because they won't happen in-time.
    This issue will be resolved with the next major release of `openraft`, where heartbeats will be sent separately from
    the main data replication.
+3. In the current version, the logging output is very verbose on the `info` level. This is on purpose until everything
+   has been stabilized. In future versions, this will be reduced quite a bit.
