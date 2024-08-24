@@ -43,9 +43,7 @@ and performance. The following values have been chosen as good default values:
 - `journal_size_limit=16384`
 - `wal_autocheckpoint=4000`
 
-- `temp_store=memory`
 - `auto_vacuum=INCREMENTAL`
-
 - `foreign_keys=ON`
 - `optimize=0x10002`
 
@@ -71,7 +69,6 @@ just to trade a bit of disk space for better throughput. Because of the bigger m
 into the main DB file are needed, which means less I/O. The `wal_autocheckpoint` default is `1000`, which matches a 4MB
 WAL file with a `page_size` of 4KB, and this has been increased to `4000` to match the 16MB WAL file.
 
-`temp_store=memory` trades again a bit of memory for less I/O and therefore increased throughput.
 `auto_vacuum=INCREMENTAL` makes sure that the DB file fragmentation will be kept low while not `VACUUM`ing too much.
 Because `auto_vacuum=INCREMENTAL` on its own is not enough, the Hiqlite writer task (mentioned below) will `VACUUM` at
 certain checkpoints like creating new snapshots or backups.
@@ -108,7 +105,7 @@ to care about is the Client. When, where and how the read pool is being used dep
 instance, if you have a local client, meaning you have an embedded replica of the Raft + SQLite, most of these queries
 will be executed locally, which makes them superfast compared to any queries against a typical network database.
 Usually,
-a local, simple `SELECT` query can be done in ~ 20 - 30µs, depending on your machine of course. If you are executing a
+a local, simple `SELECT` query can be done in ~ 30 - 70µs, depending on your machine of course. If you are executing a
 consistent query or you have a remote Client, the read pool on the current leader node will be used, which means you
 will
 have the overhead of a network round trip.

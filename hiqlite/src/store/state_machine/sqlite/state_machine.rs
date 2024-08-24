@@ -413,7 +413,9 @@ impl StateMachineSqlite {
         conn.pragma_update(None, "journal_size_limit", 16384)?;
         conn.pragma_update(None, "wal_autocheckpoint", 4_000)?;
 
-        conn.pragma_update(None, "temp_store", "memory")?;
+        // setting in-memory temp_store actually slows down SELECTs a little bit
+        // conn.pragma_update(None, "temp_store", "memory")?;
+
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
 
