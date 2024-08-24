@@ -6,7 +6,7 @@ Hiqlite is an embeddable SQLite database that can form a Raft cluster to provide
 ## Project Status
 
 This project is in an early phase and I have some things on the TODO before I can release the first v0.1.0.
-Until these TODO's are finished, I will not not care about any changelog or something like that, because it costs more
+Until these TODO's are finished, I will not care about any changelog or something like that, because it costs more
 time and effort than it's worth at this point.
 
 However, you can take a look at the integration test (`hiqlite/tests/`) or the example. These do work fine so far.
@@ -29,9 +29,10 @@ Why another SQLite replication solution? Other projects exist already that can d
 them checks all boxes. They either require an additional independent process running on the side which can do async
 replication, need a special file system, or are running as a server.
 
-I don't think that running SQLite as a server is a good solution. Yes, it is very resource friendly, and it may
-be a good solution when you are heavily resource constrained, but you loose its biggest strength when doing this: having
-all you data local, which makes reads superfast without network latency.
+I don't think that running SQLite as a server is a good solution. Yes, it is very resource friendly, and it may be a
+good solution when you are heavily resource constrained, but you lose its biggest strength when doing this: having
+all your data local, which makes reads superfast without network latency.
+
 Hiqlite builds on top of `rusqlite` and provides an async wrapper around it to make it easy usable with `tokio`. For the
 Raft logic, it builds on top of`openraft` while providing its own storage and network implementations.
 
