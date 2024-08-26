@@ -96,7 +96,7 @@ pub struct StateRaftDB {
     pub lock: tokio::sync::Mutex<()>,
     pub logs_writer: flume::Sender<crate::store::logs::rocksdb::ActionWrite>,
     pub sql_writer: flume::Sender<WriterRequest>,
-    pub read_pool: std::sync::Arc<SqlitePool>,
+    pub read_pool: SqlitePool,
     pub log_statements: bool,
 }
 

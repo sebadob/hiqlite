@@ -111,7 +111,7 @@ pub struct StateMachineSqlite {
     #[cfg(feature = "s3")]
     s3_config: Option<Arc<crate::s3::S3Config>>,
 
-    pub read_pool: Arc<SqlitePool>,
+    pub read_pool: SqlitePool,
     pub(crate) write_tx: flume::Sender<WriterRequest>,
 }
 
@@ -246,7 +246,7 @@ impl StateMachineSqlite {
             path_lock_file,
             #[cfg(feature = "s3")]
             s3_config,
-            read_pool: Arc::new(read_pool),
+            read_pool,
             write_tx,
         };
 
@@ -410,15 +410,6 @@ impl StateMachineSqlite {
 
     fn apply_pragmas(conn: &rusqlite::Connection, read_only: bool) -> Result<(), rusqlite::Error> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "journal_size_limit", 16384)?;
-        conn.pragma_update(None, "wal_autocheckpoint", 4_000)?;
-
-        conn.pragma_update(None, "temp_store", "memory")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
-
-        conn.pragma_update(None, "optimize", "0x10002")?;
-
         // synchronous set to OFF is not an issue in our case.
         // If the OS crashes before it could flush any buffers to disk, we will rebuild the DB
         // anyway from the logs store just to be 100% sure that all cluster members are in a
@@ -427,11 +418,15 @@ impl StateMachineSqlite {
         conn.pragma_update(None, "synchronous", "OFF")?;
 
         conn.pragma_update(None, "page_size", 4096).unwrap();
+        conn.pragma_update(None, "journal_size_limit", 16384)?;
+        conn.pragma_update(None, "wal_autocheckpoint", 4_000)?;
 
-        // if set, it will try to keep the whole DB cached in memory, if it fits
-        // not set currently for better comparison to sqlx
-        // conn.pragma_update(None, "mmap_size", (16i64 * 1024 * 1024 * 1024).to_string())
-        //     .unwrap();
+        // setting in-memory temp_store actually slows down SELECTs a little bit
+        // conn.pragma_update(None, "temp_store", "memory")?;
+
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+        conn.pragma_update(None, "optimize", "0x10002")?;
 
         // only allow select statements
         if read_only {
@@ -516,6 +511,7 @@ impl StateMachineSqlite {
             })?;
 
         // let path_snapshot_clone = path_snapshot.clone();
+        let path_dbg = path_snapshot.clone();
         let metadata = task::spawn_blocking(move || {
             let mut stmt = conn
                 .prepare("SELECT data FROM _metadata WHERE key = 'meta'")
@@ -536,7 +532,10 @@ impl StateMachineSqlite {
                     Ok(metadata)
                 })
                 .map_err(|err| {
-                    error!("Error reading metadata from Snapshot: {}", err);
+                    error!(
+                        "Error reading metadata from Snapshot '{}': {}",
+                        path_dbg, err
+                    );
                     StorageError::IO {
                         source: StorageIOError::write(&err),
                     }
@@ -549,18 +548,18 @@ impl StateMachineSqlite {
             source: StorageIOError::write(&err),
         })?;
 
-        if metadata.is_err() {
-            // this may happen if the whole node / OS crashes and the DB got corrupted
-            // -> delete snapshot and fetch from remote
-            error!(
-                "Found corrupted snapshot file, removing it: {}",
-                path_snapshot
-            );
-            if let Err(err) = fs::remove_file(path_snapshot).await {
-                error!("Error deleting corrupted snapshot: {}", err);
-            }
-            return Ok(None);
-        }
+        // if metadata.is_err() {
+        //     // this may happen if the whole node / OS crashes and the DB got corrupted
+        //     // -> delete snapshot and fetch from remote
+        //     error!(
+        //         "Found corrupted snapshot file, removing it: {}",
+        //         path_snapshot
+        //     );
+        //     if let Err(err) = fs::remove_file(path_snapshot).await {
+        //         error!("Error deleting corrupted snapshot: {}", err);
+        //     }
+        //     return Ok(None);
+        // }
         let metadata = metadata?;
         let snapshot_id = id.to_string();
         assert_eq!(
@@ -838,8 +837,6 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         })?;
 
         self.update_state_machine_(tar).await?;
-
-        // TODO cleanup of possibly existing backup restore files
 
         Ok(())
     }

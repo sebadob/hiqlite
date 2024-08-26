@@ -33,7 +33,7 @@ pub mod rows;
 pub(crate) async fn query_consistent_local<S>(
     raft: &Raft<TypeConfigSqlite>,
     log_statements: bool,
-    read_pool: Arc<SqlitePool>,
+    read_pool: SqlitePool,
     stmt: S,
     params: Params,
 ) -> Result<Vec<RowOwned>, Error>
@@ -46,7 +46,7 @@ where
 
 pub(crate) async fn query_owned_local<S>(
     log_statements: bool,
-    read_pool: Arc<SqlitePool>,
+    read_pool: SqlitePool,
     stmt: S,
     params: Params,
 ) -> Result<Vec<RowOwned>, Error>

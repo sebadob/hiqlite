@@ -285,6 +285,8 @@ pub fn spawn_writer(
                         };
 
                         let mut results = Vec::with_capacity(req.queries.len());
+                        let mut query_err = None;
+
                         'outer: for state_machine::Query { sql, params } in req.queries {
                             if log_statements {
                                 info!("Query::Transaction:\n{}\n{:?}", sql, params);
@@ -293,41 +295,56 @@ pub fn spawn_writer(
                             let mut stmt = match txn.prepare_cached(sql.as_ref()) {
                                 Ok(stmt) => stmt,
                                 Err(err) => {
-                                    error!("Preparing cached query {}: {:?}", sql, err);
-                                    results
-                                        .push(Err(Error::PrepareStatement(err.to_string().into())));
-                                    continue;
+                                    let err = format!("Preparing cached query {}: {:?}", sql, err);
+                                    query_err =
+                                        Some(Error::PrepareStatement(err.to_string().into()));
+                                    break;
                                 }
                             };
 
                             let mut idx = 1;
                             for param in params {
                                 if let Err(err) = stmt.raw_bind_parameter(idx, param.into_sql()) {
-                                    error!(
+                                    let err = format!(
                                         "Error binding param on position {} to query {}: {:?}",
                                         idx, sql, err
                                     );
-                                    results.push(Err(Error::QueryParams(err.to_string().into())));
-                                    continue 'outer;
+                                    query_err = Some(Error::QueryParams(err.to_string().into()));
+                                    break 'outer;
                                 }
 
                                 idx += 1;
                             }
 
                             let res = stmt.raw_execute().map_err(Error::from);
-                            results.push(res);
+                            match res {
+                                Ok(r) => results.push(Ok(r)),
+                                Err(err) => {
+                                    query_err = Some(Error::Transaction(err.to_string().into()));
+                                    break;
+                                }
+                            }
                         }
 
-                        match txn.commit() {
-                            Ok(()) => {
-                                req.tx
-                                    .send(Ok(results))
-                                    .expect("oneshot tx to never be dropped");
+                        if let Some(err) = query_err {
+                            if let Err(e) = txn.rollback() {
+                                error!("Error during txn rollback: {:?}", e);
                             }
-                            Err(err) => {
-                                req.tx
-                                    .send(Err(Error::Transaction(err.to_string().into())))
-                                    .expect("oneshot tx to never be dropped");
+                            req.tx
+                                .send(Err(err))
+                                .expect("oneshot tx to never be dropped");
+                        } else {
+                            match txn.commit() {
+                                Ok(()) => {
+                                    req.tx
+                                        .send(Ok(results))
+                                        .expect("oneshot tx to never be dropped");
+                                }
+                                Err(err) => {
+                                    req.tx
+                                        .send(Err(Error::Transaction(err.to_string().into())))
+                                        .expect("oneshot tx to never be dropped");
+                                }
                             }
                         }
                     }
@@ -379,19 +396,24 @@ pub fn spawn_writer(
                     // last_membership,
                     ack,
                 }) => {
+                    sm_data.last_snapshot_id = Some(snapshot_id.to_string());
+                    persist_metadata(&conn, &sm_data).expect("Metadata persist to never fail");
+
                     match create_snapshot(
                         &conn,
-                        snapshot_id,
+                        // snapshot_id,
                         path,
-                        sm_data.last_applied_log_id,
-                        sm_data.last_membership.clone(),
+                        // sm_data.last_applied_log_id,
+                        // sm_data.last_membership.clone(),
                     ) {
-                        Ok(meta) => {
+                        Ok(_) => {
                             if let Err(err) = conn.execute("PRAGMA optimize", []) {
                                 error!("Error during 'PRAGMA optimize': {}", err);
                             }
 
-                            ack.send(Ok(SnapshotResponse { meta }))
+                            ack.send(Ok(SnapshotResponse {
+                                meta: sm_data.clone(),
+                            }))
                         }
                         Err(err) => {
                             error!("Error creating new snapshot: {:?}", err);
@@ -529,13 +551,7 @@ pub fn spawn_writer(
         warn!("SQL writer is shutting down");
 
         // make sure metadata is persisted before shutting down
-        let mut stmt = conn
-            .prepare_cached("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")
-            .expect("Metadata persist prepare to never fail");
-
-        let data = bincode::serialize(&sm_data).unwrap();
-        stmt.execute([data])
-            .expect("Metadata persist to never fail");
+        persist_metadata(&conn, &sm_data).expect("Error persisting metadata");
 
         if let Err(err) = conn.execute("PRAGMA optimize", []) {
             error!("Error during 'PRAGMA optimize': {}", err);
@@ -547,27 +563,22 @@ pub fn spawn_writer(
     tx
 }
 
-fn create_snapshot(
+#[inline]
+fn persist_metadata(
     conn: &rusqlite::Connection,
-    snapshot_id: Uuid,
-    path: String,
-    last_applied_log_id: Option<LogId<NodeId>>,
-    last_membership: StoredMembership<NodeId, Node>,
-) -> Result<StateMachineData, rusqlite::Error> {
-    let metadata = StateMachineData {
-        last_applied_log_id,
-        last_membership,
-        last_snapshot_id: Some(snapshot_id.to_string()),
-    };
-
-    let meta_bytes = bincode::serialize(&metadata).unwrap();
-    let mut stmt = conn.prepare("UPDATE _metadata SET data = $1 WHERE key = 'meta'")?;
+    metadata: &StateMachineData,
+) -> Result<(), rusqlite::Error> {
+    let meta_bytes = bincode::serialize(metadata).unwrap();
+    let mut stmt = conn.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
     stmt.execute([meta_bytes])?;
+    Ok(())
+}
 
+#[inline]
+fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), rusqlite::Error> {
     let q = format!("VACUUM main INTO '{}'", path);
     conn.execute(&q, ())?;
-
-    Ok(metadata)
+    Ok(())
 }
 
 fn create_backup(
@@ -591,10 +602,7 @@ fn create_backup(
     // make sure connection is dropped before starting encrypt + push
     {
         let conn_bkp = rusqlite::Connection::open(&path_full)?;
-        let mut stmt =
-            conn_bkp.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
-        let data = bincode::serialize(&StateMachineData::default()).unwrap();
-        stmt.execute([data])?;
+        persist_metadata(conn, &StateMachineData::default());
     }
 
     info!("Database backup finished");
