@@ -12,7 +12,6 @@ readme = "../README.md"
 repository = "https://github.com/sebadob/hiqlite"
 
 [package.metadata.docs.rs]
-#features = ["cache", "dashboard", "dlock", "shutdown-handle", "sqlite"]
 all-features = true
 
 [features]
@@ -20,7 +19,7 @@ default = ["auto-heal", "backup", "sqlite"]
 
 auto-heal = []
 backup = ["dep:cron", "s3", "sqlite"]
-# TODO we should not need the "openraft/loosen-follower-log-revert" here -> conflict in self-healing tests
+# TODO check why we need the "openraft/loosen-follower-log-revert" here -> conflict in self-healing tests
 cache = ["openraft/loosen-follower-log-revert"]
 dashboard = [
     "dep:argon2",
