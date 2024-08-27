@@ -4,7 +4,7 @@ members = ["hiqlite"]
 exclude = ["examples"]
 
 [workspace.package]
-version = "0.0.6"
+version = "0.1.0-20240827"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Sebastian Dobe <sebastiandobe@mailbox.org"]
@@ -55,7 +55,8 @@ hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
 mime_guess = "2.0.5"
 num-traits = "0.2.19"
 num-derive = "0.4.2"
-openraft = { version = "0.9.13", features = ["serde", "storage-v2"] }
+# pinned because of https://github.com/datafuselabs/openraft/issues/1236
+openraft = { version = "=0.9.13", features = ["serde", "storage-v2"] }
 #redb = "2.1.1"
 reqwest = { version = "0.12", default-features = false, features = [
     "http2",
@@ -70,7 +71,7 @@ rusqlite = { version = "0.32.1", features = [
     "column_decltype",
 ] }
 rust-embed = { version = "8.5.0", features = ["compression"] }
-rustls = { version = "0.23.5", features = ["ring"] }
+rustls = { version = "0.23.12", features = ["ring"] }
 serde = { version = "1.0.114", features = ["derive"] }
 serde_json = "1.0.57"
 serde_rusqlite = "0.36.0"
@@ -94,3 +95,5 @@ webpki-roots = { version = "0.26.3" }
 # make minimal versions happy
 lazy_static = "1.0.2"
 lz4-sys = "1.9.5"
+tower-layer = "0.3.3"
+tower-service = "0.3.3"

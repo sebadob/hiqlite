@@ -30,6 +30,8 @@ pub async fn get_session(s: Session) -> Result<Json<Session>, Error> {
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     password: String,
+    // TODO not sure yet how to proceed with the `pow`. This can only be calculated on the frontend
+    // when running via TLS it seems -> investigate further
     pow: String,
 }
 
