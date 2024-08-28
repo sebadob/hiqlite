@@ -33,22 +33,6 @@ impl Client {
         #[cfg(feature = "cache")]
         let (tx_client_cache, rx_client_cache) = flume::bounded(2);
 
-        // #[cfg(feature = "cache")]
-        // Self::open_stream(
-        //     tls_config.clone(),
-        //     secret.as_bytes().to_vec(),
-        //     leader_cache.clone(),
-        //     rx_client_cache,
-        // );
-        //
-        // #[cfg(feature = "sqlite")]
-        // Self::open_stream(
-        //     tls_config.clone(),
-        //     secret.as_bytes().to_vec(),
-        //     leader_db.clone(),
-        //     rx_client_db,
-        // );
-
         let db_client = DbClient {
             state: Some(state),
             #[cfg(feature = "cache")]
@@ -58,12 +42,6 @@ impl Client {
             // TODO do we even still need this for a local client? -> all raft messages should use internal API ?
             nodes: Vec::default(),
             client: None,
-            // client: reqwest::Client::builder()
-            //     .http2_prior_knowledge()
-            //     // TODO
-            //     // .danger_accept_invalid_certs(tls_config.as_ref().map(|c| c.))
-            //     .build()
-            //     .unwrap(),
             #[cfg(feature = "cache")]
             tx_client_cache,
             #[cfg(feature = "sqlite")]
@@ -102,10 +80,18 @@ impl Client {
         slf
     }
 
-    /// Create a remote client
+    /// Manually create a remote client.
     ///
-    /// Provide any node as address. As long as all nodes can be reached,
+    /// Provide any nodes as address. As long as all nodes can be reached,
     /// leader changes will happen automatically.
+    ///
+    /// You never need to create the client yourself if your application embeds Hiqlite, as it will
+    /// return a `Client` from `hiqlite::start_node()` or `hiqlite::start_node_with_cache()`.
+    ///
+    /// **Note:**
+    /// If your client will be unable to reach all nodes, you can run the Hiqlite Server in proxy
+    /// mode like mentioned in the [README](https://github.com/sebadob/hiqlite/blob/main/README.md).
+    /// In this case, only provide the proxy's IP in the `nodes: Vec<String>`.
     pub async fn remote(
         nodes: Vec<String>,
         tls: bool,
@@ -146,22 +132,6 @@ impl Client {
             api_secret.clone(),
         ));
 
-        // #[cfg(feature = "cache")]
-        // Self::open_stream(
-        //     tls_config.clone(),
-        //     api_secret.as_bytes().to_vec(),
-        //     leader_cache.clone(),
-        //     rx_client_cache,
-        // );
-        //
-        // #[cfg(feature = "sqlite")]
-        // Self::open_stream(
-        //     tls_config.clone(),
-        //     api_secret.as_bytes().to_vec(),
-        //     leader_db.clone(),
-        //     rx_client_db,
-        // );
-
         let api_secret_bytes = api_secret.as_bytes().to_vec();
 
         let db_client = DbClient {
@@ -173,10 +143,8 @@ impl Client {
             nodes,
             client: Some(
                 reqwest::Client::builder()
-                    // .user_agent("Raft Client")
                     .http2_prior_knowledge()
                     // TODO
-                    // .danger_accept_invalid_certs()
                     .build()
                     .unwrap(),
             ),

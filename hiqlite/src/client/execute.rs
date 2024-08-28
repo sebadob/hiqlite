@@ -7,7 +7,17 @@ use std::borrow::Cow;
 use tokio::sync::oneshot;
 
 impl Client {
-    /// `EXECUTE` a modifying query
+    /// Execute any modifying / non-read-only query on the database.
+    /// Returns the affected rows on success.
+    ///
+    /// ```rust, notest
+    /// client
+    ///     .execute(
+    ///         "INSERT INTO test (id, num, description) VALUES ($1, $2, $3)",
+    ///         params!("id1", 123, "my description"),
+    ///     )
+    ///     .await?;
+    /// ```
     pub async fn execute<S>(&self, sql: S, params: Params) -> Result<usize, Error>
     where
         S: Into<Cow<'static, str>>,
@@ -66,6 +76,10 @@ impl Client {
         }
     }
 
+    /// Execute a query on the database that includes a `RETURNING` statement.
+    ///
+    /// Returns the rows mapped to the output type on success. This only works for types that
+    /// `impl<'r> From<hiqlite::Row<'r>>`
     pub async fn execute_returning_map<S, T>(&self, sql: S, params: Params) -> Result<Vec<T>, Error>
     where
         S: Into<Cow<'static, str>>,
@@ -79,6 +93,8 @@ impl Client {
         Ok(res)
     }
 
+    /// Execute a query on the database that includes a `RETURNING` statement.
+    /// Returns the raw rows on success.
     pub async fn execute_returning<S>(
         &self,
         sql: S,

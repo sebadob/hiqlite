@@ -6,7 +6,33 @@ use std::borrow::Cow;
 use tokio::sync::oneshot;
 
 impl Client {
-    /// Takes an arbitrary SQL String with multiple queries and executes all of them as a batch
+    /// Takes an arbitrary SQL String with multiple queries and executes all of them as a batch.
+    ///
+    /// ```rust, notest
+    /// let mut results = client
+    ///      .batch(
+    ///          r#"
+    ///          INSERT INTO test (id, num, description) VALUES
+    ///              ('batch1', 1, "Batch desc 1"),
+    ///              ('batch2', 2, "Batch desc 2"),
+    ///              ('batch3', 3, "Batch desc 3");
+    ///
+    ///          DELETE FROM test WHERE id = 'id4';
+    ///          "#,
+    ///      )
+    ///      .await?;
+    ///
+    ///  // we will receive a Vec with all the results
+    ///  let rows_affected = results.remove(0)?;
+    ///  assert_eq!(rows_affected, 3);
+    ///  let rows_affected = results.remove(0)?;
+    ///  assert_eq!(rows_affected, 1);
+    /// ```
+    ///
+    /// **CAUTION:**
+    /// The queries executed with this `.batch()` are **NOT PREPARED**!
+    /// This means you **must validate and sanitize** the input manually.
+    /// Executing unvalidated user input in a batch can open your app to SQL Injections!
     pub async fn batch<S>(&self, sql: S) -> Result<Vec<Result<usize, Error>>, Error>
     where
         S: Into<Cow<'static, str>>,

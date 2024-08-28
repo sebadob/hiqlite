@@ -12,7 +12,22 @@ use strum::IntoEnumIterator;
 use tokio::sync::oneshot;
 
 impl Client {
-    /// GET a value from the cache
+    /// GET a value from the cache.
+    ///
+    /// ```rust, notest
+    /// let key = "my key 1";
+    /// let value = Value {
+    ///     id: "some id".to_string(),
+    ///     num: 1337,
+    ///     description: Some("My Example Description".to_string()),
+    /// };
+    ///
+    /// // Insert a value that will expire 1 second later. Each value has its own custom expiry.
+    /// client.put(Cache::One, key, &value, Some(1)).await?;
+    ///
+    /// let v: Value = client.get(Cache::One, key).await?.unwrap();
+    //  assert_eq!(v, value);
+    /// ```
     pub async fn get<C, K, V>(&self, cache: C, key: K) -> Result<Option<V>, Error>
     where
         C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
@@ -25,7 +40,9 @@ impl Client {
         }
     }
 
-    /// GET a raw bytes value from the cache
+    /// GET a raw bytes value from the cache.
+    ///
+    /// Works in the same way as `.get()` without any value mapping.
     pub async fn get_bytes<C, K>(&self, cache: C, key: K) -> Result<Option<Vec<u8>>, Error>
     where
         C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
@@ -65,6 +82,21 @@ impl Client {
 
     /// `Put` a value into the cache.
     /// The optional `ttl` is the lifetime of the value in seconds from *now* on.
+    ///
+    /// ```rust, notest
+    /// let key = "my key 1";
+    /// let value = Value {
+    ///     id: "some id".to_string(),
+    ///     num: 1337,
+    ///     description: Some("My Example Description".to_string()),
+    /// };
+    ///
+    /// // Insert a value that will expire 1 second later. Each value has its own custom expiry.
+    /// client.put(Cache::One, key, &value, Some(1)).await?;
+    ///
+    /// let v: Value = client.get(Cache::One, key).await?.unwrap();
+    //  assert_eq!(v, value);
+    /// ```
     pub async fn put<C, K, V>(
         &self,
         cache: C,

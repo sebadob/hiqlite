@@ -105,7 +105,7 @@ impl Client {
         Ok(self.listen_rx().recv_async().await?)
     }
 
-    /// Tries to receive an event and returns immediately, is non is currently waiting.
+    /// Tries to receive an event and returns immediately, if none is currently waiting.
     pub fn try_listen<T>(&self) -> Result<Option<T>, Error>
     where
         T: for<'de> Deserialize<'de>,

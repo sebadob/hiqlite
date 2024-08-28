@@ -52,10 +52,38 @@ impl Client {
             .collect())
     }
 
-    /// This is the most efficient and fastest way to query data from sqlite into a struct.
-    /// It is mandatory, that the struct implements `From<Row<'_>>` for this to work.
-    /// If you want a more comfortable and easier way and don't need the most efficiency and
-    /// speed, take a look at `.query_as()`.
+    /// Query data from the database and map it to the given `struct`.
+    ///
+    /// The `struct` must implement `impl<'r> From<hiqlite::Row<'r>>` for this to work:
+    ///
+    /// ```rust, notest
+    /// #[derive(Debug)]
+    /// struct MyStruct {
+    ///     pub id: String,
+    ///     pub num: i64,
+    ///     pub description: Option<String>,
+    /// }
+    ///
+    /// impl<'r> From<Row<'r>> for MyStruct {
+    ///     fn from(mut row: Row<'r>) -> Self {
+    ///         Self {
+    ///             id: row.get("id"),
+    ///             num: row.get("num"),
+    ///             description: row.get("description"),
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// This gives
+    /// you the most amount of flexibility to achieve more complicated or optimized mapping.
+    /// If you want a more comfortable and easier way, take a look at `.query_as()`.
+    ///
+    /// ```rust, notest
+    /// let res: Vec<MyStruct> = client
+    ///     .query_map("SELECT * FROM test", params!())
+    ///     .await?;
+    /// ```
     pub async fn query_map<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
     where
         T: for<'r> From<crate::Row<'r>> + Send + 'static,
@@ -74,7 +102,14 @@ impl Client {
     }
 
     /// Works in the same way as `query_map()`, but returns only one result.
+    ///
     /// Errors if no rows are returned and ignores additional results if more than one row returned.
+    ///
+    /// ```rust, notest
+    /// let res: MyStruct = client
+    ///     .query_map_one("SELECT * FROM test WHERE id = $1", params!("id1"))
+    ///     .await?;
+    /// ```
     pub async fn query_map_one<T, S>(&self, stmt: S, params: Params) -> Result<T, Error>
     where
         T: for<'r> From<crate::Row<'r>> + Send + 'static,
@@ -91,12 +126,19 @@ impl Client {
         }
     }
 
-    /// Converts data returned from a sql query into a struct. This struct must derive
-    /// serde::Deserialize. This is the easiest and most straight forward way of doing it, but not
-    /// the fastest and most efficient one. If you want to optimize memory and speed, you should
-    /// use `.query_map()`.
+    /// Converts data returned from a sql query into a struct which derives `serde::Deserialize`.
     ///
-    /// Note: This does not work for remote-only clients
+    /// This is the easiest and most straight forward way of getting data. This is most often the
+    /// fasted way of mapping values while needing a little bit more memory.
+    ///
+    /// ```rust, notest
+    /// let res: Vec<Entity> = client
+    ///     .query_as("SELECT * FROM test", params!())
+    ///     .await?;
+    /// ```
+    ///
+    /// **Note:**
+    /// This works for local clients only, not for `hiqlite::Client::remote()` or `query_consistent`.
     pub async fn query_as<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
     where
         T: DeserializeOwned + Send + 'static,
@@ -110,9 +152,8 @@ impl Client {
     }
 
     /// Works in the same way as `query_as()`, but returns only one result.
-    /// Errors if no rows are returned and ignores additional results if more than one row returned.
     ///
-    /// Note: This does not work for remote-only clients
+    /// Errors if no rows are returned and ignores additional results if more than one row returned.
     pub async fn query_as_one<T, S>(&self, stmt: S, params: Params) -> Result<T, Error>
     where
         T: DeserializeOwned + Send + 'static,

@@ -6,6 +6,19 @@ use tokio::sync::oneshot;
 use tracing::error;
 
 impl Client {
+    /// Create an on-demand backup of the SQLite state machine.
+    ///
+    /// You usually don't need to call this manually, because Hiqlite will automatically run a
+    /// cron job every night and push backups to object storage, when you have the `s3` feature
+    /// enabled.
+    ///
+    /// **Note:**
+    /// Each raft node will create a backup on local disk, but only the current leader will
+    /// encrypt and push it to s3 storage. This is why you will typically only see the leaders
+    /// node id inside your bucket and not the other ones.
+    ///
+    /// The backup will be created in the background and run on other threads. This means it will
+    /// not be finished immediately when this function returns.
     #[cold]
     pub async fn backup(&self) -> Result<(), Error> {
         match self.backup_execute().await {

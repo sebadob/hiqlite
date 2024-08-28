@@ -7,6 +7,30 @@ use tokio::sync::oneshot;
 
 impl Client {
     /// Takes multiple queries and executes all of them in a single transaction.
+    ///
+    /// The transaction will be rolled back if any query returns an error.
+    ///
+    /// ```rust, notest
+    /// let sql = "INSERT INTO test (id, num, description) VALUES ($1, $2, $3)";
+    /// let res = client
+    ///     .txn([
+    ///         (sql, params!("id2", 345, "my description for 2. row")),
+    ///         (sql, params!("id3", 678, "my description for 3. row")),
+    ///         (sql, params!("id4", 999, "my description for 4. row")),
+    ///     ])
+    ///     .await;
+    ///
+    /// // From a transaction, you get one result and many smaller ones.
+    /// // The first result is for the transaction commit itself
+    /// assert!(res.is_ok());
+    ///
+    /// // The inner value is a Vec<Result<_>> contain a result for each single execute in the
+    /// // exact same order as they were provided.
+    /// for inner_res in res? {
+    ///     let rows_affected = inner_res?;
+    ///     assert_eq!(rows_affected, 1);
+    /// }
+    /// ```
     pub async fn txn<C, Q>(&self, sql: Q) -> Result<Vec<Result<usize, Error>>, Error>
     where
         Q: IntoIterator<Item = (C, Params)>,

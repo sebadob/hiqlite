@@ -7,6 +7,20 @@ use rust_embed::RustEmbed;
 use tokio::sync::oneshot;
 
 impl Client {
+    /// Execute database migrations.
+    ///
+    /// To make this work, you currently need to add `rust-embed` to your `Cargo.toml`.
+    /// Then embed the Migrations into your binary to be able to execute them in a typüe-safe way:
+    /// ```rust, notest
+    /// #[derive(rust_embed::Embed)]
+    /// #[folder = "migrations"]
+    /// struct Migrations;
+    ///
+    /// client.migrate::<Migrations>().await?;
+    /// ```
+    ///
+    /// You might want to take a look at the
+    /// [sqlite-only](https://github.com/sebadob/hiqlite/tree/main/examples/sqlite-only) example.
     #[cold]
     pub async fn migrate<T: RustEmbed>(&self) -> Result<(), Error> {
         match self.migrate_execute(Migrations::build::<T>()).await {

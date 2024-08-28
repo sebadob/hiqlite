@@ -42,6 +42,25 @@ impl Client {
     // TODO
     // - lock_timeout
 
+    /// Get a lock for the given key.
+    ///
+    /// ```rust, notest
+    /// // In some cases, you need to make sure you get some lock for either longer running actions
+    /// // or ones that need retrieving data, manipulating it and then sending it back to the DB.
+    /// // In these cases you might not be able to do all at once in a SQL query.
+    /// // Hiqlite has distributed locks (feature `dlock`) to achieve this.
+    /// let lock = client.lock("my lock key").await?;
+    ///
+    /// // A lock key can be any String to provide the most flexibility.
+    /// // It behaves the same as any other lock - it will be released on drop and as long as it
+    /// // exists, other locks will have to wait.
+    /// //
+    /// // In the current implementation, distributed locks have an internal timeout of 10 seconds.
+    /// // When this time expires, a lock will be considered "dead" because of network issues, just
+    /// // in case it has not been possible to release the lock properly. This prevents deadlocks
+    /// // just because some client or server crashed.
+    /// drop(lock);
+    /// ```
     pub async fn lock<K>(&self, key: K) -> Result<Lock, Error>
     where
         K: Into<Cow<'static, str>>,

@@ -130,21 +130,6 @@ impl Client {
         }
     }
 
-    // fn map_metrics_err(res: Result<RaftMetrics<NodeId, Node>, Err>) -> Result<RaftMetrics<NodeId, Node>, Err> {
-    //     match res {
-    //         Ok(metrics) => Ok(metrics),
-    //         Err(err) => {
-    //             match err {
-    //                 Error::Connect(err) |  Error::Timeout(err) => {
-    //                     error!("Metrics lookup error: {}", err);
-    //                     Err(err)
-    //                 }
-    //                 err => unreachable!("We should never receive an error other than connect or timeout for metrics get: {}", err);
-    //             }
-    //         }
-    //     }
-    // }
-
     async fn find_set_leader(
         metrics: RaftMetrics<NodeId, Node>,
         leader: &Arc<RwLock<(NodeId, String)>>,
@@ -240,85 +225,4 @@ impl Client {
 
         has_changed
     }
-
-    // #[cfg(feature = "cache")]
-    // pub(crate) async fn send_with_retry_cache<B: Serialize, Resp: for<'a> Deserialize<'a>>(
-    //     &self,
-    //     path: &str,
-    //     body: Option<&B>,
-    // ) -> Result<Resp, Error> {
-    //     let url = self.build_addr(path, &self.inner.leader_cache).await;
-    //     self.send_with_retry(
-    //         url,
-    //         &self.inner.leader_cache,
-    //         &self.inner.tx_client_cache,
-    //         body,
-    //     )
-    //     .await
-    // }
-
-    // #[cfg(feature = "sqlite")]
-    // pub(crate) async fn send_with_retry_db<B: Serialize, Resp: for<'a> Deserialize<'a>>(
-    //     &self,
-    //     path: &str,
-    //     body: Option<&B>,
-    // ) -> Result<Resp, Error> {
-    //     let url = self.build_addr(path, &self.inner.leader_db).await;
-    //     self.send_with_retry(url, &self.inner.leader_db, &self.inner.tx_client_db, body)
-    //         .await
-    // }
-
-    // #[cfg(feature = "cache")]
-    // #[inline]
-    // async fn send_with_retry<B: Serialize, Resp: for<'a> Deserialize<'a>>(
-    //     &self,
-    //     url: String,
-    //     leader: &Arc<RwLock<(NodeId, String)>>,
-    //     tx_client: &flume::Sender<ClientStreamReq>,
-    //     body: Option<&B>,
-    // ) -> Result<Resp, Error> {
-    //     loop {
-    //         let res = match if let Some(body) = body {
-    //             let body = bincode::serialize(body).unwrap();
-    //             self.inner.client.post(url.clone()).body(body)
-    //         } else {
-    //             self.inner.client.get(url.clone())
-    //         }
-    //         .header(crate::network::HEADER_NAME_SECRET, self.api_secret())
-    //         .send()
-    //         .await
-    //         {
-    //             Ok(res) => res,
-    //             Err(err) => {
-    //                 error!("Connection error: {}", err);
-    //                 self.find_set_active_leader().await;
-    //                 continue;
-    //             }
-    //         };
-    //
-    //         debug!("request status: {}", res.status());
-    //
-    //         // let content_type = res.headers().get(CONTENT_TYPE);
-    //         // let is_json =
-    //         //     content_type.map(|v| v.to_str().unwrap_or_default()) == Some("application/json");
-    //
-    //         if res.status().is_success() {
-    //             let bytes = res.bytes().await?;
-    //             // let resp = if is_json {
-    //             //     serde_json::from_slice(&bytes)?
-    //             // } else {
-    //             //     bincode::deserialize(bytes.as_ref())?
-    //             // };
-    //             let resp = bincode::deserialize(bytes.as_ref())?;
-    //             return Ok(resp);
-    //         } else {
-    //             let err = res.json::<Error>().await?;
-    //             if self.was_leader_update_error(&err, leader, tx_client).await {
-    //                 tracing::info!("Received a leader change error, retrying");
-    //             } else {
-    //                 return Err(err);
-    //             }
-    //         }
-    //     }
-    // }
 }

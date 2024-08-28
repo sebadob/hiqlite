@@ -18,6 +18,7 @@ use openraft::RaftMetrics;
 use std::clone::Clone;
 
 impl Client {
+    /// Get cluster metrics for the database Raft.
     #[cfg(feature = "sqlite")]
     pub async fn metrics_db(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
         if let Some(state) = &self.inner.state {
@@ -31,6 +32,7 @@ impl Client {
         }
     }
 
+    /// Get cluster metrics for the cache Raft.
     #[cfg(feature = "cache")]
     pub async fn metrics_cache(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
         if let Some(state) = &self.inner.state {
@@ -76,7 +78,7 @@ impl Client {
         }
     }
 
-    /// Check the Raft health state for the DB
+    /// Check the cluster health state for the database Raft.
     #[cfg(feature = "sqlite")]
     pub async fn is_healthy_db(&self) -> Result<(), Error> {
         let metrics = self.metrics_db().await?;
@@ -90,7 +92,7 @@ impl Client {
         }
     }
 
-    /// Check the Raft health state for the cache
+    /// Check the cluster health state for the cache Raft.
     #[cfg(feature = "cache")]
     pub async fn is_healthy_cache(&self) -> Result<(), Error> {
         let metrics = self.metrics_cache().await?;
@@ -104,6 +106,7 @@ impl Client {
         }
     }
 
+    /// Wait until the database Raft is healthy.
     #[cfg(feature = "sqlite")]
     pub async fn wait_until_healthy_db(&self) {
         while self.is_healthy_db().await.is_err() {
@@ -112,6 +115,7 @@ impl Client {
         }
     }
 
+    /// Wait until the cache Raft is healthy.
     #[cfg(feature = "cache")]
     pub async fn wait_until_healthy_cache(&self) {
         while self.is_healthy_cache().await.is_err() {
