@@ -61,9 +61,8 @@ in case of any errors or problems.
 - simple `String` batch executes
 - consistent read / select queries on leader
 - `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
-  This will end up behind a `serde` feature in the future which is not implemented yet.
 - `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
-  faster method with more manual work
+  more flexible method with more manual work
 - in addition to SQLite - multiple in-memory K/V caches with optional independent TTL per entry per cache
 - listen / notify to send real-time messages through the Raft
 - `dlock` feature provides access to distributed locks
