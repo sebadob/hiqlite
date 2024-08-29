@@ -1199,6 +1199,7 @@ dependencies = [
  "rocksdb",
  "rusqlite",
  "rust-embed",
+ "rust_decimal",
  "rustls",
  "serde",
  "serde_json",

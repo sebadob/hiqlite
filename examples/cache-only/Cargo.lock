@@ -942,6 +942,7 @@ dependencies = [
  "openraft",
  "reqwest",
  "rust-embed",
+ "rust_decimal",
  "rustls",
  "serde",
  "serde_json",
