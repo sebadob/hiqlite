@@ -3,26 +3,6 @@
 Hiqlite is an embeddable SQLite database that can form a Raft cluster to provide strong consistency, high availability
 (which is where `Hiqlite` derives from), replication, automatic leader fail-over and self-healing features.
 
-## Project Status
-
-This project is in an early phase and I have some things on the TODO before I can release the first v0.1.0.
-Until these TODO's are finished, I will not care about any changelog or something like that, because it costs more
-time and effort than it's worth at this point.
-
-However, you can take a look at the integration test (`hiqlite/tests/`) or the example. These do work fine so far.
-I do have many panics (that hopefully don't happen) and assertions in case of logic errors all over the code.
-I'd rather have my application panic so I can catch the error immediately than missing an error log and ending up in
-an inconsistent state.
-
-Issues and discussions are not available on purpose in this early stage. It would simply not make any sense before
-v0.1.0. I will also push directly to `main` until it's hitting the first release, which will most probably break the
-examples from time to time. There is a working [0.0.6 Tag](https://github.com/sebadob/hiqlite/tree/v0.0.6), just in
-case I do break them.
-
-The project itself is pretty useable by now. The TODO's are mainly about documentation, more examples and making
-the `Client` work for remote-only databases. The `hiqlite_server` is working fine so far as well. It can generate a
-basic starter config for testing on localhost and should be straight forward to use.
-
 ## Why
 
 Why another SQLite replication solution? Other projects exist already that can do this. The problem is that none of
@@ -61,27 +41,25 @@ in case of any errors or problems.
   machine
 - "magic" auto setup, no need to do any manual init or management for the Raft
 - self-healing - each node can automatically recover from:
-    - lost cached WAL buffers for the state machine
-    - lost cached WAL buffer for the logs store
+    - lost cached WAL buffer for the state machine
     - complete loss of the state machine DB (SQLite)
-    - complete loss of the logs storage (rocksdb)
     - complete loss of the whole volume itself
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
 - fully encrypted backups to s3, cron job or manual (
-  with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr) )
+  with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
 - restore from remote backup (with log index roll-over)
-- strongly consistent, replicated `execute` queries
+- strongly consistent, replicated `EXECUTE` queries
     - on a leader node, the client will not even bother with using networking
     - on a non-leader node, it will automatically switch over to a network connection so the request
       is forwarded and initiated on the current Raft leader
-- strongly consistent, replicated `execute` queries with returning statement through the Raft
+- strongly consistent, replicated `EXECUTE` queries with returning statement through the Raft
     - you can either get a raw handle to the custom `RowOwned` struct
     - or you can map the `RETURNING` statement to an existing struct
-- consistent read / select queries on leader
 - transaction executes
 - simple `String` batch executes
+- consistent read / select queries on leader
 - `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
   This will end up behind a `serde` feature in the future which is not implemented yet.
 - `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
@@ -93,10 +71,72 @@ in case of any errors or problems.
 - integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
   done
 
-## TODOs before v0.1.0
+## Performance
 
-- real world stability testing and fixes
-- proper documentation
+I added a [bench example](https://github.com/sebadob/hiqlite/tree/main/examples/bench) for easy testing on different
+hardware and setups. This example is very simple and it mostly cares about `INSERT` performance, since this is usually
+the bottleneck with Raft, because of 2 RTTs for each write by design.
+
+The performance can vary quite a bit, depending on your setup and hardware, of course. Even though the project is in an
+early state, I already put quite a bit of work in optimizing latency and throughput and I would say, it will be able
+to handle everything you throw at it. When you reach the threshold, you are probably in an area where you usually would
+not rely on a single database instance with something like a Postgres anymore as well.  
+SSDs and fast memory make quite a big difference of course. Regarding the CPU, the whole system is designed to benefit
+more from fewer cores with higher single speed like Workstation CPU's or AMD Epyc 4004 series. The reasons is the
+single writer at a time limitation from SQLite.
+
+Just to give you some raw numbers so you can get an idea how fast it currently is, some numbers below.  
+These values were taken using the [bench example](https://github.com/sebadob/hiqlite/tree/main/examples/bench).
+
+Hiqlite can run as a single instance as well, which will have lower latency and higher throughput of course, but I did
+not include this in the tests, because you usually want a HA Raft cluster of course. With higher concurrency (`-c`),
+only write / second will change, reads will always be local anyway.
+
+Test command (`-c` adjusted each time for different concurrency):
+
+```
+cargo run --release -- cluster -c 4 -r 100000
+```
+
+### Beefy Workstation
+
+AMD Ryzen 9950X, DDR5-5200 with highly optimized timings, M2 SSD Gen4
+
+**SQLite:**
+
+| Concurrency | 100k single `INSERT` | 100k transactional `INSERT` | single row `SELECT` |
+|-------------|----------------------|-----------------------------|---------------------| 
+| 4           | ~22.000 / s          | ~680.000 / s                | ~16 micros          |
+| 16          | ~36.000 / s          | ~450.000 / s                |                     |
+| 64          | ~43.000 / s          | ~440.000 / s                |                     |
+
+**Cache:**
+
+| Concurrency | 100k single PUT | single entry GET |
+|-------------|-----------------|------------------| 
+| 4           | ~49.000 / s     | ~10 micros       |
+| 16          | ~150.000 / s    |                  |
+| 64          | ~320.000 / s    |                  |
+
+### Older Workstation
+
+AMD Ryzen 3900X, DDR4-3000, 2x M2 SSD Gen3 as Raid 0
+
+**SQLite:**
+
+| Concurrency | 100k single `INSERT` | 100k transactional `INSERT` | single row `SELECT` |
+|-------------|----------------------|-----------------------------|---------------------| 
+| 4           | ~6.800 / s           | ~235.000 / s                | ~28 micros          |
+| 16          | ~13.300 / s          | ~180.000 / s                |                     |
+| 64          | ~20.800 / s          | ~173.000 / s                |                     |
+
+**Cache:**
+
+| Concurrency | 100k single PUT | single entry GET |
+|-------------|-----------------|------------------| 
+| 4           | ~17.200 / s     | ~17 micros       |
+| 16          | ~52.000 / s     |                  |
+| 64          | ~112.00 / s     |                  |
 
 ## Crate Features
 
@@ -111,7 +151,7 @@ By default, the following features are enabled:
 ### `auto-heal`
 
 This feature allows for auto-healing the State Machine (SQLite) in case of an un-graceful shutdown.
-To redurce I/O and improve performance, Hiqlite does not write the `last_applied_log_id` from the Raft messages
+To reduce I/O and improve performance, Hiqlite does not write the `last_applied_log_id` from the Raft messages
 into SQLite with each write. If it would do that, we would need to execute 1 extra query for each incoming
 request, which effectively would double the amount of I/O if we just think about single `EXECUTE` queries.
 Instead of doing that, it tracks the last applied ID in memory and only persists it into the DB in the
@@ -443,8 +483,7 @@ spec:
     spec:
       containers:
         - name: hiqlite
-          # TODO update the repo link to the image hosted publicly on ghcr
-          image: cr.sebadob.dev/hiqlite/hiqlite
+          image: ghcr.io/sebadob/hiqlite:0.1.0
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
