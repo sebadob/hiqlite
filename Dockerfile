@@ -21,8 +21,6 @@ WORKDIR /app
 COPY --from=builder /empty ./data
 COPY --from=builder /work/target/release/hiqlite ./hiqlite
 
-#COPY out/hiqlite .
-
 ENTRYPOINT ["/app/hiqlite"]
 
 CMD ["serve"]
