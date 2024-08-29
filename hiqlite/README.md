@@ -81,7 +81,7 @@ early state, I already put quite a bit of work in optimizing latency and through
 to handle everything you throw at it. When you reach the threshold, you are probably in an area where you usually would
 not rely on a single database instance with something like a Postgres anymore as well.  
 SSDs and fast memory make quite a big difference of course. Regarding the CPU, the whole system is designed to benefit
-more from fewer cores with higher single speed like Workstation CPU's or AMD Epyc 4004 series. The reasons is the
+more from fewer cores with higher single core speed like Workstation CPU's or AMD Epyc 4004 series. The reason is the
 single writer at a time limitation from SQLite.
 
 Just to give you some raw numbers so you can get an idea how fast it currently is, some numbers below.  
