@@ -1,6 +1,6 @@
 # v0.1.0
 
-With this versions, it starts to make sense to use the crate in real applications to further stabilize it.  
+With this first version, it starts to make sense to use Hiqlite in real applications to further stabilize it.  
 This first release comes with the following features:
 
 - full Raft cluster setup
