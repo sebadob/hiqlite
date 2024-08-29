@@ -121,6 +121,7 @@ webpki-roots = { workspace = true, optional = true }
 # make minimal versions happy
 lazy_static.workspace = true
 lz4-sys.workspace = true
+rust_decimal.workspace = true
 tower-layer.workspace = true
 tower-service.workspace = true
 

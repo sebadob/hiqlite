@@ -92,5 +92,6 @@ webpki-roots = { version = "0.26.3" }
 # make minimal versions happy
 lazy_static = "1.0.2"
 lz4-sys = "1.9.5"
+rust_decimal = "1.17"
 tower-layer = "0.3.3"
 tower-service = "0.3.3"
