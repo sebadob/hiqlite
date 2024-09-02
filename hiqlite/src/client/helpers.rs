@@ -156,7 +156,7 @@ impl Client {
 
     #[cfg(feature = "sqlite")]
     #[inline(always)]
-    pub(crate) async fn is_leader_db(&self) -> Option<&Arc<AppState>> {
+    pub async fn is_leader_db(&self) -> Option<&Arc<AppState>> {
         if let Some(state) = &self.inner.state {
             if state.id == self.inner.leader_db.read().await.0 {
                 return Some(state);
@@ -167,7 +167,7 @@ impl Client {
 
     #[cfg(feature = "cache")]
     #[inline(always)]
-    pub(crate) async fn is_leader_cache(&self) -> Option<&Arc<AppState>> {
+    pub async fn is_leader_cache(&self) -> Option<&Arc<AppState>> {
         if let Some(state) = &self.inner.state {
             if state.id == self.inner.leader_cache.read().await.0 {
                 return Some(state);
