@@ -31,7 +31,7 @@ use crate::network::api::{ApiStreamRequest, ApiStreamRequestPayload};
 use crate::{migration::Migration, store::state_machine::sqlite::state_machine::Query};
 
 #[derive(Debug)]
-pub enum ClientStreamReq {
+pub(crate) enum ClientStreamReq {
     // coming from the `DbClient`
     #[cfg(feature = "sqlite")]
     Execute(ClientExecutePayload),

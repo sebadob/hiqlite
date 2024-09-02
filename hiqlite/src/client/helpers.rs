@@ -154,9 +154,31 @@ impl Client {
         Ok(())
     }
 
+    /// Check if this instance is the current Raft cluster leader for the database.
+    #[cfg(feature = "sqlite")]
+    pub async fn is_leader_db(&self) -> bool {
+        if let Some(state) = &self.inner.state {
+            if state.id == self.inner.leader_db.read().await.0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if this instance is the current Raft cluster leader for the cache.
+    #[cfg(feature = "cache")]
+    pub async fn is_leader_cache(&self) -> bool {
+        if let Some(state) = &self.inner.state {
+            if state.id == self.inner.leader_cache.read().await.0 {
+                return true;
+            }
+        }
+        false
+    }
+
     #[cfg(feature = "sqlite")]
     #[inline(always)]
-    pub async fn is_leader_db(&self) -> Option<&Arc<AppState>> {
+    pub(crate) async fn is_leader_db_with_state(&self) -> Option<&Arc<AppState>> {
         if let Some(state) = &self.inner.state {
             if state.id == self.inner.leader_db.read().await.0 {
                 return Some(state);
@@ -167,7 +189,7 @@ impl Client {
 
     #[cfg(feature = "cache")]
     #[inline(always)]
-    pub async fn is_leader_cache(&self) -> Option<&Arc<AppState>> {
+    pub(crate) async fn is_leader_cache_with_state(&self) -> Option<&Arc<AppState>> {
         if let Some(state) = &self.inner.state {
             if state.id == self.inner.leader_cache.read().await.0 {
                 return Some(state);

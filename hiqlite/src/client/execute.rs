@@ -44,7 +44,7 @@ impl Client {
 
     #[inline(always)]
     async fn execute_req(&self, sql: Query) -> Result<usize, Error> {
-        if let Some(state) = self.is_leader_db().await {
+        if let Some(state) = self.is_leader_db_with_state().await {
             let res = state
                 .raft_db
                 .raft
@@ -131,7 +131,7 @@ impl Client {
 
     #[inline]
     pub(crate) async fn execute_returning_req(&self, sql: Query) -> Result<Vec<RowOwned>, Error> {
-        if let Some(state) = self.is_leader_db().await {
+        if let Some(state) = self.is_leader_db_with_state().await {
             let res = state
                 .raft_db
                 .raft

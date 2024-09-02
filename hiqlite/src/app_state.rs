@@ -46,7 +46,7 @@ impl RaftType {
 
 // Representation of an application state. This struct can be shared around to share
 // instances of raft, store and more.
-pub struct AppState {
+pub(crate) struct AppState {
     pub id: NodeId,
     pub addr_api: String,
     #[cfg(feature = "sqlite")]

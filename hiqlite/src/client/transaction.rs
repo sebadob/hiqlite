@@ -64,7 +64,7 @@ impl Client {
         &self,
         queries: Vec<Query>,
     ) -> Result<Vec<Result<usize, Error>>, Error> {
-        if let Some(state) = self.is_leader_db().await {
+        if let Some(state) = self.is_leader_db_with_state().await {
             let res = state
                 .raft_db
                 .raft

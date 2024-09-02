@@ -193,7 +193,7 @@ impl Client {
     }
 
     pub(crate) async fn notify_req(&self, cache_req: CacheRequest) -> Result<(), Error> {
-        if let Some(state) = self.is_leader_cache().await {
+        if let Some(state) = self.is_leader_cache_with_state().await {
             state.raft_cache.raft.client_write(cache_req).await?;
             Ok(())
         } else {

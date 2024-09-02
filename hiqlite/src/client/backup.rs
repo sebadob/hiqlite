@@ -24,7 +24,7 @@ impl Client {
         match self.backup_execute().await {
             Ok(res) => Ok(res),
             Err(err) => {
-                let is_leader = self.is_leader_db().await.is_some();
+                let is_leader = self.is_leader_db_with_state().await.is_some();
                 error!(
                     "Error during backup: {}\n current leader: {}\nis this leader: {}",
                     err,
@@ -36,7 +36,7 @@ impl Client {
                     .await
                 {
                     // TODO sometimes the backup task can get stuck here -> leader not updating properly?
-                    let is_leader = self.is_leader_db().await.is_some();
+                    let is_leader = self.is_leader_db_with_state().await.is_some();
                     error!(
                         "was leader error during backup: {}\n current leader: {}\nis this leader: {}",
                         err,
@@ -55,7 +55,7 @@ impl Client {
     async fn backup_execute(&self) -> Result<(), Error> {
         let current_leader = self.inner.leader_db.read().await.0;
 
-        if let Some(state) = self.is_leader_db().await {
+        if let Some(state) = self.is_leader_db_with_state().await {
             let res = state
                 .raft_db
                 .raft
