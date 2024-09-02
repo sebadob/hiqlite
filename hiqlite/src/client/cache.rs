@@ -12,6 +12,33 @@ use strum::IntoEnumIterator;
 use tokio::sync::oneshot;
 
 impl Client {
+    /// Clears a single cache.
+    pub async fn clear_cache<C>(&self, cache: C) -> Result<(), Error>
+    where
+        C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+    {
+        self.cache_req_retry(
+            CacheRequest::Clear {
+                cache_idx: cache
+                    .to_usize()
+                    .expect("Invalid ToPrimitive impl on Cache Index"),
+            },
+            false,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    /// Clears all available caches.
+    pub async fn clear_cache_all<C>(&self) -> Result<(), Error>
+    where
+        C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+    {
+        self.cache_req_retry(CacheRequest::ClearAll, false).await?;
+        Ok(())
+    }
+
     /// GET a value from the cache.
     ///
     /// ```rust, notest
@@ -121,6 +148,7 @@ impl Client {
             false,
         )
         .await?;
+
         Ok(())
     }
 
@@ -140,6 +168,7 @@ impl Client {
             false,
         )
         .await?;
+
         Ok(())
     }
 
@@ -172,7 +201,7 @@ impl Client {
         cache_req: CacheRequest,
         is_remote_get: bool,
     ) -> Result<CacheResponse, Error> {
-        if let Some(state) = self.is_leader_cache().await {
+        if let Some(state) = self.is_leader_cache_with_state().await {
             let res = state.raft_cache.raft.client_write(cache_req).await?;
             Ok(res.data)
         } else {

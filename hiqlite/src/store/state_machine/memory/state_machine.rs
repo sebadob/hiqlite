@@ -54,6 +54,10 @@ pub enum CacheRequest {
         cache_idx: usize,
         key: Cow<'static, str>,
     },
+    Clear {
+        cache_idx: usize,
+    },
+    ClearAll,
     #[cfg(feature = "listen_notify")]
     Notify((i64, Vec<u8>)),
     #[cfg(feature = "dlock")]
@@ -269,18 +273,16 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         value,
                         expires,
                     } => {
-                        let idx = cache_idx.to_usize().unwrap();
-
                         if let Some(exp) = expires {
                             self.tx_ttls
-                                .get(idx)
+                                .get(cache_idx)
                                 .unwrap()
                                 .send(TtlRequest::Ttl((exp, key.to_string())))
                                 .expect("cache ttl handler to always be running");
                         }
 
                         self.tx_caches
-                            .get(idx)
+                            .get(cache_idx)
                             .unwrap()
                             .send(CacheRequestHandler::Put((key.to_string(), value)))
                             .expect("cache ttl handler to always be running");
@@ -289,13 +291,30 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                     }
 
                     CacheRequest::Delete { cache_idx, key } => {
-                        let idx = cache_idx.to_usize().unwrap();
-
                         self.tx_caches
-                            .get(idx)
+                            .get(cache_idx)
                             .unwrap()
                             .send(CacheRequestHandler::Delete(key.to_string()))
                             .expect("cache ttl handler to always be running");
+
+                        CacheResponse::Ok
+                    }
+
+                    CacheRequest::Clear { cache_idx } => {
+                        self.tx_caches
+                            .get(cache_idx)
+                            .unwrap()
+                            .send(CacheRequestHandler::Clear)
+                            .expect("cache ttl handler to always be running");
+
+                        CacheResponse::Ok
+                    }
+
+                    CacheRequest::ClearAll => {
+                        for tx in &self.tx_caches {
+                            tx.send(CacheRequestHandler::Clear)
+                                .expect("cache ttl handler to always be running");
+                        }
 
                         CacheResponse::Ok
                     }

@@ -149,7 +149,7 @@ impl Client {
         cache_req: CacheRequest,
         is_remote_await: bool,
     ) -> Result<LockState, Error> {
-        if let Some(state) = self.is_leader_cache().await {
+        if let Some(state) = self.is_leader_cache_with_state().await {
             let res = state.raft_cache.raft.client_write(cache_req).await?;
             let data: CacheResponse = res.data;
             match data {

@@ -17,6 +17,7 @@ pub enum CacheRequestHandler {
     Get((String, oneshot::Sender<Option<Vec<u8>>>)),
     Put((String, Vec<u8>)),
     Delete(String),
+    Clear,
     SnapshotBuild(oneshot::Sender<BTreeMap<String, Vec<u8>>>),
     SnapshotInstall((BTreeMap<String, Vec<u8>>, oneshot::Sender<()>)),
 }
@@ -47,6 +48,10 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
             }
             CacheRequestHandler::Delete(key) => {
                 data.remove(&key);
+            }
+            CacheRequestHandler::Clear => {
+                info!("Clearing all caches for {}", cache_name);
+                data = BTreeMap::new();
             }
             CacheRequestHandler::SnapshotBuild(ack) => {
                 ack.send(data.clone()).unwrap();
