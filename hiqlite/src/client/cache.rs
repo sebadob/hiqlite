@@ -31,10 +31,7 @@ impl Client {
     }
 
     /// Clears all available caches.
-    pub async fn clear_cache_all<C>(&self) -> Result<(), Error>
-    where
-        C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
-    {
+    pub async fn clear_cache_all(&self) -> Result<(), Error> {
         self.cache_req_retry(CacheRequest::ClearAll, false).await?;
         Ok(())
     }
