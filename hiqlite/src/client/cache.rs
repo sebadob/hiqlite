@@ -59,7 +59,13 @@ impl Client {
         V: for<'a> Deserialize<'a>,
     {
         match self.get_bytes(cache, key).await {
-            Ok(value) => Ok(value.map(|v| bincode::deserialize(&v).unwrap())),
+            Ok(value) => {
+                if let Some(v) = value {
+                    Ok(bincode::deserialize(&v)?)
+                } else {
+                    Ok(None)
+                }
+            }
             Err(err) => Err(err),
         }
     }
