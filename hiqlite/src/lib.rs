@@ -126,7 +126,7 @@ impl Display for Node {
 /// The main entry function to start a Raft / Hiqlite node.
 /// # Panics
 /// If an incorrect `node_config` was given.
-#[cfg(all(feature = "sqlite", not(feature = "cache")))]
+#[cfg(feature = "sqlite")]
 pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
     #[derive(
         Debug, serde::Serialize, serde::Deserialize, strum::EnumIter, num_derive::ToPrimitive,
