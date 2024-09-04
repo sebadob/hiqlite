@@ -11,7 +11,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::task;
-use tracing::info;
+use tracing::{debug, info};
 
 #[cfg(feature = "backup")]
 use crate::backup;
@@ -32,9 +32,14 @@ where
     node_config.is_valid()?;
 
     if node_config.tls_api.is_some() || node_config.tls_raft.is_some() {
-        rustls::crypto::ring::default_provider()
+        if rustls::crypto::ring::default_provider()
             .install_default()
-            .expect("default CryptoProvider installation to succeed");
+            .is_err()
+        {
+            debug!(
+                "Error installing default rustls crypto provider, may have been installed already"
+            );
+        }
     }
 
     let tls_api_client_config = node_config.tls_api.clone().map(|c| c.client_config());
