@@ -61,7 +61,7 @@ impl Client {
         match self.get_bytes(cache, key).await {
             Ok(value) => {
                 if let Some(v) = value {
-                    Ok(bincode::deserialize(&v)?)
+                    Ok(Some(bincode::deserialize(&v)?))
                 } else {
                     Ok(None)
                 }
