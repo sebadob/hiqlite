@@ -108,7 +108,7 @@ where
     C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
 {
     let log_store = logs::memory::LogStoreMemory::new();
-    let state_machine_store = Arc::new(StateMachineMemory::new::<C>().await.unwrap());
+    let state_machine_store = Arc::new(StateMachineMemory::new::<C>().await?);
 
     let network = NetworkStreaming {
         node_id: node_config.node_id,

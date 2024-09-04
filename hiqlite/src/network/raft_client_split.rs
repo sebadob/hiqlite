@@ -204,7 +204,6 @@ impl NetworkStreaming {
 
         loop {
             let socket = {
-                info!("WsHandler trying to connect to {}", node.addr_raft);
                 match Self::try_connect(
                     this_node,
                     &node.addr_raft,
@@ -442,6 +441,7 @@ impl NetworkStreaming {
             "http"
         };
         let uri = format!("{}://{}/stream/{}", scheme, addr, raft_type.as_str());
+        info!("Trying to connect to: {}", uri);
 
         let req = Request::builder()
             .method("GET")
