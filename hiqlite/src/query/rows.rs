@@ -118,14 +118,77 @@ pub enum ColumnType {
 }
 
 impl ColumnType {
+    #[inline(always)]
     fn from_decl_type(typ: Option<&str>) -> Self {
+        // we will always match as few character as possible for improved speed
         if let Some(t) = typ {
+            // We will check "correct" types first for better speed with correct definitions.
+            // SQLITE will convert int, integer, text, blob, real to UPPERCASE on creation.
+            if t.starts_with("INT") {
+                return Self::Integer;
+            }
+
             match t {
-                "INTEGER" => Self::Integer,
-                "REAL" => Self::Real,
                 "TEXT" => Self::Text,
                 "BLOB" => Self::Blob,
-                ct => unreachable!("unreachable column type: {}", ct),
+                "REAL" => Self::Real,
+                _ => {
+                    // When the proper types don't exist, try check type-affinity.
+                    // Type affinity matches will NOT be converted to uppercase automatically!
+
+                    if t.is_empty() {
+                        return Self::Blob;
+                    }
+
+                    // A new allocation is less expensive than checking each match twice.
+                    let ty = t.to_uppercase();
+
+                    // 3.1. Determination Of Column Affinity from SQLite docs:
+                    // https://www.sqlite.org/datatype3.html
+
+                    // .starts_with("INT") already checked
+                    // INT
+                    // INTEGER
+                    // INT2
+                    // INT8
+                    //
+                    // TINYINT
+                    // SMALLINT
+                    // MEDIUMINT
+                    // BIGINT
+                    // UNSIGNED BIG INT
+                    if ty.contains("INT") {
+                        Self::Integer
+
+                    // "TEXT already checked
+                    // TEXT
+                    //
+                    // CHARACTER(20)
+                    // VARCHAR(255)
+                    // VARYING CHARACTER(255)
+                    // NCHAR(55)
+                    // NATIVE CHARACTER(70)
+                    // NVARCHAR(100)
+                    // CLOB
+                    } else if ty.contains("CHAR") || ty.contains("CLOB") {
+                        Self::Text
+
+                    // .starts_with("RE") already checked
+                    // REAL
+                    //
+                    // DOUBLE
+                    // DOUBLE PRECISION
+                    // FLOAT
+                    } else if ty.contains("FLOA") || ty.contains("DOUB") {
+                        Self::Real
+
+                    // Anything SQLite cannot match properly should be an INTEGER / NUMERIC.
+                    // However, we should have caught anything here -> panic!() to catch user errors
+                    // early is the better option to avoid hard to find bugs at runtime.
+                    } else {
+                        unreachable!("unreachable column type: {}", t)
+                    }
+                }
             }
         } else {
             Self::Expr
