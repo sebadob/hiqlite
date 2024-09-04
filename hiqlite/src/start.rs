@@ -31,11 +31,18 @@ where
 {
     node_config.is_valid()?;
 
-    if rustls::crypto::ring::default_provider()
-        .install_default()
-        .is_err()
-    {
-        debug!("Error installing default rustls crypto provider, may have been installed already");
+    if node_config.tls_raft.is_some() || node_config.tls_api.is_some() {
+        info!("Starting Hiqlite with TLS");
+        if rustls::crypto::ring::default_provider()
+            .install_default()
+            .is_err()
+        {
+            debug!(
+                "Error installing default rustls crypto provider, may have been installed already"
+            );
+        }
+    } else {
+        info!("Starting Hiqlite without TLS");
     }
 
     let tls_api_client_config = node_config.tls_api.clone().map(|c| c.client_config());
