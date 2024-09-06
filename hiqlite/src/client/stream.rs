@@ -754,6 +754,7 @@ async fn try_connect(
         "http"
     };
     let uri = format!("{}://{}/stream/{}", scheme, addr, raft_type.as_str());
+    info!("Client API WebSocket trying to connect to: {}", uri);
 
     let req = Request::builder()
         .method("GET")
