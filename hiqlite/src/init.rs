@@ -214,8 +214,7 @@ pub async fn become_cluster_member(
     let client = reqwest::Client::builder()
         .http2_prior_knowledge()
         .danger_accept_invalid_certs(tls_no_verify)
-        .build()
-        .unwrap();
+        .build()?;
     let scheme = if tls { "https" } else { "http" };
 
     let this_node = get_this_node(this_node, nodes);
@@ -223,8 +222,7 @@ pub async fn become_cluster_member(
         node_id: this_node.id,
         addr_api: this_node.addr_api,
         addr_raft: this_node.addr_raft,
-    })
-    .unwrap();
+    })?;
 
     info!("Trying to become {} raft learner", raft_type.as_str());
     try_become(
@@ -281,6 +279,7 @@ async fn try_become(
 
         for node in nodes {
             if node.id == this_node {
+                debug!("Skipping 'this' node");
                 continue;
             }
 
@@ -308,7 +307,7 @@ async fn try_become(
                         return Ok(());
                     } else {
                         let body = resp.bytes().await?;
-                        let err: Error = serde_json::from_slice(&body).unwrap();
+                        let err: Error = serde_json::from_slice(&body)?;
                         error!(
                             "Node {} become '{}' member on remote ({}): {}",
                             this_node,
