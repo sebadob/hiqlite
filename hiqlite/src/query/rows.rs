@@ -439,3 +439,22 @@ impl TryFrom<ValueOwned> for DateTime<FixedOffset> {
             .map_err(|err| Error::Sqlite(err.to_string().into()))
     }
 }
+
+impl TryFrom<ValueOwned> for serde_json::Value {
+    type Error = crate::Error;
+
+    /// RFC3339 ("YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM") into `DateTime<Local>`.
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let slf = match value {
+            ValueOwned::Null => serde_json::Value::Null,
+            ValueOwned::Integer(i) => serde_json::Value::Number(i.into()),
+            ValueOwned::Real(r) => serde_json::Value::Number(r.into()),
+            ValueOwned::Text(s) => serde_json::from_str(s.as_str())
+                .map_err(|err| Error::Sqlite(err.to_string().into()))?,
+            ValueOwned::Blob(b) => {
+                serde_json::from_slice(&b).map_err(|err| Error::Sqlite(err.to_string().into()))?
+            }
+        };
+        Ok(slf)
+    }
+}
