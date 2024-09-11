@@ -5,7 +5,7 @@ use openraft::{RaftMetrics, StoredMembership};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{task, time};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     let handle = task::spawn(check_split_brain(state, nodes, tls));
