@@ -94,7 +94,7 @@ async fn test_migrations_are_correct(client: &Client) -> Result<(), Error> {
     let migrations: Vec<AppliedMigration> = client
         .query_map("SELECT * FROM _migrations", params!())
         .await?;
-    assert_eq!(migrations.len(), 2);
+    assert_eq!(migrations.len(), 3);
     debug(&migrations);
 
     assert_eq!(migrations[0].id, 1);
@@ -110,6 +110,9 @@ async fn test_migrations_are_correct(client: &Client) -> Result<(), Error> {
         migrations[1].hash,
         "c61c731c49a33a44ad56112365423f8d654e7ddbe9320f2492746aa61f54a733"
     );
+
+    assert_eq!(migrations[2].id, 3);
+    assert_eq!(migrations[2].name, "types_conversion");
 
     Ok(())
 }

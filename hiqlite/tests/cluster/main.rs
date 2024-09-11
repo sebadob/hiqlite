@@ -22,6 +22,7 @@ mod cache;
 mod dlock;
 mod listen_notify;
 mod remote_only;
+mod type_conversions;
 
 pub const TEST_DATA_DIR: &str = "tests/data_test";
 
@@ -85,6 +86,10 @@ async fn exec_tests() -> Result<(), Error> {
     log("Starting batch tests");
     batch::test_batch(&client_1, &client_2, &client_3).await?;
     log("Batch tests finished");
+
+    log("Starting SQL type conversion tests");
+    type_conversions::test_type_conversions(&client_1).await?;
+    log("SQL type conversion tests finished");
 
     log("Test cache operations");
     cache::test_cache(&client_1, &client_2, &client_3).await?;
