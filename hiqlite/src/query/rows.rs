@@ -1,4 +1,5 @@
 use crate::Error;
+use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
@@ -229,6 +230,15 @@ pub enum ValueOwned {
     Blob(Vec<u8>),
 }
 
+impl ValueOwned {
+    fn try_as_str(&self) -> Result<&str, Error> {
+        match self {
+            ValueOwned::Text(s) => Ok(s.as_str()),
+            _ => Err(Error::Sqlite("Cannot convert ValueOwned to &str".into())),
+        }
+    }
+}
+
 impl TryFrom<ValueOwned> for i64 {
     type Error = crate::Error;
 
@@ -240,7 +250,7 @@ impl TryFrom<ValueOwned> for i64 {
     }
 }
 
-impl TryFrom<ValueOwned> for std::option::Option<i64> {
+impl TryFrom<ValueOwned> for Option<i64> {
     type Error = crate::Error;
 
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
@@ -262,13 +272,26 @@ impl TryFrom<ValueOwned> for f64 {
     }
 }
 
-impl TryFrom<ValueOwned> for std::option::Option<f64> {
+impl TryFrom<ValueOwned> for Option<f64> {
     type Error = crate::Error;
 
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
             v => f64::try_from(v).map(Some),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for bool {
+    type Error = crate::Error;
+
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Integer(i) => Ok(i == 1),
+            ValueOwned::Real(i) => Ok(i == 1.0),
+            ValueOwned::Text(s) => Ok(s.as_str() == "true"),
+            _ => Err(Error::Sqlite("Cannot convert into bool".into())),
         }
     }
 }
@@ -284,7 +307,7 @@ impl TryFrom<ValueOwned> for String {
     }
 }
 
-impl TryFrom<ValueOwned> for std::option::Option<String> {
+impl TryFrom<ValueOwned> for Option<String> {
     type Error = crate::Error;
 
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
@@ -306,7 +329,7 @@ impl TryFrom<ValueOwned> for Vec<u8> {
     }
 }
 
-impl TryFrom<ValueOwned> for std::option::Option<Vec<u8>> {
+impl TryFrom<ValueOwned> for Option<Vec<u8>> {
     type Error = crate::Error;
 
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
@@ -314,5 +337,105 @@ impl TryFrom<ValueOwned> for std::option::Option<Vec<u8>> {
             ValueOwned::Null => Ok(None),
             v => Vec::try_from(v).map(Some),
         }
+    }
+}
+
+impl TryFrom<ValueOwned> for NaiveDate {
+    type Error = crate::Error;
+
+    /// "YYYY-MM-DD" => ISO 8601 calendar date without timezone.
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let s = value.try_as_str()?;
+        match Self::parse_from_str(s, "%F") {
+            Ok(slf) => Ok(slf),
+            Err(err) => Err(Error::Sqlite(err.to_string().into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for NaiveTime {
+    type Error = crate::Error;
+
+    /// "HH:MM"/"HH:MM:SS"/"HH:MM:SS.SSS" => ISO 8601 time without timezone.
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let s = value.try_as_str()?;
+        let fmt = match s.len() {
+            5 => "%H:%M",
+            8 => "%T",
+            _ => "%T%.f",
+        };
+
+        match Self::parse_from_str(s, fmt) {
+            Ok(slf) => Ok(slf),
+            Err(err) => Err(Error::Sqlite(err.to_string().into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for NaiveDateTime {
+    type Error = crate::Error;
+
+    /// "YYYY-MM-DD HH:MM:SS"/"YYYY-MM-DD HH:MM:SS.SSS" => ISO 8601 combined date
+    /// and time without timezone. ("YYYY-MM-DDTHH:MM:SS"/"YYYY-MM-DDTHH:MM:SS.SSS"
+    /// also supported)
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let s = value.try_as_str()?;
+        let fmt = if s.len() >= 11 && s.as_bytes()[10] == b'T' {
+            "%FT%T%.f"
+        } else {
+            "%F %T%.f"
+        };
+
+        match Self::parse_from_str(s, fmt) {
+            Ok(slf) => Ok(slf),
+            Err(err) => Err(Error::Sqlite(err.to_string().into())),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for DateTime<Utc> {
+    type Error = crate::Error;
+
+    /// RFC3339 ("YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM") into `DateTime<Utc>`.
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        {
+            // Try to parse value as rfc3339 first.
+            let s = value.try_as_str()?;
+
+            let fmt = if s.len() >= 11 && s.as_bytes()[10] == b'T' {
+                "%FT%T%.f%#z"
+            } else {
+                "%F %T%.f%#z"
+            };
+
+            if let Ok(dt) = DateTime::parse_from_str(s, fmt) {
+                return Ok(dt.with_timezone(&Utc));
+            }
+        }
+
+        // Couldn't parse as rfc3339 - fall back to NaiveDateTime.
+        NaiveDateTime::try_from(value).map(|dt| Utc.from_utc_datetime(&dt))
+    }
+}
+
+impl TryFrom<ValueOwned> for DateTime<Local> {
+    type Error = crate::Error;
+
+    /// RFC3339 ("YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM") into `DateTime<Local>`.
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let utc_dt = DateTime::<Utc>::try_from(value)?;
+        Ok(utc_dt.with_timezone(&Local))
+    }
+}
+
+impl TryFrom<ValueOwned> for DateTime<FixedOffset> {
+    type Error = crate::Error;
+
+    /// RFC3339 ("YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM") into `DateTime<Local>`.
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        let s = value.try_as_str()?;
+        Self::parse_from_rfc3339(s)
+            .or_else(|_| Self::parse_from_str(s, "%F %T%.f%:z"))
+            .map_err(|err| Error::Sqlite(err.to_string().into()))
     }
 }
