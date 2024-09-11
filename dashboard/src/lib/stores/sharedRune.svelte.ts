@@ -13,12 +13,6 @@ export const useSharedStore = <T, A>(
     return _value;
 };
 
-// export const useWritable = <T>(name: string, value?: T) =>
-//     useSharedStore(name, writable, value);
-//
-// export const useReadable = <T>(name: string, value: T) =>
-//     useSharedStore(name, readable, value);
-
 export const useSignal = <T>(name: string, value: T) =>
     useSharedStore(name, signal, value);
 
