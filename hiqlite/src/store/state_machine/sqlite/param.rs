@@ -1,3 +1,4 @@
+use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rusqlite::types::{ToSqlOutput, Value};
 use serde::{Deserialize, Serialize};
 
@@ -138,6 +139,65 @@ impl From<Vec<u8>> for Param {
     #[inline]
     fn from(v: Vec<u8>) -> Param {
         Param::Blob(v)
+    }
+}
+
+impl From<DateTime<Utc>> for Param {
+    /// UTC time => UTC RFC3339 timestamp
+    /// ("YYYY-MM-DD HH:MM:SS.SSS+00:00")
+    #[inline]
+    fn from(value: DateTime<Utc>) -> Self {
+        Param::Text(value.format("%F %T%.f%:z").to_string())
+    }
+}
+
+impl From<DateTime<Local>> for Param {
+    /// Local time => UTC RFC3339 timestamp
+    /// ("YYYY-MM-DD HH:MM:SS.SSS+00:00")
+    #[inline]
+    fn from(value: DateTime<Local>) -> Self {
+        Param::Text(value.with_timezone(&Utc).format("%F %T%.f%:z").to_string())
+    }
+}
+
+impl From<DateTime<FixedOffset>> for Param {
+    /// Date and time with time zone => RFC3339 timestamp
+    /// ("YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM")
+    #[inline]
+    fn from(value: DateTime<FixedOffset>) -> Self {
+        Param::Text(value.format("%F %T%.f%:z").to_string())
+    }
+}
+
+impl From<NaiveDate> for Param {
+    /// ISO 8601 calendar date without timezone => "YYYY-MM-DD"
+    #[inline]
+    fn from(value: NaiveDate) -> Self {
+        Param::Text(value.format("%F").to_string())
+    }
+}
+
+impl From<NaiveTime> for Param {
+    /// ISO 8601 time without timezone => "HH:MM:SS.SSS"
+    #[inline]
+    fn from(value: NaiveTime) -> Self {
+        Param::Text(value.format("%T%.f").to_string())
+    }
+}
+
+impl From<NaiveDateTime> for Param {
+    /// ISO 8601 combined date and time without timezone =>
+    /// "YYYY-MM-DD HH:MM:SS.SSS"
+    #[inline]
+    fn from(value: NaiveDateTime) -> Self {
+        Param::Text(value.format("%F %T%.f").to_string())
+    }
+}
+
+impl From<serde_json::Value> for Param {
+    #[inline]
+    fn from(value: serde_json::Value) -> Self {
+        Param::Text(value.to_string())
     }
 }
 

@@ -30,6 +30,7 @@ chrono = { version = "0.4.38", default-features = false, features = [
     "std",
     "clock",
     "now",
+    #    "serde",
 ] }
 clap = { version = "4.1.11", features = ["derive", "env"] }
 cron = { version = "0.12.1" }
@@ -65,7 +66,9 @@ rocksdb = { version = "0.22.0", default-features = true, features = ["snappy"] }
 rusqlite = { version = "0.32.1", features = [
     "backup",
     "bundled",
+    "chrono",
     "column_decltype",
+    "serde_json",
 ] }
 rust-embed = { version = "8.5.0", features = [] }
 rustls = { version = "0.23.12", features = ["ring"] }
