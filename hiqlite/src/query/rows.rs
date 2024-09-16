@@ -184,10 +184,8 @@ impl ColumnType {
                         Self::Real
 
                     // Anything SQLite cannot match properly should be an INTEGER / NUMERIC.
-                    // However, we should have caught anything here -> panic!() to catch user errors
-                    // early is the better option to avoid hard to find bugs at runtime.
                     } else {
-                        unreachable!("unreachable column type: {}", t)
+                        Self::Integer
                     }
                 }
             }
