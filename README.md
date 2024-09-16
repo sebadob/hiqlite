@@ -186,7 +186,27 @@ raft leader via snapshot + log replication.
 Backups will be created locally first on each of the Raft nodes. Afterward, only the leader will encrypt the
 backup and push it to the configured S3 bucket for disaster recovery.
 
-Auto-restoring from a backup on S3 storage will also be possible with this feature enabled.
+Auto-restoring from a backup on S3 storage will also be possible with this feature enabled. The likelihood that you
+need to do this, is pretty low though.
+
+#### You lose a cluster node
+
+If you lost a cluster node for whatever reasons, you don't need a backup. Just shut down the node, get rid of any
+possibly left over data, and restart it. The node will join the cluster and fetch the latest snapshot + logs from
+the current leader node.
+
+#### You lose the full cluster
+
+If you end up in a situation where you lost the complete cluster, it is the only situation when you probably need
+restore from backup as disaster recovery. The process is simple:
+
+1. Have the cluster shut down. This is probably the case anyway, if
+   you need to restore from a backup.
+2. Provide the backup file name on S3 storage with the
+   HIQLITE_BACKUP_RESTORE value.
+3. Start up the cluster again.
+4. After the restart, make sure to remove the HIQLITE_BACKUP_RESTORE
+   env value.
 
 ### `cache`
 
@@ -344,6 +364,12 @@ hiqlite serve -h
 
 The `--node-id` must match a value from `HQL_NODES` inside your config. When you overwrite the node id at startup,
 you can re-use the same config for multiple nodes.
+
+### Example Config
+
+Take a look at the [examples](https://github.com/sebadob/hiqlite/tree/main/examples) or the example
+[config](https://github.com/sebadob/hiqlite/blob/main/config) to get an idea about the possible config values.
+The `NodeConfig` can be created programmatically or fully created `from_env()` vars.
 
 ### Cluster inside Kubernetes
 
