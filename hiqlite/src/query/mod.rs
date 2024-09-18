@@ -81,6 +81,7 @@ where
     .await?
 }
 
+#[inline(always)]
 pub(crate) async fn query_map<T, S>(
     state: &Arc<AppState>,
     stmt: S,

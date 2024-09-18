@@ -25,15 +25,14 @@ places.
     - `chrono::NaiveDateTime`
     - `serde_json::Value`
       The additional `chrono` and `serde_json` types are stored as `TEXT` inside the DB for compatibility with the
-      underlying `rusqlite` crate. Using `INTEGER` for `chrono::Naive*` and `Utc` types would be more efficient, which
-      may
-      be added as a possibility in the future.  
-      Note: These auto type conversions only work when you implement the `From<hiqlite::Row>` and do not work with the
+      underlying `rusqlite` crate. Using `INTEGER` for `chrono::Naive*` and `Utc` types would be faster more efficient,
+      which may be changed in the future. For now, all Date and Time-like types are converted to `TEXT`.  
+      *Note:* These auto type conversions only work when you implement the `From<hiqlite::Row>` and do not work with the
       auto-conversion from deriving `serde::Deserialize`.
 - `openraft` has been bumped to `v0.9.16` which solves some issues with a not-so-pretty rolling restart of Kubernetes
   StatefulSets for instance due to a race condition.
 - `HIQLITE_BACKUP_RESTORE` env var to restore from a backup has been renamed to `HQL_BACKUP_RESTORE` to match the other
-  config wars regarding the prefix.
+  config vars regarding the prefix.
 
 ## v0.1.0
 
