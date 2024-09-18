@@ -4,7 +4,7 @@ members = ["hiqlite"]
 exclude = ["examples"]
 
 [workspace.package]
-version = "0.2.0-20240918"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Sebastian Dobe <sebastiandobe@mailbox.org"]
@@ -30,7 +30,8 @@ chrono = { version = "0.4.38", default-features = false, features = [
     "std",
     "clock",
     "now",
-    #    "serde",
+    # The default serde impl for chrono does not match the one from rusqlite.
+    #"serde",
 ] }
 clap = { version = "4.1.11", features = ["derive", "env"] }
 cron = { version = "0.12.1" }
