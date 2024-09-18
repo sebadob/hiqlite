@@ -201,9 +201,9 @@ If you end up in a situation where you lost the complete cluster, it is the only
 restore from backup as disaster recovery. The process is simple:
 
 1. Have the cluster shut down. This is probably the case anyway, if you need to restore from a backup.
-2. Provide the backup file name on S3 storage with the HIQLITE_BACKUP_RESTORE value.
+2. Provide the backup file name on S3 storage with the `HQL_BACKUP_RESTORE` value.
 3. Start up the cluster again.
-4. After the restart, make sure to remove the HIQLITE_BACKUP_RESTORE env value.
+4. After the restart, make sure to remove the `HQL_BACKUP_RESTORE` env value.
 
 ### `cache`
 
