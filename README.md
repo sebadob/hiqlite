@@ -191,13 +191,13 @@ need to do this, is pretty low though.
 
 #### You lose a cluster node
 
-If you lost a cluster node for whatever reasons, you don't need a backup. Just shut down the node, get rid of any
+If you lost a cluster node for whatever reason, you don't need a backup. Just shut down the node, get rid of any
 possibly left over data, and restart it. The node will join the cluster and fetch the latest snapshot + logs from
 the current leader node.
 
 #### You lose the full cluster
 
-If you end up in a situation where you lost the complete cluster, it is the only situation when you probably need
+If you end up in a situation where you lost the complete cluster, it is the only moment when you probably need
 restore from backup as disaster recovery. The process is simple:
 
 1. Have the cluster shut down. This is probably the case anyway, if you need to restore from a backup.
@@ -640,8 +640,7 @@ spec:
     spec:
       containers:
         - name: hiqlite-proxy
-          # TODO update the repo link to the image hosted publicly on ghcr
-          image: cr.sebadob.dev/hiqlite/hiqlite
+          image: ghcr.io/sebadob/hiqlite:0.1.0
           command: [ "/app/hiqlite", "proxy" ]
           imagePullPolicy: Always
           securityContext:
