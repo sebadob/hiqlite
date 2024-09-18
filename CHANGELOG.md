@@ -1,6 +1,6 @@
 # Changelog
 
-## UNRELEASED
+## v0.2.0
 
 This releases fixes some usability issues of the initial version. It also brings clearer documentation in a lot of
 places.
