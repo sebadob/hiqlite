@@ -175,12 +175,12 @@ fn dt_from_backup_name(name: &str) -> Option<DateTime<Utc>> {
     }
 }
 
-/// Check if the env var `HIQLITE_BACKUP_RESTORE` is set and restores the given backup if so.
+/// Check if the env var `HQL_BACKUP_RESTORE` is set and restores the given backup if so.
 /// Returns `Ok(true)` if backup has been applied.
 /// This will only run if the current node ID is `1`.
 pub(crate) async fn restore_backup_start(node_config: &NodeConfig) -> Result<bool, Error> {
-    if let Ok(name) = env::var("HIQLITE_BACKUP_RESTORE") {
-        warn!("Found HIQLITE_BACKUP_RESTORE={}", name);
+    if let Ok(name) = env::var("HQL_BACKUP_RESTORE") {
+        warn!("Found HQL_BACKUP_RESTORE={}", name);
 
         if node_config.node_id == 1 {
             warn!("Starting restore process on Node 1");
@@ -200,7 +200,7 @@ pub(crate) async fn restore_backup_start(node_config: &NodeConfig) -> Result<boo
 /// **CAUTION: This function MUST BE CALLED when the Raft is not running!**
 ///
 /// You only need to invoke this manually if you want to apply a backup in another
-/// way than with the `HIQLITE_BACKUP_RESTORE` env var, which is being done automatically.
+/// way than with the `HQL_BACKUP_RESTORE` env var, which is being done automatically.
 pub async fn restore_backup(node_config: &NodeConfig, backup_name: &str) -> Result<(), Error> {
     let s3_config = match &node_config.s3_config {
         None => {

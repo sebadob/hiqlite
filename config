@@ -83,11 +83,11 @@ HQL_BACKUP_KEEP_DAYS=30
 # 1. Have the cluster shut down. This is probably the case anyway, if
 #    you need to restore from a backup.
 # 2. Provide the backup file name on S3 storage with the
-#    HIQLITE_BACKUP_RESTORE value.
+#    HQL_BACKUP_RESTORE value.
 # 3. Start up the cluster again.
-# 4. After the restart, make sure to remove the HIQLITE_BACKUP_RESTORE
+# 4. After the restart, make sure to remove the HQL_BACKUP_RESTORE
 #    env value.
-#HIQLITE_BACKUP_RESTORE=
+#HQL_BACKUP_RESTORE=
 
 # Access values for the S3 bucket where backups will be pushed to.
 #HQL_S3_URL=https://s3.example.com

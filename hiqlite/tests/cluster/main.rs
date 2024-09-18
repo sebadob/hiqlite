@@ -38,7 +38,7 @@ async fn test_cluster() {
     set_panic_hook();
 
     // always start clean
-    env::remove_var("HIQLITE_BACKUP_RESTORE");
+    env::remove_var("HQL_BACKUP_RESTORE");
     let _ = fs::remove_dir_all(TEST_DATA_DIR).await;
 
     tracing_subscriber::fmt()

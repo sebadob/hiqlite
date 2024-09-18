@@ -8,7 +8,7 @@ use tokio::task;
 pub async fn start_test_cluster_with_backup() -> Result<(Client, Client, Client), Error> {
     let path = backup::find_backup_file(1).await;
     let (_path, backup_name) = path.rsplit_once('/').unwrap();
-    env::set_var("HIQLITE_BACKUP_RESTORE", backup_name);
+    env::set_var("HQL_BACKUP_RESTORE", backup_name);
 
     let handle_client_2 = task::spawn(start_node_with_cache::<Cache>(build_config(2).await));
     let handle_client_3 = task::spawn(start_node_with_cache::<Cache>(build_config(3).await));
@@ -18,7 +18,7 @@ pub async fn start_test_cluster_with_backup() -> Result<(Client, Client, Client)
     let client_2 = handle_client_2.await??;
     let client_3 = handle_client_3.await??;
 
-    env::remove_var("HIQLITE_BACKUP_RESTORE");
+    env::remove_var("HQL_BACKUP_RESTORE");
 
     Ok((client_1, client_2, client_3))
 }
