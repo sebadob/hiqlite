@@ -107,8 +107,7 @@ async fn should_node_1_skip_init(
     let client = reqwest::Client::builder()
         .http2_prior_knowledge()
         .danger_accept_invalid_certs(tls_no_verify)
-        .build()
-        .unwrap();
+        .build()?;
 
     // no need for +1 since this very node is the +1
     let quorum = nodes.len() / 2;
@@ -141,38 +140,28 @@ async fn should_node_1_skip_init(
                     if resp.status().is_success() {
                         let body = resp.bytes().await?;
                         let membership: Membership<NodeId, Node> =
-                            bincode::deserialize(body.as_ref()).unwrap();
+                            bincode::deserialize(body.as_ref())?;
 
-                        // If one of our remote nodes is already initialized, we need to check the total
-                        // nodes it is already connected to and if node 1 is in the list.
-                        // If it is, it means that this very node has lost its volume and need to
-                        // re-join the cluster.
-                        let contains_this = membership
-                            .nodes()
-                            .filter(|(id, _node)| **id == 1)
-                            .collect::<Vec<(&u64, &Node)>>();
-
-                        if contains_this.is_empty() {
-                            panic!(
-                                r#"
-        Remote member is already initialized but does not contain this node in its members.
-        This can only happen with a bad configuration or if the cluster has been modified manually.
-        Please add node 1 as a learner to the cluster to fix this issue.
-                            "#
-                            );
-                        } else {
-                            // if this node is already a remote member but is not initialized, it has lost
-                            // its volume and needs to join remote -> skip our own init
+                        if membership.nodes().count() > 0 {
+                            // We could check if the remote members are at least of size "quorum",
+                            // but this could possibly lead to a situation where you would not be
+                            // able to recover a cluster with only 1 healthy node left, which is a
+                            // possible situation.
                             return Ok(true);
+                        } else {
+                            panic!(
+                                "The remote node {} is initialized but has no configured members.\
+                            This should never happen.",
+                                node.id
+                            );
                         }
                     } else {
                         let body = resp.bytes().await?;
-                        let err: Error = serde_json::from_slice(&body).unwrap();
-                        // if let Ok(Error::Config(err)) = bincode::deserialize::<Error>(body.as_ref())
-                        // {
+                        let err: Error = serde_json::from_slice(&body)?;
                         error!("{}", err);
+                        // TODO should we even track "quorum" nodes or simply join if any configured
+                        // remote node is already initialized?
                         skip_nodes.push(node.id);
-                        // }
                     }
                 }
                 Err(err) => {

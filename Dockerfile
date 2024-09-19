@@ -1,5 +1,5 @@
 #FROM rust:1.80.1-bullseye AS builder
-FROM rust:1.80.1-bookworm AS builder
+FROM rust:1.81.1-bookworm AS builder
 
 # prepare an empty dir upfront to set proper access rights
 RUN mkdir /empty
