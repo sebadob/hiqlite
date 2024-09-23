@@ -213,7 +213,7 @@ pub(crate) async fn get_membership(
 
     // it is possible to end up in a race condition on rolling releases
     if members.nodes().count() == 0 {
-        time::sleep(Duration::from_millis(100)).await;
+        time::sleep(Duration::from_millis(1000)).await;
         let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
         members = metrics.membership_config;
 
