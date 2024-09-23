@@ -209,7 +209,18 @@ pub(crate) async fn get_membership(
     }
 
     let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-    let members = metrics.membership_config;
+    let mut members = metrics.membership_config;
+
+    // it is possible to end up in a race condition on rolling releases
+    if members.nodes().count() == 0 {
+        time::sleep(Duration::from_millis(100)).await;
+        let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+        members = metrics.membership_config;
+
+        // this should never panic at this point
+        assert!(members.nodes().count() > 0);
+    }
+
     fmt_ok(headers, members.membership())
 }
 
