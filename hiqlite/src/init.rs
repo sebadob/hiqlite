@@ -178,6 +178,12 @@ async fn should_node_1_skip_init(
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum SkipBecome {
+    Yes,
+    No,
+}
+
 /// If this node is a non cluster member, it will try to become a learner and
 /// a voting member afterward.
 pub async fn become_cluster_member(
@@ -214,7 +220,7 @@ pub async fn become_cluster_member(
     })?;
 
     info!("Trying to become {} raft learner", raft_type.as_str());
-    try_become(
+    let skip = try_become(
         &state,
         raft_type,
         &client,
@@ -227,6 +233,11 @@ pub async fn become_cluster_member(
     )
     .await?;
     info!("Successfully became {} raft learner", raft_type.as_str());
+
+    if skip == SkipBecome::Yes {
+        // can happen in a race condition situation during a rolling release
+        return Ok(());
+    }
 
     info!("Trying to become {} raft member", raft_type.as_str());
     try_become(
@@ -258,12 +269,16 @@ async fn try_become(
     this_node: u64,
     nodes: &[Node],
     check_init: bool,
-) -> Result<(), Error> {
+) -> Result<SkipBecome, Error> {
     loop {
         time::sleep(Duration::from_secs(1)).await;
-        // maybe we got initialized in the meantime
+        // maybe we are initialized in the meantime
         if check_init && helpers::is_raft_initialized(state, raft_type).await? {
-            return Ok(());
+            info!(
+                "Init check at loop start in try_become - this node became the raft leader in \
+            the meantime - skipping init"
+            );
+            return Ok(SkipBecome::Yes);
         }
 
         for node in nodes {
@@ -293,7 +308,7 @@ async fn try_become(
                 Ok(resp) => {
                     if resp.status().is_success() {
                         debug!("becoming a member has been successful");
-                        return Ok(());
+                        return Ok(SkipBecome::No);
                     } else {
                         let body = resp.bytes().await?;
                         let err: Error = serde_json::from_slice(&body)?;
@@ -304,6 +319,35 @@ async fn try_become(
                             url,
                             err
                         );
+
+                        // We can get into this situation when using the cache layer, because it has
+                        // no persistence. This race condition can happen for a rolling release
+                        // on K8s for instance. While this node may try to become a remote member,
+                        // the raft has decided that this node is the new leader.
+                        //
+                        // -> We must check this after each error to get smooth rolling releases.
+                        if let Some((Some(leader_id), Some(node))) = err.is_forward_to_leader() {
+                            if leader_id == this_node {
+                                info!("This node became the raft leader in the meantime - skipping init");
+
+                                if !helpers::is_raft_initialized(state, raft_type).await? {
+                                    let leader = helpers::get_raft_leader(state, raft_type).await;
+                                    let metrics = helpers::get_raft_metrics(state, raft_type).await;
+
+                                    panic!(
+                                        r#"Raft is not initialized when remote node has 'this' as leader.
+    This should be impossible to happen!
+
+    This node: {this_node}
+    Leader:    {leader:?}: {node:?}
+    Metrics:   {metrics:?}
+"#
+                                    );
+                                }
+
+                                return Ok(SkipBecome::Yes);
+                            }
+                        }
                     }
                 }
                 Err(err) => {
