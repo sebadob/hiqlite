@@ -4,7 +4,7 @@ members = ["hiqlite"]
 exclude = ["examples"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Sebastian Dobe <sebastiandobe@mailbox.org"]
@@ -83,7 +83,7 @@ thiserror = "1.0.61"
 tokio = { version = "1.38.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.0", features = ["ring"] }
 tower = { version = "0.5", features = [] }
-tower-http = { version = "0.5.0", features = [
+tower-http = { version = "0.6.0", features = [
     "set-header",
     "sensitive-headers",
     "util",

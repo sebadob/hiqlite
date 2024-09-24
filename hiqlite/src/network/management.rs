@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio::time;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LearnerReq {
@@ -216,10 +216,11 @@ pub(crate) async fn get_membership(
         time::sleep(Duration::from_millis(1000)).await;
         let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
         members = metrics.membership_config;
+        debug!("Membership after 1000ms timeout: {:?}", members);
 
         // if we still have no members, return an error
         return Err(Error::Config(
-            "Node is initialized but has not members".into(),
+            "Node is initialized but has no members".into(),
         ));
     }
 

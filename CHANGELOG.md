@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.2.1
+
+### Race conditions during rolling releases
+
+A few additional checks and fixes have been applied to fight possible race conditions during for instance a rolling
+release of a Kubernetes StatefulSet when using the cache layer. Since it has no persistence, the Raft group formation
+could get into state where Kubernetes had to kill one of the containers after a rolling release to get them healthy
+again. This should now be fine as it was smooth like expected in the last tests.
+
+### Backups
+
+The backups behavior has been changed slightly. It is still the case that only the current Raft leader will push the
+backup to S3 storage (if configured), but each node will create an keep its own local backup. This helps when you don't
+have S3 available and will make sure, that you will still have a backup "somewhere" even when you lose a full node.
+
+### Self-Healing
+
+The self-healing tests have been simplified to make them easier to maintain in the future. They do not decide between
+different folders being lost because you usually lose the whole volume or nothing at all. So if any issue comes up on
+a Raft member node, the easiest solution is to simply delete the whole volume, restart and let it rebuild anyway.
+
 ## v0.2.0
 
 This releases fixes some usability issues of the initial version. It also brings clearer documentation in a lot of

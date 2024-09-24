@@ -152,6 +152,7 @@ impl Client {
     ) -> Result<(), Error> {
         #[cfg(feature = "cache")]
         {
+            info!("Shutting down raft cache layer");
             match state.raft_cache.raft.shutdown().await {
                 Ok(_) => {}
                 Err(err) => {
@@ -161,32 +162,37 @@ impl Client {
         }
 
         #[cfg(feature = "sqlite")]
-        match state.raft_db.raft.shutdown().await {
-            Ok(_) => {
-                let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            info!("Shutting down raft sqlite layer");
+            match state.raft_db.raft.shutdown().await {
+                Ok(_) => {
+                    let (tx, rx) = tokio::sync::oneshot::channel();
 
-                state
-                    .raft_db
-                    .sql_writer
-                    .send_async(WriterRequest::Shutdown(tx))
-                    .await
-                    .expect("SQL writer to always be running");
+                    info!("Shutting down sqlite writer");
+                    state
+                        .raft_db
+                        .sql_writer
+                        .send_async(WriterRequest::Shutdown(tx))
+                        .await
+                        .expect("SQL writer to always be running");
 
-                if state
-                    .raft_db
-                    .logs_writer
-                    .send_async(ActionWrite::Shutdown)
-                    .await
-                    .is_ok()
-                {
-                    // this sometimes fails because of race conditions and internal drop handlers
-                    // it just depends on which task is faster, but in any case the writer
-                    // does a wal flush before exiting
-                    rx.await.expect("To always get an answer from SQL writer");
+                    info!("Shutting down sqlite logs writer");
+                    if state
+                        .raft_db
+                        .logs_writer
+                        .send_async(ActionWrite::Shutdown)
+                        .await
+                        .is_ok()
+                    {
+                        // this sometimes fails because of race conditions and internal drop handlers
+                        // it just depends on which task is faster, but in any case the writer
+                        // does a wal flush before exiting
+                        rx.await.expect("To always get an answer from SQL writer");
+                    }
                 }
-            }
-            Err(err) => {
-                return Err(Error::Error(err.to_string().into()));
+                Err(err) => {
+                    return Err(Error::Error(err.to_string().into()));
+                }
             }
         }
 
@@ -199,10 +205,13 @@ impl Client {
             tx.send(true).unwrap();
         }
 
+        info!("Waiting 5 additional seconds before shutting down");
+
         // We need to do a short sleep only to avoid race conditions during rolling releases.
         // This also helps to make re-joins after a restart smoother.
         time::sleep(Duration::from_secs(5)).await;
 
+        info!("Shutdown complete");
         Ok(())
     }
 }

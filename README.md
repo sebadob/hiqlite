@@ -505,7 +505,7 @@ spec:
     spec:
       containers:
         - name: hiqlite
-          image: ghcr.io/sebadob/hiqlite:0.2.0
+          image: ghcr.io/sebadob/hiqlite:0.2.1
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
@@ -640,7 +640,7 @@ spec:
     spec:
       containers:
         - name: hiqlite-proxy
-          image: ghcr.io/sebadob/hiqlite:0.2.0
+          image: ghcr.io/sebadob/hiqlite:0.2.1
           command: [ "/app/hiqlite", "proxy" ]
           imagePullPolicy: Always
           securityContext:
@@ -706,11 +706,10 @@ like shown in the
 
 There are currently some known issues:
 
-1. Sometimes a node can hang on shutdown. In this case it needs to be killed manually.
-   As mentioned already, I was not able to reproduce this so far. It happens to me somewhere in the range of 1 out of
-   50 - 100 shutdowns. This could be solved by simply adding a timeout to the shutdown handler, but I did not do that
-   on purpose at the current stage. I would rather find the issue and fix it, even if it takes time because of not
-   being easily reproducible than ignoring the issue with a timeout.
+1. Sometimes a node can hang on shutdown. In this case it needs to be killed manually. As mentioned already, I was not
+   able to reproduce this consistently so far. This could be solved by simply adding a timeout to the shutdown handler,
+   but I did not do that on purpose at the current stage. I would rather find the issue and fix it, even if it takes
+   time because of not being easily reproducible than ignoring the issue with a timeout.
 2. When creating synthetic benchmarks for testing write throughput at the absolute max, you will see error logs because
    of missed Raft heartbeats and leader switches, even though the network and everything else is fine. The reason is
    simply that the Raft heartbeats in the current implementation come in-order with the Raft data replication. So, if
