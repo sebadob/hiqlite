@@ -1,5 +1,6 @@
-#FROM rust:1.80.1-bullseye AS builder
-FROM rust:1.81.1-bookworm AS builder
+FROM rust:1.81.0-bookworm AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 # prepare an empty dir upfront to set proper access rights
 RUN mkdir /empty
