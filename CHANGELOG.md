@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.1
+
+A few additional checks and fixes have been applied to fight possible race conditions during for instance a rolling
+release of a Kubernetes StatefulSet when using the cache layer. Since it has no persistence, the Raft group formation
+could get into state where Kubernetes had to kill one of the containers after a rolling release to get them healthy
+again. This should now be fine as it was smooth like expected in the last tests.
+
 ## v0.2.0
 
 This releases fixes some usability issues of the initial version. It also brings clearer documentation in a lot of

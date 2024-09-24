@@ -505,7 +505,7 @@ spec:
     spec:
       containers:
         - name: hiqlite
-          image: ghcr.io/sebadob/hiqlite:0.2.0
+          image: ghcr.io/sebadob/hiqlite:0.2.1
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
@@ -640,7 +640,7 @@ spec:
     spec:
       containers:
         - name: hiqlite-proxy
-          image: ghcr.io/sebadob/hiqlite:0.2.0
+          image: ghcr.io/sebadob/hiqlite:0.2.1
           command: [ "/app/hiqlite", "proxy" ]
           imagePullPolicy: Always
           securityContext:
