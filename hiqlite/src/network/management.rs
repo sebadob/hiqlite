@@ -219,7 +219,7 @@ pub(crate) async fn get_membership(
 
         // if we still have no members, return an error
         return Err(Error::Config(
-            "Node is initialized but has not members".into(),
+            "Node is initialized but has no members".into(),
         ));
     }
 
