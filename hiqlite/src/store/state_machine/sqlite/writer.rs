@@ -509,23 +509,24 @@ pub fn spawn_writer(
                         Err(err) => error!("Error during VACUUM: {}", err),
                     }
 
-                    if this_node == req.node_id {
-                        if let Err(err) = create_backup(
-                            &conn,
-                            req.node_id,
-                            req.target_folder,
-                            #[cfg(feature = "s3")]
-                            req.s3_config,
-                        ) {
-                            error!("Error creating backup: {:?}", err);
-                            req.ack.send(Err(err));
-                            continue;
-                        }
+                    // only the current leader should push the backup
+                    #[cfg(feature = "s3")]
+                    let s3_config = if this_node == req.node_id {
+                        req.s3_config
                     } else {
-                        info!(
-                            "Backup to external storage will be handled by the leader node: {}",
-                            req.node_id
-                        );
+                        None
+                    };
+
+                    if let Err(err) = create_backup(
+                        &conn,
+                        req.node_id,
+                        req.target_folder,
+                        #[cfg(feature = "s3")]
+                        s3_config,
+                    ) {
+                        error!("Error creating backup: {:?}", err);
+                        req.ack.send(Err(err));
+                        continue;
                     }
 
                     if let Err(err) = conn.execute("PRAGMA optimize", []) {
