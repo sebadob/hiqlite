@@ -594,7 +594,7 @@ fn create_backup(
     // - if we have an s3 target, encrypt and push it
 
     let file = format!("backup_node_{}_{}.sqlite", node_id, Utc::now().timestamp());
-    let path_full = format!("{}/{}", target_folder, file,);
+    let path_full = format!("{}/{}", target_folder, file);
     info!("Creating database backup into {}", path_full);
 
     conn.execute(&format!("VACUUM main INTO '{}'", path_full), ())?;

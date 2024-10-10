@@ -125,7 +125,7 @@ impl Client {
     /// client.put(Cache::One, key, &value, Some(1)).await?;
     ///
     /// let v: Value = client.get(Cache::One, key).await?.unwrap();
-    //  assert_eq!(v, value);
+    ///  assert_eq!(v, value);
     /// ```
     pub async fn put<C, K, V>(
         &self,
@@ -139,13 +139,32 @@ impl Client {
         K: Into<Cow<'static, str>>,
         V: Serialize,
     {
+        self.put_bytes(cache, key, bincode::serialize(value).unwrap(), ttl)
+            .await?;
+        Ok(())
+    }
+
+    /// GET a raw bytes value from the cache.
+    ///
+    /// Works in the same way as `.get()` without any value mapping.
+    pub async fn put_bytes<C, K>(
+        &self,
+        cache: C,
+        key: K,
+        value: Vec<u8>,
+        ttl: Option<i64>,
+    ) -> Result<(), Error>
+    where
+        C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+        K: Into<Cow<'static, str>>,
+    {
         self.cache_req_retry(
             CacheRequest::Put {
                 cache_idx: cache
                     .to_usize()
                     .expect("Invalid ToPrimitive impl on Cache Index"),
                 key: key.into(),
-                value: bincode::serialize(value).unwrap(),
+                value,
                 expires: ttl.map(|seconds| Utc::now().timestamp().saturating_add(seconds)),
             },
             false,
