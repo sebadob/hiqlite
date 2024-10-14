@@ -25,7 +25,7 @@
 <style>
     section {
         padding: .15rem .25rem;
-        border-top: 1px solid var(--col-mid-a);
+        border-top: 1px solid hsl(var(--bg-high));
         max-height: 33dvh;
         overflow-y: auto;
     }

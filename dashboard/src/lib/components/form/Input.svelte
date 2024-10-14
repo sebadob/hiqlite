@@ -133,6 +133,6 @@
 
     .error {
         margin-top: -.5rem;
-        color: var(--col-err);
+        color: var(--error);
     }
 </style>

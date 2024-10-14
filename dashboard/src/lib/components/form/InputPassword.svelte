@@ -1,9 +1,10 @@
 <script lang="ts">
     import {slide} from "svelte/transition";
+
+    import type {FullAutoFill} from "svelte/elements";
     import IconClipboard from "$lib/components/icons/IconClipboard.svelte";
     import IconEyeSlash from "$lib/components/icons/IconEyeSlash.svelte";
     import IconEye from "$lib/components/icons/IconEye.svelte";
-    import {derived} from "svelte/store";
 
     let {
         type = 'password',
@@ -29,7 +30,7 @@
         name: string,
         value?: string,
         label?: string,
-        autocomplete?: string,
+        autocomplete?: FullAutoFill | null | undefined,
         placeholder: string,
         title: string,
         disabled?: boolean | null | undefined,
@@ -53,14 +54,7 @@
         }
     }
 
-    function handleKeyPress(ev: KeyboardEvent) {
-        if (ev.code === 'Enter') {
-            // TODO try to find out if we are in a form and submit it
-            // dispatch('enter', true);
-        }
-    }
-
-    function toggle() {
+    function toggleView() {
         if (type === 'password') {
             type = 'text';
         } else {
@@ -68,23 +62,30 @@
         }
     }
 
-    function onBlur(event: FocusEvent & { currentTarget: EventTarget & HTMLInputElement }) {
-        // console.log('in onBlur');
+    function onblur(event: FocusEvent & { currentTarget: EventTarget & HTMLInputElement }) {
+        // console.log('in onBlur');color: var(--col-err);
         // console.log(event);
         const isValid = event?.currentTarget?.reportValidity();
         isErr = !isValid;
     }
 
-    function onInput(event: Event & { currentTarget: EventTarget & HTMLInputElement }) {
+    function oninput(event: Event & { currentTarget: EventTarget & HTMLInputElement }) {
         // console.log('in onInput');
         // console.log(event);
     }
 
-    function onInvalid(event: Event & { currentTarget: EventTarget & HTMLInputElement }) {
+    function oninvalid(event: Event & { currentTarget: EventTarget & HTMLInputElement }) {
         // console.log('in onInvalid');
         // console.log(event);
         event.preventDefault();
         isErr = true;
+    }
+
+    function onkeydown(ev: KeyboardEvent) {
+        if (ev.code === 'Enter') {
+            // TODO try to find out if we are in a form and submit it
+            // dispatch('enter', true);
+        }
     }
 
 </script>
@@ -92,12 +93,12 @@
 <div style:width={width}>
     <div class="input-row">
         <input
-                style:padding-right={showCopy ? '55px' : '30px'}
                 {type}
                 {id}
                 {name}
                 {title}
                 aria-label={title}
+                style:padding-right={showCopy ? '55px' : '30px'}
                 bind:value
 
                 {autocomplete}
@@ -110,10 +111,10 @@
                 max={max || undefined}
                 pattern={pattern || undefined}
 
-                oninput={onInput}
-                oninvalid={onInvalid}
-                onblur={onBlur}
-                onkeydown={handleKeyPress}
+                {oninput}
+                {oninvalid}
+                {onblur}
+                {onkeydown}
         />
 
         <div class="rel">
@@ -133,8 +134,8 @@
                     role="button"
                     tabindex="0"
                     class="btn show"
-                    onclick={toggle}
-                    onkeydown={toggle}
+                    onclick={toggleView}
+                    onkeydown={toggleView}
             >
                 {#if type === 'password'}
                     <IconEyeSlash width={22}/>
@@ -147,7 +148,7 @@
 </div>
 
 <div class="label">
-    <label for={id} class="font-label noselect">
+    <label for={id} class="font-label noselect" data-required={required}>
         {label}
     </label>
     {#if isErr}
@@ -163,7 +164,7 @@
 <style>
     .error {
         margin-top: -.5rem;
-        color: var(--col-err);
+        color: hsl(var(--error));
     }
 
     .input-row {

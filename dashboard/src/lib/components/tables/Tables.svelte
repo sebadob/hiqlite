@@ -6,7 +6,8 @@
     import IconDocText from "$lib/components/icons/IconDocText.svelte";
     import {AUTO_QUERY, QUERIES} from "$lib/stores/query.svelte.js";
     import type {IQuery} from "$lib/types/query";
-    import {randomKey} from "$lib/utils/randomKey";
+    import {genKey} from "$lib/utils/genKey";
+    import Resizable from "$lib/components/Resizable.svelte";
 
     let data: ITable[] = $state([]);
     let selectedTable: undefined | ITable = $state();
@@ -32,7 +33,7 @@
 
     function addInfoQuery(tableName: string) {
         let query: IQuery = {
-            id: `${tableName}_${randomKey(4)}`,
+            id: `${tableName}_${genKey(4)}`,
             query: `${AUTO_QUERY}\nPRAGMA table_info(${tableName})`,
         };
         QUERIES.push(query);
@@ -53,49 +54,42 @@
     <TableView view={ITableView.View} bind:viewSelected/>
 </div>
 
-<div id="tables">
-    <div class="tables">
-        {#each data as table (table.name)}
-            <div
-                    role="button"
-                    tabindex="0"
-                    class={selectedTable?.name === table.name ? 'entry selected' : 'entry'}
-                    onclick={() => select(table.name)}
-                    onkeydown={() => select(table.name)}
-            >
-                <div>
-                    {table.name}
-                </div>
-                {#if table.typ === 'table'}
-                    <div
-                            role="button"
-                            tabindex="0"
-                            class="btn"
-                            onclick={() => addInfoQuery(table.name)}
-                            onkeydown={() => addInfoQuery(table.name)}
-                    >
-                        <IconDocText/>
-                    </div>
-                {/if}
+<Resizable
+        resizeBottom
+        initialHeightPx={window ? window.innerHeight - 400 : 600}
+        minHeightPx={120}
+>
+    {#each data as table (table.name)}
+        <div
+                role="button"
+                tabindex="0"
+                class={selectedTable?.name === table.name ? 'entry selected' : 'entry'}
+                onclick={() => select(table.name)}
+                onkeydown={() => select(table.name)}
+        >
+            <div>
+                {table.name}
             </div>
-        {/each}
-    </div>
+            {#if table.typ === 'table'}
+                <div
+                        role="button"
+                        tabindex="0"
+                        class="btn"
+                        onclick={() => addInfoQuery(table.name)}
+                        onkeydown={() => addInfoQuery(table.name)}
+                >
+                    <IconDocText/>
+                </div>
+            {/if}
+        </div>
+    {/each}
+</Resizable>
 
-    {#if selectedTable}
-        <TableDetails table={selectedTable}/>
-    {/if}
-</div>
+{#if selectedTable}
+    <TableDetails table={selectedTable}/>
+{/if}
 
 <style>
-    #tables {
-        height: 100%;
-        width: var(--width-tables);
-        min-width: 18rem;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-    }
-
     .btn {
         color: var(--col-mid);
         cursor: pointer;
@@ -107,25 +101,20 @@
         align-items: center;
         padding: .15rem .25rem;
         cursor: pointer;
+        transition: all 150ms;
     }
 
     .entry:hover {
-        background: var(--col-p);
-        color: var(--col-tabs-sel);
+        background: hsl(var(--action));
+        color: hsl(var(--bg));
     }
 
     .selected {
-        background: var(--col-p);
-        color: var(--col-tabs-sel);
+        background: hsl(var(--action));
+        color: hsl(var(--bg));
     }
 
     .selector {
         display: flex;
-    }
-
-    .tables {
-        display: flex;
-        flex-direction: column;
-        overflow-y: auto;
     }
 </style>

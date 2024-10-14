@@ -5,6 +5,7 @@
     import type {IQuery} from "$lib/types/query";
     import {onMount} from "svelte";
     import {AUTO_QUERY} from "$lib/stores/query.svelte.js";
+    import ResultsDataTable from "$lib/components/query/ResultsDataTable.svelte";
 
     // let {query, onUpdate}: {
     //     query: IQuery,
@@ -24,11 +25,9 @@
         }
     });
 
-    function onKeyDown(ev: KeyboardEvent) {
-        if (ev.ctrlKey) {
-            if (ev.code === 'Enter') {
-                execute();
-            }
+    function onkeydown(ev: KeyboardEvent) {
+        if (ev.ctrlKey && ev.code === 'Enter') {
+            execute();
         }
     }
 
@@ -57,9 +56,9 @@
 <textarea
         name="query"
         bind:value={query.query}
-        onkeydown={onKeyDown}
+        {onkeydown}
 >
-</textarea>
+    </textarea>
 
 {#if error}
     <div class="err">
@@ -67,7 +66,8 @@
     </div>
 {/if}
 
-<Results bind:rows/>
+<ResultsDataTable bind:rows/>
+<!--<Results bind:rows/>-->
 
 <style>
     textarea {
@@ -80,8 +80,8 @@
         /*resize: none;*/
         resize: vertical;
         font-size: 1.1rem;
-        color: var(--col-text);
-        background: var(--col-bg);
+        color: hsl(var(--text));
+        background: hsl(var(--bg));
         border-bottom: 1px solid var(--col-mid-a);
     }
 </style>

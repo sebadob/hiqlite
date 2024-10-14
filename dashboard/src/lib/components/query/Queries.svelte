@@ -2,23 +2,23 @@
     import Query from "$lib/components/query/Query.svelte";
     import Tab from "$lib/components/query/Tab.svelte";
     import IconPlus from "$lib/components/icons/IconPlus.svelte";
-    import {randomKey} from "$lib/utils/randomKey";
-    import {derived} from "svelte/store";
-    import {AUTO_QUERY, DEFAULT_QUERY, DEFAULT_QUERY_FULL, QUERIES} from "$lib/stores/query.svelte.js";
+    import {genKey} from "$lib/utils/genKey";
+    import {DEFAULT_QUERY, DEFAULT_QUERY_FULL, QUERIES} from "$lib/stores/query.svelte.js";
 
     let tabSelected = $state(QUERIES[0].id);
     let querySelected = $derived(QUERIES.filter(q => q.id === tabSelected)[0]);
 
     $effect(() => {
-        let last = QUERIES[QUERIES.length - 1];
-        if (last?.query.startsWith(AUTO_QUERY)) {
-            tabSelected = last.id;
+        if (QUERIES.length > 0) {
+            tabSelected = QUERIES[QUERIES.length - 1].id;
+        } else {
+            tabSelected = '';
         }
     });
 
     function addNew() {
         QUERIES.push({
-            id: randomKey(6),
+            id: genKey(6),
             query: DEFAULT_QUERY,
         });
     }
@@ -70,7 +70,7 @@
         display: flex;
         align-items: center;
         flex-wrap: wrap;
-        background: var(--col-tabs-bg);
+        background: hsl(var(--bg-high));
     }
 
     .ctrl {
@@ -79,6 +79,6 @@
 
     .add-new {
         margin-bottom: -4px;
-        color: var(--col-ok);
+        color: hsl(var(--action));
     }
 </style>

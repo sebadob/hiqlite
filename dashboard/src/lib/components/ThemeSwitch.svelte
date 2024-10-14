@@ -1,38 +1,27 @@
 <script lang="ts">
     import {crossfade} from "svelte/transition";
-    import {cubicInOut} from 'svelte/easing';
+    import Button from "$lib/components/Button.svelte";
 
     const storageIdx = 'darkMode';
-    const [send, receive] = crossfade({
-        duration: 250,
-        easing: cubicInOut
-    });
+    const [send, receive] = crossfade({});
 
-    let mode = $state({
-        isInitialized: false,
-        darkMode: false,
-    });
+    let darkMode: undefined | boolean = $state();
 
     $effect(() => {
-        if (!mode.isInitialized) {
-            mode.darkMode = isDarkMode();
-            mode.isInitialized = true;
-        } else {
-            toggleColorScheme(mode.darkMode);
-        }
-    });
+        const mediaPref = window?.matchMedia?.('(prefers-color-scheme:dark)')?.matches ?? false;
 
-    function isDarkMode() {
-        const darkMode = window?.localStorage?.getItem(storageIdx);
-        if (darkMode) {
-            return "true" === darkMode;
-        }
-
-        return window?.matchMedia("(prefers-color-scheme: dark)")?.matches;
-    }
-
-    function toggleColorScheme(darkMode: boolean) {
-        if (darkMode) {
+        if (darkMode === undefined) {
+            const darkModeSaved = window?.localStorage?.getItem(storageIdx);
+            if (darkModeSaved) {
+                let newValue = "true" === darkModeSaved;
+                if (darkMode === mediaPref) {
+                    localStorage.removeItem(storageIdx);
+                }
+                darkMode = newValue;
+            } else {
+                darkMode = mediaPref;
+            }
+        } else if (darkMode) {
             document.body.classList.remove("light-theme");
             document.body.classList.add("dark-theme");
         } else {
@@ -40,23 +29,21 @@
             document.body.classList.add("light-theme");
         }
 
-        localStorage.setItem(storageIdx, darkMode.toString());
-    }
+        if (mediaPref === darkMode) {
+            localStorage.removeItem(storageIdx);
+        } else {
+            localStorage.setItem(storageIdx, darkMode.toString());
+        }
+    });
 
     function toggle() {
-        mode.darkMode = !mode.darkMode
+        darkMode = !darkMode
     }
 </script>
 
-<div
-        role="button"
-        tabindex="0"
-        class="icon"
-        onclick={toggle}
-        onkeydown={toggle}
->
-    {#if mode.darkMode}
-        <div class="moon" in:receive={{key: "dark", delay: 200}} out:send={{key: "light"}}>
+<Button ariaLabel="Change color theme" invisible onclick={toggle}>
+    {#if darkMode === true}
+        <div class="icon moon" in:receive={{key: "dark"}} out:send={{key: "light"}}>
             <svg
                     xmlns="http://www.w3.org/2000/svg"
                     fill="none"
@@ -74,8 +61,10 @@
                 />
             </svg>
         </div>
-    {:else}
-        <div class="sun" in:receive={{key: "light", delay: 200}} out:send={{key: "dark"}}>
+    {/if}
+
+    {#if darkMode === false}
+        <div class="icon sun" in:receive={{key: "light"}} out:send={{key: "dark"}}>
             <svg
                     xmlns="http://www.w3.org/2000/svg"
                     fill="none"
@@ -94,7 +83,7 @@
             </svg>
         </div>
     {/if}
-</div>
+</Button>
 
 <style>
     .icon {
@@ -105,10 +94,10 @@
     }
 
     .sun {
-        color: #969605;
+        color: var(--theme-sun);
     }
 
     .moon {
-        color: #6f6fdb;
+        color: var(--theme-moon);
     }
 </style>
