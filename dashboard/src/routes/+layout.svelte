@@ -1,6 +1,6 @@
 <script lang="ts">
     import ThemeSwitchAbsolute from "$lib/components/ThemeSwitchAbsolute.svelte";
-    import {onMount} from "svelte";
+    import {onMount, type Snippet} from "svelte";
     import type {ISession} from "$lib/types/session";
     import Login from "$lib/components/Login.svelte";
     import Tables from "$lib/components/tables/Tables.svelte";
@@ -9,6 +9,11 @@
     import {API_PREFIX} from "$lib/utils/fetch";
     import {useSignal} from "$lib/stores/sharedRune.svelte";
     import {DEFAULT_QUERY_FULL} from "$lib/stores/query.svelte.js";
+
+    import "$lib/css/global.css";
+    import "$lib/css/theme.css";
+
+    let {children}: { children: Snippet } = $props();
 
     let session: undefined | ISession = $state();
     let isInitialized = $state(false);
@@ -38,7 +43,9 @@
         <Tables/>
     </nav>
     <main>
-        <slot/>
+        <div class="inner">
+            {@render children()}
+        </div>
     </main>
     <Health/>
 {:else if isInitialized}
@@ -52,11 +59,16 @@
         height: 100dvh;
         display: flex;
         flex-direction: column;
-        border-right: 1px solid #808080;
+        border-right: 1px solid hsl(var(--bg-high));
     }
 
     main {
-        flex: 1;
+        width: 100%;
+        display: flex;
+    }
+
+    .inner {
+        width: 100%;
         display: flex;
         flex-direction: column;
     }

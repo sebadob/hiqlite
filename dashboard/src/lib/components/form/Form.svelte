@@ -1,5 +1,6 @@
 <script lang="ts">
     import {handleRes} from "$lib/utils/fetch";
+    import type {Snippet} from "svelte";
 
     let {
         action,
@@ -7,12 +8,14 @@
         isError = $bindable(),
         onSubmit,
         onResponse,
+        children,
     }: {
         action: string,
         method?: string,
         isError?: boolean,
         onSubmit?: (form: HTMLFormElement, params: URLSearchParams) => void,
         onResponse?: (res: Response) => void,
+        children: Snippet,
     } = $props();
 
     async function submit(event: SubmitEvent & { currentTarget: EventTarget & HTMLFormElement }) {
@@ -58,5 +61,5 @@
 </script>
 
 <form action={action} method={method} onsubmit={submit}>
-    <slot/>
+    {@render children()}
 </form>

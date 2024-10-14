@@ -1,13 +1,16 @@
 <script lang="ts">
-    let {label}: {
+    import type {Snippet} from "svelte";
+
+    let {label, children}: {
         label: string,
+        children: Snippet,
     } = $props();
 </script>
 
 <div class="metric">
     <div class="label font-label">{label}</div>
     <div class="font-mono">
-        <slot/>
+        {@render children()}
     </div>
 </div>
 

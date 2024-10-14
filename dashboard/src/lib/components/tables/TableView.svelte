@@ -24,20 +24,20 @@
 <style>
     div {
         flex: 1;
-        /*color: var(--col-tabs);*/
-        color: var(--col-p-a);
-        background: var(--col-tabs-bg);
+        background: hsl(var(--bg-high));
+        color: hsl(var(--action));
+        border-bottom: 2px solid hsl(var(--bg-high));
         text-align: center;
         cursor: pointer;
     }
 
     div:hover {
-        border-bottom: 2px solid var(--col-p);
+        border-bottom: 2px solid hsl(var(--action));
     }
 
     .selected {
-        background: var(--col-p);
-        color: var(--col-tabs-sel);
+        background: hsl(var(--action));
+        color: hsl(var(--bg));
         border-bottom: 2px solid var(--col-p);
     }
 </style>

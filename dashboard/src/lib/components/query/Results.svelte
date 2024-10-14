@@ -2,6 +2,7 @@
     import type {IColumn, IRow, SqlValue} from "$lib/types/query_results";
 
     let {rows = $bindable()}: { rows: IRow[] } = $props();
+    $inspect(rows);
 
     let cols: IColumn[][] = $state([[]]);
 
@@ -72,6 +73,7 @@
         min-width: 16rem;
         overflow: auto;
         display: flex;
+        border: 1px solid red;
     }
 
     .col > div:nth-child(odd) {

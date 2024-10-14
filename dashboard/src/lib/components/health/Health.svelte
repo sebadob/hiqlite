@@ -8,9 +8,9 @@
 
 <style>
     aside {
-        width: var(--width-health);
-        min-width: 10rem;
+        width: 12rem;
+        min-width: 12rem;
         padding: .15rem .5rem 1rem .5rem;
-        border-left: 1px solid var(--col-mid-a);
+        border-left: 1px solid hsl(var(--bg-high));
     }
 </style>

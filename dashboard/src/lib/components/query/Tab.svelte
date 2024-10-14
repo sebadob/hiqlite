@@ -1,38 +1,41 @@
 <script lang="ts">
-
     import IconStop from "$lib/components/icons/IconStop.svelte";
+
+    import type {Snippet} from "svelte";
 
     let {
         tab = $bindable(),
         tabSelected = $bindable(),
         onClose,
+        children,
     }: {
         tab: string,
         tabSelected: string
         onClose: (id: string) => void,
+        children: Snippet,
     } = $props();
 
     let ref: HTMLDivElement;
     let isSelected = $derived(tabSelected === tab);
 
-    function onKeyDown(ev: KeyboardEvent) {
+    function onkeydown(ev: KeyboardEvent) {
         if (isSelected) {
             if (ev.code === 'Enter') {
                 ev.preventDefault();
-                saveName();
+                onblur();
             }
         } else {
-            onClick();
+            onclick();
         }
     }
 
-    function saveName() {
+    function onblur() {
         let v = ref.innerText;
         tab = v;
         tabSelected = v;
     }
 
-    function onClick() {
+    function onclick() {
         if (!isSelected) {
             tabSelected = tab;
         }
@@ -50,11 +53,11 @@
             contenteditable={isSelected}
             role="button"
             tabindex="0"
-            onclick={onClick}
-            onkeydown={onKeyDown}
-            onblur={saveName}
+            {onclick}
+            {onkeydown}
+            {onblur}
     >
-        <slot/>
+        {@render children()}
     </div>
     <div class="close">
         <div
@@ -64,7 +67,7 @@
                 onclick={close}
                 onkeydown={close}
         >
-            <IconStop/>
+            <IconStop color="hsl(var(--error))"/>
         </div>
     </div>
 </div>
@@ -77,21 +80,21 @@
     .tab {
         padding-left: 5px;
         padding-right: 20px;
-        color: var(--col-p-a);
-        background: var(--col-tabs-bg);
-        border-bottom: 2px solid var(--col-tabs-bg);
+        color: hsl(var(--action));
+        background: hsl(var(--bg-high));
+        border-bottom: 2px solid hsl(var(--bg-high));
         text-align: center;
         cursor: pointer;
     }
 
     .tab:hover {
-        border-bottom: 2px solid var(--col-p);
+        border-bottom: 2px solid hsl(var(--action));
     }
 
     .selected {
-        background: var(--col-p);
-        color: var(--col-tabs-sel);
-        border-bottom: 2px solid var(--col-p);
+        background: hsl(var(--action));
+        color: hsl(var(--bg));
+        border-bottom: 2px solid hsl(var(--action));
         cursor: text;
     }
 

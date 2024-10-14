@@ -75,7 +75,7 @@
 
 <div class="container">
     <div class="login">
-        <Form action={action} onSubmit={onSubmit}>
+        <Form action={action} {onSubmit}>
             <!--        <Form action={action} onResponse={onResponse}>-->
             <InputPassword
                     id="password"
@@ -85,7 +85,7 @@
                     title="Valid Dashboard Password"
                     required
             />
-            <Button type="submit" bind:isLoading>
+            <Button type="submit" level={1} {isLoading}>
                 Login
             </Button>
 
