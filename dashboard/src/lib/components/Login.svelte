@@ -100,6 +100,7 @@
 
 <style>
     .container {
+        width: 100dvw;
         flex: 1;
         display: flex;
         justify-content: center;

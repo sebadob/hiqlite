@@ -17,7 +17,8 @@
             for (let col of rows[0].columns) {
                 cols.push({
                     content: col.name,
-                    initialWidth: `${5 + col.name.length * .5}rem`,
+                    initialWidth: '12rem',
+                    // initialWidth: `${8 + col.name.length * .5}rem`,
                     orderType: columnOrderType(col.value),
                 })
             }
