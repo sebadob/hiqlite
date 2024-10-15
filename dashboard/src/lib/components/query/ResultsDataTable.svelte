@@ -74,6 +74,8 @@
             <!--{#snippet options(row: IRow[], close: undefined | (() => void))}-->
             <!--{/snippet}-->
         </DataTable>
+    {:else}
+        <p>no results</p>
     {/if}
 </div>
 
