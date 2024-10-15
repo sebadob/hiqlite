@@ -60,6 +60,6 @@
     }
 </script>
 
-<form action={action} method={method} onsubmit={submit}>
+<form {action} {method} onsubmit={submit}>
     {@render children()}
 </form>
