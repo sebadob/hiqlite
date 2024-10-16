@@ -67,10 +67,7 @@ impl Client {
             }
         }
         if let Some(last_applied) = applied.last() {
-            migrations = migrations
-                .into_iter()
-                .filter(|m| m.id > last_applied.id)
-                .collect();
+            migrations.retain(|m| m.id > last_applied.id);
         }
         if migrations.is_empty() {
             info!("All migrations have been applied already - nothing to migrate");
