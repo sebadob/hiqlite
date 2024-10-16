@@ -169,9 +169,8 @@ impl Client {
     /// A raw query will return the bare `Row` without doing any deserialization or mapping.
     /// This can be useful if you just need to know if a query succeeds, or if you need to manually
     /// work with the result without being able to convert it into a type.
-    pub async fn query_raw<T, S>(&self, stmt: S, params: Params) -> Result<Vec<crate::Row>, Error>
+    pub async fn query_raw<S>(&self, stmt: S, params: Params) -> Result<Vec<crate::Row>, Error>
     where
-        T: for<'r> From<crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.inner.state {
