@@ -2,7 +2,7 @@ use crate::client::stream::{ClientQueryPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::state_machine::Query;
-use crate::{query, Client, Error, Params};
+use crate::{query, Client, Error, Params, Row};
 use serde::de::DeserializeOwned;
 use std::borrow::Cow;
 use tokio::sync::oneshot;
@@ -163,6 +163,28 @@ impl Client {
             query::query_as_one(state, stmt, params).await
         } else {
             Err(Error::Config("`query_as()` only works for local clients, you need to use `query_map()` for remote".into()))
+        }
+    }
+
+    /// A raw query will return the bare `Row` without doing any deserialization or mapping.
+    /// This can be useful if you just need to know if a query succeeds, or if you need to manually
+    /// work with the result without being able to convert it into a type.
+    pub async fn query_raw<T, S>(&self, stmt: S, params: Params) -> Result<Vec<crate::Row>, Error>
+    where
+        T: for<'r> From<crate::Row<'r>> + Send + 'static,
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.inner.state {
+            let rows = query::query_owned_local(
+                state.raft_db.log_statements,
+                state.raft_db.read_pool.clone(),
+                stmt,
+                params,
+            )
+            .await?;
+            Ok(rows.into_iter().map(Row::Owned).collect())
+        } else {
+            self.query_remote(stmt, params, false).await
         }
     }
 
