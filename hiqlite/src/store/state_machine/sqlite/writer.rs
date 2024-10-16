@@ -635,7 +635,10 @@ fn migrate(conn: &mut rusqlite::Connection, mut migrations: Vec<Migration>) -> R
     let mut last_applied = last_applied_migration(conn, &migrations)?;
     debug!("Last applied migration: {}", last_applied);
     migrations.retain(|m| m.id > last_applied);
-    debug!("Leftover migrations to apply: {:?}", migrations);
+    debug!(
+        "Leftover migrations to apply: {:?}",
+        migrations.iter().map(|m| format!("{}_{}", m.id, m.name))
+    );
 
     for migration in migrations {
         if migration.id != last_applied + 1 {
