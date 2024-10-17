@@ -82,7 +82,7 @@ pub struct ResponseExecuteReturning {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResponseBatch {
-    pub result: Vec<Result<usize, Error>>,
+    pub result: Result<Vec<Result<usize, Error>>, Error>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -138,9 +138,9 @@ pub async fn test_self_healing(
     }
 
     // since we took ownership, we need to shut down the clients here
-    // client_1.shutdown().await?;
+    client_1.shutdown().await?;
     log("client_1 shutdown complete after self heal tests");
-    // client_2.shutdown().await?;
+    client_2.shutdown().await?;
     log("client_2 shutdown complete after self heal tests");
     client_3.shutdown().await?;
     log("client_3 shutdown complete after self heal tests");

@@ -65,7 +65,7 @@ impl Client {
                 .await?;
             let resp: Response = res.data;
             match resp {
-                Response::Batch(res) => Ok(res.result),
+                Response::Batch(res) => res.result,
                 _ => unreachable!(),
             }
         } else {

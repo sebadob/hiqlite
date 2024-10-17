@@ -73,7 +73,7 @@ pub struct SqlTransaction {
 pub struct SqlBatch {
     pub sql: Cow<'static, str>,
     pub last_applied_log_id: Option<LogId<NodeId>>,
-    pub tx: oneshot::Sender<Vec<Result<usize, Error>>>,
+    pub tx: oneshot::Sender<Result<Vec<Result<usize, Error>>, Error>>,
 }
 
 #[derive(Debug)]
@@ -366,9 +366,22 @@ pub fn spawn_writer(
                             info!("Query::Batch:\n{}", req.sql);
                         }
 
-                        let mut batch = Batch::new(&conn, req.sql.as_ref());
+                        let txn = match conn.transaction() {
+                            Ok(txn) => txn,
+                            Err(err) => {
+                                error!("Opening database transaction: {:?}", err);
+                                req.tx
+                                    .send(Err(Error::Transaction(err.to_string().into())))
+                                    .expect("oneshot tx to never be dropped");
+                                continue;
+                            }
+                        };
+
+                        let mut batch = Batch::new(&txn, req.sql.as_ref());
                         // we can at least assume 2 statements in a batch execute
                         let mut res = Vec::with_capacity(2);
+
+                        let mut err = None;
 
                         loop {
                             match batch.next() {
@@ -376,16 +389,33 @@ pub fn spawn_writer(
                                     res.push(stmt.execute([]).map_err(Error::from));
                                 }
                                 Ok(None) => break,
-                                Err(err) => {
-                                    // TODO if there is a syntax error in the batch stmt, this will loop forever
-                                    // -> Err(_) will NOT remove the bad element from the Batch -> open an issue?
-                                    panic!("{}", err);
-                                    // res.push(Err(Error::from(err)));
+                                Err(e) => {
+                                    // The `Batch` iterator can't recover from errors
+                                    // -> exit early and do not commit the txn
+                                    err = Some(Error::Sqlite(e.to_string().into()));
+                                    break;
                                 }
                             }
                         }
 
-                        req.tx.send(res).expect("oneshot tx to never be dropped");
+                        if let Some(err) = err {
+                            req.tx
+                                .send(Err(err))
+                                .expect("oneshot tx to never be dropped");
+                        } else {
+                            match txn.commit().map_err(Error::from) {
+                                Ok(_) => {
+                                    req.tx
+                                        .send(Ok(res))
+                                        .expect("oneshot tx to never be dropped");
+                                }
+                                Err(err) => {
+                                    req.tx
+                                        .send(Err(err))
+                                        .expect("oneshot tx to never be dropped");
+                                }
+                            }
+                        }
                     }
                 },
 

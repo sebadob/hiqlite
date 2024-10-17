@@ -600,7 +600,7 @@ async fn handle_socket_concurrent(
                             };
                             ApiStreamResponse {
                                 request_id,
-                                result: ApiStreamResponsePayload::Batch(Ok(res.result)),
+                                result: ApiStreamResponsePayload::Batch(res.result),
                             }
                         }
                         Err(err) => ApiStreamResponse {

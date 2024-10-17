@@ -169,12 +169,11 @@ impl Client {
                     let (tx, rx) = tokio::sync::oneshot::channel();
 
                     info!("Shutting down sqlite writer");
-                    state
+                    let _ = state
                         .raft_db
                         .sql_writer
                         .send_async(WriterRequest::Shutdown(tx))
-                        .await
-                        .expect("SQL writer to always be running");
+                        .await;
 
                     info!("Shutting down sqlite logs writer");
                     if state
@@ -202,7 +201,7 @@ impl Client {
         let _ = tx_client_cache.send_async(ClientStreamReq::Shutdown).await;
 
         if let Some(tx) = tx_shutdown {
-            tx.send(true).unwrap();
+            let _ = tx.send(true);
         }
 
         info!("Waiting 5 additional seconds before shutting down");
