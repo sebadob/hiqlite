@@ -80,15 +80,19 @@ impl Client {
     ///
     /// Returns the rows mapped to the output type on success. This only works for types that
     /// `impl<'r> From<hiqlite::Row<'r>>`
-    pub async fn execute_returning_map<S, T>(&self, sql: S, params: Params) -> Result<Vec<T>, Error>
+    pub async fn execute_returning_map<S, T>(
+        &self,
+        sql: S,
+        params: Params,
+    ) -> Result<Vec<Result<T, Error>>, Error>
     where
         S: Into<Cow<'static, str>>,
         T: for<'r> From<crate::Row<'r>> + Send + 'static,
     {
-        let rows: Vec<crate::Row> = self.execute_returning::<S>(sql, params).await?;
-        let mut res: Vec<T> = Vec::with_capacity(rows.len());
+        let rows: Vec<Result<crate::Row, Error>> = self.execute_returning::<S>(sql, params).await?;
+        let mut res: Vec<Result<T, Error>> = Vec::with_capacity(rows.len());
         for row in rows {
-            res.push(T::from(row))
+            res.push(row.map(T::from))
         }
         Ok(res)
     }
@@ -99,7 +103,7 @@ impl Client {
         &self,
         sql: S,
         params: Params,
-    ) -> Result<Vec<crate::Row>, Error>
+    ) -> Result<Vec<Result<crate::Row, Error>>, Error>
     where
         S: Into<Cow<'static, str>>,
     {
@@ -122,15 +126,18 @@ impl Client {
             }
         };
 
-        let mut res: Vec<crate::Row> = Vec::with_capacity(rows.len());
+        let mut res: Vec<Result<crate::Row, Error>> = Vec::with_capacity(rows.len());
         for row in rows {
-            res.push(crate::Row::Owned(row))
+            res.push(row.map(crate::Row::Owned))
         }
         Ok(res)
     }
 
     #[inline]
-    pub(crate) async fn execute_returning_req(&self, sql: Query) -> Result<Vec<RowOwned>, Error> {
+    pub(crate) async fn execute_returning_req(
+        &self,
+        sql: Query,
+    ) -> Result<Vec<Result<RowOwned, Error>>, Error> {
         if let Some(state) = self.is_leader_db_with_state().await {
             let res = state
                 .raft_db
