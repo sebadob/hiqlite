@@ -101,7 +101,7 @@ pub async fn test_type_conversions(client: &Client) -> Result<(), Error> {
     );
     debug(&params);
 
-    let ret: Vec<Data> = client
+    let mut ret: Vec<Result<Data, Error>> = client
         .execute_returning_map(
             r#"INSERT INTO type_conversion
             (id, id_none, id_opt, name, name_none, name_opt, is_bool, utc, local, offset,
@@ -112,7 +112,8 @@ pub async fn test_type_conversions(client: &Client) -> Result<(), Error> {
         )
         .await?;
     assert_eq!(ret.len(), 1);
-    assert_eq!(ret[0], data);
+    let res: Data = ret.remove(0)?;
+    assert_eq!(res, data);
 
     let slf: Data = client
         .query_map_one(
@@ -122,7 +123,7 @@ pub async fn test_type_conversions(client: &Client) -> Result<(), Error> {
         .await?;
     assert_eq!(slf, data);
 
-    // TODO we can't use the automatic conversion with `query_as`, because the default serialization
+    // TODO we can't use the automatic conversion with `query_as`, because of the default serialization
     // / deserialization for chrono types is not the one implemented in rusqlite. Can we make this work?
     // let slf: Data = client
     //     .query_as_one(

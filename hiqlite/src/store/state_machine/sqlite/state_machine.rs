@@ -77,7 +77,7 @@ pub struct ResponseExecute {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResponseExecuteReturning {
-    pub result: Result<Vec<RowOwned>, Error>,
+    pub result: Result<Vec<Result<RowOwned, Error>>, Error>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

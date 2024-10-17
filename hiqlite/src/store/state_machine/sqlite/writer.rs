@@ -59,7 +59,7 @@ pub struct SqlExecuteReturning {
     pub sql: Cow<'static, str>,
     pub params: Params,
     pub last_applied_log_id: Option<LogId<NodeId>>,
-    pub tx: oneshot::Sender<Result<Vec<RowOwned>, Error>>,
+    pub tx: oneshot::Sender<Result<Vec<Result<RowOwned, Error>>, Error>>,
 }
 
 #[derive(Debug)]
@@ -259,12 +259,22 @@ pub fn spawn_writer(
                             }
 
                             let mut rows = stmt.raw_query();
-                            let mut rows_owned = Vec::new();
-                            while let Ok(Some(row)) = rows.next() {
-                                rows_owned.push(RowOwned::from_row_column(row, &columns));
+                            let mut res = Vec::new();
+                            loop {
+                                match rows.next() {
+                                    Ok(Some(row)) => {
+                                        res.push(Ok(RowOwned::from_row_column(row, &columns)));
+                                    }
+                                    Ok(None) => {
+                                        break;
+                                    }
+                                    Err(err) => {
+                                        res.push(Err(Error::Sqlite(err.to_string().into())));
+                                    }
+                                }
                             }
 
-                            Ok(rows_owned)
+                            Ok(res)
                         };
 
                         q.tx.send(res).expect("oneshot tx to never be dropped");
@@ -366,9 +376,11 @@ pub fn spawn_writer(
                                     res.push(stmt.execute([]).map_err(Error::from));
                                 }
                                 Ok(None) => break,
-                                // will happen if the query can't be prepared -> syntax error
                                 Err(err) => {
-                                    res.push(Err(Error::from(err)));
+                                    // TODO if there is a syntax error in the batch stmt, this will loop forever
+                                    // -> Err(_) will NOT remove the bad element from the Batch -> open an issue?
+                                    panic!("{}", err);
+                                    // res.push(Err(Error::from(err)));
                                 }
                             }
                         }

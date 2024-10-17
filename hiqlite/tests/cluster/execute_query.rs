@@ -185,10 +185,11 @@ pub async fn test_execute_query(
         )
         .await?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get::<i64>("id"), data.id);
-    assert_eq!(rows[0].get::<i64>("ts"), data.ts);
+    let mut row = rows.remove(0)?;
+    assert_eq!(row.get::<i64>("id"), data.id);
+    assert_eq!(row.get::<i64>("ts"), data.ts);
     assert_eq!(
-        rows[0].get::<Option<String>>("description").as_deref(),
+        row.get::<Option<String>>("description").as_deref(),
         Some("Execute Returning Data")
     );
 
@@ -198,16 +199,17 @@ pub async fn test_execute_query(
         ts: Utc::now().timestamp(),
         description: None,
     };
-    let rows: Vec<TestData> = client_1
+    let mut rows: Vec<Result<TestData, Error>> = client_1
         .execute_returning_map(
             "INSERT INTO test VALUES ($1, $2, $3) RETURNING *",
             params!(data.id, data.ts, data.description.clone()),
         )
         .await?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].id, data.id);
-    assert_eq!(rows[0].ts, data.ts);
-    assert_eq!(rows[0].description, data.description);
+    let row = rows.remove(0)?;
+    assert_eq!(row.id, data.id);
+    assert_eq!(row.ts, data.ts);
+    assert_eq!(row.description, data.description);
 
     Ok(())
 }

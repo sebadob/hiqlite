@@ -317,7 +317,7 @@ pub(crate) enum ApiStreamResponsePayload {
     #[cfg(feature = "sqlite")]
     Execute(Result<usize, Error>),
     #[cfg(feature = "sqlite")]
-    ExecuteReturning(Result<Vec<RowOwned>, Error>),
+    ExecuteReturning(Result<Vec<Result<RowOwned, Error>>, Error>),
     #[cfg(feature = "sqlite")]
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
     #[cfg(feature = "sqlite")]
