@@ -45,23 +45,17 @@ impl Client {
                 }
                 Some(to_migrate) => {
                     if to_migrate.id != migration.id {
-                        return Err(Error::Sqlite(
-                            format!(
-                                "ID mismatch between given and already applied migration: {} != {}",
-                                to_migrate.id, migration.id
-                            )
-                            .into(),
-                        ));
+                        panic!(
+                            "ID mismatch between given and already applied migration: {} != {}",
+                            to_migrate.id, migration.id
+                        );
                     }
 
                     if to_migrate.hash != migration.hash {
-                        return Err(Error::Sqlite(
-                            format!(
-                                "HASH mismatch between given and already applied migration: {} != {}",
-                                to_migrate.hash, migration.hash
-                            )
-                            .into(),
-                        ));
+                        panic!(
+                            "HASH mismatch between given and already applied migration: {} != {}",
+                            to_migrate.hash, migration.hash
+                        );
                     }
                 }
             }
