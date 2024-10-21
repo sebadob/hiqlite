@@ -128,6 +128,13 @@ impl From<String> for Param {
     }
 }
 
+impl From<&String> for Param {
+    #[inline]
+    fn from(s: &String) -> Param {
+        Param::Text(s.clone())
+    }
+}
+
 impl From<&[u8]> for Param {
     #[inline]
     fn from(v: &[u8]) -> Param {
