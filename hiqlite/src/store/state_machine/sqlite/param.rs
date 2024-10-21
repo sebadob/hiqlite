@@ -213,3 +213,16 @@ where
         }
     }
 }
+
+impl<T> From<&Option<T>> for Param
+where
+    T: Clone + Into<Param>,
+{
+    #[inline]
+    fn from(v: &Option<T>) -> Param {
+        match v {
+            Some(x) => x.clone().into(),
+            None => Param::Null,
+        }
+    }
+}
