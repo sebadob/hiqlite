@@ -46,15 +46,15 @@ impl Client {
                 Some(to_migrate) => {
                     if to_migrate.id != migration.id {
                         panic!(
-                            "ID mismatch between given and already applied migration: {} != {}",
-                            to_migrate.id, migration.id
+                            "ID mismatch for '{}' between given and already applied migration: {} != {}",
+                            to_migrate.name, to_migrate.id, migration.id
                         );
                     }
 
                     if to_migrate.hash != migration.hash {
                         panic!(
-                            "HASH mismatch between given and already applied migration: {} != {}",
-                            to_migrate.hash, migration.hash
+                            "HASH mismatch for '{}' between given and already applied migration: {} != {}",
+                            to_migrate.name, to_migrate.hash, migration.hash
                         );
                     }
                 }
