@@ -187,6 +187,43 @@ impl Client {
         }
     }
 
+    /// A raw query will return the bare `Row` without doing any deserialization or mapping.
+    ///
+    /// This version works the same as `query_raw()` with the exception that it will return an
+    /// error, if no rows have been returned. This eliminates the need for manual `is_empty()` checks
+    /// each time.
+    pub async fn query_raw_not_empty<S>(
+        &self,
+        stmt: S,
+        params: Params,
+    ) -> Result<Vec<crate::Row>, Error>
+    where
+        S: Into<Cow<'static, str>>,
+    {
+        let rows = self.query_raw(stmt, params).await?;
+        if rows.is_empty() {
+            Err(Error::Sqlite("No rows returned".into()))
+        } else {
+            Ok(rows)
+        }
+    }
+
+    /// A raw query will return the bare `Row` without doing any deserialization or mapping.
+    ///
+    /// This version will return exactly one `Row`. It will error if none has been returned from
+    /// the database and will ignore any rows other than the first one.
+    pub async fn query_raw_one<S>(&self, stmt: S, params: Params) -> Result<crate::Row, Error>
+    where
+        S: Into<Cow<'static, str>>,
+    {
+        let mut rows = self.query_raw(stmt, params).await?;
+        if rows.is_empty() {
+            Err(Error::Sqlite("No rows returned".into()))
+        } else {
+            Ok(rows.swap_remove(0))
+        }
+    }
+
     /// Executes a query on remote host and returns raw rows.
     /// This is mostly used internally and not directly.
     pub(crate) async fn query_remote<S>(
