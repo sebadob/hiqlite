@@ -59,6 +59,33 @@ impl BackupConfig {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub enum BackupSource {
+    S3(String),
+    File(String),
+}
+
+impl BackupSource {
+    fn from_env() -> Option<Self> {
+        let var = env::var("HQL_BACKUP_RESTORE").ok()?;
+
+        if let Some(obj) = var.strip_prefix("s3:") {
+            return Some(Self::S3(obj.to_string()));
+        }
+
+        if let Some(file) = var.strip_prefix("file:") {
+            return Some(Self::File(file.to_string()));
+        }
+
+        error!(
+            "HQL_BACKUP_RESTORE must start with either 's3:' or 'file:'. \
+            Cannot restore from backup - unknown prefix: {}",
+            var
+        );
+        None
+    }
+}
+
 pub fn start_cron(client: Client, s3_config: Arc<S3Config>, backup_config: BackupConfig) {
     task::spawn(async move {
         info!("Backup cron task started");
@@ -179,12 +206,11 @@ fn dt_from_backup_name(name: &str) -> Option<DateTime<Utc>> {
 /// Returns `Ok(true)` if backup has been applied.
 /// This will only run if the current node ID is `1`.
 pub(crate) async fn restore_backup_start(node_config: &NodeConfig) -> Result<bool, Error> {
-    if let Ok(name) = env::var("HQL_BACKUP_RESTORE") {
-        warn!("Found HQL_BACKUP_RESTORE={}", name);
+    if let Some(src) = BackupSource::from_env() {
+        info!("Found {:?}", src);
 
         if node_config.node_id == 1 {
-            warn!("Starting restore process on Node 1");
-            restore_backup(node_config, &name).await?;
+            restore_backup(node_config, src).await?;
             return Ok(true);
         } else {
             warn!("Cleaning up existing files and start restore cluster join");
@@ -201,19 +227,22 @@ pub(crate) async fn restore_backup_start(node_config: &NodeConfig) -> Result<boo
 ///
 /// You only need to invoke this manually if you want to apply a backup in another
 /// way than with the `HQL_BACKUP_RESTORE` env var, which is being done automatically.
-pub async fn restore_backup(node_config: &NodeConfig, backup_name: &str) -> Result<(), Error> {
-    let s3_config = match &node_config.s3_config {
-        None => {
+pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Result<(), Error> {
+    info!("Starting database restore from backup {:?}", src);
+
+    match &src {
+        BackupSource::S3(_) => {}
+        BackupSource::File(_) => {}
+    }
+
+    if let BackupSource::S3(_) = &src {
+        if node_config.s3_config.is_none() {
             return Err(Error::S3(
                 "No `S3Config` given, cannot restore backup".to_string(),
             ));
         }
-        Some(c) => c,
-    };
+    }
 
-    info!("Starting database restore from backup {}", backup_name);
-
-    // let path_base = StateMachineSqlite::path_base(&node_config.data_dir);
     let (
         PathDb(path_db),
         PathBackups(path_backups),
@@ -223,10 +252,35 @@ pub async fn restore_backup(node_config: &NodeConfig, backup_name: &str) -> Resu
     let path_logs = logs::logs_dir(&node_config.data_dir);
 
     fs::create_dir_all(&path_backups).await?;
-    let path_backup_s3 = format!("{}/{}", path_backups, BACKUP_DB_NAME);
-    s3_config.pull(backup_name, &path_backup_s3).await?;
 
-    is_metadata_ok(path_backup_s3.clone()).await?;
+    let (path_backup, remove_src) = match src {
+        BackupSource::S3(s3_obj) => {
+            let s3_config = match &node_config.s3_config {
+                None => {
+                    return Err(Error::S3(
+                        "No `S3Config` given, cannot restore backup".to_string(),
+                    ));
+                }
+                Some(c) => c,
+            };
+            let path_backup = format!("{}/{}", path_backups, BACKUP_DB_NAME);
+            s3_config.pull(&s3_obj, &path_backup).await?;
+            (path_backup, true)
+        }
+        BackupSource::File(path_src) => {
+            let (path, filename) = path_src.rsplit_once('/').unwrap_or(("", &path_src));
+            debug!(
+                "Given backup path full: '{}', after parsing: '{}' / '{}'",
+                path_src, path, filename
+            );
+            let path_backup = format!("{}/{}", path_backups, filename);
+
+            fs::copy(path_src, &path_backup).await?;
+            (path_backup, false)
+        }
+    };
+
+    is_metadata_ok(path_backup.clone()).await?;
     debug!("Database backup metadata is ok");
 
     debug!("Removing old data");
@@ -239,18 +293,24 @@ pub async fn restore_backup(node_config: &NodeConfig, backup_name: &str) -> Resu
     fs::create_dir_all(&path_db).await?;
     let path_db_full = format!("{}/{}", path_db, node_config.filename_db);
     info!(
-        "Fetched backup check ok - copying into its final place: {} -> {}",
-        path_backup_s3, path_db_full
+        "Given backup check ok - copying into its final place: {} -> {}",
+        path_backup, path_db_full
     );
-    fs::copy(&path_backup_s3, path_db_full).await?;
+    fs::copy(&path_backup, path_db_full).await?;
 
-    info!("Cleaning up fetched backup from {}", path_backup_s3);
-    fs::remove_file(path_backup_s3).await?;
+    if remove_src {
+        info!("Cleaning up S3 backup from {}", path_backup);
+        fs::remove_file(path_backup).await?;
+    }
 
     Ok(())
 }
 
 async fn is_metadata_ok(path_db: String) -> Result<(), Error> {
+    if env::var("HQL_BACKUP_SKIP_VALIDATION") == Ok("true".to_string()) {
+        return Ok(());
+    }
+
     task::spawn_blocking(move || {
         let conn = rusqlite::Connection::open(path_db)?;
         let mut stmt = conn.prepare_cached("SELECT data FROM _metadata WHERE key = 'meta'")?;
