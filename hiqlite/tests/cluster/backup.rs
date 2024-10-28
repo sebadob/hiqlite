@@ -3,12 +3,14 @@ use hiqlite::{params, Client, Error, Param};
 use std::time::Duration;
 use tokio::{fs, time};
 
+pub static BACKUP_PATH_FILE: &str = "tests/data_test/backup.sqlite";
+
 pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
     log("Creating backup request via client_1");
     client_1.backup().await?;
 
     // these test backups are tiny and very quick -> async background task
-    time::sleep(Duration::from_millis(50)).await;
+    time::sleep(Duration::from_millis(100)).await;
 
     log("Find backup DB");
 
@@ -18,15 +20,16 @@ pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
     let leader = metrics.current_leader.unwrap();
     let path = find_backup_file(leader).await;
 
-    let conn_bkp = rusqlite::Connection::open(path).unwrap();
+    // copy the file into a 2nd location for later restore from file testing
+    fs::copy(&path, BACKUP_PATH_FILE).await?;
+
+    let conn_bkp = rusqlite::Connection::open(path)?;
 
     log("Check that a regular connection to the backup db is working");
-    let res = conn_bkp
-        .query_row("SELECT 1", [], |row| {
-            let i: i64 = row.get(0)?;
-            Ok(i)
-        })
-        .unwrap();
+    let res = conn_bkp.query_row("SELECT 1", [], |row| {
+        let i: i64 = row.get(0)?;
+        Ok(i)
+    })?;
     assert_eq!(res, 1);
 
     Ok(())

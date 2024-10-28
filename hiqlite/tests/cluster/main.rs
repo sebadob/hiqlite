@@ -136,6 +136,7 @@ async fn exec_tests() -> Result<(), Error> {
     backup::test_backup(&client_1).await?;
     log("Backup tests finished");
 
+    // BEGIN: test S3 backup restore
     log("Change current database as preparation for backup restore tests");
     backup::test_backup_restore_prerequisites(&client_1).await?;
     log("Current database has been changed");
@@ -148,12 +149,35 @@ async fn exec_tests() -> Result<(), Error> {
     // just give the s3 upload task in the background some time to finish
     time::sleep(Duration::from_millis(1000)).await;
 
-    log("Trying to start the cluster again after shutdown with restore from backup");
-    let (client_1, client_2, client_3) = backup_restore::start_test_cluster_with_backup().await?;
+    log("Trying to start the cluster again after shutdown with restore from S3 backup");
+    let (client_1, client_2, client_3) =
+        backup_restore::start_test_cluster_with_backup(false).await?;
     log("Cluster has been started again");
 
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
     log("Cluster is healthy again");
+    // END: test S3 backup restore
+
+    // BEGIN: test local file backup restore
+    log("Change current database as preparation for backup restore tests");
+    backup::test_backup_restore_prerequisites(&client_1).await?;
+    log("Current database has been changed");
+
+    log("Shutting down nodes");
+    client_1.shutdown().await?;
+    client_2.shutdown().await?;
+    client_3.shutdown().await?;
+
+    time::sleep(Duration::from_millis(1000)).await;
+
+    log("Trying to start the cluster again after shutdown with restore from local file backup");
+    let (client_1, client_2, client_3) =
+        backup_restore::start_test_cluster_with_backup(true).await?;
+    log("Cluster has been started again");
+
+    start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
+    log("Cluster is healthy again");
+    // ENV: test local file backup restore
 
     cache::insert_test_value_cache(&client_1).await?;
 

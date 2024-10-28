@@ -1,3 +1,4 @@
+use crate::backup::BACKUP_PATH_FILE;
 use crate::execute_query::TestData;
 use crate::start::build_config;
 use crate::{backup, log, Cache};
@@ -5,10 +6,16 @@ use hiqlite::{params, start_node_with_cache, Client, Error, Param};
 use std::env;
 use tokio::task;
 
-pub async fn start_test_cluster_with_backup() -> Result<(Client, Client, Client), Error> {
-    let path = backup::find_backup_file(1).await;
-    let (_path, backup_name) = path.rsplit_once('/').unwrap();
-    env::set_var("HQL_BACKUP_RESTORE", backup_name);
+pub async fn start_test_cluster_with_backup(
+    from_fs: bool,
+) -> Result<(Client, Client, Client), Error> {
+    if from_fs {
+        env::set_var("HQL_BACKUP_RESTORE", format!("file:{}", BACKUP_PATH_FILE));
+    } else {
+        let path = backup::find_backup_file(1).await;
+        let (_path, backup_name) = path.rsplit_once('/').unwrap();
+        env::set_var("HQL_BACKUP_RESTORE", format!("s3:{}", backup_name));
+    }
 
     let handle_client_2 = task::spawn(start_node_with_cache::<Cache>(build_config(2).await));
     let handle_client_3 = task::spawn(start_node_with_cache::<Cache>(build_config(3).await));
