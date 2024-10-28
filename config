@@ -90,6 +90,14 @@ HQL_BACKUP_KEEP_DAYS=30
 #    env value.
 #HQL_BACKUP_RESTORE=
 
+# The Hiqlite backup restore process checks the `_metadata` table
+# in backups as an integrity check. If you however want to "restore"
+# from an already existing default SQLite file, you can disable
+# this validation to make the restore process succeed anyway.
+# To do so, set `HQL_BACKUP_SKIP_VALIDATION=true`.
+# default: not set
+#HQL_BACKUP_SKIP_VALIDATION=
+
 # Access values for the S3 bucket where backups will be pushed to.
 #HQL_S3_URL=https://s3.example.com
 #HQL_S3_BUCKET=my_bucket

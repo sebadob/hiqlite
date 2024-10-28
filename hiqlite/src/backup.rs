@@ -307,6 +307,10 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
 }
 
 async fn is_metadata_ok(path_db: String) -> Result<(), Error> {
+    if env::var("HQL_BACKUP_SKIP_VALIDATION") == Ok("true".to_string()) {
+        return Ok(());
+    }
+
     task::spawn_blocking(move || {
         let conn = rusqlite::Connection::open(path_db)?;
         let mut stmt = conn.prepare_cached("SELECT data FROM _metadata WHERE key = 'meta'")?;
