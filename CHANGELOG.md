@@ -1,5 +1,43 @@
 # Changelog
 
+## UNRELEASED
+
+### Changes
+
+#### New `Client` Functions and `impl`s for `Param`
+
+The `hiqlite::Client` now provides a few more helpful functions and features:
+
+- `put_bytes()` for the cache to be able to just cache raw bytes without any serialization
+- `query_raw()` will return the raw `hiqlite::Row`s from the database in cases where you might just want to
+  have results without deserializing into a `struct`.
+- `query_raw_one()` - the same as above, just returns a single `hiqlite::Row`
+- `query_raw_not_empty()` is a DX improvement. Often when you need `query_raw()`, you use it to retrieve a specific
+  set of columns or `COUNT(*)`, but you also don't want to check that the `Row`s are not empty before accessing.
+  This function will `Err()` if no `Row`s have been returned and therefore reduced boilerplate in these situations.
+- The migration process will panic and error early on migration hash mismatches and provide more clear
+  logging and information where exactly the issue is.
+- `execute_returning()`s return type has been changed to properly return a wrapping `Result<_>` like the others
+- `batch()` will exit and error early, if the writer had issues with bad syntax. Because of the internal design
+  of the `Batch` reader, it is impossible to recover from syntax errors. Therefore the whole batch will not be applied
+  and the transaction will be rolled back in that case.
+
+In addition, there is now:
+
+- `impl<T> From<&Option<T>> for Param`
+- `impl From<&String> for Param`
+
+### Bugfix
+
+The Backup creation routine has reset the "wrong" metadata after backup creation. This is not an issue during runtime
+usually, because it will get overwritten with the correct data again very soon, but could cause issues if the instance
+crashes before this can happen. Now, the internal metadata for the newly created backup will be reset correctly instead
+of the live database.
+
+#### Dashboard Improvements
+
+The dashboard has received a few improvements like resizeable result table columns and a nicer look.
+
 ## v0.2.1
 
 ### Race conditions during rolling releases
