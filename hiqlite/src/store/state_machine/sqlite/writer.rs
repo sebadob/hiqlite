@@ -150,13 +150,13 @@ pub fn spawn_writer(
         // we want to handle our metadata manually to not interfere with migrations in apps later on
         conn.execute(
             r#"
-            CREATE TABLE IF NOT EXISTS _metadata
-            (
-                key  TEXT    NOT NULL
-                    CONSTRAINT _metadata_pk
-                        PRIMARY KEY,
-                data BLOB    NOT NULL
-            )"#,
+CREATE TABLE IF NOT EXISTS _metadata
+(
+    key  TEXT    NOT NULL
+        CONSTRAINT _metadata_pk
+            PRIMARY KEY,
+    data BLOB    NOT NULL
+)"#,
             (),
         )
         .expect("_metadata table creation to always succeed");
@@ -632,7 +632,7 @@ fn create_backup(
 ) -> Result<(), Error> {
     // - build target db file name with node id and timestamp
     // - vacuum into target file
-    // - connect to vacuumed db and remove metadata
+    // - connect to vacuumed db and reset metadata
     // - if we have an s3 target, encrypt and push it
 
     let file = format!("backup_node_{}_{}.sqlite", node_id, Utc::now().timestamp());
@@ -645,7 +645,7 @@ fn create_backup(
     // make sure connection is dropped before starting encrypt + push
     {
         let conn_bkp = rusqlite::Connection::open(&path_full)?;
-        persist_metadata(conn, &StateMachineData::default());
+        persist_metadata(&conn_bkp, &StateMachineData::default());
     }
 
     info!("Database backup finished");
