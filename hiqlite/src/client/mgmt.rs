@@ -208,6 +208,7 @@ impl Client {
 
         // We need to do a short sleep only to avoid race conditions during rolling releases.
         // This also helps to make re-joins after a restart smoother.
+        // TODO for some very weird reason, the process gets stuck during this sleep await when testing
         time::sleep(Duration::from_secs(5)).await;
 
         info!("Shutdown complete");
