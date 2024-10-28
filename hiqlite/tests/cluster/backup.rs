@@ -23,7 +23,7 @@ pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
     // copy the file into a 2nd location for later restore from file testing
     fs::copy(&path, BACKUP_PATH_FILE).await?;
 
-    let conn_bkp = rusqlite::Connection::open(path)?;
+    let conn_bkp = rusqlite::Connection::open(BACKUP_PATH_FILE)?;
 
     log("Check that a regular connection to the backup db is working");
     let res = conn_bkp.query_row("SELECT 1", [], |row| {
@@ -31,6 +31,9 @@ pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
         Ok(i)
     })?;
     assert_eq!(res, 1);
+
+    // we want to remove the `_metadata` table locally to test the validation skip later on
+    conn_bkp.execute("DROP TABLE _metadata", [])?;
 
     Ok(())
 }

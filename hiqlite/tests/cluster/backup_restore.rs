@@ -10,6 +10,7 @@ pub async fn start_test_cluster_with_backup(
     from_fs: bool,
 ) -> Result<(Client, Client, Client), Error> {
     if from_fs {
+        env::set_var("HQL_BACKUP_SKIP_VALIDATION", "true");
         env::set_var("HQL_BACKUP_RESTORE", format!("file:{}", BACKUP_PATH_FILE));
     } else {
         let path = backup::find_backup_file(1).await;
@@ -25,6 +26,7 @@ pub async fn start_test_cluster_with_backup(
     let client_2 = handle_client_2.await??;
     let client_3 = handle_client_3.await??;
 
+    env::remove_var("HQL_BACKUP_SKIP_VALIDATION");
     env::remove_var("HQL_BACKUP_RESTORE");
 
     Ok((client_1, client_2, client_3))
