@@ -120,9 +120,33 @@ impl Client {
         } else {
             let mut rows = self.query_remote(stmt, params, false).await?;
             if rows.is_empty() {
-                return Err(Error::Sqlite("No rows returned".into()));
+                Err(Error::Sqlite("No rows returned".into()))
+            } else {
+                Ok(T::from(rows.swap_remove(0)))
             }
-            Ok(T::from(rows.swap_remove(0)))
+        }
+    }
+
+    /// Works in the same way as `query_map_one()`, but returns only one result as an `Option<T>`.
+    /// If no rows have been returned (without database errors), you will get an `Ok(None)`.
+    pub async fn query_map_optional<T, S>(
+        &self,
+        stmt: S,
+        params: Params,
+    ) -> Result<Option<T>, Error>
+    where
+        T: for<'r> From<crate::Row<'r>> + Send + 'static,
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.inner.state {
+            query::query_map_optional(state, stmt, params).await
+        } else {
+            let mut rows = self.query_remote(stmt, params, false).await?;
+            if rows.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(T::from(rows.swap_remove(0))))
+            }
         }
     }
 
@@ -147,7 +171,11 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_as(state, stmt, params).await
         } else {
-            Err(Error::Config("`query_as()` only works for local clients, you need to use `query_map()` for remote".into()))
+            Err(Error::Config(
+                "`query_as()` only works for local clients, you need to use \
+                `query_map()` for remote"
+                    .into(),
+            ))
         }
     }
 
@@ -162,7 +190,30 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_as_one(state, stmt, params).await
         } else {
-            Err(Error::Config("`query_as()` only works for local clients, you need to use `query_map()` for remote".into()))
+            Err(Error::Config(
+                "`query_as()` only works for local clients, you need to use \
+                `query_map()` for remote"
+                    .into(),
+            ))
+        }
+    }
+
+    /// Works in the same way as `query_as_one()`, but returns only one result as `Option<T>`.
+    /// Unlike the `query_as_one()`, this does not throw an error if no Rows have been returned,
+    /// but just returns `None`.
+    pub async fn query_as_optional<T, S>(&self, stmt: S, params: Params) -> Result<Option<T>, Error>
+    where
+        T: DeserializeOwned + Send + 'static,
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.inner.state {
+            query::query_as_optional(state, stmt, params).await
+        } else {
+            Err(Error::Config(
+                "`query_as_optional()` only works for local clients, you need to use \
+                `query_map()` for remote"
+                    .into(),
+            ))
         }
     }
 
