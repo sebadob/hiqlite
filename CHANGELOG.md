@@ -17,6 +17,8 @@ The `hiqlite::Client` now provides a few more helpful functions and features:
   This function will `Err()` if no `Row`s have been returned and therefore reduced boilerplate in these situations.
 - The migration process will panic and error early on migration hash mismatches and provide more clear
   logging and information where exactly the issue is.
+- The new `query_as_optional()` and `query_map_optional()` return a `Result<Option<T>>` and don't error in case of
+  no rows returned.
 - `execute_returning()`s return type has been changed to properly return a wrapping `Result<_>` like the others
 - `batch()` will exit and error early, if the writer had issues with bad syntax. Because of the internal design
   of the `Batch` reader, it is impossible to recover from syntax errors. Therefore the whole batch will not be applied
