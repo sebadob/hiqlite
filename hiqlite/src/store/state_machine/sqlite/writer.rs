@@ -366,18 +366,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             info!("Query::Batch:\n{}", req.sql);
                         }
 
-                        let txn = match conn.transaction() {
-                            Ok(txn) => txn,
-                            Err(err) => {
-                                error!("Opening database transaction: {:?}", err);
-                                req.tx
-                                    .send(Err(Error::Transaction(err.to_string().into())))
-                                    .expect("oneshot tx to never be dropped");
-                                continue;
-                            }
-                        };
-
-                        let mut batch = Batch::new(&txn, req.sql.as_ref());
+                        let mut batch = Batch::new(&conn, req.sql.as_ref());
                         // we can at least assume 2 statements in a batch execute
                         let mut res = Vec::with_capacity(2);
 
@@ -403,18 +392,9 @@ CREATE TABLE IF NOT EXISTS _metadata
                                 .send(Err(err))
                                 .expect("oneshot tx to never be dropped");
                         } else {
-                            match txn.commit().map_err(Error::from) {
-                                Ok(_) => {
-                                    req.tx
-                                        .send(Ok(res))
-                                        .expect("oneshot tx to never be dropped");
-                                }
-                                Err(err) => {
-                                    req.tx
-                                        .send(Err(err))
-                                        .expect("oneshot tx to never be dropped");
-                                }
-                            }
+                            req.tx
+                                .send(Ok(res))
+                                .expect("oneshot tx to never be dropped");
                         }
                     }
                 },
