@@ -116,6 +116,7 @@ where
     .await?
 }
 
+#[inline]
 pub(crate) async fn query_map_one<T, S>(
     state: &Arc<AppState>,
     stmt: S,
@@ -133,6 +134,25 @@ where
     }
 }
 
+#[inline]
+pub(crate) async fn query_map_optional<T, S>(
+    state: &Arc<AppState>,
+    stmt: S,
+    params: Params,
+) -> Result<Option<T>, Error>
+where
+    T: for<'r> From<rows::Row<'r>> + Send + 'static,
+    S: Into<Cow<'static, str>>,
+{
+    let mut rows: Vec<T> = query_map(state, stmt, params).await?;
+    if rows.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(rows.swap_remove(0)))
+    }
+}
+
+#[inline]
 pub(crate) async fn query_as<T, S>(
     state: &Arc<AppState>,
     stmt: S,
@@ -167,6 +187,7 @@ where
     .await?
 }
 
+#[inline]
 pub(crate) async fn query_as_one<T, S>(
     state: &Arc<AppState>,
     stmt: S,
@@ -181,5 +202,23 @@ where
         Err(Error::Sqlite("no rows returned".into()))
     } else {
         Ok(rows.swap_remove(0))
+    }
+}
+
+#[inline]
+pub(crate) async fn query_as_optional<T, S>(
+    state: &Arc<AppState>,
+    stmt: S,
+    params: Params,
+) -> Result<Option<T>, Error>
+where
+    T: DeserializeOwned + Send + 'static,
+    S: Into<Cow<'static, str>>,
+{
+    let mut rows: Vec<T> = query_as(state, stmt, params).await?;
+    if rows.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(rows.swap_remove(0)))
     }
 }
