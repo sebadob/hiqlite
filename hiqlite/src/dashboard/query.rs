@@ -12,7 +12,7 @@ pub(crate) async fn dashboard_query_dynamic(
     sql: String,
 ) -> Result<Vec<RowOwned>, Error> {
     if sql.len() < 8 {
-        return Err(Error::Sqlite("invalid query".into()));
+        return Err(Error::BadRequest("invalid query".into()));
     }
 
     if state.raft_db.log_statements {

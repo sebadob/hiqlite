@@ -120,7 +120,7 @@ impl Client {
         } else {
             let mut rows = self.query_remote(stmt, params, false).await?;
             if rows.is_empty() {
-                Err(Error::Sqlite("No rows returned".into()))
+                Err(Error::QueryReturnedNoRows("No rows returned".into()))
             } else {
                 Ok(T::from(rows.swap_remove(0)))
             }
