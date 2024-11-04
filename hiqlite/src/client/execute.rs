@@ -103,11 +103,7 @@ impl Client {
     /// `impl<'r> From<hiqlite::Row<'r>>`.
     ///
     /// Throws an error if not exactly 1 row has been returned.
-    pub async fn execute_returning_map_one<S, T>(
-        &self,
-        sql: S,
-        params: Params,
-    ) -> Result<Result<T, Error>, Error>
+    pub async fn execute_returning_map_one<S, T>(&self, sql: S, params: Params) -> Result<T, Error>
     where
         S: Into<Cow<'static, str>>,
         T: for<'r> From<crate::Row<'r>> + Send + 'static,
@@ -120,7 +116,7 @@ impl Client {
                 format!("cannot map {} rows into one", rows.len()).into(),
             ))
         } else {
-            Ok(rows.swap_remove(0))
+            rows.swap_remove(0)
         }
     }
 
@@ -167,7 +163,7 @@ impl Client {
         &self,
         sql: S,
         params: Params,
-    ) -> Result<Result<crate::Row, Error>, Error>
+    ) -> Result<crate::Row, Error>
     where
         S: Into<Cow<'static, str>>,
     {
@@ -179,7 +175,7 @@ impl Client {
                 format!("cannot map {} rows into one", rows.len()).into(),
             ))
         } else {
-            Ok(rows.swap_remove(0))
+            rows.swap_remove(0)
         }
     }
 
