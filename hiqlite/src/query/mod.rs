@@ -129,6 +129,10 @@ where
     let mut rows: Vec<T> = query_map(state, stmt, params).await?;
     if rows.is_empty() {
         Err(Error::QueryReturnedNoRows("no rows returned".into()))
+    } else if rows.len() > 1 {
+        Err(Error::Sqlite(
+            format!("cannot map {} rows into one", rows.len()).into(),
+        ))
     } else {
         Ok(rows.swap_remove(0))
     }
@@ -200,6 +204,10 @@ where
     let mut rows: Vec<T> = query_as(state, stmt, params).await?;
     if rows.is_empty() {
         Err(Error::QueryReturnedNoRows("no rows returned".into()))
+    } else if rows.len() > 1 {
+        Err(Error::Sqlite(
+            format!("cannot map {} rows into one", rows.len()).into(),
+        ))
     } else {
         Ok(rows.swap_remove(0))
     }
