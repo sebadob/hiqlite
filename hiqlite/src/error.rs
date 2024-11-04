@@ -19,12 +19,15 @@ use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 pub enum Error {
     #[error("BadRequest: {0}")]
     BadRequest(Cow<'static, str>),
+    /// Serialization / Deserialization errors from `bincode`
     #[error("Bincode: {0}")]
     Bincode(String),
     #[error("Cache: {0}")]
     Cache(Cow<'static, str>),
+    /// Internal Channel errors from `flume`
     #[error("Channel: {0}")]
     Channel(String),
+    /// Internal error when a leader-request is sent to a non-leader node
     #[error("CheckIsLeaderError: {0}")]
     CheckIsLeaderError(RaftError<u64, CheckIsLeaderError<u64, Node>>),
     #[error("ClientWriteError: {0}")]
@@ -33,6 +36,9 @@ pub enum Error {
     Config(Cow<'static, str>),
     #[error("Connect: {0}")]
     Connect(String),
+    /// Sqlite constraint violation
+    #[error("Connect: {0}")]
+    ConstraintViolation(String),
     #[cfg(any(feature = "dashboard", feature = "s3"))]
     #[error("Cryptr: {0}")]
     Cryptr(String),
@@ -40,15 +46,23 @@ pub enum Error {
     Error(Cow<'static, str>),
     #[error("InitializeError: {0}")]
     InitializeError(RaftInitError),
+    /// Error informing about a Raft leader change
     #[error("LeaderChange: {0}")]
     LeaderChange(Cow<'static, str>),
+    /// Error when the given query parameters could not be bound properly to the prepared statement.
     #[error("QueryParams: {0}")]
     QueryParams(Cow<'static, str>),
+    /// Error returned when a query did not return any rows.
+    #[error("QueryReturnedNoRows: {0}")]
+    QueryReturnedNoRows(Cow<'static, str>),
+    /// Error if the prepared statement cannot be built properly.
     #[error("PrepareStatement: {0}")]
     PrepareStatement(Cow<'static, str>),
+    /// Internal Raft error
     #[error("RaftError: {0}")]
     RaftError(RaftError<u64>),
     #[error("RaftErrorFatal: {0}")]
+    /// Internal Raft error
     RaftErrorFatal(Fatal<u64>),
     #[error("Request: {0}")]
     Request(String),
@@ -57,6 +71,8 @@ pub enum Error {
     S3(String),
     #[error("SnapshotError: {0}")]
     SnapshotError(RaftSnapshotError),
+    /// All kinds of SQLite database errors, mostly just a wrapper for the `rusqlite` error apart
+    /// from `QueryReturnedNoRows`.
     #[cfg(feature = "sqlite")]
     #[error("Sqlite: {0}")]
     Sqlite(Cow<'static, str>),
@@ -105,10 +121,12 @@ impl IntoResponse for Error {
             Error::Cache(_) => StatusCode::BAD_REQUEST,
             Error::Channel(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::CheckIsLeaderError(_) => StatusCode::CONFLICT,
+            Error::ConstraintViolation(_) => StatusCode::BAD_REQUEST,
             #[cfg(any(feature = "dashboard", feature = "s3"))]
             Error::Cryptr(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::LeaderChange(_) => StatusCode::CONFLICT,
             Error::QueryParams(_) => StatusCode::BAD_REQUEST,
+            Error::QueryReturnedNoRows(_) => StatusCode::NOT_FOUND,
             Error::PrepareStatement(_) => StatusCode::BAD_REQUEST,
             Error::ClientWriteError(_) => {
                 if self.is_forward_to_leader().is_some() {
@@ -211,8 +229,43 @@ impl From<Fatal<u64>> for Error {
 #[cfg(feature = "sqlite")]
 impl From<rusqlite::Error> for Error {
     fn from(value: rusqlite::Error) -> Self {
-        trace!("Sqlite: {}", value);
-        Self::Sqlite(value.to_string().into())
+        trace!("rusqlite::Error: {}", value);
+
+        match value {
+            rusqlite::Error::QueryReturnedNoRows => {
+                Self::QueryReturnedNoRows("no rows returned".into())
+            }
+            rusqlite::Error::SqliteFailure(err, ext) => match err.code {
+                // ErrorCode::InternalMalfunction => {}
+                // ErrorCode::PermissionDenied => {}
+                // ErrorCode::OperationAborted => {}
+                // ErrorCode::DatabaseBusy => {}
+                // ErrorCode::DatabaseLocked => {}
+                // ErrorCode::OutOfMemory => {}
+                // ErrorCode::ReadOnly => {}
+                // ErrorCode::OperationInterrupted => {}
+                // ErrorCode::SystemIoFailure => {}
+                // ErrorCode::DatabaseCorrupt => {}
+                // ErrorCode::NotFound => {}
+                // ErrorCode::DiskFull => {}
+                // ErrorCode::CannotOpen => {}
+                // ErrorCode::FileLockingProtocolFailed => {}
+                // ErrorCode::SchemaChanged => {}
+                // ErrorCode::TooBig => {}
+                rusqlite::ErrorCode::ConstraintViolation => {
+                    Self::ConstraintViolation(format!("{} {:?}", err, ext))
+                }
+                // ErrorCode::TypeMismatch => {}
+                // ErrorCode::ApiMisuse => {}
+                // ErrorCode::NoLargeFileSupport => {}
+                // ErrorCode::AuthorizationForStatementDenied => {}
+                // ErrorCode::ParameterOutOfRange => {}
+                // ErrorCode::NotADatabase => {}
+                // ErrorCode::Unknown => {}
+                _ => Self::Sqlite(format!("{} {:?}", err, ext).into()),
+            },
+            v => Self::Sqlite(v.to_string().into()),
+        }
     }
 }
 

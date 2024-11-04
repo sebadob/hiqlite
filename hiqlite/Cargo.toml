@@ -62,8 +62,16 @@ server = [
     "tokio/macros",
 ]
 shutdown-handle = ["dep:ctrlc"]
-sqlite = ["dep:deadpool", "dep:rusqlite", "dep:rocksdb", "dep:serde_rusqlite"]
-webpki-roots = ["dep:webpki-roots", "reqwest/rustls-tls-webpki-roots"]
+sqlite = [
+    "dep:deadpool",
+    "dep:rusqlite",
+    "dep:rocksdb",
+    "dep:serde_rusqlite",
+]
+webpki-roots = [
+    "dep:webpki-roots",
+    "reqwest/rustls-tls-webpki-roots",
+]
 
 [dependencies]
 argon2 = { workspace = true, optional = true }
