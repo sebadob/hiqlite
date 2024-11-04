@@ -98,6 +98,33 @@ impl Client {
     }
 
     /// Execute a query on the database that includes a `RETURNING` statement.
+    ///
+    /// Returns the row mapped to the output type on success. This only works for types that
+    /// `impl<'r> From<hiqlite::Row<'r>>`.
+    ///
+    /// Throws an error if not exactly 1 row has been returned.
+    pub async fn execute_returning_map_one<S, T>(
+        &self,
+        sql: S,
+        params: Params,
+    ) -> Result<Result<T, Error>, Error>
+    where
+        S: Into<Cow<'static, str>>,
+        T: for<'r> From<crate::Row<'r>> + Send + 'static,
+    {
+        let mut rows = self.execute_returning_map::<S, T>(sql, params).await?;
+        if rows.is_empty() {
+            Err(Error::QueryReturnedNoRows("no rows returned".into()))
+        } else if rows.len() > 1 {
+            Err(Error::Sqlite(
+                format!("cannot map {} rows into one", rows.len()).into(),
+            ))
+        } else {
+            Ok(rows.swap_remove(0))
+        }
+    }
+
+    /// Execute a query on the database that includes a `RETURNING` statement.
     /// Returns the raw rows on success.
     pub async fn execute_returning<S>(
         &self,
@@ -131,6 +158,29 @@ impl Client {
             res.push(row.map(crate::Row::Owned))
         }
         Ok(res)
+    }
+
+    /// Execute a query on the database that includes a `RETURNING` statement.
+    ///
+    /// Returns a single raw row. Will throw an error if rows returned is not exactly 1.
+    pub async fn execute_returning_one<S>(
+        &self,
+        sql: S,
+        params: Params,
+    ) -> Result<Result<crate::Row, Error>, Error>
+    where
+        S: Into<Cow<'static, str>>,
+    {
+        let mut rows = self.execute_returning(sql, params).await?;
+        if rows.is_empty() {
+            Err(Error::QueryReturnedNoRows("no rows returned".into()))
+        } else if rows.len() > 1 {
+            Err(Error::Sqlite(
+                format!("cannot map {} rows into one", rows.len()).into(),
+            ))
+        } else {
+            Ok(rows.swap_remove(0))
+        }
     }
 
     #[inline]
