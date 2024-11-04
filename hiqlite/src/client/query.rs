@@ -103,7 +103,7 @@ impl Client {
 
     /// Works in the same way as `query_map()`, but returns only one result.
     ///
-    /// Errors if no rows are returned and ignores additional results if more than one row returned.
+    /// Errors if not exactly a single row has been returned.
     ///
     /// ```rust, notest
     /// let res: MyStruct = client
@@ -121,6 +121,10 @@ impl Client {
             let mut rows = self.query_remote(stmt, params, false).await?;
             if rows.is_empty() {
                 Err(Error::QueryReturnedNoRows("No rows returned".into()))
+            } else if rows.len() > 1 {
+                Err(Error::Sqlite(
+                    format!("cannot map {} rows into one", rows.len()).into(),
+                ))
             } else {
                 Ok(T::from(rows.swap_remove(0)))
             }
@@ -261,8 +265,8 @@ impl Client {
 
     /// A raw query will return the bare `Row` without doing any deserialization or mapping.
     ///
-    /// This version will return exactly one `Row`. It will error if none has been returned from
-    /// the database and will ignore any rows other than the first one.
+    /// This version will return exactly one `Row`.
+    /// Throws an error if the returned rows are not exactly one.
     pub async fn query_raw_one<S>(&self, stmt: S, params: Params) -> Result<crate::Row, Error>
     where
         S: Into<Cow<'static, str>>,
@@ -270,6 +274,10 @@ impl Client {
         let mut rows = self.query_raw(stmt, params).await?;
         if rows.is_empty() {
             Err(Error::Sqlite("No rows returned".into()))
+        } else if rows.len() > 1 {
+            Err(Error::Sqlite(
+                format!("cannot map {} rows into one", rows.len()).into(),
+            ))
         } else {
             Ok(rows.swap_remove(0))
         }
