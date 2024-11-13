@@ -5,7 +5,7 @@ use openraft::{RaftMetrics, StoredMembership};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{task, time};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     let handle = task::spawn(check_split_brain(state, nodes, tls));
@@ -20,19 +20,16 @@ pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
 
 async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     loop {
-        time::sleep(Duration::from_secs(600)).await;
+        time::sleep(Duration::from_secs(300)).await;
 
         #[cfg(feature = "sqlite")]
         match state.raft_db.raft.current_leader().await {
             None => {
                 warn!("No leader for DB");
-                continue;
             }
             Some(leader_expected) => {
                 let metrics = state.raft_db.raft.metrics().borrow().clone();
                 let membership = metrics.membership_config;
-
-                check_nodes_in_members(&nodes, &membership);
 
                 if let Err(err) = check_compare_membership(
                     &state,
@@ -55,7 +52,6 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
         match state.raft_cache.raft.current_leader().await {
             None => {
                 warn!("No leader for Cache");
-                continue;
             }
             Some(leader_expected) => {
                 let metrics = state.raft_cache.raft.metrics().borrow().clone();
@@ -80,12 +76,24 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     }
 }
 
-fn check_nodes_in_members(nodes: &[Node], membership: &Arc<StoredMembership<u64, Node>>) {
+fn check_nodes_in_members(
+    typ: &str,
+    nodes: &[Node],
+    membership: &Arc<StoredMembership<u64, Node>>,
+) {
     let members = membership.nodes().map(|(id, _)| *id).collect::<Vec<_>>();
 
     for node in nodes {
         if !members.contains(&node.id) {
-            error!("Node {} not in membership config: {:?}", node.id, members);
+            warn!(
+                r#"
+
+{} node {} not in membership config: {:?}
+If the missing node is up and running, this is a split brain and should not happen.
+If however the missing node is currently offline or just starting up, you can ignore this message.
+"#,
+                typ, node.id, members
+            );
         }
     }
 }
@@ -128,7 +136,7 @@ async fn check_compare_membership(
         // let metrics = res.json::<RaftMetrics<u64, Node>>().await?;
         let members = metrics.membership_config;
 
-        check_nodes_in_members(nodes, &members);
+        check_nodes_in_members(path, nodes, &members);
 
         if members != membership {
             error!(
