@@ -12,6 +12,7 @@
         initialHeightPx,
         minWidthPx = 50,
         minHeightPx = 50,
+        onResizeBottom,
         children,
     }: {
         resizeRight?: boolean,
@@ -22,6 +23,7 @@
         initialHeightPx?: number,
         minWidthPx?: number,
         minHeightPx?: number,
+        onResizeBottom?: (bottom: number) => void,
         children: Snippet,
     } = $props();
 
@@ -49,6 +51,8 @@
                 top = rect.top;
                 height = rect.height
             }
+
+            onResizeBottom?.(rect.bottom);
         }
     }
 
@@ -89,6 +93,10 @@
             height = minHeightPx;
         } else {
             height = y;
+        }
+        if (ref && onResizeBottom) {
+            let rect = ref.getBoundingClientRect();
+            onResizeBottom(rect.bottom);
         }
     }
 </script>

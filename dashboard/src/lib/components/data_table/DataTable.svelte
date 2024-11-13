@@ -1,19 +1,18 @@
 <script lang="ts">
     import Button from "$lib/components/Button.svelte";
-    import {copyToClip} from "$lib/utils/copyToClip";
     import A from "$lib/components/A.svelte";
     import Pagination from "$lib/components/Pagination.svelte";
     import Checkbox from "$lib/components/Checkbox.svelte";
     import Popover from "$lib/components/Popover.svelte";
+    import CheckIcon from "$lib/components/CheckIcon.svelte";
     import {untrack} from "svelte";
+    import type {IDataTable, IRow} from "$lib/components/data_table/data_table_types.ts";
     import IconChevronDown from "$lib/components/icons/IconChevronDown.svelte";
     import IconArrowUpDown from "$lib/components/icons/IconArrowUpDown.svelte";
     import IconCog from "$lib/components/icons/IconCog.svelte";
-    import CheckIcon from "$lib/components/CheckIcon.svelte";
+    import {copyToClip} from "$lib/utils/copyToClip";
     import IconDotsHorizontal from "$lib/components/icons/IconDotsHorizontal.svelte";
     import IconEye from "$lib/components/icons/IconEye.svelte";
-
-    import type {IDataTable, IRow} from "$lib/components/data_table/data_table_types";
 
     let {
         caption,
@@ -21,15 +20,24 @@
         showColumns = $bindable(Array(columns.length).fill(true)),
         rows = $bindable(),
         options,
+        highlight,
         offsetLeftOptions,
         offsetTopOptions,
-        offsetLeftColumnSelect,
         paginationCompact = false,
+        paginationDisabled,
+        paginationPageSize = 15,
         select,
+        selectInitHide = false,
         width,
         maxWidth,
         minWidthColPx = 50,
     }: IDataTable = $props();
+
+    $inspect(rows, columns).with(() => {
+        if (rows.length > 0 && columns.length !== rows[0].length) {
+            console.error('`columns` and `entries` have different lengths');
+        }
+    })
 
     const SELECT_WIDTH = '3rem';
     const OPTION_WIDTH = '2rem';
@@ -39,26 +47,22 @@
     let columnWidthsSelected = $state(untrack(() => columnWidths));
 
     let page = $state(1);
-    let pageSize = $state(15);
+    let pageSize = $state(untrack(() => paginationPageSize));
+
+    let checkedAll = $state(false);
     let selectedRows = $state(Array(rows.length).fill(false));
     let isAnySelected = $derived(selectedRows.find(r => r === true));
 
     let closePopoverSelect: undefined | (() => void) = $state();
     let closePopoverOption: (() => void)[] = $state([]);
 
-    $inspect(rows, columns).with(() => {
-        if (rows.length > 0 && columns.length !== rows[0].length) {
-            console.warn('`columns` and `entries` have different lengths', columns, rows);
-        } else {
-            console.log('`columns` and `entries` lengths match');
-        }
-    })
-
-    let checkedAll = $state(false);
-    let rowsPaginated: IRow[][] = $state([]);
     let orderDir: 'up' | 'down' = $state('up');
-
+    let rowsPaginated: IRow[][] = $state([]);
+    let paginationDisabledLocal = $derived(paginationDisabled !== undefined ? paginationDisabled : rows.length < paginationPageSize);
     let rowCount = $derived.by(() => {
+        if (paginationDisabled || paginationDisabledLocal) {
+            return rows.length;
+        }
         if (rowsPaginated && rowsPaginated.length) {
             return rowsPaginated.length;
         }
@@ -69,21 +73,26 @@
     });
 
     let refCols: (undefined | HTMLElement)[] = $state(Array(untrack(() => columnWidths.length)).fill(undefined));
+    let refTBody: undefined | HTMLElement = $state();
     let resizingCol = 0;
+    let highlightTr: undefined | number = $state();
 
     // If there are any `auto` columns in the template, we need to convert them to absolute numbers
     // to make the resizing not completely weird to use.
-    setTimeout(() => {
-        for (let i = 1; i <= columnWidths.length; i++) {
-            if (columnWidths[i] === 'auto') {
-                resizingCol = i - 1;
-                let ref = refCols[i];
-                if (ref) {
-                    updateColSize(ref.getBoundingClientRect().width);
+    $effect(() => {
+        setTimeout(() => {
+            for (let i = 1; i < columnWidths.length; i++) {
+                if (columnWidths[i] === 'auto') {
+                    resizingCol = select ? i : i - 1;
+                    let ref = refCols[i];
+                    if (ref) {
+                        updateColSize(ref.getBoundingClientRect().width);
+                    }
                 }
             }
-        }
-    }, 1000);
+            // timeout must be >= css transition duration
+        }, 150);
+    });
 
     $effect(() => {
         let newSel = Array(rows.length).fill(false);
@@ -107,7 +116,8 @@
     });
 
     $effect(() => {
-        closePopoverOption = Array(rowsPaginated?.length).fill(() => console.error('un-initialized popover close option'));
+        let len = paginationDisabled || paginationDisabledLocal ? rows.length : rowsPaginated.length || 0;
+        closePopoverOption = Array(len).fill(() => console.error('un-initialized popover close option'));
     });
 
     $effect(() => {
@@ -120,17 +130,38 @@
         columnWidthsSelected = newWidths;
     });
 
+    $effect(() => {
+        if (highlight !== undefined && refTBody) {
+            let trIdx = highlight;
+            if (!paginationDisabledLocal && page > 1) {
+                trIdx = highlight - (page - 1) * pageSize;
+            }
+            highlightTr = trIdx;
+
+            setTimeout(() => {
+                let elem = refTBody?.getElementsByClassName('highlight')[0];
+                elem?.scrollIntoView({behavior: 'smooth', block: 'center'});
+            }, 250);
+        } else {
+            highlightTr = undefined;
+        }
+    });
+
     function buildInitialColumnWidths() {
         let widths = columns.map(col => col.initialWidth);
 
+        let showColumnsUpdate = [...showColumns];
+
         if (select) {
             widths = [SELECT_WIDTH, ...widths];
+            showColumnsUpdate = [!selectInitHide, ...showColumnsUpdate];
         }
         if (options) {
             widths = [...widths, OPTION_WIDTH];
+            showColumnsUpdate = [...showColumnsUpdate, true];
         }
 
-        showColumns = Array(widths.length).fill(true);
+        showColumns = showColumnsUpdate;
         return widths;
     }
 
@@ -157,7 +188,7 @@
     }
 
     function absoluteRowNo(rowNo: number) {
-        if (page > 1) {
+        if (!paginationDisabledLocal && page > 1) {
             return (page - 1) * pageSize + rowNo;
         } else {
             return rowNo;
@@ -217,14 +248,14 @@
                 />
 
                 <Popover
-                        ariaLabel="Options for the selection"
+                        ariaLabel="Selected Options"
                         bind:close={closePopoverSelect}
                         btnDisabled={!isAnySelected}
                         btnInvisible
                 >
                     {#snippet button()}
                         <span class="btnSelect" data-disabled={!isAnySelected}>
-                            <IconChevronDown width={18}/>
+                            <IconChevronDown width="1rem"/>
                         </span>
                     {/snippet}
                     {@render select(selectedRows, closePopoverSelect)}
@@ -237,10 +268,12 @@
                 <th bind:this={refCols[i]}>
                     <span class="flex-1 label">
                         {#if column.orderType}
-                            {column.content}
+                            <span class="orderText">
+                                {column.content}
+                            </span>
                             <Button invisible onclick={() => orderBy(i, column.orderType)}>
                                 <span class="iconOrder">
-                                    <IconArrowUpDown width={16}/>
+                                    <IconArrowUpDown width="1rem"/>
                                 </span>
                             </Button>
                         {:else}
@@ -260,15 +293,15 @@
 
         {#if options && showColumns[showColumns.length - 1]}
             <th class="headerOptions">
-                <IconCog width={20}/>
+                <IconCog width="1.2rem"/>
             </th>
         {/if}
     </tr>
     </thead>
 
-    <tbody>
-    {#each rowsPaginated as row, i}
-        <tr style:grid-template-columns={gridTemplateColumns()}>
+    <tbody bind:this={refTBody}>
+    {#snippet renderRow(row: IRow[], i: number)}
+        <tr class:highlight={highlightTr === i} style:grid-template-columns={gridTemplateColumns()}>
             {#if select && showColumns[0]}
                 <td class="checkbox">
                     <Checkbox ariaLabel="Select Row" bind:checked={selectedRows[absoluteRowNo(i)]}/>
@@ -280,34 +313,34 @@
                     <td>
                         {#if columns[j]?.showAs === 'a'}
                             <A href={column.href || ''}>
-                            <span class="linkText">
-                                {column.content}
-                            </span>
+                                <span class="linkText nowrap" class:muted={column.muted}>
+                                    {column.content}
+                                </span>
                             </A>
                         {:else if columns[j]?.showAs === 'a_blank'}
                             <A href={column.href || ''} target="_blank">
-                            <span class="linkText">
-                                {column.content}
-                            </span>
+                                <span class="linkText nowrap" class:muted={column.muted}>
+                                    {column.content}
+                                </span>
                             </A>
                         {:else if columns[j]?.showAs === 'copyToClip'}
                             <Button invisible onclick={() => copyToClip(column.content.toString())}>
-                            <span class="copyToClip">
-                                {column.content}
-                            </span>
+                                <span class="copyToClip nowrap" class:muted={column.muted}>
+                                    {column.content}
+                                </span>
                             </Button>
                         {:else if columns[j]?.showAs === 'check'}
-                        <span class="checkIcon">
-                            <CheckIcon checked={column.content}/>
-                        </span>
+                            <span class="checkIcon nowrap" class:muted={column.muted}>
+                                <CheckIcon checked={column.content}/>
+                            </span>
                         {:else if column.onClick}
                             <Button invisible onclick={ev => column.onClick?.(ev, absoluteRowNo(i))}>
-                            <span class="onclick">
-                                {column.content}
-                            </span>
+                                <span class="onclick nowrap" class:muted={column.muted}>
+                                    {column.content}
+                                </span>
                             </Button>
                         {:else}
-                        <span class="rawText">
+                        <span class="rawText nowrap" class:muted={column.muted}>
                             {column.content}
                         </span>
                         {/if}
@@ -334,38 +367,38 @@
                 </td>
             {/if}
         </tr>
-    {/each}
+    {/snippet}
+
+    {#if paginationDisabledLocal}
+        {#if selectedRows.length === rows.length}
+            {#each rows as row, i}
+                {@render renderRow(row, i)}
+            {/each}
+        {/if}
+    {:else}
+        {#each rowsPaginated as row, i}
+            {@render renderRow(row, i)}
+        {/each}
+    {/if}
     </tbody>
 
     <caption class="flex space-between">
-        <Pagination
-                items={rows}
-                bind:itemsPaginated={rowsPaginated}
-                bind:page
-                bind:pageSize
-                compact={paginationCompact}
-        />
-
-        <span class="flex gap-05">
-            <span>
-                {caption}
-            </span>
+        <div class="flex">
             <Popover
                     ariaLabel="Select Columns"
-                    offsetLeft={offsetLeftColumnSelect || '-6rem'}
-                    offsetTop={`-${columnWidths.length * 1.4 + 2.7}rem`}
+                    offsetTop={`-${columnWidths.length * 1.4 + 3}rem`}
                     btnInvisible
             >
                 {#snippet button()}
-                    <span class="eye">
+                    <div class="eye">
                         <IconEye/>
-                    </span>
+                    </div>
                 {/snippet}
                 <div class="columnsSelect">
                     {#if select}
                         <div class="columnSelect">
                             <Checkbox
-                                    ariaLabel="Select Columns: Select"
+                                    ariaLabel="Select Column: Select"
                                     bind:checked={showColumns[0]}
                             >
                                 Select
@@ -376,7 +409,7 @@
                     {#each columns as column, i}
                         <div class="columnSelect">
                             <Checkbox
-                                    ariaLabel={`Select Columns: ${column.content}`}
+                                    ariaLabel={`Select Column: ${column.content}`}
                                     bind:checked={showColumns[select ? i + 1 : i]}
                             >
                                 {column.content}
@@ -387,7 +420,7 @@
                     {#if options}
                         <div class="columnSelect">
                             <Checkbox
-                                    ariaLabel="Select Columns: Options"
+                                    ariaLabel="Select Column: Options"
                                     bind:checked={showColumns[showColumns.length - 1]}
                             >
                                 Options
@@ -396,7 +429,23 @@
                     {/if}
                 </div>
             </Popover>
-        </span>
+
+            <div class="caption">
+                {@render caption?.()}
+            </div>
+
+            {#if paginationDisabledLocal}
+                <div></div>
+            {:else}
+                <Pagination
+                        items={rows}
+                        bind:itemsPaginated={rowsPaginated}
+                        bind:page
+                        bind:pageSize
+                        compact={paginationCompact}
+                />
+            {/if}
+        </div>
     </caption>
 </table>
 
@@ -405,28 +454,33 @@
         padding-right: .5rem;
         caption-side: bottom;
         text-align: left;
-    }
-
-    caption > span {
-        color: hsl(var(--bg-high));
+        border-top: 1px solid hsla(var(--bg-high), .25);
+        overflow: clip;
     }
 
     table {
-        width: 100%;
+        height: 100%;
+        display: grid;
+        grid-template-rows: 2.2rem auto 2rem;
+        overflow-x: auto;
+        -webkit-border-horizontal-spacing: 0;
+        -webkit-border-vertical-spacing: 0;
     }
 
     thead {
         display: block;
+        overflow: clip;
     }
 
     thead tr {
+        margin-top: -1px;
         background: hsl(var(--bg-high));
         border-radius: var(--border-radius) var(--border-radius) 0 0;
     }
 
     tbody {
         display: block;
-        overflow-y: scroll;
+        overflow-y: auto;
     }
 
     tbody tr:last-child {
@@ -440,6 +494,7 @@
     }
 
     tbody tr {
+        height: 2.1rem;
         transition: background 150ms;
     }
 
@@ -449,6 +504,8 @@
     }
 
     th {
+        position: relative;
+        bottom: -.15rem;
         display: flex;
         color: hsl(var(--text-high));
         font-weight: normal;
@@ -463,6 +520,7 @@
         word-wrap: break-word;
         vertical-align: text-top;
         overflow-x: scroll;
+        overflow-y: clip;
     }
 
     tbody tr:nth-child(even) {
@@ -491,18 +549,21 @@
         color: hsla(var(--text), .5);
     }
 
+    .caption {
+        transform: translateY(-.3rem);
+    }
+
     .checkbox {
-        transform: translateY(.1rem);
+        transform: translateY(.22rem);
     }
 
     .checkIcon {
         position: relative;
-        bottom: -.2rem;
+        bottom: -.1rem;
     }
 
     .columnsSelect {
         padding: .5rem;
-        /*border: 1px solid red;*/
     }
 
     .columnSelect {
@@ -512,7 +573,7 @@
 
     .copyToClip {
         position: relative;
-        top: -.05rem;
+        bottom: .3rem;
         color: hsl(var(--text));
         font-size: 1rem;
         font-weight: normal;
@@ -521,8 +582,7 @@
     }
 
     .eye {
-        position: relative;
-        bottom: -.15rem;
+        margin: 0 .5rem 0 .5rem;
         color: hsla(var(--text), .5);
         transition: all 150ms;
     }
@@ -534,20 +594,24 @@
     .headerCheckbox {
         display: grid;
         grid-template-columns: 1.3rem 1rem;
-        transform: translateY(.2rem);
+        transform: translateY(.06rem);
     }
 
     .headerOptions {
         height: 100%;
         padding: 0;
         justify-content: center;
-        margin: auto 0;
         color: hsla(var(--text), .66);
+        transform: translateY(-.1rem);
+    }
+
+    .highlight {
+        background: hsla(var(--accent), .25) !important;
     }
 
     .iconOrder {
         position: relative;
-        bottom: -.15rem;
+        bottom: .15rem;
         color: hsla(var(--text), .7);
         transition: all 150ms;
     }
@@ -556,13 +620,24 @@
         color: hsl(var(--action));
     }
 
+    .nowrap {
+        text-wrap: nowrap;
+    }
+
     .linkText {
         position: relative;
         bottom: -.05rem;
     }
 
+    .muted {
+        color: hsla(var(--text), .7);
+    }
+
     .onclick {
-        color: hsla(var(--action), .75);
+        position: relative;
+        top: -.5rem;
+        color: hsl(var(--text));
+        font-weight: normal;
         transition: color 150ms;
     }
 
@@ -574,7 +649,11 @@
         margin: 0;
         padding: 0;
         text-align: center;
-        transform: translateY(.1rem);
+    }
+
+    .orderText {
+        position: relative;
+        top: -.3rem;
     }
 
     .rawText {

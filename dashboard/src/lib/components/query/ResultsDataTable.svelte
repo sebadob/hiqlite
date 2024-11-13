@@ -18,6 +18,8 @@
                 cols.push({
                     content: col.name,
                     initialWidth: '12rem',
+                    // TODO this would be improved with iterating over a given set of results and grep
+                    // the longest content in each column, but would be pretty resource intense on big tables.
                     // initialWidth: `${8 + col.name.length * .5}rem`,
                     orderType: columnOrderType(col.value),
                 })
@@ -66,26 +68,13 @@
     }
 </script>
 
-<div id="query-results">
-    {#if columns.length > 0 && rowsDt.length > 0}
-        <DataTable {columns} bind:rows={rowsDt}>
-            <!--{#snippet select(rows: boolean[], close: undefined | (() => void))}-->
-            <!--{/snippet}-->
-            <!--{#snippet options(row: IRow[], close: undefined | (() => void))}-->
-            <!--{/snippet}-->
-        </DataTable>
-    {:else}
-        <p>no results</p>
-    {/if}
-</div>
-
-<style>
-    #query-results {
-        display: block;
-        /*max-width: 40rem;*/
-        flex: 1;
-        /*max-width: var(--width-inner);*/
-        overflow: scroll;
-        /*display: flex;*/
-    }
-</style>
+{#if columns.length > 0 && rowsDt.length > 0}
+    <DataTable {columns} bind:rows={rowsDt} paginationPageSize={100}>
+        <!--{#snippet select(rows: boolean[], close: undefined | (() => void))}-->
+        <!--{/snippet}-->
+        <!--{#snippet options(row: IRow[], close: undefined | (() => void))}-->
+        <!--{/snippet}-->
+    </DataTable>
+{:else}
+    <p>no results</p>
+{/if}

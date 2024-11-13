@@ -1,22 +1,26 @@
 <script lang="ts">
     import {fetchPostText} from "$lib/utils/fetch";
-    import Results from "$lib/components/query/Results.svelte";
     import type {IRow} from "$lib/types/query_results";
     import type {IQuery} from "$lib/types/query";
-    import {onMount} from "svelte";
     import {AUTO_QUERY} from "$lib/stores/query.svelte.js";
     import ResultsDataTable from "$lib/components/query/ResultsDataTable.svelte";
+    import Resizable from "$lib/components/Resizable.svelte";
 
-    // let {query, onUpdate}: {
-    //     query: IQuery,
-    //     onUpdate: (id: string, query: string) => void,
-    // } = $props();
     let {query}: {
         query: IQuery,
     } = $props();
     let rows: IRow[] = $state([]);
 
     let error = $state('');
+
+    let innerHeight: undefined | number = $state();
+    let bottomQueryInput: undefined | number = $state();
+    let heightResults = $derived.by(() => {
+        if (innerHeight && bottomQueryInput) {
+            return `${innerHeight - bottomQueryInput}px`;
+        }
+        return '100%';
+    });
 
     $effect(() => {
         if (query.query.startsWith(AUTO_QUERY)) {
@@ -51,14 +55,29 @@
             error = Object.values(json)[0] as string;
         }
     }
+
+    async function onResizeBottom(bottom: number) {
+        bottomQueryInput = bottom;
+    }
 </script>
 
-<textarea
-        name="query"
-        bind:value={query.query}
-        {onkeydown}
+<svelte:window bind:innerHeight/>
+
+<Resizable
+        resizeBottom
+        minHeightPx={100}
+        initialHeightPx={300}
+        {onResizeBottom}
 >
-    </textarea>
+    <div
+            role="textbox"
+            tabindex="0"
+            class="query"
+            bind:innerText={query.query}
+            contenteditable
+            {onkeydown}
+    ></div>
+</Resizable>
 
 {#if error}
     <div class="err">
@@ -66,22 +85,23 @@
     </div>
 {/if}
 
-<ResultsDataTable bind:rows/>
-<!--<Results bind:rows/>-->
+<div
+        id="query-results"
+        style:height={heightResults}
+        style:max-height={heightResults}
+>
+    <ResultsDataTable bind:rows/>
+</div>
 
 <style>
-    textarea {
-        /*width: calc(100% - 20px);*/
-        height: 20rem;
-        padding: 10px;
-        border: 1px solid var(--col-gmid);
-        border-radius: 3px;
-        outline: none;
-        /*resize: none;*/
-        resize: vertical;
-        font-size: 1.1rem;
-        color: hsl(var(--text));
-        background: hsl(var(--bg));
-        border-bottom: 1px solid var(--col-mid-a);
+    #query-results {
+        border-top: 1px solid hsla(var(--bg-high), .66);
+    }
+
+    .query {
+        padding: .25rem .5rem;
+        height: 100%;
+        background: hsla(var(--bg-high), .2);
+        overflow: auto;
     }
 </style>
