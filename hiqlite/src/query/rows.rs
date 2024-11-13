@@ -297,10 +297,10 @@ impl TryFrom<ValueOwned> for bool {
 impl TryFrom<ValueOwned> for Option<bool> {
     type Error = crate::Error;
 
-    fn try_from(value: ValueOwned) -> Result<Option<Self>, Self::Error> {
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
-            v => Self::try_from(v).map(Some),
+            v => v.try_into().map(Some),
         }
     }
 }
