@@ -11,23 +11,29 @@ export interface IColumn {
 
 export interface IRow {
     content: string | number | boolean,
+    muted?: boolean,
     // will be used as the link if `IColumn.showAs` is set to `a` or `a_blank`
     href?: string,
     onClick?: (ev: Event, row: number) => void,
+    withIcon?: 'file' | 'folder',
 }
 
 export interface IDataTable {
-    caption?: string,
+    caption?: Snippet,
     columns: IColumn[],
     showColumns?: boolean[],
     rows: IRow[][],
     // gridTemplateColumns: string,
     options?: Snippet<[row: IRow[], close: undefined | (() => void)]>,
+    highlight?: number;
     offsetLeftOptions?: string;
     offsetTopOptions?: string;
-    offsetLeftColumnSelect?: string;
     paginationCompact?: boolean,
+    paginationDisabled?: boolean,
+    /// any of: 5, 7, 10, 15, 20, 30, 50, 100
+    paginationPageSize?: number,
     select?: Snippet<[rows: boolean[], close: undefined | (() => void)]>,
+    selectInitHide?: boolean,
     selectedRows?: boolean[],
     width?: string,
     maxWidth?: string,

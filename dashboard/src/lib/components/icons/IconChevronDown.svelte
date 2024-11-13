@@ -1,6 +1,7 @@
 <script lang="ts">
+    export let color = 'currentColor';
     export let opacity = 0.9;
-    export let width = 20;
+    export let width = "1.5rem";
 </script>
 
 <svg
