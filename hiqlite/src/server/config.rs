@@ -99,7 +99,6 @@ HQL_NODE_ID=1
 # id addr_raft addr_api
 # id addr_raft addr_api
 #
-# 2 nodes must be separated by 2 `\n`
 #HQL_NODES="
 #1 localhost:8100 localhost:8200
 #2 localhost:8100 localhost:8200
