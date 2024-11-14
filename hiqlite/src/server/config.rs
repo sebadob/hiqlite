@@ -203,7 +203,7 @@ ENC_KEYS="
 # should actively be used for new encryptions.
 ENC_KEY_ACTIVE={}
 
-# The password for the dashboard as Argon2ID hash
+# The password for the dashboard as b64 encoded Argon2ID hash
 HQL_PASSWORD_DASHBOARD={}
 
 # Can be set to `true` during local dev and testing to issue

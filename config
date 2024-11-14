@@ -137,7 +137,7 @@ bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ=
 # should actively be used for new encryptions.
 ENC_KEY_ACTIVE=bVCyTsGaggVy5yqQ
 
-# The password for the dashboard as Argon2ID hash
+# The password for the dashboard as b64 encoded Argon2ID hash
 # '123SuperMegaSafe' in this example
 HQL_PASSWORD_DASHBOARD=JGFyZ29uMmlkJHY9MTkkbT0xOTQ1Nix0PTIscD0xJGQ2RlJDYTBtaS9OUnkvL1RubmZNa0EkVzJMeTQrc1dxZ0FGd0RyQjBZKy9iWjBQUlZlOTdUMURwQkk5QUoxeW1wRQ==
 
