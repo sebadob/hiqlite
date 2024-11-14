@@ -132,11 +132,15 @@ pub async fn set_session_verify(
     password: String,
 ) -> Result<Response, Error> {
     check_csrf(&method, headers).await?;
-    password::verify_password(password, state.dashboard.password_dashboard.clone()).await?;
+    if let Some(pwd) = state.dashboard.password_dashboard.clone() {
+        password::verify_password(password, pwd).await?;
 
-    let session = Session::new();
-    let cookie = session.as_cookie()?;
-    Ok(([(SET_COOKIE, cookie)], Json(session)).into_response())
+        let session = Session::new();
+        let cookie = session.as_cookie()?;
+        Ok(([(SET_COOKIE, cookie)], Json(session)).into_response())
+    } else {
+        Err(Error::Unauthorized("unauthorized".into()))
+    }
 }
 
 async fn check_csrf(method: &Method, headers: &HeaderMap) -> Result<(), Error> {

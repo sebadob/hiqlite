@@ -4,6 +4,7 @@ use cryptr::EncKeys;
 use spow::pow::Pow;
 use std::env;
 use std::fmt::Debug;
+use tracing::warn;
 
 pub mod handlers;
 pub mod middleware;
@@ -15,16 +16,25 @@ mod table;
 
 #[derive(Debug)]
 pub struct DashboardState {
-    pub password_dashboard: String,
+    pub password_dashboard: Option<String>,
 }
 
 impl DashboardState {
     pub fn from_env() -> Self {
-        let b64 =
-            env::var("HQL_PASSWORD_DASHBOARD").expect("HQL_PASSWORD_DASHBOARD does not exist");
-        let password_dashboard = String::from_utf8(b64_decode(&b64).unwrap()).unwrap();
-
-        Self { password_dashboard }
+        match env::var("HQL_PASSWORD_DASHBOARD") {
+            Ok(b64) => {
+                let hash = String::from_utf8(b64_decode(&b64).unwrap()).unwrap();
+                Self {
+                    password_dashboard: Some(hash),
+                }
+            }
+            Err(_) => {
+                warn!("HQL_PASSWORD_DASHBOARD has not been set and the dashboard will be disabled");
+                Self {
+                    password_dashboard: None,
+                }
+            }
+        }
     }
 }
 
