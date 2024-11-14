@@ -62,7 +62,7 @@ pub struct NodeConfig {
     pub s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
     /// Set the password for the integrated dashboard. Must be given as argon2id hash. feature `dashboard`
     #[cfg(feature = "dashboard")]
-    pub password_dashboard: String,
+    pub password_dashboard: Option<String>,
 }
 
 impl Default for NodeConfig {
@@ -85,7 +85,7 @@ impl Default for NodeConfig {
             #[cfg(feature = "s3")]
             s3_config: None,
             #[cfg(feature = "dashboard")]
-            password_dashboard: String::default(),
+            password_dashboard: None,
             // #[cfg(feature = "dashboard")]
             // insecure_cookie: false,
         }
@@ -240,10 +240,12 @@ impl NodeConfig {
         }
 
         #[cfg(feature = "dashboard")]
-        if self.password_dashboard.len() < 14 {
-            return Err(Error::Config(
-                "password_dashboard should be at least 14 characters long".into(),
-            ));
+        if let Some(pwd) = &self.password_dashboard {
+            if pwd.len() < 16 {
+                return Err(Error::Config(
+                    "password_dashboard should be at least 14 characters long".into(),
+                ));
+            }
         }
 
         Ok(())

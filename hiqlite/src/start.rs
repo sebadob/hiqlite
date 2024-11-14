@@ -184,33 +184,37 @@ where
     #[cfg(not(feature = "dashboard"))]
     let router_api = default_routes.with_state(state.clone());
     #[cfg(feature = "dashboard")]
-    let router_api = default_routes
-        .route("/", get(dashboard::handlers::redirect_to_index))
-        .nest(
-            "/dashboard",
-            Router::new()
-                .route("/", get(dashboard::handlers::redirect_to_index))
-                .nest(
-                    "/api",
-                    Router::new()
-                        .route("/metrics", get(dashboard::handlers::get_metrics))
-                        .route("/pow", get(dashboard::handlers::get_pow))
-                        .route("/query", post(dashboard::handlers::post_query))
-                        .route(
-                            "/session",
-                            get(dashboard::handlers::get_session)
-                                .post(dashboard::handlers::post_session),
-                        )
-                        .route("/tables", get(dashboard::handlers::get_tables))
-                        .route(
-                            "/tables/:filter",
-                            get(dashboard::handlers::get_tables_filtered),
-                        ),
-                )
-                .layer(dashboard::middleware::middleware())
-                .fallback(dashboard::static_files::handler),
-        )
-        .with_state(state.clone());
+    let router_api = if state.dashboard.password_dashboard.is_some() {
+        default_routes
+            .route("/", get(dashboard::handlers::redirect_to_index))
+            .nest(
+                "/dashboard",
+                Router::new()
+                    .route("/", get(dashboard::handlers::redirect_to_index))
+                    .nest(
+                        "/api",
+                        Router::new()
+                            .route("/metrics", get(dashboard::handlers::get_metrics))
+                            .route("/pow", get(dashboard::handlers::get_pow))
+                            .route("/query", post(dashboard::handlers::post_query))
+                            .route(
+                                "/session",
+                                get(dashboard::handlers::get_session)
+                                    .post(dashboard::handlers::post_session),
+                            )
+                            .route("/tables", get(dashboard::handlers::get_tables))
+                            .route(
+                                "/tables/:filter",
+                                get(dashboard::handlers::get_tables_filtered),
+                            ),
+                    )
+                    .layer(dashboard::middleware::middleware())
+                    .fallback(dashboard::static_files::handler),
+            )
+            .with_state(state.clone())
+    } else {
+        default_routes.with_state(state.clone())
+    };
 
     info!("api external listening on {}", &api_addr);
     let tls_config = if let Some(config) = &node_config.tls_api {
