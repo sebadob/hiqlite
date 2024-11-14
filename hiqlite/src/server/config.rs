@@ -99,7 +99,6 @@ HQL_NODE_ID=1
 # id addr_raft addr_api
 # id addr_raft addr_api
 #
-# 2 nodes must be separated by 2 `\n`
 #HQL_NODES="
 #1 localhost:8100 localhost:8200
 #2 localhost:8100 localhost:8200
@@ -204,7 +203,7 @@ ENC_KEYS="
 # should actively be used for new encryptions.
 ENC_KEY_ACTIVE={}
 
-# The password for the dashboard as Argon2ID hash
+# The password for the dashboard as b64 encoded Argon2ID hash
 HQL_PASSWORD_DASHBOARD={}
 
 # Can be set to `true` during local dev and testing to issue
