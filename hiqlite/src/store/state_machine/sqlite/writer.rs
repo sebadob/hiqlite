@@ -542,7 +542,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                     if let Err(err) = create_backup(
                         &conn,
                         req.node_id,
-                        req.target_folder,
+                        req.target_folder.clone(),
                         #[cfg(feature = "s3")]
                         s3_config,
                     ) {
@@ -550,6 +550,15 @@ CREATE TABLE IF NOT EXISTS _metadata
                         req.ack.send(Err(err));
                         continue;
                     }
+
+                    #[cfg(feature = "backup")]
+                    task::spawn(async move {
+                        if let Err(err) =
+                            crate::backup::backup_local_cleanup(req.target_folder).await
+                        {
+                            error!("Error during local backup cleanup: {:?}", err);
+                        }
+                    });
 
                     if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
