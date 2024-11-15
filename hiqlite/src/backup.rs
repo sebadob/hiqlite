@@ -10,6 +10,7 @@ use crate::{Client, Error, NodeConfig};
 use chrono::{DateTime, Utc};
 use std::env;
 use std::ops::Sub;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -163,6 +164,57 @@ async fn backup_cron_job(
                 if dt < threshold {
                     info!("Deleting expired backup: {}", object.key);
                     s3_config.bucket.delete(object.key.clone()).await?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn backup_local_cleanup(backup_path: String) -> Result<(), Error> {
+    // 2024/01/01 00:00:00
+    let ts_min = 1704063600;
+
+    let keep_days = env::var("HQL_BACKUP_KEEP_DAYS_LOCAL")
+        .unwrap_or_else(|_| "3".to_string())
+        .parse::<u32>()
+        .unwrap_or_else(|_| {
+            error!("Error parsing HQL_BACKUP_KEEP_DAYS_LOCAL to u32, using default of 3 days");
+            3
+        });
+    let ts_threshold = Utc::now()
+        .sub(chrono::Duration::days(keep_days as i64))
+        .timestamp();
+
+    let path = Path::new(&backup_path);
+    let mut dir_entries = tokio::fs::read_dir(path).await?;
+
+    while let Ok(Some(entry)) = dir_entries.next_entry().await {
+        if entry.metadata().await?.is_dir() {
+            continue;
+        }
+
+        let name = entry.file_name();
+        if let Some(s) = name.to_str() {
+            // format!("backup_node_{}_{}.sqlite", node_id, Utc::now().timestamp());
+            if !s.starts_with("backup_node_") && !s.ends_with(".sqlite") {
+                continue;
+            }
+
+            let stripped = s.strip_suffix(".sqlite").unwrap_or(s);
+            let (_, ts) = stripped.rsplit_once('_').unwrap_or_default();
+
+            match ts.parse::<i64>() {
+                Ok(ts) => {
+                    if ts > ts_min && ts < ts_threshold {
+                        debug!("Cleaning up backup {}", s);
+                        let p = format!("{}{}", backup_path, s);
+                        let _ = tokio::fs::remove_dir_all(p).await;
+                    }
+                }
+                Err(err) => {
+                    error!("Cannot parse ts from file {}: {}", s, err)
                 }
             }
         }
