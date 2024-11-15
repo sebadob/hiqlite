@@ -48,6 +48,11 @@ impl S3Config {
             let url = reqwest::Url::parse(&url).expect("Cannot parse HQL_S3_URL as URL");
             let bucket_name = env::var("HQL_S3_BUCKET").expect("HQL_S3_BUCKET not found");
             let region = Region(env::var("HQL_S3_REGION").expect("HQL_S3_REGION not found"));
+            let path_style = env::var("HQL_S3_PATH_STYLE")
+                .expect("HQL_S3_PATH_STYLE not found")
+                .parse::<bool>()
+                .expect("Cannot parse HQL_S3_PATH_STYLE as bool");
+
             let access_key_id = AccessKeyId(env::var("HQL_S3_KEY").expect("HQL_S3_KEY not found"));
             let access_key_secret =
                 AccessKeySecret(env::var("HQL_S3_SECRET").expect("HQL_S3_SECRET not found"));
@@ -55,8 +60,9 @@ impl S3Config {
                 access_key_id,
                 access_key_secret,
             };
+
             let options = Some(BucketOptions {
-                path_style: true,
+                path_style,
                 list_objects_v2: true,
             });
 

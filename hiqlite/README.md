@@ -408,6 +408,7 @@ data:
     HQL_S3_URL=https://s3.example.com
     HQL_S3_BUCKET=test
     HQL_S3_REGION=example
+    HQL_S3_PATH_STYLE=true
 
     HQL_INSECURE_COOKIE=true
 ```
