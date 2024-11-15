@@ -68,6 +68,10 @@ it is maybe in a physically separate network, or inside its own VPN, or you simp
 instance `kubectl` to your localhost when you want to access the dashboard. If I can find a workaround for the WASM
 issue, I will add `spow` again in the future for additional security.
 
+#### S3 Path Style
+
+You need to set `HQL_S3_PATH_STYLE` to either `true` or `false` now, while `true` was the default before.
+
 ### Bugfix
 
 The Backup creation routine has reset the "wrong" metadata after backup creation. This is not an issue during runtime
