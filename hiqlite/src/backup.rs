@@ -1,4 +1,5 @@
 use crate::app_state::AppState;
+use crate::helpers::fn_access;
 use crate::s3::S3Config;
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{
@@ -207,7 +208,7 @@ fn dt_from_backup_name(name: &str) -> Option<DateTime<Utc>> {
 /// This will only run if the current node ID is `1`.
 pub(crate) async fn restore_backup_start(node_config: &NodeConfig) -> Result<bool, Error> {
     if let Some(src) = BackupSource::from_env() {
-        info!("Found {:?}", src);
+        info!("Found backup restore request {:?}", src);
 
         if node_config.node_id == 1 {
             restore_backup(node_config, src).await?;
@@ -230,11 +231,6 @@ pub(crate) async fn restore_backup_start(node_config: &NodeConfig) -> Result<boo
 pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Result<(), Error> {
     info!("Starting database restore from backup {:?}", src);
 
-    match &src {
-        BackupSource::S3(_) => {}
-        BackupSource::File(_) => {}
-    }
-
     if let BackupSource::S3(_) = &src {
         if node_config.s3_config.is_none() {
             return Err(Error::S3(
@@ -252,6 +248,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     let path_logs = logs::logs_dir(&node_config.data_dir);
 
     fs::create_dir_all(&path_backups).await?;
+    fn_access(&path_backups, 0o700).await?;
 
     let (path_backup, remove_src) = match src {
         BackupSource::S3(s3_obj) => {
@@ -291,12 +288,15 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     let _ = fs::remove_dir_all(&path_logs).await;
 
     fs::create_dir_all(&path_db).await?;
+    fn_access(&path_db, 0o700).await?;
+
     let path_db_full = format!("{}/{}", path_db, node_config.filename_db);
     info!(
         "Given backup check ok - copying into its final place: {} -> {}",
         path_backup, path_db_full
     );
-    fs::copy(&path_backup, path_db_full).await?;
+    fs::copy(&path_backup, &path_db_full).await?;
+    fn_access(&path_db_full, 0o700).await?;
 
     if remove_src {
         info!("Cleaning up S3 backup from {}", path_backup);

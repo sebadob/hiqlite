@@ -1,3 +1,4 @@
+use crate::helpers::fn_access;
 use crate::server::args::{ArgsConfig, ArgsGenerate};
 use crate::server::password;
 use crate::{Error, NodeConfig};
@@ -25,6 +26,7 @@ pub fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
 pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
     let path = default_config_dir();
     fs::create_dir_all(&path).await?;
+    fn_access(&path, 0o600).await?;
 
     let path_file = default_config_file_path();
     if fs::File::open(&path_file).await.is_ok() {
@@ -44,12 +46,7 @@ pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
     fs::write(&path_file, default_config).await?;
     println!("New default config file created: {}", path_file);
 
-    #[cfg(target_family = "unix")]
-    {
-        use std::fs::Permissions;
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path_file, Permissions::from_mode(0o600)).await?;
-    }
+    fn_access(&path_file, 0o600).await?;
 
     Ok(())
 }

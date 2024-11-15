@@ -1,5 +1,5 @@
 use crate::Error;
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
+use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordVerifier, Version};
 use std::sync::LazyLock;
 use tokio::sync::RwLock;
 use tokio::task;
@@ -14,10 +14,18 @@ pub async fn verify_password(plain: String, hash: String) -> Result<(), Error> {
 
     task::spawn_blocking(move || {
         let parsed_hash = PasswordHash::new(&hash)?;
-        Argon2::default().verify_password(plain.as_bytes(), &parsed_hash)?;
+        build_hasher().verify_password(plain.as_bytes(), &parsed_hash)?;
         Ok::<(), Error>(())
     })
     .await??;
 
     Ok(())
+}
+
+pub fn build_hasher<'a>() -> Argon2<'a> {
+    Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(32_768, 2, 2, Some(32)).unwrap(),
+    )
 }

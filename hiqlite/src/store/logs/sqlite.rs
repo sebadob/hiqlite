@@ -97,6 +97,7 @@ impl LogStore {
     pub async fn new(data_dir: &str, filename_db: Option<&str>) -> Result<Self, Error> {
         let dir = format!("{}/logs", data_dir);
         fs::create_dir_all(&dir).await?;
+        fn_access(&dir, 0o600).await?;
         let db_path = filename_db.map(|name| format!("{}/{}", dir, name));
 
         let conn = connect_sqlite(db_path.as_deref(), false)?;

@@ -139,7 +139,7 @@ ENC_KEY_ACTIVE=bVCyTsGaggVy5yqQ
 
 # The password for the dashboard as b64 encoded Argon2ID hash
 # '123SuperMegaSafe' in this example
-HQL_PASSWORD_DASHBOARD=JGFyZ29uMmlkJHY9MTkkbT0xOTQ1Nix0PTIscD0xJGQ2RlJDYTBtaS9OUnkvL1RubmZNa0EkVzJMeTQrc1dxZ0FGd0RyQjBZKy9iWjBQUlZlOTdUMURwQkk5QUoxeW1wRQ==
+HQL_PASSWORD_DASHBOARD=JGFyZ29uMmlkJHY9MTkkbT0zMix0PTIscD0xJE9FbFZURnAwU0V0bFJ6ZFBlSEZDT0EkTklCN0txTy8vanB4WFE5bUdCaVM2SlhraEpwaWVYOFRUNW5qdG9wcXkzQQ==
 
 # Can be set to `true` during local dev and testing to issue
 # insecure cookies

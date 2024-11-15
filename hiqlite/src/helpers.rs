@@ -106,3 +106,16 @@ pub async fn change_membership(
         RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
     }
 }
+
+/// Restricts the access for the given path.
+#[cfg(feature = "sqlite")]
+#[inline]
+pub async fn fn_access(path: &str, mode: u32) -> Result<(), Error> {
+    #[cfg(target_family = "unix")]
+    {
+        use std::fs::Permissions;
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&path, Permissions::from_mode(mode)).await?;
+    }
+    Ok(())
+}
