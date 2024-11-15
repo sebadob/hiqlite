@@ -2,8 +2,9 @@ set shell := ["bash", "-uc"]
 
 export TAG := `cat Cargo.toml | grep '^version =' | cut -d " " -f3 | xargs`
 export MSRV := `cat hiqlite/Cargo.toml | grep '^rust-version =' | cut -d " " -f3 | xargs`
-export USER :=  `echo "$(id -u):$(id -g)"`
+export USER := `echo "$(id -u):$(id -g)"`
 
+[private]
 default:
     @just -l
 
@@ -29,8 +30,8 @@ create-root-ca:
 
     cp tls/ca/x509/intermediate/ca-chain.pem tls/ca-chain.pem
 
-
 # Create a new End Entity TLS certificate for development and testing
+
 # Intermediate CA DEV password: 123SuperMegaSafe
 create-end-entity-tls:
     # create the new certificate
@@ -50,12 +51,14 @@ create-end-entity-tls:
     cp tls/ca/x509/end_entity/$(cat tls/ca/x509/end_entity/serial)/cert-chain.pem tls/cert-chain.pem
     cp tls/ca/x509/end_entity/$(cat tls/ca/x509/end_entity/serial)/key.pem tls/key.pem
 
-
 # prints out the currently set version
 version:
     #!/usr/bin/env bash
     echo "v$TAG"
 
+# cleanup the data dir
+cleanup:
+    rm -rf data/*
 
 # clippy lint + check with minimal versions from nightly
 check:
@@ -68,7 +71,6 @@ check:
 
     # just update at the end again for following clippy and testing
     cargo update
-
 
 # checks all combinations of features with clippy
 clippy:
@@ -96,7 +98,6 @@ clippy:
     cargo clippy --no-default-features --features dashboard
     cargo clippy --no-default-features --features shutdown-handle
 
-
 clippy-examples:
     #!/usr/bin/env bash
     set -euxo pipefail
@@ -114,7 +115,6 @@ clippy-examples:
 docs:
     cargo +nightly doc --all-features --no-deps --open
 
-
 # runs the full set of tests
 test:
     #!/usr/bin/env bash
@@ -123,22 +123,20 @@ test:
     # we need to run the tests with nightly to not get an error for docs auto cfg
     cargo +nightly test --features cache,dlock,listen_notify
 
-
 # builds the code
 build ty="server":
     #!/usr/bin/env bash
     set -euxo pipefail
 
-    if [[ {{ty}} == "server" ]]; then
+    if [[ {{ ty }} == "server" ]]; then
           cargo build
-    elif [[ {{ty}} == "ui" ]]; then
+    elif [[ {{ ty }} == "ui" ]]; then
       rm -rf hiqlite/static
       cd dashboard
       rm -rf build
       npm run build
       git add ../hiqlite/static
     fi
-
 
 # builds a container image
 build-image name="ghcr.io/sebadob/hiqlite":
@@ -155,9 +153,8 @@ build-image name="ghcr.io/sebadob/hiqlite":
     #mkdir -p out
     #cp target/release/hiqlite out/
 
-    docker build -t {{name}}:{{TAG}} .
-    docker push {{name}}:{{TAG}}
-
+    docker build -t {{ name }}:{{ TAG }} .
+    docker push {{ name }}:{{ TAG }}
 
 # builds the code in --release mode
 build-release:
@@ -165,19 +162,17 @@ build-release:
     set -euxo pipefail
     cargo build --release
 
-
 run ty="server":
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
 
-    if [[ {{ty}} == "server" ]]; then
+    if [[ {{ ty }} == "server" ]]; then
       cargo run --features server -- serve
-    elif [[ {{ty}} == "ui" ]]; then
+    elif [[ {{ ty }} == "ui" ]]; then
       cd dashboard
       npm run dev -- --host=0.0.0.0
     fi
-
 
 # verifies the MSRV
 msrv-verify:
@@ -186,15 +181,12 @@ msrv-verify:
     cd hiqlite
     cargo msrv verify
 
-
 # find's the new MSRV, if it needs a bump
 msrv-find:
-    cargo msrv --min {{MSRV}}
-
+    cargo msrv --min {{ MSRV }}
 
 # verify thats everything is good
 verify: check clippy clippy-examples test msrv-verify
-
 
 # makes sure everything is fine
 verfiy-is-clean: verify
@@ -206,7 +198,6 @@ verfiy-is-clean: verify
 
     echo all good
 
-
 # sets a new git tag and pushes it
 release: verfiy-is-clean
     #!/usr/bin/env bash
@@ -217,7 +208,6 @@ release: verfiy-is-clean
 
     git tag "v$TAG"
     git push origin "v$TAG"
-
 
 # publishes the current lib version to cargo.io
 publish: verfiy-is-clean

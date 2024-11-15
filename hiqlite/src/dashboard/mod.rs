@@ -8,7 +8,7 @@ use tracing::warn;
 
 pub mod handlers;
 pub mod middleware;
-mod password;
+pub mod password;
 mod query;
 pub mod session;
 pub mod static_files;

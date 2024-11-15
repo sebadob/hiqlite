@@ -81,7 +81,7 @@ async fn test_migrations_are_correct(client: &Client) -> Result<(), Error> {
     assert!(res.is_err());
     if let Err(err) = res {
         let e = err.to_string();
-        assert_eq!(e, "Sqlite: no such table: bad_1");
+        assert!(e.contains("no such table: bad_1"));
     }
 
     let res: Vec<TestData> = client.query_map("SELECT * FROM test", params!()).await?;

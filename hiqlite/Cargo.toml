@@ -132,6 +132,7 @@ lz4-sys.workspace = true
 rust_decimal.workspace = true
 tower-layer.workspace = true
 tower-service.workspace = true
+log = "0.4.22"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

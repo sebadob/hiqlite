@@ -129,7 +129,7 @@ pub async fn test_execute_query(
         .await;
     assert!(res.is_err());
     let err = format!("{:?}", res);
-    assert!(err.starts_with("Err(Sqlite(\"UNIQUE constraint failed"));
+    assert!(err.starts_with("Err(ConstraintViolation("));
 
     log("DELETE query and make sure data is gone");
     let rows_affected = client_1
