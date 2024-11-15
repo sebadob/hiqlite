@@ -20,6 +20,7 @@ The `hiqlite::Client` now provides a few more helpful functions and features:
 - The new `query_as_optional()` and `query_map_optional()` return a `Result<Option<T>>` and don't error in case of
   no rows returned.
 - `execute_returning()`s return type has been changed to properly return a wrapping `Result<_>` like the others
+- `execute_returning_map_one()` and `execute_returning_one()` are available as well now to reduce boilerplate.
 - `batch()` will exit and error early, if the writer had issues with bad syntax. Because of the internal design
   of the `Batch` reader, it is impossible to recover from syntax errors. Therefore the whole batch will not be applied
   and the transaction will be rolled back in that case.
@@ -28,6 +29,44 @@ In addition, there is now:
 
 - `impl<T> From<&Option<T>> for Param`
 - `impl From<&String> for Param`
+- `impl TryFrom<ValueOwned> for Option<bool>`
+
+#### Error Handling
+
+`Error::ConstraintViolation` and `Error::QueryReturnedNoRows` have been added to be able to handle errors in downstream
+applications more granular.
+
+All query fn's from the client that end with `*_one` and should only return a single row have been changed slightly.
+Before, they would ignore any Rows after the first one, which can lead to very nasty bugs in production. They now only
+return an `Ok(_)` if exactly a single Row has been returned and will error otherwise.
+
+#### Access Rights Restrictions
+
+To prevent information leakage from a world readable database by default, all Hiqlite folders will be restricted with
+proper access rights after creation to make them only accessible by the user.
+
+#### Dynamically Available Dashboard
+
+If you have the `dashboard` feature enabled, you can choose to not provide a `HQL_PASSWORD_DASHBOARD` at startup.
+This value was mandatory before and is optional now.
+
+If not given, all routes for the dashboard will not exist. This makes it possible to compile with the `dashboard`
+feature set and decide at runtime, if you maybe only want to enable is when necessary.
+
+#### Dashboard Improvements
+
+The dashboard has received a few improvements like resizeable result table columns and a nicer look. It has also been
+upgraded to the latest Svelte 5 stable.
+
+A very simple rate-limiting has been added for the dashboard login. Only a single password hashing task can exist at a
+time, guarded by a `Mutex`. Concurrent logins will never be needed here and this is a good prevention against
+brute-force and DoS at the same time.
+
+I do have `spow` set up for the dashboard login, but it is not in use currently. The reason is that the WASM will not
+run in plain HTTP contexts, and it would therefore always require TLS. However, you may not wish to add TLS here because
+it is maybe in a physically separate network, or inside its own VPN, or you simply only do a port forward via for
+instance `kubectl` to your localhost when you want to access the dashboard. If I can find a workaround for the WASM
+issue, I will add `spow` again in the future for additional security.
 
 ### Bugfix
 
@@ -35,10 +74,6 @@ The Backup creation routine has reset the "wrong" metadata after backup creation
 usually, because it will get overwritten with the correct data again very soon, but could cause issues if the instance
 crashes before this can happen. Now, the internal metadata for the newly created backup will be reset correctly instead
 of the live database.
-
-#### Dashboard Improvements
-
-The dashboard has received a few improvements like resizeable result table columns and a nicer look.
 
 ## v0.2.1
 
