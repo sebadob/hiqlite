@@ -54,40 +54,42 @@
     <TableView view={ITableView.View} bind:viewSelected/>
 </div>
 
-<Resizable
-        resizeBottom
-        initialHeightPx={window ? window.innerHeight - 400 : 600}
-        minHeightPx={120}
->
-    {#each data as table (table.name)}
-        <div
-                role="button"
-                tabindex="0"
-                class={selectedTable?.name === table.name ? 'entry selected' : 'entry'}
-                onclick={() => select(table.name)}
-                onkeydown={() => select(table.name)}
-        >
-            <div>
-                {table.name}
-            </div>
-            {#if table.typ === 'table'}
-                <div
-                        role="button"
-                        tabindex="0"
-                        class="btn"
-                        onclick={() => addInfoQuery(table.name)}
-                        onkeydown={() => addInfoQuery(table.name)}
-                >
-                    <IconDocText/>
+<div class="tables">
+    <Resizable
+            resizeBottom
+            initialHeightPx={window ? window.innerHeight - 400 : 600}
+            minHeightPx={120}
+    >
+        {#each data as table (table.name)}
+            <div
+                    role="button"
+                    tabindex="0"
+                    class={selectedTable?.name === table.name ? 'entry selected' : 'entry'}
+                    onclick={() => select(table.name)}
+                    onkeydown={() => select(table.name)}
+            >
+                <div>
+                    {table.name}
                 </div>
-            {/if}
-        </div>
-    {/each}
-</Resizable>
+                {#if table.typ === 'table'}
+                    <div
+                            role="button"
+                            tabindex="0"
+                            class="btn"
+                            onclick={() => addInfoQuery(table.name)}
+                            onkeydown={() => addInfoQuery(table.name)}
+                    >
+                        <IconDocText/>
+                    </div>
+                {/if}
+            </div>
+        {/each}
+    </Resizable>
 
-{#if selectedTable}
-    <TableDetails table={selectedTable}/>
-{/if}
+    {#if selectedTable}
+        <TableDetails table={selectedTable}/>
+    {/if}
+</div>
 
 <style>
     .btn {
@@ -116,5 +118,11 @@
 
     .selector {
         display: flex;
+    }
+
+    .tables {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
     }
 </style>

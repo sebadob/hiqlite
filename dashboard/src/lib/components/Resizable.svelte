@@ -88,7 +88,11 @@
     }
 
     function onMoveBottom(ev: MouseEvent) {
-        let y = window.screenY + ev.y - (top || 0);
+        console.log(window.screenY, ev.y)
+        // console.log(ev.y, ev.layerY);
+
+        let y = window.screenY + ev.clientY - (top || 0);
+        // let y = (height || 0) + ev.layerY * ev.movementY;
         if (y < minHeightPx) {
             height = minHeightPx;
         } else {
