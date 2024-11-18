@@ -67,7 +67,7 @@
                 onclick={close}
                 onkeydown={close}
         >
-            <IconStop color="hsl(var(--error))"/>
+            <IconStop color="hsl(var(--error))" width="1.2rem"/>
         </div>
     </div>
 </div>
