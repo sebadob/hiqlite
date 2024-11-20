@@ -210,7 +210,7 @@ impl Client {
         // This also helps to make re-joins after a restart smoother.
         // TODO for some very weird reason, the process sometimes gets stuck during
         // this sleep await when testing
-        time::sleep(Duration::from_secs(5)).await;
+        time::sleep(Duration::from_secs(10)).await;
 
         info!("Shutdown complete");
         Ok(())
