@@ -101,7 +101,7 @@ struct LogStoreWriter {
 }
 
 impl LogStoreWriter {
-    fn spawn(db: Arc<DB>) -> flume::Sender<ActionWrite> {
+    fn spawn(db: Arc<DB>, sync_immediate: bool) -> flume::Sender<ActionWrite> {
         let (tx, rx) = flume::bounded::<ActionWrite>(2);
 
         task::spawn_blocking(move || {
@@ -140,7 +140,9 @@ impl LogStoreWriter {
                             // });
                             // callbacks.push(callback);
 
-                            // db.flush_wal(true);
+                            if sync_immediate {
+                                db.flush_wal(true);
+                            }
                             callback.log_io_completed(Ok(()));
                         }
                     }
@@ -205,7 +207,7 @@ impl LogStoreWriter {
                     }
 
                     ActionWrite::Sync => {
-                        // panic!("async append callbacks are only available for openraft 0.10+");
+                        // async append callbacks are only available for openraft 0.10+
                         if is_dirty {
                             db.flush_wal(true);
                             is_dirty = false;
@@ -407,7 +409,7 @@ pub struct LogStoreRocksdb {
 }
 
 impl LogStoreRocksdb {
-    pub async fn new(data_dir: &str) -> Self {
+    pub async fn new(data_dir: &str, sync_immediate: bool) -> Self {
         let dir = logs::logs_dir(data_dir);
         fs::create_dir_all(&dir)
             .await
@@ -457,11 +459,13 @@ impl LogStoreRocksdb {
         let db = DB::open_cf_descriptors(&opts, dir, vec![meta, logs]).unwrap();
         let db = Arc::new(db);
 
-        let tx_writer = LogStoreWriter::spawn(db.clone());
+        let tx_writer = LogStoreWriter::spawn(db.clone(), sync_immediate);
         let tx_reader = LogStoreReader::spawn(db.clone());
 
-        let sync_interval = time::interval(Duration::from_millis(200));
-        LogsSyncer::spawn(tx_writer.clone(), sync_interval);
+        if !sync_immediate {
+            let sync_interval = time::interval(Duration::from_millis(200));
+            LogsSyncer::spawn(tx_writer.clone(), sync_interval);
+        }
 
         LogStoreRocksdb {
             db,
