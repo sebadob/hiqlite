@@ -39,7 +39,9 @@ pub(crate) async fn start_raft_db(
     node_config: NodeConfig,
     raft_config: Arc<RaftConfig>,
 ) -> Result<StateRaftDB, Error> {
-    let log_store = logs::rocksdb::LogStoreRocksdb::new(&node_config.data_dir).await;
+    let log_store =
+        logs::rocksdb::LogStoreRocksdb::new(&node_config.data_dir, node_config.sync_immediate)
+            .await;
     let state_machine_store = StateMachineSqlite::new(
         &node_config.data_dir,
         &node_config.filename_db,
