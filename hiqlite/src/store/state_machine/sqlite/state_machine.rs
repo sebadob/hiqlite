@@ -189,55 +189,6 @@ impl StateMachineSqlite {
                 source: StorageIOError::read(&err),
             })?;
 
-        // // we always want to have at least the default StateMachineData inside the DB to avoid
-        // // wrapping it in Option<_> all the time
-        // if !db_exists {
-        //     let (ack, rx) = flume::unbounded();
-        //     write_tx
-        //         .send_async(WriterRequest::MetadataPersist(MetaPersistRequest {
-        //             data: StateMachineData::default(),
-        //             ack,
-        //         }))
-        //         .await
-        //         .map_err(|err| StorageError::IO {
-        //             source: StorageIOError::write(&err),
-        //         })?;
-        //     rx.recv_async().await.map_err(|err| StorageError::IO {
-        //         source: StorageIOError::write(&err),
-        //     })?;
-        // }
-
-        // let state_machine_data: StateMachineData = if db_exists {
-        //     let (ack, rx) = oneshot::channel();
-        //     write_tx
-        //         .send_async(WriterRequest::MetadataRead(ack))
-        //         .await
-        //         .map_err(|err| StorageError::IO {
-        //             source: StorageIOError::read(&err),
-        //         })?;
-        //     rx.await.expect("To always get Metadata from DB")
-        // } else {
-        //     let data = StateMachineData::default();
-        //     // let data = bincode::serialize(&metadata).unwrap();
-        //
-        //     let (ack, rx) = flume::unbounded();
-        //     write_tx
-        //         .send_async(WriterRequest::MetadataPersist(MetaPersistRequest {
-        //             data: data.clone(),
-        //             ack,
-        //         }))
-        //         .await
-        //         .map_err(|err| StorageError::IO {
-        //             source: StorageIOError::write(&err),
-        //         })?;
-        //     rx.recv_async().await.map_err(|err| StorageError::IO {
-        //         source: StorageIOError::write(&err),
-        //     })?;
-        //
-        //     data
-        // };
-        // info!("Initial StateMachineData: {:?}", state_machine_data);
-
         let mut slf = Self {
             // data: state_machine_data,
             this_node,
@@ -288,6 +239,9 @@ impl StateMachineSqlite {
         if create {
             // this may error if we did already re-create it in a lock file recovery before
             let _ = fs::create_dir_all(&path_db).await;
+            fn_access(&path_base, 0o700)
+                .await
+                .expect("Cannot set access rights for path_base");
             fn_access(&path_db, 0o700)
                 .await
                 .expect("Cannot set access rights for path_db");
@@ -429,7 +383,7 @@ impl StateMachineSqlite {
         // not having any disadvantage with the Raft setup.
         conn.pragma_update(None, "synchronous", "OFF")?;
 
-        conn.pragma_update(None, "page_size", 4096).unwrap();
+        conn.pragma_update(None, "page_size", 4096)?;
         conn.pragma_update(None, "journal_size_limit", 16384)?;
         conn.pragma_update(None, "wal_autocheckpoint", 4_000)?;
 
