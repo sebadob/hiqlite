@@ -122,6 +122,7 @@ impl StateMachineSqlite {
         this_node: NodeId,
         log_statements: bool,
         prepared_statement_cache_capacity: usize,
+        read_pool_size: usize,
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::s3::S3Config>>,
     ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
         // IMPORTANT: Do NOT change the order of the db exists check!
@@ -156,6 +157,7 @@ impl StateMachineSqlite {
             path_db.as_ref(),
             filename_db,
             prepared_statement_cache_capacity,
+            read_pool_size,
         )
         .await
         .map_err(|err| StorageError::IO {
@@ -302,13 +304,12 @@ impl StateMachineSqlite {
         path: &str,
         filename_db: &str,
         prepared_statement_cache_capacity: usize,
+        pool_size: usize,
     ) -> Result<SqlitePool, Error> {
         let path_full = format!("{}/{}", path, filename_db);
 
-        // TODO configurable read pool size
-        let amount = 4;
-        let mut conns = Vec::with_capacity(amount);
-        for _ in 0..amount {
+        let mut conns = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
             let mut conn = Self::connect(
                 path.to_string(),
                 filename_db.to_string(),
