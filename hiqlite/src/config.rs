@@ -44,6 +44,19 @@ pub struct NodeConfig {
     /// The internal cache size for prepared statements. The default is `1024` which could be
     /// reduced in very heavily memory-constrained environments.
     pub prepared_statement_cache_capacity: usize,
+    /// The size of the pooled connections for local database reads.
+    ///
+    /// Do not confuse this with a pool size for network databases, as it is much more efficient.
+    /// You cant' really translate between them, because it depends on many factors, but if you
+    /// assume a factor of 10 is a good start. This means, if you needed a (read) pool size of 40
+    /// connections for something like a postgres before, you should start at a `read_pool_size` of
+    /// 4.
+    ///
+    /// Keep in mind that this pool is only used for reads and writes will travel through the Raft
+    /// and have their own dedicated connection.
+    ///
+    /// default: 4
+    pub read_pool_size: usize,
     /// Enables immediate flush + sync to disk after each Log Store Batch.
     /// The situations where you would need this are very rare, and you should use it with care.
     ///
@@ -92,6 +105,7 @@ impl Default for NodeConfig {
             filename_db: "hiqlite.db".into(),
             log_statements: false,
             prepared_statement_cache_capacity: 1024,
+            read_pool_size: 4,
             sync_immediate: false,
             raft_config: Self::default_raft_config(10_000),
             tls_raft: None,
@@ -193,6 +207,10 @@ impl NodeConfig {
                 .parse()
                 .expect("Cannot parse HQL_LOG_STATEMENTS to u64"),
             prepared_statement_cache_capacity: 1024,
+            read_pool_size: env::var("HQL_READ_POOL_SIZE")
+                .unwrap_or_else(|_| "4".to_string())
+                .parse()
+                .expect("Cannot parse HQL_READ_POOL_SIZE to usize"),
             sync_immediate: env::var("HQL_SYNC_IMMEDIATE")
                 .unwrap_or_else(|_| "false".to_string())
                 .parse()
