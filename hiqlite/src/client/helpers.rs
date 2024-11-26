@@ -35,7 +35,9 @@ impl Client {
             // we never need to do any remote lookups for metrics -> get can never fail
             #[cfg(feature = "sqlite")]
             {
-                let mut find_leader = Err(Error::Error("".into()));
+                let metrics = state.raft_db.raft.metrics().borrow().clone();
+                let mut find_leader = Self::find_set_leader(metrics, &self.inner.leader_db).await;
+
                 while let Err(err) = find_leader {
                     error!("Find DB leader error: {}", err);
                     time::sleep(Duration::from_millis(250)).await;
@@ -46,10 +48,13 @@ impl Client {
 
             #[cfg(feature = "cache")]
             {
-                let mut find_leader = Err(Error::Error("".into()));
+                let metrics = state.raft_cache.raft.metrics().borrow().clone();
+                let mut find_leader =
+                    Self::find_set_leader(metrics, &self.inner.leader_cache).await;
+
                 while let Err(err) = find_leader {
                     error!("Find cache leader error: {}", err);
-                    time::sleep(Duration::from_millis(100)).await;
+                    time::sleep(Duration::from_millis(250)).await;
                     let metrics = state.raft_cache.raft.metrics().borrow().clone();
                     find_leader = Self::find_set_leader(metrics, &self.inner.leader_cache).await;
                 }
