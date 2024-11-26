@@ -25,7 +25,7 @@ pub enum EncKeysFrom {
 /// Most default values are good for internal, fast networks. If you have a slow or unstable
 /// network, you might want to tune the `RaftConfig`. However, you should never adjust the
 /// `max_in_snapshot_log_to_keep`, because this will play a crucial role if you need to restore
-/// from a backup in case of desaster recovery.
+/// from a backup in case of disaster recovery.
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     /// The `node_id` defines which entry from the `nodes` is "this node"
@@ -46,14 +46,15 @@ pub struct NodeConfig {
     pub prepared_statement_cache_capacity: usize,
     /// The size of the pooled connections for local database reads.
     ///
-    /// Do not confuse this with a pool size for network databases, as it is much more efficient.
-    /// You cant' really translate between them, because it depends on many factors, but if you
-    /// assume a factor of 10 is a good start. This means, if you needed a (read) pool size of 40
-    /// connections for something like a postgres before, you should start at a `read_pool_size` of
-    /// 4.
+    /// Do not confuse this with a pool size for network databases, as it
+    /// is much more efficient. You can't really translate between them,
+    /// because it depends on many things, but assuming a factor of 10 is
+    /// a good start. This means, if you needed a (read) pool size of 40
+    /// connections for something like a postgres before, you should start
+    /// at a `read_pool_size` of 4.
     ///
-    /// Keep in mind that this pool is only used for reads and writes will travel through the Raft
-    /// and have their own dedicated connection.
+    /// Keep in mind that this pool is only used for reads and writes will
+    /// travel through the Raft and have their own dedicated connection.
     ///
     /// default: 4
     pub read_pool_size: usize,
