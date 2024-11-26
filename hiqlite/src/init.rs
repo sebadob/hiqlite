@@ -194,7 +194,7 @@ pub async fn become_cluster_member(
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
-    if is_initialized_timeout(&state, raft_type).await? {
+    if raft_type == &RaftType::Sqlite && is_initialized_timeout(&state, raft_type).await? {
         info!(
             "{} raft is already initialized - skipping become_cluster_member()",
             raft_type.as_str()
