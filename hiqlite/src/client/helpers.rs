@@ -36,8 +36,9 @@ impl Client {
             #[cfg(feature = "sqlite")]
             {
                 let mut find_leader = Err(Error::Error("".into()));
-                while find_leader.is_err() {
-                    time::sleep(Duration::from_millis(100)).await;
+                while let Err(err) = find_leader {
+                    error!("Find DB leader error: {}", err);
+                    time::sleep(Duration::from_millis(250)).await;
                     let metrics = state.raft_db.raft.metrics().borrow().clone();
                     find_leader = Self::find_set_leader(metrics, &self.inner.leader_db).await;
                 }
@@ -46,7 +47,8 @@ impl Client {
             #[cfg(feature = "cache")]
             {
                 let mut find_leader = Err(Error::Error("".into()));
-                while find_leader.is_err() {
+                while let Err(err) = find_leader {
+                    error!("Find cache leader error: {}", err);
                     time::sleep(Duration::from_millis(100)).await;
                     let metrics = state.raft_cache.raft.metrics().borrow().clone();
                     find_leader = Self::find_set_leader(metrics, &self.inner.leader_cache).await;
