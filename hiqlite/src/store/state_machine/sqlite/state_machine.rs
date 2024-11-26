@@ -97,7 +97,6 @@ pub struct StateMachineData {
     pub last_applied_log_id: Option<LogId<NodeId>>,
     pub last_membership: StoredMembership<NodeId, Node>,
     pub last_snapshot_id: Option<String>,
-    // pub last_snapshot_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,48 +115,13 @@ pub struct StateMachineSqlite {
     pub(crate) write_tx: flume::Sender<WriterRequest>,
 }
 
-// impl Drop for StateMachineSqlite {
-//     fn drop(&mut self) {
-//         info!("StateMachineSqlite is being dropped");
-//
-//         // let (ack, rx) = flume::unbounded();
-//         // if let Err(err) = self
-//         //     .write_tx
-//         //     .send(WriterRequest::MetadataPersist(MetaPersistRequest {
-//         //         // data: bincode::serialize(&self.data).unwrap(),
-//         //         data: self.data.clone(),
-//         //         ack,
-//         //     }))
-//         // {
-//         //     error!(
-//         //         "Error sending metadata persist request to SQL writer: {}",
-//         //         err
-//         //     );
-//         // } else {
-//         //     rx.recv().unwrap();
-//         // }
-//         //
-//         // Self::remove_lock_file(&self.path_lock_file);
-//
-//         let (ack, _rx) = oneshot::channel();
-//         if let Err(err) = self.write_tx.send(WriterRequest::Shutdown(ack)) {
-//             error!(
-//                 "Error sending metadata persist request to SQL writer: {}",
-//                 err
-//             );
-//         }
-//
-//         info!("StateMachineSqlite has been dropped");
-//         // self.handle.abort();
-//     }
-// }
-
 impl StateMachineSqlite {
     pub(crate) async fn new(
         data_dir: &str,
         filename_db: &str,
         this_node: NodeId,
         log_statements: bool,
+        prepared_statement_cache_capacity: usize,
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::s3::S3Config>>,
     ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
         // IMPORTANT: Do NOT change the order of the db exists check!
@@ -175,19 +139,28 @@ impl StateMachineSqlite {
         Self::check_set_lock_file(&path_lock_file, &path_db, &mut db_exists).await;
 
         // Always start the writer first! -> creates mandatory tables
-        let conn = Self::connect(path_db.to_string(), filename_db.to_string(), false)
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::write(&err),
-            })?;
+        let conn = Self::connect(
+            path_db.to_string(),
+            filename_db.to_string(),
+            false,
+            prepared_statement_cache_capacity,
+        )
+        .await
+        .map_err(|err| StorageError::IO {
+            source: StorageIOError::write(&err),
+        })?;
         let write_tx =
             writer::spawn_writer(conn, this_node, path_lock_file.clone(), log_statements);
 
-        let read_pool = Self::connect_read_pool(path_db.as_ref(), filename_db)
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::read(&err),
-            })?;
+        let read_pool = Self::connect_read_pool(
+            path_db.as_ref(),
+            filename_db,
+            prepared_statement_cache_capacity,
+        )
+        .await
+        .map_err(|err| StorageError::IO {
+            source: StorageIOError::read(&err),
+        })?;
 
         let mut slf = Self {
             // data: state_machine_data,
@@ -313,30 +286,47 @@ impl StateMachineSqlite {
         path: String,
         filename_db: String,
         read_only: bool,
+        prepared_statement_cache_capacity: usize,
     ) -> Result<rusqlite::Connection, Error> {
         task::spawn_blocking(move || {
             let path_full = format!("{}/{}", path, filename_db);
             let conn = rusqlite::Connection::open(path_full)?;
-            Self::apply_pragmas(&conn, read_only)?;
+            Self::apply_pragmas(&conn, read_only, prepared_statement_cache_capacity)?;
             Ok(conn)
         })
         .await?
     }
 
     /// TODO provide a way to pass in conn pool size
-    async fn connect_read_pool(path: &str, filename_db: &str) -> Result<SqlitePool, Error> {
+    async fn connect_read_pool(
+        path: &str,
+        filename_db: &str,
+        prepared_statement_cache_capacity: usize,
+    ) -> Result<SqlitePool, Error> {
         let path_full = format!("{}/{}", path, filename_db);
 
         // TODO configurable read pool size
         let amount = 4;
         let mut conns = Vec::with_capacity(amount);
         for _ in 0..amount {
-            let mut conn = Self::connect(path.to_string(), filename_db.to_string(), true).await;
+            let mut conn = Self::connect(
+                path.to_string(),
+                filename_db.to_string(),
+                true,
+                prepared_statement_cache_capacity,
+            )
+            .await;
             while conn.is_err() {
                 time::sleep(Duration::from_millis(10)).await;
-                conn = Self::connect(path.to_string(), filename_db.to_string(), true).await;
+                conn = Self::connect(
+                    path.to_string(),
+                    filename_db.to_string(),
+                    true,
+                    prepared_statement_cache_capacity,
+                )
+                .await;
             }
-            conns.push(conn.unwrap());
+            conns.push(conn?);
         }
 
         let pool = deadpool::unmanaged::Pool::from(conns);
@@ -374,7 +364,11 @@ impl StateMachineSqlite {
         Ok(pool)
     }
 
-    fn apply_pragmas(conn: &rusqlite::Connection, read_only: bool) -> Result<(), rusqlite::Error> {
+    fn apply_pragmas(
+        conn: &rusqlite::Connection,
+        read_only: bool,
+        prepared_statement_cache_capacity: usize,
+    ) -> Result<(), rusqlite::Error> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         // synchronous set to OFF is not an issue in our case.
         // If the OS crashes before it could flush any buffers to disk, we will rebuild the DB
@@ -394,6 +388,9 @@ impl StateMachineSqlite {
         conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
         conn.pragma_update(None, "optimize", "0x10002")?;
 
+        // note:
+        // in tests, `mmap_size` did not show any performance benefit with the settings above
+
         // only allow select statements
         if read_only {
             conn.pragma_update(None, "query_only", true)?;
@@ -402,7 +399,7 @@ impl StateMachineSqlite {
         }
 
         // TODO make configurable
-        conn.set_prepared_statement_cache_capacity(1024);
+        conn.set_prepared_statement_cache_capacity(prepared_statement_cache_capacity);
 
         Ok(())
     }
@@ -470,7 +467,7 @@ impl StateMachineSqlite {
         let filename_db = id.to_string();
 
         // open a DB connection to read out the metadata
-        let conn = Self::connect(db_path, filename_db, false)
+        let conn = Self::connect(db_path, filename_db, false, 2)
             .await
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write(&err),

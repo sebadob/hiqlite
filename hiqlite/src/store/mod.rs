@@ -47,6 +47,7 @@ pub(crate) async fn start_raft_db(
         &node_config.filename_db,
         node_config.node_id,
         node_config.log_statements,
+        node_config.prepared_statement_cache_capacity,
         #[cfg(feature = "s3")]
         node_config.s3_config,
     )

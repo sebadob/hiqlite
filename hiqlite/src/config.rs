@@ -41,6 +41,9 @@ pub struct NodeConfig {
     pub filename_db: Cow<'static, str>,
     /// Enables statement logging or the SQL writer
     pub log_statements: bool,
+    /// The internal cache size for prepared statements. The default is `1024` which could be
+    /// reduced in very heavily memory-constrained environments.
+    pub prepared_statement_cache_capacity: usize,
     /// Enables immediate flush + sync to disk after each Log Store Batch.
     /// The situations where you would need this are very rare, and you should use it with care.
     ///
@@ -88,6 +91,7 @@ impl Default for NodeConfig {
             data_dir: "hiqlite".into(),
             filename_db: "hiqlite.db".into(),
             log_statements: false,
+            prepared_statement_cache_capacity: 1024,
             sync_immediate: false,
             raft_config: Self::default_raft_config(10_000),
             tls_raft: None,
@@ -188,6 +192,7 @@ impl NodeConfig {
                 .unwrap_or_else(|_| "false".to_string())
                 .parse()
                 .expect("Cannot parse HQL_LOG_STATEMENTS to u64"),
+            prepared_statement_cache_capacity: 1024,
             sync_immediate: env::var("HQL_SYNC_IMMEDIATE")
                 .unwrap_or_else(|_| "false".to_string())
                 .parse()
