@@ -207,7 +207,10 @@ impl NodeConfig {
                 .parse()
                 .expect("Cannot parse HQL_LOG_STATEMENTS to u64"),
             prepared_statement_cache_capacity: 1024,
-            read_pool_size: 4,
+            read_pool_size: env::var("HQL_READ_POOL_SIZE")
+                .unwrap_or_else(|_| "4".to_string())
+                .parse()
+                .expect("Cannot parse HQL_READ_POOL_SIZE to usize"),
             sync_immediate: env::var("HQL_SYNC_IMMEDIATE")
                 .unwrap_or_else(|_| "false".to_string())
                 .parse()
