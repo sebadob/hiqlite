@@ -194,6 +194,8 @@ pub async fn become_cluster_member(
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
+    // TODO can this cluster member check be improved and be made more robust?
+    #[cfg(feature = "sqlite")]
     if raft_type == &RaftType::Sqlite && is_initialized_timeout(&state, raft_type).await? {
         info!(
             "{} raft is already initialized - skipping become_cluster_member()",
@@ -358,6 +360,7 @@ async fn try_become(
     }
 }
 
+#[cfg(feature = "sqlite")]
 async fn is_initialized_timeout(
     state: &Arc<AppState>,
     raft_type: &RaftType,
