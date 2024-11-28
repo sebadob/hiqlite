@@ -7,31 +7,31 @@ Hiqlite is an embeddable SQLite database that can form a Raft cluster to provide
 
 Why another SQLite replication solution? Other projects exist already that can do this. The problem is that none of
 them checks all boxes. They either require an additional independent process running on the side which can do async
-replication, need a special file system, or are running as a server.
+replication, need a special file system, have bad throughput / latency, or are running as a server.
 
 I don't think that running SQLite as a server is a good solution. Yes, it is very resource friendly, and it may be a
-good solution when you are heavily resource constrained, but you lose its biggest strength when doing this: having
+good choice when you are heavily resource constrained, but you lose its biggest strength when doing this: having
 all your data local, which makes reads superfast without network latency.
 
-Hiqlite builds on top of `rusqlite` and provides an async wrapper around it to make it easy usable with `tokio`. For the
-Raft logic, it builds on top of`openraft` while providing its own storage and network implementations.
+Hiqlite builds on top of `rusqlite` and provides an async wrapper around it. For the Raft logic, it builds on top of
+`openraft` while providing its own storage and network implementations.
 
 ## Goal
 
-Rust is such an efficient language that you usually only need one process to achieve whatever you need, for most
-applications at least. An embedded SQLite makes the whole process very convenient. You get very fast local reads and at
-the same time, it comes with the benefit that you don't have to manage an additional database, which you need to set up,
+Rust is such an efficient language that you most often only need a single process to achieve whatever you need, for most
+applications at least. An embedded SQLite makes everything very convenient. You get very fast local reads and at the
+same time, it comes with the benefit that you don't have to manage an additional database, which you need to set up,
 configure and more importantly maintain. And embedded SQLite will bring database updates basically for free when you
-build a new version.
+build a new application version.
 
 When configured correctly, SQLite offers very good performance and can handle most workloads these days. In very
-first benchmarks that I did to find out if the project makes sense in the first place, I got up to 24.5k single
-inserts / s on a cheap consumer grade M2 SSD. These tests were done on localhost with 3 different processes, but still
-with real networking in between them. On another machine with older SATA SSDs it reached up to 16.5k inserts / s.
+first benchmarks that I did to find out if the project makes sense at all, I got up to 24.5k single inserts / s on a
+cheap consumer grade M2 SSD. These tests were done on localhost with 3 different processes, but still with real
+networking in between them. On another machine with older SATA SSDs it reached up to 16.5k inserts / s.
 
 At the end, the goal is that you can have the simplicity and all the advantages of an embedded SQLite while still being
 able to run your application highly available (which is almost always mandatory for me) and having automatic fail-over
-in case of any errors or problems.
+and self-healing capabilities in case of any errors or problems.
 
 ## Currently implemented and working features
 
@@ -40,10 +40,7 @@ in case of any errors or problems.
 - persistent storage for Raft logs (with [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb)) and SQLite state
   machine
 - "magic" auto setup, no need to do any manual init or management for the Raft
-- self-healing - each node can automatically recover from:
-    - lost cached WAL buffer for the state machine
-    - complete loss of the state machine DB (SQLite)
-    - complete loss of the whole volume itself
+- self-healing - each node can automatically recover from un-graceful shutdowns and even full data volume loss
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
@@ -73,8 +70,8 @@ in case of any errors or problems.
 ## Performance
 
 I added a [bench example](https://github.com/sebadob/hiqlite/tree/main/examples/bench) for easy testing on different
-hardware and setups. This example is very simple and it mostly cares about `INSERT` performance, since this is usually
-the bottleneck with Raft, because of 2 RTTs for each write by design.
+hardware and setups. This example is very simple and it mostly cares about `INSERT` performance, which is usually the
+bottleneck when using Raft, because of 2 network round-trips for each write by design.
 
 The performance can vary quite a bit, depending on your setup and hardware, of course. Even though the project is in an
 early state, I already put quite a bit of work in optimizing latency and throughput and I would say, it will be able
@@ -84,17 +81,17 @@ SSDs and fast memory make quite a big difference of course. Regarding the CPU, t
 more from fewer cores with higher single core speed like Workstation CPU's or AMD Epyc 4004 series. The reason is the
 single writer at a time limitation from SQLite.
 
-Just to give you some raw numbers so you can get an idea how fast it currently is, some numbers below.  
-These values were taken using the [bench example](https://github.com/sebadob/hiqlite/tree/main/examples/bench).
+Just to give you some raw numbers so you can get an idea how fast it currently is, some numbers below. These values were
+taken using the [bench example](https://github.com/sebadob/hiqlite/tree/main/examples/bench).
 
-Hiqlite can run as a single instance as well, which will have lower latency and higher throughput of course, but I did
-not include this in the tests, because you usually want a HA Raft cluster of course. With higher concurrency (`-c`),
-only write / second will change, reads will always be local anyway.
+Hiqlite can run as a single instance as well, which will have even lower latency and higher throughput of course, but I
+did not include this in the tests, because you usually want a HA Raft cluster. With higher concurrency (`-c`), only
+write / second will change, reads will always be local anyway.
 
 Test command (`-c` adjusted each time for different concurrency):
 
 ```
-cargo run --release -- cluster -c 4 -r 100000
+cargo run --release -- cluster -c 4 -r 10000
 ```
 
 ### Beefy Workstation
@@ -507,7 +504,7 @@ spec:
     spec:
       containers:
         - name: hiqlite
-          image: ghcr.io/sebadob/hiqlite:0.2.1
+          image: ghcr.io/sebadob/hiqlite:0.3.0
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
@@ -642,7 +639,7 @@ spec:
     spec:
       containers:
         - name: hiqlite-proxy
-          image: ghcr.io/sebadob/hiqlite:0.2.1
+          image: ghcr.io/sebadob/hiqlite:0.3.0
           command: [ "/app/hiqlite", "proxy" ]
           imagePullPolicy: Always
           securityContext:
@@ -708,16 +705,12 @@ like shown in the
 
 There are currently some known issues:
 
-1. Sometimes a node can hang on shutdown. In this case it needs to be killed manually. As mentioned already, I was not
-   able to reproduce this consistently so far. This could be solved by simply adding a timeout to the shutdown handler,
-   but I did not do that on purpose at the current stage. I would rather find the issue and fix it, even if it takes
-   time because of not being easily reproducible than ignoring the issue with a timeout.
-2. When creating synthetic benchmarks for testing write throughput at the absolute max, you will see error logs because
+1. When creating synthetic benchmarks for testing write throughput at the absolute max, you will see error logs because
    of missed Raft heartbeats and leader switches, even though the network and everything else is fine. The reason is
-   simply that the Raft heartbeats in the current implementation come in-order with the Raft data replication. So, if
-   you generate an insane amount of Raft data which takes time to replicate, because you end up being effectively I/O
-   bound by your physical disk, these heartbeats can get lost, because they won't happen in-time.
-   This issue will be resolved with the next major release of `openraft`, where heartbeats will be sent separately from
-   the main data replication.
-3. In the current version, the logging output is very verbose on the `info` level. This is on purpose until everything
+   that the Raft heartbeats in the current implementation come in-order with the Raft data replication. So, if you
+   generate an insane amount of Raft data which takes time to replicate, because you end up being effectively I/O
+   bound by your physical disk, these heartbeats can get lost, because they won't happen in-time. This issue will be
+   resolved with the next major release of `openraft`, where heartbeats will be sent separately from the main data
+   replication.
+2. In the current version, the logging output is very verbose on the `info` level. This is on purpose until everything
    has been stabilized. In future versions, this will be reduced quite a bit.

@@ -1,9 +1,9 @@
-use crate::helpers::fn_access;
+use crate::helpers::{fn_access, read_line_stdin};
 use crate::server::args::{ArgsConfig, ArgsGenerate};
 use crate::server::password;
 use crate::{Error, NodeConfig};
 use cryptr::{utils, EncKeys};
-use tokio::fs;
+use tokio::{fs, task};
 
 pub fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
     let config_path = if args.config_file == "$HOME/.hiqlite/config" {
@@ -26,22 +26,37 @@ pub fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
 pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
     let path = default_config_dir();
     fs::create_dir_all(&path).await?;
-    fn_access(&path, 0o600).await?;
+    fn_access(&path, 0o700).await?;
 
     let path_file = default_config_file_path();
     if fs::File::open(&path_file).await.is_ok() {
-        return Err(Error::Error(
-            format!("Config file {} exists already", path_file).into(),
-        ));
+        eprint!(
+            "Config file {} exists already. Overwrite? (yes): ",
+            path_file
+        );
+        let line = read_line_stdin().await?;
+        if line != "yes" {
+            return Ok(());
+        }
     }
 
-    let password_dashboard = if let Some(password) = args.password {
-        password::hash_password_b64(password).await?
+    let pwd_plain = if args.password {
+        let plain;
+        loop {
+            println!("Provide a password with at least 16 characters: ");
+            let line = read_line_stdin().await?;
+            if line.len() > 16 {
+                plain = line;
+                break;
+            }
+        }
+        plain
     } else {
-        let plain = utils::secure_random_alnum(16);
-        println!("New password for the dashboard: {}", plain);
-        password::hash_password_b64(plain).await?
+        utils::secure_random_alnum(24)
     };
+    println!("New password for the dashboard: {}", pwd_plain);
+    let password_dashboard = password::hash_password_b64(pwd_plain).await?;
+
     let default_config = default_config(&password_dashboard, args.insecure_cookie)?;
     fs::write(&path_file, default_config).await?;
     println!("New default config file created: {}", path_file);
@@ -75,6 +90,7 @@ fn default_config(password_dashboard_b64: &str, insecure_cookie: bool) -> Result
     let secret_api = utils::secure_random_alnum(32);
     let enc_keys = EncKeys::generate()?;
     let enc_keys_b64 = enc_keys.keys_as_b64()?;
+    let enc_keys_trimmed = enc_keys_b64.trim();
     let enc_key_active = enc_keys.enc_key_active;
 
     Ok(format!(
@@ -107,7 +123,7 @@ HQL_NODES="
 
 # The data dir hiqlite will store raft logs and state machine data in.
 # default: hiqlite_data
-HQL_DATA_DIR={}
+HQL_DATA_DIR={data_dir}
 
 # The file name of the SQLite database in the state machine folder.
 # default: hiqlite.db
@@ -117,6 +133,42 @@ HQL_DATA_DIR={}
 # purposes.
 # default: false
 #HQL_LOG_STATEMENTS=false
+
+# The size of the pooled connections for local database reads.
+#
+# Do not confuse this with a pool size for network databases, as it
+# is much more efficient. You can't really translate between them,
+# because it depends on many things, but assuming a factor of 10 is
+# a good start. This means, if you needed a (read) pool size of 40
+# connections for something like a postgres before, you should start
+# at a `read_pool_size` of 4.
+#
+# Keep in mind that this pool is only used for reads and writes will
+# travel through the Raft and have their own dedicated connection.
+#
+# default: 4
+#HQL_READ_POOL_SIZE=4
+
+# Enables immediate flush + sync to disk after each Log Store Batch.
+# The situations where you would need this are very rare, and you
+# should use it with care.
+#
+# The default is `false`, and a flush + sync will be done in 200ms
+# intervals. Even if the application should crash, the OS will take
+# care of flushing left-over buffers to disk and no data will get
+# lost. If something worse happens, you might lose the last 200ms
+# of commits (on that node, not the whole cluster). This is only
+# important to know for single instance deployments. HA nodes will
+# sync data from other cluster members after a restart anyway.
+#
+# The only situation where you might want to enable this option is
+# when you are on a host that might lose power out of nowhere, and
+# it has no backup battery, or when your OS / disk itself is unstable.
+#
+# `sync_immediate` will greatly reduce the write throughput and put
+# a lot more pressure on the disk. If you have lots of writes, it
+# can pretty quickly kill your SSD for instance.
+#HQL_SYNC_IMMEDIATE=false
 
 # Sets the limit when the Raft will trigger the creation of a new
 # state machine snapshot and purge all logs that are included in
@@ -140,8 +192,8 @@ HQL_LOGS_UNTIL_SNAPSHOT=10000
 # Secrets for Raft internal authentication as well as for the API.
 # These must be at least 16 characters long and you should provide
 # different ones for both variables.
-HQL_SECRET_RAFT={}
-HQL_SECRET_API={}
+HQL_SECRET_RAFT={secret_raft}
+HQL_SECRET_API={secret_api}
 
 # You can either parse `ENC_KEYS` and `ENC_KEY_ACTIVE` from the
 # environment with setting this value to `env`, or parse them from
@@ -155,10 +207,15 @@ HQL_SECRET_API={}
 # default: "0 30 2 * * * *"
 #HQL_BACKUP_CRON="0 30 2 * * * *"
 
-# Backups older than the configured days will be cleaned up after
-# the backup cron job.
+# Backups older than the configured days will be cleaned up on S3
+# after the backup cron job `HQL_BACKUP_CRON`.
 # default: 30
-#HQL_BACKUP_KEEP_DAYS=30
+HQL_BACKUP_KEEP_DAYS=30
+
+# Backups older than the configured days will be cleaned up locally
+# after each `Client::backup()` and the cron job `HQL_BACKUP_CRON`.
+# default: 3
+HQL_BACKUP_KEEP_DAYS_LOCAL=3
 
 # Access values for the S3 bucket where backups will be pushed to.
 #HQL_S3_URL=https://s3.example.com
@@ -193,27 +250,20 @@ HQL_SECRET_API={}
 # You can find a utility in the Admin UI to do this for you.
 #
 ENC_KEYS="
-{}
+{enc_keys_trimmed}
 "
 
 # This identifies the key ID from the `ENC_KEYS` list, that
 # should actively be used for new encryptions.
-ENC_KEY_ACTIVE={}
+ENC_KEY_ACTIVE={enc_key_active}
 
 # The password for the dashboard as b64 encoded Argon2ID hash
-HQL_PASSWORD_DASHBOARD={}
+HQL_PASSWORD_DASHBOARD={password_dashboard_b64}
 
 # Can be set to `true` during local dev and testing to issue
 # insecure cookies
 # default: false
-HQL_INSECURE_COOKIE={}
+HQL_INSECURE_COOKIE={insecure_cookie}
 "#,
-        data_dir,
-        secret_raft,
-        secret_api,
-        enc_keys_b64.trim(),
-        enc_key_active,
-        password_dashboard_b64,
-        insecure_cookie,
     ))
 }
