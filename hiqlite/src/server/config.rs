@@ -1,9 +1,9 @@
-use crate::helpers::fn_access;
+use crate::helpers::{fn_access, read_line_stdin};
 use crate::server::args::{ArgsConfig, ArgsGenerate};
 use crate::server::password;
 use crate::{Error, NodeConfig};
 use cryptr::{utils, EncKeys};
-use tokio::fs;
+use tokio::{fs, task};
 
 pub fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
     let config_path = if args.config_file == "$HOME/.hiqlite/config" {
@@ -34,30 +34,30 @@ pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
             "Config file {} exists already. Overwrite? (yes): ",
             path_file
         );
-        let mut buf = String::with_capacity(1);
-        std::io::stdin().read_line(&mut buf)?;
-
-        let trimmed = buf.trim().to_lowercase();
-        if trimmed != "yes" {
+        let line = read_line_stdin().await?;
+        if line != "yes" {
             return Ok(());
         }
     }
 
     let pwd_plain = if args.password {
-        let mut buf = String::with_capacity(16);
-        while buf.len() < 16 {
-            buf.clear();
+        let plain;
+        loop {
             println!("Provide a password with at least 16 characters: ");
-            std::io::stdin().read_line(&mut buf)?;
+            let line = read_line_stdin().await?;
+            if line.len() > 16 {
+                plain = line;
+                break;
+            }
         }
-        buf.trim().to_string()
+        plain
     } else {
         utils::secure_random_alnum(24)
     };
     println!("New password for the dashboard: {}", pwd_plain);
-    let password_dashboard = password::hash_password_b64(pwd_plain.clone()).await?;
+    let password_dashboard = password::hash_password_b64(pwd_plain).await?;
 
-    let default_config = default_config(&pwd_plain, &password_dashboard, args.insecure_cookie)?;
+    let default_config = default_config(&password_dashboard, args.insecure_cookie)?;
     fs::write(&path_file, default_config).await?;
     println!("New default config file created: {}", path_file);
 
@@ -84,11 +84,7 @@ fn default_config_file_path() -> String {
     format!("{}/config", default_config_dir())
 }
 
-fn default_config(
-    password_dashboard_plain: &str,
-    password_dashboard_b64: &str,
-    insecure_cookie: bool,
-) -> Result<String, Error> {
+fn default_config(password_dashboard_b64: &str, insecure_cookie: bool) -> Result<String, Error> {
     let data_dir = format!("{}/data", default_config_dir());
     let secret_raft = utils::secure_random_alnum(32);
     let secret_api = utils::secure_random_alnum(32);
@@ -262,7 +258,6 @@ ENC_KEYS="
 ENC_KEY_ACTIVE={enc_key_active}
 
 # The password for the dashboard as b64 encoded Argon2ID hash
-# Password: {password_dashboard_plain}
 HQL_PASSWORD_DASHBOARD={password_dashboard_b64}
 
 # Can be set to `true` during local dev and testing to issue

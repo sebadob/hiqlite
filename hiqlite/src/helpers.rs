@@ -119,3 +119,15 @@ pub async fn fn_access(path: &str, mode: u32) -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// Reads a single line from stdin and returns it `trim`ed.
+#[cfg(feature = "server")]
+pub async fn read_line_stdin() -> Result<String, Error> {
+    let line = tokio::task::spawn_blocking(|| {
+        let mut buf = String::with_capacity(4);
+        std::io::stdin().read_line(&mut buf)?;
+        Ok::<String, Error>(buf.trim().to_string())
+    })
+    .await??;
+    Ok(line)
+}
