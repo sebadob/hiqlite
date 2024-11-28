@@ -72,6 +72,41 @@ issue, I will add `spow` again in the future for additional security.
 
 You need to set `HQL_S3_PATH_STYLE` to either `true` or `false` now, while `true` was the default before.
 
+#### Sync Immediate
+
+A new config value has been added to `NodeConfig` called `sync_immediate`, with a corresponding optional env var
+`HQL_SYNC_IMMEDIATE`. With this value set to `true`, an immediate flush + sync to disk will be done after each single
+Raft logs batch. This is a pretty big tradeoff but may be necessary in some situations.
+
+```
+# Enables immediate flush + sync to disk after each Log Store Batch.
+# The situations where you would need this are very rare, and you
+# should use it with care.
+#
+# The default is `false`, and a flush + sync will be done in 200ms
+# intervals. Even if the application should crash, the OS will take
+# care of flushing left-over buffers to disk and no data will get
+# lost. If something worse happens, you might lose the last 200ms 
+# of commits (on that node, not the whole cluster). This is only
+# important to know for single instance deployments. HA nodes will
+# sync data from other cluster members after a restart anyway.
+#
+# The only situation where you might want to enable this option is
+# when you are on a host that might lose power out of nowhere, and
+# it has no backup battery, or when your OS / disk itself is unstable.
+#
+# `sync_immediate` will greatly reduce the write throughput and put
+# a lot more pressure on the disk. If you have lots of writes, it
+# can pretty quickly kill your SSD for instance.
+#HQL_SYNC_IMMEDIATE=false
+```
+
+#### Prepared Statement Cache Size
+
+The max cache size for prepared statements is now configurable as well.
+The default is and has been 1024 before, which is probably a good size for production usage. However, if you are heavily
+resource constrained, you now have the possibility to reduce the cache size via the `NodeConfig`.
+
 ### Bugfix
 
 The Backup creation routine has reset the "wrong" metadata after backup creation. This is not an issue during runtime

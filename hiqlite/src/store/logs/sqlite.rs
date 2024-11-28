@@ -142,8 +142,8 @@ impl LogStore {
     ) -> flume::Sender<ActionWrite> {
         let (tx, rx) = flume::bounded::<ActionWrite>(2);
 
-        // thread::spawn(move || {
-        task::spawn_blocking(move || {
+        thread::spawn(move || {
+            // task::spawn_blocking(move || {
             let mut append = conn
                 .prepare_cached("INSERT INTO logs (id, data) VALUES ($1, $2)")
                 .expect("Prepare statement to succeed");
@@ -302,7 +302,8 @@ impl LogStore {
     fn spawn_reader(conn: rusqlite::Connection) -> flume::Sender<ActionRead> {
         let (tx, rx) = flume::bounded::<ActionRead>(2);
 
-        task::spawn_blocking(move || {
+        std::thread::spawn(move || {
+            // task::spawn_blocking(move || {
             let mut read_logs = conn
                 .prepare_cached("SELECT data FROM logs WHERE id >= $1 AND id <= $2")
                 .expect("Statement prepare to succeed");

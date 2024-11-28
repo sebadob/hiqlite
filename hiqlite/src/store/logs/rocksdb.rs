@@ -6,6 +6,7 @@ use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use byteorder::WriteBytesExt;
 use flume::RecvError;
+use log::debug;
 use openraft::storage::Snapshot;
 use openraft::storage::{LogFlushed, LogState, RaftLogStorage};
 use openraft::BasicNode;
@@ -104,7 +105,8 @@ impl LogStoreWriter {
     fn spawn(db: Arc<DB>, sync_immediate: bool) -> flume::Sender<ActionWrite> {
         let (tx, rx) = flume::bounded::<ActionWrite>(2);
 
-        task::spawn_blocking(move || {
+        std::thread::spawn(move || {
+            // task::spawn_blocking(move || {
             // let mut callbacks = Vec::with_capacity(8);
 
             let mut is_dirty = false;
@@ -244,7 +246,7 @@ impl LogsSyncer {
             loop {
                 interval.tick().await;
                 if let Err(err) = tx_writer.send_async(ActionWrite::Sync).await {
-                    warn!("Error sending ActionWrite::Sync to LogStoreWriter");
+                    debug!("Error sending ActionWrite::Sync to LogStoreWriter - exiting");
                     break;
                 }
             }
@@ -281,7 +283,8 @@ impl LogStoreReader {
             }
         }
 
-        task::spawn_blocking(move || {
+        std::thread::spawn(move || {
+            // task::spawn_blocking(move || {
             while let Ok(action) = rx.recv() {
                 match action {
                     ActionRead::Logs(ActionReadLogs { from, until, ack }) => {

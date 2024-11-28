@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
-use tracing::info;
+use tracing::{error, info};
 
 #[cfg(feature = "sqlite")]
 use crate::store::{logs::rocksdb::ActionWrite, state_machine::sqlite::writer::WriterRequest};
@@ -14,6 +14,7 @@ use crate::store::{logs::rocksdb::ActionWrite, state_machine::sqlite::writer::Wr
 use crate::{Node, NodeId};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use openraft::RaftMetrics;
+use openraft::ServerState;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use std::clone::Clone;
 
@@ -84,10 +85,20 @@ impl Client {
         let metrics = self.metrics_db().await?;
         metrics.running_state?;
         if metrics.current_leader.is_some() {
-            Ok(())
+            if metrics.state == ServerState::Learner
+                || metrics.state == ServerState::Follower
+                || metrics.state == ServerState::Leader
+            {
+                Ok(())
+            } else {
+                Err(Error::Connect(format!(
+                    "The DB leader voting process has not finished yet - server state: {:?}",
+                    metrics.state
+                )))
+            }
         } else {
             Err(Error::LeaderChange(
-                "The leader voting process has not finished yet".into(),
+                "The DB leader voting process has not finished yet".into(),
             ))
         }
     }
@@ -98,10 +109,20 @@ impl Client {
         let metrics = self.metrics_cache().await?;
         metrics.running_state?;
         if metrics.current_leader.is_some() {
-            Ok(())
+            if metrics.state == ServerState::Learner
+                || metrics.state == ServerState::Follower
+                || metrics.state == ServerState::Leader
+            {
+                Ok(())
+            } else {
+                Err(Error::Connect(format!(
+                    "The cache leader voting process has not finished yet - server state: {:?}",
+                    metrics.state
+                )))
+            }
         } else {
             Err(Error::LeaderChange(
-                "The leader voting process has not finished yet".into(),
+                "The cache leader voting process has not finished yet".into(),
             ))
         }
     }
@@ -109,18 +130,34 @@ impl Client {
     /// Wait until the database Raft is healthy.
     #[cfg(feature = "sqlite")]
     pub async fn wait_until_healthy_db(&self) {
-        while self.is_healthy_db().await.is_err() {
-            info!("Waiting for healthy Raft DB");
-            time::sleep(Duration::from_millis(500)).await;
+        loop {
+            match self.is_healthy_db().await {
+                Ok(_) => {
+                    return;
+                }
+                Err(err) => {
+                    info!("Waiting for healthy Raft DB");
+                    error!("\n\n{}\n", err);
+                    time::sleep(Duration::from_millis(500)).await;
+                }
+            }
         }
     }
 
     /// Wait until the cache Raft is healthy.
     #[cfg(feature = "cache")]
     pub async fn wait_until_healthy_cache(&self) {
-        while self.is_healthy_cache().await.is_err() {
-            info!("Waiting for healthy Raft DB");
-            time::sleep(Duration::from_millis(500)).await;
+        loop {
+            match self.is_healthy_cache().await {
+                Ok(_) => {
+                    return;
+                }
+                Err(err) => {
+                    info!("Waiting for healthy Raft cache");
+                    error!("{}", err);
+                    time::sleep(Duration::from_millis(500)).await;
+                }
+            }
         }
     }
 
@@ -204,12 +241,17 @@ impl Client {
             let _ = tx.send(true);
         }
 
-        info!("Waiting 5 additional seconds before shutting down");
-
         // We need to do a short sleep only to avoid race conditions during rolling releases.
         // This also helps to make re-joins after a restart smoother.
+        //
         // TODO for some very weird reason, the process sometimes gets stuck during
-        // this sleep await when testing
+        // this sleep await. I only saw this behavior in integration tests though, where alle nodes
+        // are started from the same `tokio::test` task.
+        //
+        // Note: The issue is "something blocking" in `openraft` but only in some conditions that
+        // don't make sense to me yet - needs further investigation until this sleep can be removed
+        // safely.
+        info!("Shutting down in 10 seconds ...");
         time::sleep(Duration::from_secs(10)).await;
 
         info!("Shutdown complete");

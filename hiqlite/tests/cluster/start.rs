@@ -57,7 +57,6 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         node_id,
         nodes: nodes(),
         data_dir,
-        filename_db: "hiqlite".into(),
         log_statements: true,
         raft_config: NodeConfig::default_raft_config(1000),
         // TODO currently we can't test with TLS, because this depends on `axum_server`.
@@ -72,6 +71,7 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         s3_config: hiqlite::s3::S3Config::try_from_env(),
         #[cfg(feature = "dashboard")]
         password_dashboard: Some("DoesNotMatterHere".to_string()),
+        ..Default::default()
     }
 }
 

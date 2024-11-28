@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
 use crate::{Client, Error, Node, NodeId};
+use log::trace;
 use openraft::RaftMetrics;
 use std::clone::Clone;
 use std::sync::atomic::Ordering;
@@ -39,7 +40,7 @@ impl Client {
                 let mut find_leader = Self::find_set_leader(metrics, &self.inner.leader_db).await;
 
                 while let Err(err) = find_leader {
-                    error!("Find DB leader error: {}", err);
+                    trace!("Find DB leader error: {}", err);
                     time::sleep(Duration::from_millis(250)).await;
                     let metrics = state.raft_db.raft.metrics().borrow().clone();
                     find_leader = Self::find_set_leader(metrics, &self.inner.leader_db).await;
@@ -53,7 +54,7 @@ impl Client {
                     Self::find_set_leader(metrics, &self.inner.leader_cache).await;
 
                 while let Err(err) = find_leader {
-                    error!("Find cache leader error: {}", err);
+                    trace!("Find cache leader error: {}", err);
                     time::sleep(Duration::from_millis(250)).await;
                     let metrics = state.raft_cache.raft.metrics().borrow().clone();
                     find_leader = Self::find_set_leader(metrics, &self.inner.leader_cache).await;

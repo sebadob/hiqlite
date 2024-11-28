@@ -184,19 +184,20 @@ enum SkipBecome {
     No,
 }
 
-/// If this node is a non cluster member, it will try to become a learner and
+/// If this node is not a cluster member, it will try to become a learner and
 /// a voting member afterward.
+#[tracing::instrument(skip(state, nodes, tls, tls_no_verify))]
 pub async fn become_cluster_member(
     state: Arc<AppState>,
     raft_type: &RaftType,
     this_node: u64,
     nodes: &[Node],
+    election_timeout_max: u64,
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
     // TODO can this cluster member check be improved and be made more robust?
-    #[cfg(feature = "sqlite")]
-    if raft_type == &RaftType::Sqlite && is_initialized_timeout(&state, raft_type).await? {
+    if is_initialized_timeout(&state, raft_type, election_timeout_max).await? {
         info!(
             "{} raft is already initialized - skipping become_cluster_member()",
             raft_type.as_str()
@@ -238,6 +239,7 @@ pub async fn become_cluster_member(
 
     if skip == SkipBecome::Yes {
         // can happen in a race condition situation during a rolling release
+        info!("Became a Raft member in the meantime - skipping further init");
         return Ok(());
     }
 
@@ -273,7 +275,6 @@ async fn try_become(
     check_init: bool,
 ) -> Result<SkipBecome, Error> {
     loop {
-        time::sleep(Duration::from_secs(1)).await;
         // maybe we are initialized in the meantime
         if check_init && helpers::is_raft_initialized(state, raft_type).await? {
             info!(
@@ -350,20 +351,24 @@ async fn try_become(
                                 return Ok(SkipBecome::Yes);
                             }
                         }
+
+                        time::sleep(Duration::from_millis(500)).await;
                     }
                 }
                 Err(err) => {
                     error!("Node connection error: {}", err);
+
+                    time::sleep(Duration::from_millis(500)).await;
                 }
             }
         }
     }
 }
 
-#[cfg(feature = "sqlite")]
 async fn is_initialized_timeout(
     state: &Arc<AppState>,
     raft_type: &RaftType,
+    election_timeout_max: u64,
 ) -> Result<bool, Error> {
     // Do not try to initialize already initialized nodes
     if helpers::is_raft_initialized(state, raft_type).await? {
@@ -372,7 +377,7 @@ async fn is_initialized_timeout(
 
     // If it is not initialized, wait long enough to make sure this
     // node is not joined again to an already existing cluster after data loss.
-    time::sleep(Duration::from_secs(1)).await;
+    time::sleep(Duration::from_millis(election_timeout_max * 2)).await;
 
     // Make sure we are not initialized by now, otherwise go on
     if helpers::is_raft_initialized(state, raft_type).await? {

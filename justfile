@@ -121,7 +121,7 @@ test:
     set -euxo pipefail
     clear
     # we need to run the tests with nightly to not get an error for docs auto cfg
-    cargo +nightly test --features cache,dlock,listen_notify
+    RUSTFLAGS="--cfg tokio_unstable" cargo +nightly test --features cache,dlock,listen_notify
 
 # builds the code
 build ty="server":

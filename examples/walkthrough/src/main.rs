@@ -7,6 +7,7 @@ use std::fmt::{Debug, Display};
 use std::time::Duration;
 use tokio::fs;
 use tokio::time;
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(rust_embed::Embed)]
@@ -32,18 +33,18 @@ fn test_nodes() -> Vec<Node> {
     vec![
         Node {
             id: 1,
-            addr_api: "127.0.0.1:8100".to_string(),
-            addr_raft: "127.0.0.1:8200".to_string(),
+            addr_api: "127.0.0.1:8101".to_string(),
+            addr_raft: "127.0.0.1:8201".to_string(),
         },
         Node {
             id: 2,
-            addr_api: "127.0.0.1:8100".to_string(),
-            addr_raft: "127.0.0.1:8200".to_string(),
+            addr_api: "127.0.0.1:8102".to_string(),
+            addr_raft: "127.0.0.1:8202".to_string(),
         },
         Node {
             id: 3,
-            addr_api: "127.0.0.1:8100".to_string(),
-            addr_raft: "127.0.0.1:8200".to_string(),
+            addr_api: "127.0.0.1:8103".to_string(),
+            addr_raft: "127.0.0.1:8203".to_string(),
         },
     ]
 }
@@ -116,6 +117,7 @@ async fn main() -> Result<(), Error> {
 }
 
 async fn server(args: Option<Server>) -> Result<(), Error> {
+    let is_cluster = args.is_some();
     let config = if let Some(args) = args {
         let mut config = node_config(args.node_id, test_nodes());
 
@@ -138,9 +140,9 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
     // for simplicity, we will only do the inserts in this example on node 1,
     // the others will go to sleep
     let is_node_1 = config.node_id == 1;
+    let nodes_len = config.nodes.len();
 
     let client = start_node_with_cache::<Cache>(config).await?;
-    let mut shutdown_handle = client.shutdown_handle()?;
 
     // give the client some time to initialize everything
     time::sleep(Duration::from_secs(3)).await;
@@ -151,6 +153,37 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
             log("Waiting for the Cluster to become healthy");
             time::sleep(Duration::from_secs(1)).await;
         }
+
+        // Usually, the "cluster" is healthy with a single node, but for this example, let's wait
+        // until remotes are online as well
+        if is_cluster {
+            loop {
+                let metrics = client.metrics_db().await?;
+                let membership = metrics.membership_config.membership();
+                if membership.nodes().count() != nodes_len {
+                    info!(
+                        "Waiting for other nodes to join the cluster - online: {}/{}",
+                        membership.nodes().count(),
+                        nodes_len
+                    );
+                    time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+
+                if membership.voter_ids().count() != nodes_len {
+                    info!(
+                        "Waiting for other nodes to join the cluster - voters: {}/{}",
+                        membership.voter_ids().count(),
+                        nodes_len
+                    );
+                    time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+
+                break;
+            }
+        }
+
         log("Cluster is online and all nodes are active members");
 
         log("Apply our database migrations");
@@ -325,7 +358,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
     //   This makes sense when you already have structures implemented that catch shutdown signals,
     //   for instance if you `.await` and API being terminated.
     //   Then oyu can do a `client.shutdown().await?`
-
+    let mut shutdown_handle = client.shutdown_handle()?;
     shutdown_handle.wait().await?;
 
     Ok(())

@@ -1,12 +1,15 @@
 use crate::self_heal::test_self_healing;
+use futures_util::future::join_all;
 use hiqlite::Error;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
-use std::{env, process};
-use tokio::{fs, time};
+use std::{env, fs, process};
+use tokio::time;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Layer};
 
 mod backup;
 mod backup_restore;
@@ -34,18 +37,25 @@ enum Cache {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+// #[tokio::test(start_paused = true)]
 async fn test_cluster() {
+    let console_layer = console_subscriber::spawn();
+
     set_panic_hook();
 
     // always start clean
     env::remove_var("HQL_BACKUP_RESTORE");
-    let _ = fs::remove_dir_all(TEST_DATA_DIR).await;
+    let _ = fs::remove_dir_all(TEST_DATA_DIR);
 
-    tracing_subscriber::fmt()
+    let tracing_layer = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_thread_ids(true)
         .with_level(true)
-        .with_env_filter(EnvFilter::new("info"))
+        .with_filter(EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(console_layer)
+        .with(tracing_layer)
         .init();
 
     match exec_tests().await {
@@ -105,15 +115,16 @@ async fn exec_tests() -> Result<(), Error> {
 
     log("Test remote-only client");
     remote_only::test_remote_only_client().await?;
-    log("Temote-only client tests finished");
+    log("Remote-only client tests finished");
 
     log("Test shutdown and restart");
-    client_1.shutdown().await?;
-    log("client_1 shutdown complete");
-    client_2.shutdown().await?;
-    log("client_2 shutdown complete");
-    client_3.shutdown().await?;
-    log("client_3 shutdown complete");
+    join_all([
+        client_1.shutdown(),
+        client_2.shutdown(),
+        client_3.shutdown(),
+    ])
+    .await;
+    log("Clients shutdown complete");
 
     // logs sync task runs every 200ms -> needs to catch the closed channel
     time::sleep(Duration::from_millis(250)).await;
@@ -142,9 +153,12 @@ async fn exec_tests() -> Result<(), Error> {
     log("Current database has been changed");
 
     log("Shutting down nodes");
-    client_1.shutdown().await?;
-    client_2.shutdown().await?;
-    client_3.shutdown().await?;
+    join_all([
+        client_1.shutdown(),
+        client_2.shutdown(),
+        client_3.shutdown(),
+    ])
+    .await;
 
     // just give the s3 upload task in the background some time to finish
     time::sleep(Duration::from_millis(1000)).await;
