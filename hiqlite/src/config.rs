@@ -59,19 +59,24 @@ pub struct NodeConfig {
     /// default: 4
     pub read_pool_size: usize,
     /// Enables immediate flush + sync to disk after each Log Store Batch.
-    /// The situations where you would need this are very rare, and you should use it with care.
+    /// The situations where you would need this are very rare, and you
+    /// should use it with care.
     ///
-    /// The default is `false`, and a flush + sync will be done in 200ms intervals. Even if the
-    /// application should crash, the OS will take care of flushing left-over buffers to disk and
-    /// no data will get lost. Only if something worse happens, you might lose the last 200ms of
-    /// commits.
+    /// The default is `false`, and a flush + sync will be done in 200ms
+    /// intervals. Even if the application should crash, the OS will take
+    /// care of flushing left-over buffers to disk and no data will get
+    /// lost. If something worse happens, you might lose the last 200ms
+    /// of commits (on that node, not the whole cluster). This is only
+    /// important to know for single instance deployments. HA nodes will
+    /// sync data from other cluster members after a restart anyway.
     ///
-    /// The only situation where you might want to enable this option is when you are on a host
-    /// that might lose power out of nowhere, and it has no backup battery, or when your OS  / disk
-    /// itself is unstable.
+    /// The only situation where you might want to enable this option is
+    /// when you are on a host that might lose power out of nowhere, and
+    /// it has no backup battery, or when your OS / disk itself is unstable.
     ///
-    /// `sync_immediate` will greatly reduce the write throughput and put a lot more pressure on the
-    /// disk. If you have lots of writes, it can pretty quickly kill your SSD for instance.
+    /// `sync_immediate` will greatly reduce the write throughput and put
+    /// a lot more pressure on the disk. If you have lots of writes, it
+    /// can pretty quickly kill your SSD for instance.
     pub sync_immediate: bool,
     /// The internal Raft config. This must be the same on each node.
     /// You will get good defaults with `NodeConfig::default_raft_config(_)`.
@@ -201,7 +206,7 @@ impl NodeConfig {
                 .unwrap_or_else(|_| "data".to_string())
                 .into(),
             filename_db: env::var("HQL_FILENAME_DB")
-                .unwrap_or_else(|_| "hiqlite|_| .db".to_string())
+                .unwrap_or_else(|_| "hiqlite.db".to_string())
                 .into(),
             log_statements: env::var("HQL_LOG_STATEMENTS")
                 .unwrap_or_else(|_| "false".to_string())

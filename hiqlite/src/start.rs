@@ -253,6 +253,7 @@ where
                 &crate::app_state::RaftType::Sqlite,
                 node_config.node_id,
                 &nodes,
+                node_config.raft_config.election_timeout_max,
                 tls_raft,
                 tls_no_verify,
             )
@@ -271,6 +272,7 @@ where
                 &crate::app_state::RaftType::Cache,
                 node_config.node_id,
                 &nodes,
+                node_config.raft_config.election_timeout_max,
                 tls_raft,
                 tls_no_verify,
             )

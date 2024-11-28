@@ -58,8 +58,10 @@ HQL_LOG_STATEMENTS=true
 # The default is `false`, and a flush + sync will be done in 200ms
 # intervals. Even if the application should crash, the OS will take
 # care of flushing left-over buffers to disk and no data will get
-# lost. Only if something worse happens, you might lose the last
-# 200ms of commits.
+# lost. If something worse happens, you might lose the last 200ms
+# of commits (on that node, not the whole cluster). This is only
+# important to know for single instance deployments. HA nodes will
+# sync data from other cluster members after a restart anyway.
 #
 # The only situation where you might want to enable this option is
 # when you are on a host that might lose power out of nowhere, and

@@ -66,6 +66,7 @@ pub(crate) async fn start_raft_db(
         tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
         raft_type: RaftType::Sqlite,
+        heartbeat_interval: node_config.raft_config.heartbeat_interval,
     };
 
     // Create a local raft instance.
@@ -119,6 +120,7 @@ where
         tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
         raft_type: RaftType::Cache,
+        heartbeat_interval: node_config.raft_config.heartbeat_interval,
     };
 
     let tx_caches = state_machine_store.tx_caches.clone();

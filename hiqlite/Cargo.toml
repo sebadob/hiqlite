@@ -135,4 +135,6 @@ tower-service.workspace = true
 log = "0.4.22"
 
 [dev-dependencies]
+console-subscriber = "0.4.1"
+tokio = { workspace = true, features = ["full", "test-util", "tracing"] }
 tracing-subscriber.workspace = true

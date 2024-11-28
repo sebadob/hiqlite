@@ -42,6 +42,7 @@ use openraft::{
         InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
 };
+use tokio::task::JoinHandle;
 
 struct SpawnExecutor;
 
@@ -60,6 +61,7 @@ pub struct NetworkStreaming {
     pub tls_config: Option<Arc<rustls::ClientConfig>>,
     pub secret_raft: Vec<u8>,
     pub raft_type: RaftType,
+    pub heartbeat_interval: u64,
     // pub sender: flume::Sender<RaftRequest>,
 }
 
@@ -73,18 +75,20 @@ impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
 
         let (sender, rx) = flume::bounded(2);
 
-        tokio::task::spawn(Self::ws_handler(
+        let task = tokio::task::spawn(Self::ws_handler(
             self.node_id,
             self.raft_type.clone(),
             node.clone(),
             self.tls_config.clone(),
             self.secret_raft.clone(),
             rx,
+            self.heartbeat_interval,
         ));
 
         NetworkConnectionStreaming {
             node: node.clone(),
             sender,
+            task: Some(task),
         }
     }
 }
@@ -99,18 +103,20 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
 
         let (sender, rx) = flume::bounded(2);
 
-        tokio::task::spawn(Self::ws_handler(
+        let task = tokio::task::spawn(Self::ws_handler(
             self.node_id,
             self.raft_type.clone(),
             node.clone(),
             self.tls_config.clone(),
             self.secret_raft.clone(),
             rx,
+            self.heartbeat_interval,
         ));
 
         NetworkConnectionStreaming {
             node: node.clone(),
             sender,
+            task: Some(task),
         }
     }
 }
@@ -192,6 +198,7 @@ impl NetworkStreaming {
         tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: Vec<u8>,
         rx: flume::Receiver<RaftRequest>,
+        heartbeat_interval: u64,
     ) {
         let mut request_id = 0usize;
         // TODO probably a Vec<_> is faster here since we would never have too many in flight reqs
@@ -215,7 +222,7 @@ impl NetworkStreaming {
                 {
                     Ok(socket) => socket,
                     Err(err) => {
-                        error!("{:?}", err);
+                        error!("Socket connect error: {:?}", err);
 
                         // make sure messages don't pile up
                         rx.drain().for_each(|req| {
@@ -244,8 +251,7 @@ impl NetworkStreaming {
                             }
                         });
 
-                        // TODO this sleep seems to be ignored on remote node not available?
-                        time::sleep(Duration::from_millis(500)).await;
+                        time::sleep(Duration::from_millis(heartbeat_interval)).await;
                         continue;
                     }
                 }
@@ -484,12 +490,16 @@ impl NetworkStreaming {
 pub struct NetworkConnectionStreaming {
     node: Node,
     sender: flume::Sender<RaftRequest>,
+    task: Option<JoinHandle<()>>,
 }
 
 impl Drop for NetworkConnectionStreaming {
     fn drop(&mut self) {
         eprintln!("Connection to {} has been dropped", self.node);
         let _ = self.sender.send(RaftRequest::Shutdown);
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 }
 
