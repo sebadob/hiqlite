@@ -46,9 +46,9 @@ pub struct ArgsProxy {
 
 #[derive(Debug, Clone, Parser)]
 pub struct ArgsGenerate {
-    /// Set the password for the dashboard
-    #[clap(short, long)]
-    pub password: Option<String>,
+    /// Set a custom password for the dashboard. If `false`, a random one will be generated.
+    #[clap(short, long, default_value = "false")]
+    pub password: bool,
 
     /// Issue insecure authn cookies for the dashboard. Do NOT use in production!
     #[clap(long, default_value = "false")]
