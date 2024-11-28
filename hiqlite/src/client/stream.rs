@@ -164,7 +164,7 @@ async fn client_stream(
     raft_type: RaftType,
 ) {
     let mut in_flight: HashMap<usize, oneshot::Sender<Result<ApiStreamResponsePayload, Error>>> =
-        HashMap::with_capacity(32);
+        HashMap::with_capacity(8);
     let mut in_flight_buf: HashMap<
         usize,
         oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
@@ -592,7 +592,7 @@ async fn client_stream(
         }
         assert!(in_flight.is_empty());
         // reset to a reasonable size for the next start to keep memory usage under control
-        in_flight = HashMap::with_capacity(32);
+        in_flight = HashMap::with_capacity(8);
 
         info!("client stream tasks killed - re-connecting now");
     }

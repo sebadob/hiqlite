@@ -201,12 +201,17 @@ impl NetworkStreaming {
         heartbeat_interval: u64,
     ) {
         let mut request_id = 0usize;
-        // TODO probably a Vec<_> is faster here since we would never have too many in flight reqs
+        // TODO probably, a Vec<_> is faster here since we would never have too many in flight reqs
         // for raft internal replication and voting? -> check
+        // maybe feature-gate an alternative impl, even though it might not make the biggest difference
         let mut in_flight: HashMap<
             usize,
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-        > = HashMap::with_capacity(32);
+        > = HashMap::with_capacity(8);
+        // let mut in_flight: Vec<(
+        //     usize,
+        //     oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
+        // )> = Vec::with_capacity(8);
         let mut shutdown = false;
 
         loop {
@@ -321,6 +326,17 @@ impl NetworkStreaming {
                     }
 
                     RaftRequest::StreamResponse(resp) => {
+                        // match in_flight.iter().position(|(id, _)| &resp.request_id == id) {
+                        //     None => {
+                        //         error!("client ack for RaftStreamResponse missing");
+                        //     }
+                        //     Some(idx) => {
+                        //         let (_id, ack) = in_flight.swap_remove(idx);
+                        //         if ack.send(Ok(resp.payload)).is_err() {
+                        //             error!("sending back stream response from raft server");
+                        //         }
+                        //     }
+                        // }
                         match in_flight.remove(&resp.request_id) {
                             None => {
                                 error!("client ack for RaftStreamResponse missing");
@@ -351,6 +367,7 @@ impl NetworkStreaming {
                         break;
                     }
 
+                    // in_flight.push((request_id, ack));
                     in_flight.insert(request_id, ack);
                     request_id += 1;
                 }
@@ -359,10 +376,12 @@ impl NetworkStreaming {
             handle_write.abort();
             handle_read.abort();
 
+            // for (_, ack) in in_flight.drain(..) {
             for (_, ack) in in_flight.drain() {
                 let _ = ack.send(Err(Error::Connect("Raft WebSocket stream ended".into())));
             }
-            in_flight = HashMap::with_capacity(32);
+            // reset to a reasonable size for the next start to keep memory usage under control
+            in_flight = HashMap::with_capacity(8);
 
             if shutdown {
                 break;
