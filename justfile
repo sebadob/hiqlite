@@ -189,7 +189,8 @@ msrv-find:
 
 # verify thats everything is good
 verify:
-    just build ui
+    # we don't want to rebuild the UI each time because it's checked into git
+    #just build ui
     just check
     just clippy
     just clippy-examples
