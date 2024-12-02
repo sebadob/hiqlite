@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1
+
+This version only bumps the `svelte` dependency for the prebuilt dashboard to fix some build steps and bugs.
+
 ## v0.3.0
 
 ### Changes

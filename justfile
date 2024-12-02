@@ -66,7 +66,9 @@ check:
     set -euxo pipefail
     clear
     cargo update
-    cargo +nightly clippy -- -D warnings
+    # The +nightly currently breaks the openraft! macro
+    #cargo +nightly clippy -- -D warnings
+    cargo clippy -- -D warnings
     cargo minimal-versions check -p hiqlite --all-features
 
     # just update at the end again for following clippy and testing
@@ -187,7 +189,8 @@ msrv-find:
 
 # verify thats everything is good
 verify:
-    just build ui
+    # we don't want to rebuild the UI each time because it's checked into git
+    #just build ui
     just check
     just clippy
     just clippy-examples
