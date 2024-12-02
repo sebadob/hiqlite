@@ -254,9 +254,9 @@
                         btnInvisible
                 >
                     {#snippet button()}
-                        <span class="btnSelect" data-disabled={!isAnySelected}>
-                            <IconChevronDown width="1rem"/>
-                        </span>
+                            <span class="btnSelect" data-disabled={!isAnySelected}>
+                                <IconChevronDown width="1rem"/>
+                            </span>
                     {/snippet}
                     {@render select(selectedRows, closePopoverSelect)}
                 </Popover>
@@ -266,27 +266,27 @@
         {#each columns as column, i}
             {#if showColumns[select ? i + 1 : i]}
                 <th bind:this={refCols[i]}>
-                    <span class="flex-1 label">
-                        {#if column.orderType}
-                            <span class="orderText">
-                                {column.content}
-                            </span>
-                            <Button invisible onclick={() => orderBy(i, column.orderType)}>
-                                <span class="iconOrder">
-                                    <IconArrowUpDown width="1rem"/>
+                        <span class="flex-1 label">
+                            {#if column.orderType}
+                                <span class="orderText">
+                                    {column.content}
                                 </span>
-                            </Button>
-                        {:else}
-                            <span class="rawText">
-                                {column.content}
-                            </span>
-                        {/if}
-                    </span>
+                                <Button invisible onclick={() => orderBy(i, column.orderType)}>
+                                    <span class="iconOrder">
+                                        <IconArrowUpDown width="1rem"/>
+                                    </span>
+                                </Button>
+                            {:else}
+                                <span class="rawText">
+                                    {column.content}
+                                </span>
+                            {/if}
+                        </span>
 
                     <span class="relative">
-                    <span role="none" class="absolute sizeable" onmousedown={() => onMouseDown(i)}>
+                        <span role="none" class="absolute sizeable" onmousedown={() => onMouseDown(i)}>
+                        </span>
                     </span>
-                </span>
                 </th>
             {/if}
         {/each}
@@ -313,36 +313,36 @@
                     <td>
                         {#if columns[j]?.showAs === 'a'}
                             <A href={column.href || ''}>
-                                <span class="linkText nowrap" class:muted={column.muted}>
-                                    {column.content}
-                                </span>
+                                    <span class="linkText nowrap" class:muted={column.muted}>
+                                        {column.content}
+                                    </span>
                             </A>
                         {:else if columns[j]?.showAs === 'a_blank'}
                             <A href={column.href || ''} target="_blank">
-                                <span class="linkText nowrap" class:muted={column.muted}>
-                                    {column.content}
-                                </span>
+                                    <span class="linkText nowrap" class:muted={column.muted}>
+                                        {column.content}
+                                    </span>
                             </A>
                         {:else if columns[j]?.showAs === 'copyToClip'}
                             <Button invisible onclick={() => copyToClip(column.content.toString())}>
-                                <span class="copyToClip nowrap" class:muted={column.muted}>
-                                    {column.content}
-                                </span>
+                                    <span class="copyToClip nowrap" class:muted={column.muted}>
+                                        {column.content}
+                                    </span>
                             </Button>
                         {:else if columns[j]?.showAs === 'check'}
-                            <span class="checkIcon nowrap" class:muted={column.muted}>
-                                <CheckIcon checked={column.content}/>
-                            </span>
+                                <span class="checkIcon nowrap" class:muted={column.muted}>
+                                    <CheckIcon checked={column.content}/>
+                                </span>
                         {:else if column.onClick}
                             <Button invisible onclick={ev => column.onClick?.(ev, absoluteRowNo(i))}>
-                                <span class="onclick nowrap" class:muted={column.muted}>
-                                    {column.content}
-                                </span>
+                                    <span class="onclick nowrap" class:muted={column.muted}>
+                                        {column.content}
+                                    </span>
                             </Button>
                         {:else}
-                        <span class="rawText nowrap" class:muted={column.muted}>
-                            {column.content}
-                        </span>
+                            <span class="rawText nowrap" class:muted={column.muted}>
+                                {column.content}
+                            </span>
                         {/if}
                     </td>
                 {/if}
@@ -358,9 +358,9 @@
                             offsetTop={offsetTopOptions}
                     >
                         {#snippet button()}
-                            <span class="btnOptions">
-                                <IconDotsHorizontal/>
-                            </span>
+                                <span class="btnOptions">
+                                    <IconDotsHorizontal/>
+                                </span>
                         {/snippet}
                         {@render options(row, closePopoverOption[i])}
                     </Popover>
