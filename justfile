@@ -186,7 +186,13 @@ msrv-find:
     cargo msrv --min {{ MSRV }}
 
 # verify thats everything is good
-verify: check clippy clippy-examples test msrv-verify
+verify:
+    just build ui
+    just check
+    just clippy
+    just clippy-examples
+    just test
+    just msrv-verify
 
 # makes sure everything is fine
 verfiy-is-clean: verify
@@ -208,6 +214,8 @@ release: verfiy-is-clean
 
     git tag "v$TAG"
     git push origin "v$TAG"
+
+    just build-image
 
 # publishes the current lib version to cargo.io
 publish: verfiy-is-clean
