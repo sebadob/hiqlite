@@ -145,11 +145,11 @@ build-image name="ghcr.io/sebadob/hiqlite":
     #!/usr/bin/env bash
     set -euxo pipefail
 
-    rm -rf hiqlite/static
-    cd dashboard
-    npm run build
-    cd ..
-    git add hiqlite/static
+    #rm -rf hiqlite/static
+    #cd dashboard
+    #npm run build
+    #cd ..
+    #git add hiqlite/static
 
     #cargo build --features server --release
     #mkdir -p out
