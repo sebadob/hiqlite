@@ -196,8 +196,14 @@ pub async fn become_cluster_member(
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
-    // TODO can this cluster member check be improved and be made more robust?
-    if is_initialized_timeout(&state, raft_type, election_timeout_max).await? {
+    // A cache node may return initialized here if an existing leaders opens the client stream
+    // before we can do the check, but this will lead to an inconsistent state, because the cache
+    // layer does not keep any state between restarts - cache nodes will always be empty and
+    // in-memory. Therefore, we always need to do a new cluster join for cache nodes.
+    #[cfg(feature = "sqlite")]
+    if raft_type == &RaftType::Sqlite
+        && is_initialized_timeout(&state, raft_type, election_timeout_max).await?
+    {
         info!(
             "{} raft is already initialized - skipping become_cluster_member()",
             raft_type.as_str()
@@ -237,6 +243,9 @@ pub async fn become_cluster_member(
     .await?;
     info!("Successfully became {} raft learner", raft_type.as_str());
 
+    // Again, for the same reason as above, an im-memory cache member must always do a full
+    // re-join after restarts.
+    #[cfg(feature = "sqlite")]
     if skip == SkipBecome::Yes {
         // can happen in a race condition situation during a rolling release
         info!("Became a Raft member in the meantime - skipping further init");
