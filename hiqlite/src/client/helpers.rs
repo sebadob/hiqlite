@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 impl Client {
     #[inline(always)]
@@ -40,7 +40,7 @@ impl Client {
                 let mut find_leader = Self::find_set_leader(metrics, &self.inner.leader_db).await;
 
                 while let Err(err) = find_leader {
-                    trace!("Find DB leader error: {}", err);
+                    warn!("Find DB leader error: {}", err);
                     time::sleep(Duration::from_millis(250)).await;
                     let metrics = state.raft_db.raft.metrics().borrow().clone();
                     find_leader = Self::find_set_leader(metrics, &self.inner.leader_db).await;
@@ -54,7 +54,7 @@ impl Client {
                     Self::find_set_leader(metrics, &self.inner.leader_cache).await;
 
                 while let Err(err) = find_leader {
-                    trace!("Find cache leader error: {}", err);
+                    warn!("Find cache leader error: {}", err);
                     time::sleep(Duration::from_millis(250)).await;
                     let metrics = state.raft_cache.raft.metrics().borrow().clone();
                     find_leader = Self::find_set_leader(metrics, &self.inner.leader_cache).await;
