@@ -1,6 +1,7 @@
 #![allow(unused)]
 
 use crate::app_state::{AppState, RaftType};
+use crate::init::IsPristineNode1;
 use crate::network::NetworkStreaming;
 use crate::{init, Error, NodeConfig, NodeId, RaftConfig};
 use num_traits::ToPrimitive;
@@ -108,7 +109,7 @@ pub(crate) async fn start_raft_db(
 pub(crate) async fn start_raft_cache<C>(
     node_config: NodeConfig,
     raft_config: Arc<RaftConfig>,
-) -> Result<StateRaftCache, Error>
+) -> Result<(IsPristineNode1, StateRaftCache), Error>
 where
     C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
 {
@@ -142,7 +143,7 @@ where
     .await
     .expect("Raft create failed");
 
-    init::init_pristine_node_1_cache(
+    let is_pristine = init::init_pristine_node_1_cache(
         &raft,
         node_config.node_id,
         &node_config.nodes,
@@ -156,15 +157,18 @@ where
     )
     .await?;
 
-    Ok(StateRaftCache {
-        raft,
-        lock: Default::default(),
-        tx_caches,
-        #[cfg(feature = "listen_notify")]
-        tx_notify,
-        #[cfg(feature = "listen_notify")]
-        rx_notify,
-        #[cfg(feature = "dlock")]
-        tx_dlock,
-    })
+    Ok((
+        is_pristine,
+        StateRaftCache {
+            raft,
+            lock: Default::default(),
+            tx_caches,
+            #[cfg(feature = "listen_notify")]
+            tx_notify,
+            #[cfg(feature = "listen_notify")]
+            rx_notify,
+            #[cfg(feature = "dlock")]
+            tx_dlock,
+        },
+    ))
 }

@@ -6,7 +6,6 @@ use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use byteorder::WriteBytesExt;
 use flume::RecvError;
-use log::debug;
 use openraft::storage::Snapshot;
 use openraft::storage::{LogFlushed, LogState, RaftLogStorage};
 use openraft::BasicNode;
@@ -44,7 +43,7 @@ use std::time::Duration;
 use tokio::sync::{oneshot, RwLock};
 use tokio::time::Interval;
 use tokio::{fs, task, time};
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 // static KEY_COMMITTED: &[u8] = b"committed";
 static KEY_LAST_PURGED: &[u8] = b"last_purged";
@@ -284,7 +283,6 @@ impl LogStoreReader {
         }
 
         std::thread::spawn(move || {
-            // task::spawn_blocking(move || {
             while let Ok(action) = rx.recv() {
                 match action {
                     ActionRead::Logs(ActionReadLogs { from, until, ack }) => {
@@ -298,6 +296,7 @@ impl LogStoreReader {
                                 Ok((id, value)) => {
                                     if bin_to_id(id.as_ref()) >= until {
                                         // ack.send(None).unwrap();
+                                        trace!("Raft logs store reader: bin_to_id(id) >= until");
                                         break;
                                     }
 
@@ -307,6 +306,7 @@ impl LogStoreReader {
                                     ack.send(Some(Ok(entry))).unwrap();
                                 }
                                 Err(err) => {
+                                    error!("Raft logs store reader: {}", err);
                                     ack.send(Some(Err(read_logs_err(err)))).unwrap();
                                     break;
                                 }

@@ -19,6 +19,8 @@ use std::collections::BTreeMap;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use tracing::info;
 
+pub type IsPristineNode1 = bool;
+
 /// Initializes a fresh node 1, if it has not been set up yet.
 #[cfg(feature = "sqlite")]
 pub async fn init_pristine_node_1_db(
@@ -62,7 +64,7 @@ pub async fn init_pristine_node_1_cache(
     secret_api: &str,
     tls: bool,
     tls_no_verify: bool,
-) -> Result<(), Error> {
+) -> Result<IsPristineNode1, Error> {
     if this_node == 1 {
         let this_node = get_this_node(this_node, nodes);
 
@@ -70,15 +72,17 @@ pub async fn init_pristine_node_1_cache(
 
         if should_node_1_skip_init(&RaftType::Cache, nodes, secret_api, tls, tls_no_verify).await? {
             info!("node 1 (cache) should skip its own init - found existing cluster on remotes");
-            return Ok(());
+            return Ok(false);
         }
 
         let mut nodes_set = BTreeMap::new();
         nodes_set.insert(this_node.id, this_node);
         raft.initialize(nodes_set).await?;
-    }
 
-    Ok(())
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 fn get_this_node(this_node: u64, nodes: &[Node]) -> Node {
@@ -150,8 +154,9 @@ async fn should_node_1_skip_init(
                             return Ok(true);
                         } else {
                             panic!(
-                                "The remote node {} is initialized but has no configured members.\
-                            This should never happen.",
+                                "The remote node {} is initialized but has no configured members. \
+                            This should never happen, but it may occur for a cache-only node and \
+                            a too fast restart -> wait at least for the leader heartbeat timeout.",
                                 node.id
                             );
                         }
@@ -187,11 +192,13 @@ enum SkipBecome {
 /// If this node is not a cluster member, it will try to become a learner and
 /// a voting member afterward.
 #[tracing::instrument(skip(state, nodes, tls, tls_no_verify))]
+#[allow(clippy::too_many_arguments)]
 pub async fn become_cluster_member(
     state: Arc<AppState>,
     raft_type: &RaftType,
     this_node: u64,
     nodes: &[Node],
+    is_pristine_cache_node_1: IsPristineNode1,
     election_timeout_max: u64,
     tls: bool,
     tls_no_verify: bool,
@@ -200,16 +207,27 @@ pub async fn become_cluster_member(
     // before we can do the check, but this will lead to an inconsistent state, because the cache
     // layer does not keep any state between restarts - cache nodes will always be empty and
     // in-memory. Therefore, we always need to do a new cluster join for cache nodes.
+    //
+    // However, the situation is different for a pristine node 1 - cache and in-memory only.
+    // In this situation, the node will always be initialized but will fail joining its own,
+    // not yet existent cluster later on in the client.
     #[cfg(feature = "sqlite")]
-    if raft_type == &RaftType::Sqlite
-        && is_initialized_timeout(&state, raft_type, election_timeout_max).await?
-    {
+    let check_init = raft_type == &RaftType::Sqlite || is_pristine_cache_node_1;
+    #[cfg(not(feature = "sqlite"))]
+    let check_init = is_pristine_cache_node_1;
+
+    if check_init && is_initialized_timeout(&state, raft_type, election_timeout_max).await? {
         info!(
             "{} raft is already initialized - skipping become_cluster_member()",
             raft_type.as_str()
         );
         return Ok(());
     }
+
+    // TODO if raft type is cache:
+    // - pristine node 1 first init will always be initialized here, no matter what
+    // - nodes joining an existing cluster must always re-join - even node 1
+    // - somehow check here, if this is a pristine node 1 or a node 1 re-joining an existing cluster
 
     // If this node is neither node 1 nor initialized, we always want to reach
     // out to node 1 and yell at it, that we want to join the party as well.
@@ -229,7 +247,7 @@ pub async fn become_cluster_member(
     })?;
 
     info!("Trying to become {} raft learner", raft_type.as_str());
-    let skip = try_become(
+    let _skip = try_become(
         &state,
         raft_type,
         &client,
@@ -246,7 +264,7 @@ pub async fn become_cluster_member(
     // Again, for the same reason as above, an im-memory cache member must always do a full
     // re-join after restarts.
     #[cfg(feature = "sqlite")]
-    if skip == SkipBecome::Yes {
+    if _skip == SkipBecome::Yes {
         // can happen in a race condition situation during a rolling release
         info!("Became a Raft member in the meantime - skipping further init");
         return Ok(());
@@ -347,8 +365,11 @@ async fn try_become(
                                     let metrics = helpers::get_raft_metrics(state, raft_type).await;
 
                                     panic!(
-                                        r#"Raft is not initialized when remote node has 'this' as leader.
-    This should be impossible to happen!
+                                        r#"
+    Raft is not initialized when remote node has 'this' as leader.
+    This can only happen for an in-memory cache node and a too fast restart.
+    Because the in-memory Raft does not save the state between restarts, you must way at least
+    for the duration of a leader heartbeat timeout before trying to re-join the cluster.
 
     This node: {this_node}
     Leader:    {leader:?}: {node:?}

@@ -1,7 +1,6 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
 use crate::{Client, Error, Node, NodeId};
-use log::trace;
 use openraft::RaftMetrics;
 use std::clone::Clone;
 use std::sync::atomic::Ordering;
