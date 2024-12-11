@@ -6,7 +6,6 @@ use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use byteorder::WriteBytesExt;
 use flume::RecvError;
-use log::debug;
 use openraft::storage::Snapshot;
 use openraft::storage::{LogFlushed, LogState, RaftLogStorage};
 use openraft::BasicNode;
@@ -44,7 +43,7 @@ use std::time::Duration;
 use tokio::sync::{oneshot, RwLock};
 use tokio::time::Interval;
 use tokio::{fs, task, time};
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 // static KEY_COMMITTED: &[u8] = b"committed";
 static KEY_LAST_PURGED: &[u8] = b"last_purged";

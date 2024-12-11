@@ -192,6 +192,7 @@ enum SkipBecome {
 /// If this node is not a cluster member, it will try to become a learner and
 /// a voting member afterward.
 #[tracing::instrument(skip(state, nodes, tls, tls_no_verify))]
+#[allow(clippy::too_many_arguments)]
 pub async fn become_cluster_member(
     state: Arc<AppState>,
     raft_type: &RaftType,
@@ -246,7 +247,7 @@ pub async fn become_cluster_member(
     })?;
 
     info!("Trying to become {} raft learner", raft_type.as_str());
-    let skip = try_become(
+    let _skip = try_become(
         &state,
         raft_type,
         &client,
@@ -263,7 +264,7 @@ pub async fn become_cluster_member(
     // Again, for the same reason as above, an im-memory cache member must always do a full
     // re-join after restarts.
     #[cfg(feature = "sqlite")]
-    if skip == SkipBecome::Yes {
+    if _skip == SkipBecome::Yes {
         // can happen in a race condition situation during a rolling release
         info!("Became a Raft member in the meantime - skipping further init");
         return Ok(());
