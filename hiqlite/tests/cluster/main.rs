@@ -178,9 +178,12 @@ async fn exec_tests() -> Result<(), Error> {
     log("Current database has been changed");
 
     log("Shutting down nodes");
-    client_1.shutdown().await?;
-    client_2.shutdown().await?;
-    client_3.shutdown().await?;
+    join_all([
+        client_1.shutdown(),
+        client_2.shutdown(),
+        client_3.shutdown(),
+    ])
+    .await;
 
     time::sleep(Duration::from_millis(1000)).await;
 

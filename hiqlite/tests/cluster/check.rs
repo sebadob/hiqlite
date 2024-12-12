@@ -7,13 +7,7 @@ use crate::Cache;
 
 pub async fn is_client_db_healthy(client: &Client, id: Option<u64>) -> Result<(), Error> {
     client.wait_until_healthy_db().await;
-    // let is_healthy = client.is_healthy_db().await;
-    // if is_healthy.is_err() {
-    //     debug(&is_healthy);
-    //     let metrics = client.metrics_db().await?;
-    //     debug(&metrics);
-    //     panic!("Not healthy when it should be");
-    // }
+    client.wait_until_healthy_cache().await;
 
     log(format!("Checking DB health Node {:?}", id));
     let metrics = client.metrics_db().await?;
@@ -58,6 +52,16 @@ pub async fn is_client_db_healthy(client: &Client, id: Option<u64>) -> Result<()
     assert!(v.is_none());
 
     log(format!("Cache healthy {:?}", id));
+
+    // everything should still be healthy
+    client
+        .is_healthy_db()
+        .await
+        .expect("db should still be healthy");
+    client
+        .is_healthy_cache()
+        .await
+        .expect("cache should still be healthy");
 
     Ok(())
 }
