@@ -8,7 +8,7 @@ use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::ops::Deref;
+use std::ops::{Deref, Sub};
 use std::time::Duration;
 use tokio::{task, time};
 use tracing::{error, info, warn};
@@ -33,8 +33,10 @@ use crate::{
 
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
+use crate::{HEALTH_CHECK_DELAY_SECS, START_TS};
 #[cfg(feature = "listen_notify")]
 use axum::response::sse;
+use chrono::Utc;
 #[cfg(feature = "listen_notify")]
 use futures_util::stream::Stream;
 // pub(crate) async fn write(
@@ -117,6 +119,13 @@ pub async fn health(state: AppStateExt) -> Result<(), Error> {
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 async fn check_health(state: &AppStateExt) -> Result<(), Error> {
+    if Utc::now().sub(*START_TS).num_seconds() < *HEALTH_CHECK_DELAY_SECS as i64 {
+        info!(
+            "Early health check within the HQL_HEALTH_CHECK_DELAY_SECS timeframe - returning true"
+        );
+        return Ok(());
+    }
+
     #[cfg(feature = "sqlite")]
     {
         let metrics = state.raft_db.raft.metrics().borrow().clone();
