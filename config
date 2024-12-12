@@ -97,6 +97,14 @@ HQL_LOGS_UNTIL_SNAPSHOT=10000
 HQL_SECRET_RAFT=SuperSecureSecret1337
 HQL_SECRET_API=SuperSecureSecret1337
 
+# Configures the initial delay in seconds that should be applied
+# to `<API>/health` checks. During the first X seconds after node
+# start, health checks will always return true to solve a chicken
+# and egg problem when you want to cold-start a cluster while
+# relying on `readinessProbe` checks.
+# default: 30
+HQL_HEALTH_CHECK_DELAY_SECS=30
+
 # You can either parse `ENC_KEYS` and `ENC_KEY_ACTIVE` from the
 # environment with setting this value to `env`, or parse them from
 # a file on disk with `file:path/to/enc/keys/file`
