@@ -228,10 +228,12 @@ impl Client {
         lock: &Arc<RwLock<(NodeId, String)>>,
         tx: &flume::Sender<ClientStreamReq>,
     ) -> bool {
-        let mut has_changed = false;
+        let mut was_leader_error = false;
 
         if let Some((id, node)) = err.is_forward_to_leader() {
             if id.is_some() && node.is_some() {
+                was_leader_error = true;
+
                 let api_addr = node.as_ref().unwrap().addr_api.clone();
                 let leader_id = id.unwrap();
                 {
@@ -240,11 +242,10 @@ impl Client {
                     // re-connect triggers
                     if lock.0 != leader_id {
                         *lock = (leader_id, api_addr.clone());
-                        has_changed = true;
                     }
                 }
 
-                if has_changed {
+                if was_leader_error {
                     tx.send_async(ClientStreamReq::LeaderChange((id, node.clone())))
                         .await
                         .expect("the Client API WebSocket Manager to always be running");
@@ -252,6 +253,6 @@ impl Client {
             }
         }
 
-        has_changed
+        was_leader_error
     }
 }

@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::helpers::fn_access;
+use crate::helpers::set_path_access;
 use crate::s3::S3Config;
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{
@@ -300,7 +300,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     let path_logs = logs::logs_dir(&node_config.data_dir);
 
     fs::create_dir_all(&path_backups).await?;
-    fn_access(&path_backups, 0o700).await?;
+    set_path_access(&path_backups, 0o700).await?;
 
     let (path_backup, remove_src) = match src {
         BackupSource::S3(s3_obj) => {
@@ -340,7 +340,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     let _ = fs::remove_dir_all(&path_logs).await;
 
     fs::create_dir_all(&path_db).await?;
-    fn_access(&path_db, 0o700).await?;
+    set_path_access(&path_db, 0o700).await?;
 
     let path_db_full = format!("{}/{}", path_db, node_config.filename_db);
     info!(
@@ -348,7 +348,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
         path_backup, path_db_full
     );
     fs::copy(&path_backup, &path_db_full).await?;
-    fn_access(&path_db_full, 0o700).await?;
+    set_path_access(&path_db_full, 0o700).await?;
 
     if remove_src {
         info!("Cleaning up S3 backup from {}", path_backup);

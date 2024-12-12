@@ -1,4 +1,4 @@
-use crate::helpers::fn_access;
+use crate::helpers::set_path_access;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::{logs, StorageResult};
 use crate::NodeId;
@@ -417,7 +417,7 @@ impl LogStoreRocksdb {
         fs::create_dir_all(&dir)
             .await
             .expect("Cannot create logs path");
-        fn_access(&dir, 0o700)
+        set_path_access(&dir, 0o700)
             .await
             .expect("Cannot set proper access rights");
 

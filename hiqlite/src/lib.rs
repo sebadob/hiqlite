@@ -6,10 +6,9 @@
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::state_machine::Response;
+pub use openraft::SnapshotPolicy;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
-
-pub use openraft::SnapshotPolicy;
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use crate::{client::Client, error::Error};
@@ -80,6 +79,18 @@ pub mod s3;
 pub mod server;
 
 type NodeId = u64;
+
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+pub(crate) static START_TS: std::sync::LazyLock<chrono::DateTime<chrono::Utc>> =
+    std::sync::LazyLock::new(chrono::Utc::now);
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+pub(crate) static HEALTH_CHECK_DELAY_SECS: std::sync::LazyLock<u16> =
+    std::sync::LazyLock::new(|| {
+        std::env::var("HQL_HEALTH_CHECK_DELAY_SECS")
+            .unwrap_or_else(|_| String::from("30"))
+            .parse::<u16>()
+            .expect("Cannot parse HQL_HEALTH_CHECK_DELAY_SECS as u16")
+    });
 
 /// Helper macro to created Owned Params which can be serialized and sent
 /// over the Raft network between nodes.

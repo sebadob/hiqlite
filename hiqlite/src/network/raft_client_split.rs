@@ -256,7 +256,8 @@ impl NetworkStreaming {
                             }
                         });
 
-                        time::sleep(Duration::from_millis(heartbeat_interval)).await;
+                        // if there is a network error, don't try too hard to connect
+                        time::sleep(Duration::from_millis(heartbeat_interval * 3)).await;
                         continue;
                     }
                 }

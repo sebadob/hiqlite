@@ -1,6 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use crate::helpers::fn_access;
+use crate::helpers::set_path_access;
 use crate::migration::Migration;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::param::Param;
@@ -214,24 +214,24 @@ impl StateMachineSqlite {
         if create {
             // this may error if we did already re-create it in a lock file recovery before
             let _ = fs::create_dir_all(&path_db).await;
-            fn_access(&path_base, 0o700)
+            set_path_access(&path_base, 0o700)
                 .await
                 .expect("Cannot set access rights for path_base");
-            fn_access(&path_db, 0o700)
+            set_path_access(&path_db, 0o700)
                 .await
                 .expect("Cannot set access rights for path_db");
 
             fs::create_dir_all(&path_backups)
                 .await
                 .expect("create state machine folder backups");
-            fn_access(&path_backups, 0o700)
+            set_path_access(&path_backups, 0o700)
                 .await
                 .expect("Cannot set access rights for path_backups");
 
             fs::create_dir_all(&path_snapshots)
                 .await
                 .expect("create state machine folder snapshots");
-            fn_access(&path_snapshots, 0o700)
+            set_path_access(&path_snapshots, 0o700)
                 .await
                 .expect("Cannot set access rights for path_snapshots");
         }

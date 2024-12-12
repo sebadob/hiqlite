@@ -61,6 +61,9 @@ pub async fn test_backup_restore_prerequisites(client: &Client) -> Result<(), Er
 
     client.execute("DROP TABLE test", params!()).await?;
 
+    // wait for writes to finish safely before shutting down afterward immediately
+    time::sleep(Duration::from_millis(100)).await;
+
     Ok(())
 }
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.3.2
+
+This version will make Raft cluster formation and re-joins of nodes after restarts more robust. Additional checks and
+logic have been added to figure out the correct behavior automatically. The tricky part about this for cache nodes is,
+that they don't persist their state, which is usually needed for Raft. This makes the auto-setup of cache Raft's more
+challenging, but this version seems pretty good in that regard so far.
+
+Additionally, a new optional config variable has been added to set an initial delay for `/health` checks:
+
+```
+# Configures the initial delay in seconds that should be applied
+# to `<API>/health` checks. During the first X seconds after node
+# start, health checks will always return true to solve a chicken
+# and egg problem when you want to cold-start a cluster while
+# relying on `readinessProbe` checks.
+# default: 30
+HQL_HEALTH_CHECK_DELAY_SECS=30
+```
+
 ## v0.3.1
 
 This version only bumps the `svelte` dependency for the prebuilt dashboard to fix some build steps and bugs.

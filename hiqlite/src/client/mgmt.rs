@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
-use tracing::{error, info};
+use tracing::{debug, info};
 
 #[cfg(feature = "sqlite")]
 use crate::store::{logs::rocksdb::ActionWrite, state_machine::sqlite::writer::WriterRequest};
@@ -136,8 +136,8 @@ impl Client {
                     return;
                 }
                 Err(err) => {
+                    debug!("Waiting for healthy Raft DB: {:?}", err);
                     info!("Waiting for healthy Raft DB");
-                    error!("\n\n{}\n", err);
                     time::sleep(Duration::from_millis(500)).await;
                 }
             }
@@ -153,8 +153,8 @@ impl Client {
                     return;
                 }
                 Err(err) => {
+                    debug!("Waiting for healthy Raft cache: {:?}", err);
                     info!("Waiting for healthy Raft cache");
-                    error!("{}", err);
                     time::sleep(Duration::from_millis(500)).await;
                 }
             }

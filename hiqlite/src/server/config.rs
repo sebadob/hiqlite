@@ -1,4 +1,4 @@
-use crate::helpers::{fn_access, read_line_stdin};
+use crate::helpers::{read_line_stdin, set_path_access};
 use crate::server::args::{ArgsConfig, ArgsGenerate};
 use crate::server::password;
 use crate::{Error, NodeConfig};
@@ -26,7 +26,7 @@ pub fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
 pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
     let path = default_config_dir();
     fs::create_dir_all(&path).await?;
-    fn_access(&path, 0o700).await?;
+    set_path_access(&path, 0o700).await?;
 
     let path_file = default_config_file_path();
     if fs::File::open(&path_file).await.is_ok() {
@@ -61,7 +61,7 @@ pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
     fs::write(&path_file, default_config).await?;
     println!("New default config file created: {}", path_file);
 
-    fn_access(&path_file, 0o600).await?;
+    set_path_access(&path_file, 0o600).await?;
 
     Ok(())
 }

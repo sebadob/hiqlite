@@ -11,7 +11,43 @@ pub async fn is_raft_initialized(
 ) -> Result<bool, Error> {
     match raft_type {
         #[cfg(feature = "sqlite")]
-        RaftType::Sqlite => Ok(state.raft_db.raft.is_initialized().await?),
+        RaftType::Sqlite => {
+            if !state.raft_db.raft.is_initialized().await? {
+                Ok(false)
+            } else {
+                /*
+                We can get in a tricky situation here.
+                In most cases, the `.is_initialized()` gives just the information we want.
+                But, if *this* node lost its volume and therefore membership state, and another
+                leader is still running and trying to reach *this* node before it can fully start
+                up (race condition), the raft will report being initialized via this check, while
+                it actually is not, because it lost all its state.
+                If we get into this situation, we will have a committed leader vote, but no other
+                data like logs and membership config.
+                 */
+
+                let metrics = state.raft_db.raft.server_metrics().borrow().clone();
+
+                #[cfg(debug_assertions)]
+                if metrics.current_leader.is_none() && metrics.vote.leader_id().node_id == state.id
+                {
+                    panic!(
+                        "current_leader.is_none() && metrics.vote.leader_id().node_id == state.id"
+                    )
+                }
+
+                if metrics.vote.committed
+                    && metrics.vote.leader_id.node_id != state.id
+                    && metrics.current_leader.is_none()
+                {
+                    // If we get here, we have a race condition and a remote leader initialized this
+                    // node after a data volume loss before it had a change to re-join and sync data.
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
+            }
+        }
         #[cfg(feature = "cache")]
         RaftType::Cache => Ok(state.raft_cache.raft.is_initialized().await?),
         RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
@@ -41,6 +77,8 @@ pub async fn get_raft_metrics(
     }
 }
 
+/// Raft locking - necessary for auto-cluster-join scenarios of remote notes to prevent
+/// race conditions.
 pub async fn lock_raft<'a>(
     state: &'a Arc<AppState>,
     raft_type: &'a RaftType,
@@ -110,7 +148,7 @@ pub async fn change_membership(
 /// Restricts the access for the given path.
 #[cfg(feature = "sqlite")]
 #[inline]
-pub async fn fn_access(path: &str, mode: u32) -> Result<(), Error> {
+pub async fn set_path_access(path: &str, mode: u32) -> Result<(), Error> {
     #[cfg(target_family = "unix")]
     {
         use std::fs::Permissions;

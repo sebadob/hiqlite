@@ -166,7 +166,7 @@ impl From<std::io::Error> for Error {
 
 impl From<Box<bincode::ErrorKind>> for Error {
     fn from(value: Box<ErrorKind>) -> Self {
-        trace!("\n\nbincode::ErrorKind: {}\n", value);
+        trace!("bincode::ErrorKind: {}", value);
         Self::Bincode(value.to_string())
     }
 }
