@@ -157,6 +157,8 @@ build-image name="ghcr.io/sebadob/hiqlite":
 
     docker build -t {{ name }}:{{ TAG }} .
     docker push {{ name }}:{{ TAG }}
+    docker tag {{ name }}:{{ TAG }} {{ name }}:latest
+    docker push {{ name }}:latest
 
 # builds the code in --release mode
 build-release:
