@@ -166,13 +166,13 @@ build-release:
     set -euxo pipefail
     cargo build --release
 
-run ty="server":
+run ty="server" node_id="1":
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
 
     if [[ {{ ty }} == "server" ]]; then
-      cargo run --features server -- serve
+      HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server --release -- serve -c config --node-id {{ node_id }}
     elif [[ {{ ty }} == "ui" ]]; then
       cd dashboard
       npm run dev -- --host=0.0.0.0

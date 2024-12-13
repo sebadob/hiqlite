@@ -199,12 +199,13 @@ impl Client {
         // Before initiating the shutdown, we want to add a small delay for 2 reasons:
         // - smooth out k8s rolling releases
         // - with openraft 0.10, trigger a leader election before the delay to make it even smoother
+
         let mut election_timeout_max = 1500;
         #[cfg(feature = "cache")]
         {
             election_timeout_max = max(
                 election_timeout_max,
-                state.raft_cache.raft.config().election_timeout_max,
+                state.raft_cache.raft.config().heartbeat_interval,
             );
         }
         #[cfg(feature = "sqlite")]
@@ -214,12 +215,21 @@ impl Client {
                 state.raft_db.raft.config().election_timeout_max,
             );
         }
-        let delay_ms = election_timeout_max * 3;
 
         // TODO as soon as openraft 0.10 is stable, trigger a graceful leader change here
 
-        info!("Pre-Shutdown delay for {} ms", delay_ms);
-        time::sleep(Duration::from_millis(delay_ms)).await;
+        /*
+        TODO this is very weird with openraft 0.9 -> something seems to be blocking internally
+        Only during integration tests, we can mess up the internal raft, if we sleep for
+        >= heartbeat_interval here. This has to do something with the way how tokio tests use
+        timing internally + the fact that something inside openraft 0.9 must be blocking, as I do
+        not have any other explanation for this. The upfront sleep is totally fine in any other
+        scenario. Anything else does not make sense, as just an async sleep should never mess up
+        logic in another place.
+        Currently, when we shut down a single client during tests and restart after deleting the
+        state machine and receive a snapshot and so on, the raft can get stuck. But again, only
+        inside #[tokio::test] when 3 nodes are started from the same test runtime
+         */
 
         #[cfg(feature = "cache")]
         {
@@ -285,8 +295,11 @@ impl Client {
         // Note: The issue is "something blocking" in `openraft` but only in some conditions that
         // don't make sense to me yet - needs further investigation until this sleep can be removed
         // safely.
-        info!("Shutting down in {} ms ...", delay_ms);
-        time::sleep(Duration::from_millis(delay_ms)).await;
+        let delay = election_timeout_max * 5;
+        info!("Shutting down in {} ,s ...", delay);
+        time::sleep(Duration::from_millis(delay)).await;
+        // info!("Shutting down in 10 s ...");
+        // time::sleep(Duration::from_secs(10)).await;
 
         info!("Shutdown complete");
         Ok(())
