@@ -3,7 +3,6 @@ use crate::{cache, check, log, Cache, TEST_DATA_DIR};
 use futures_util::future::join_all;
 use hiqlite::{start_node_with_cache, Client, Error};
 use std::time::Duration;
-use tokio::time::Instant;
 use tokio::{fs, time};
 
 pub async fn test_self_healing(

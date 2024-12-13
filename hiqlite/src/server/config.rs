@@ -3,7 +3,7 @@ use crate::server::args::{ArgsConfig, ArgsGenerate};
 use crate::server::password;
 use crate::{Error, NodeConfig};
 use cryptr::{utils, EncKeys};
-use tokio::{fs, task};
+use tokio::fs;
 
 pub fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
     let config_path = if args.config_file == "$HOME/.hiqlite/config" {

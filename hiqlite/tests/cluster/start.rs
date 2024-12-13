@@ -17,6 +17,21 @@ pub async fn start_test_cluster() -> Result<(Client, Client, Client), Error> {
     Ok((client_1, client_2, client_3))
 }
 
+// pub async fn start_test_cluster() -> Result<(Client, Client, Client), Error> {
+//     let handle_client_1 =
+//         tokio_test::task::spawn(start_node_with_cache::<Cache>(build_config(1).await));
+//     let handle_client_2 =
+//         tokio_test::task::spawn(start_node_with_cache::<Cache>(build_config(2).await));
+//     let handle_client_3 =
+//         tokio_test::task::spawn(start_node_with_cache::<Cache>(build_config(3).await));
+//
+//     let client_1 = handle_client_1.await?;
+//     let client_2 = handle_client_2.await?;
+//     let client_3 = handle_client_3.await?;
+//
+//     Ok((client_1, client_2, client_3))
+// }
+
 pub fn nodes() -> Vec<Node> {
     vec![
         Node {

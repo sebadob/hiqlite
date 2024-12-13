@@ -459,7 +459,8 @@ impl LogStoreRocksdb {
         opts.set_wal_size_limit_mb(wal_mb_logs);
         let logs = ColumnFamilyDescriptor::new("logs", opts.clone());
 
-        let db = DB::open_cf_descriptors(&opts, dir, vec![meta, logs]).unwrap();
+        let db = DB::open_cf_descriptors(&opts, dir, vec![meta, logs])
+            .expect("Cannot open rocksdb files on disk");
         let db = Arc::new(db);
 
         let tx_writer = LogStoreWriter::spawn(db.clone(), sync_immediate);

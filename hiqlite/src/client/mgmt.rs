@@ -165,10 +165,8 @@ impl Client {
     /// Perform a graceful shutdown for this Raft node.
     /// Works on local clients only and can't shut down remote nodes.
     ///
-    /// The shutdown adds a delay on purpose for smoothing out Kubernetes rolling releases and
+    /// The shutdown adds a 10 delay on purpose for smoothing out Kubernetes rolling releases and
     /// make the whole process more graceful, because a whole new leader election might be necessary.
-    /// The delay will be the `max(1500, sqlite.election_timeout_max, cache.election_timeout_max) * 3`
-    /// and it will be added before shutting down the Raft layer and afterward as well.
     ///
     /// In future versions, there will be the possibility to trigger a graceful leader election
     /// upfront, but this has not been stabilized in this version.
@@ -196,42 +194,6 @@ impl Client {
         #[cfg(feature = "sqlite")] tx_client_db: &flume::Sender<ClientStreamReq>,
         tx_shutdown: &Option<watch::Sender<bool>>,
     ) -> Result<(), Error> {
-        // Before initiating the shutdown, we want to add a small delay for 2 reasons:
-        // - smooth out k8s rolling releases
-        // - with openraft 0.10, trigger a leader election before the delay to make it even smoother
-        let mut election_timeout_max = 1500;
-        #[cfg(feature = "cache")]
-        {
-            election_timeout_max = max(
-                election_timeout_max,
-                state.raft_cache.raft.config().election_timeout_max,
-            );
-        }
-        #[cfg(feature = "sqlite")]
-        {
-            election_timeout_max = max(
-                election_timeout_max,
-                state.raft_db.raft.config().election_timeout_max,
-            );
-        }
-        let delay_ms = election_timeout_max * 3;
-
-        // TODO as soon as openraft 0.10 is stable, trigger a graceful leader change here
-
-        info!("Pre-Shutdown delay for {} ms", delay_ms);
-        time::sleep(Duration::from_millis(delay_ms)).await;
-
-        #[cfg(feature = "cache")]
-        {
-            info!("Shutting down raft cache layer");
-            match state.raft_cache.raft.shutdown().await {
-                Ok(_) => {}
-                Err(err) => {
-                    return Err(Error::Error(err.to_string().into()));
-                }
-            }
-        }
-
         #[cfg(feature = "sqlite")]
         {
             info!("Shutting down raft sqlite layer");
@@ -285,8 +247,8 @@ impl Client {
         // Note: The issue is "something blocking" in `openraft` but only in some conditions that
         // don't make sense to me yet - needs further investigation until this sleep can be removed
         // safely.
-        info!("Shutting down in {} ms ...", delay_ms);
-        time::sleep(Duration::from_millis(delay_ms)).await;
+        info!("Shutting down in 10 s ...");
+        time::sleep(Duration::from_secs(10)).await;
 
         info!("Shutdown complete");
         Ok(())

@@ -29,10 +29,14 @@ pub async fn is_raft_initialized(
                 let metrics = state.raft_db.raft.server_metrics().borrow().clone();
 
                 #[cfg(debug_assertions)]
-                if metrics.current_leader.is_none() && metrics.vote.leader_id().node_id == state.id
+                if metrics.current_leader.is_none()
+                    && metrics.vote.leader_id().node_id == state.id
+                    && metrics.vote.committed
                 {
                     panic!(
-                        "current_leader.is_none() && metrics.vote.leader_id().node_id == state.id"
+                        "current_leader.is_none() && metrics.vote.leader_id().node_id == \
+                        state.id && metrics.vote.committed:\n{:?}",
+                        metrics
                     )
                 }
 
