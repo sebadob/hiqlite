@@ -1,17 +1,5 @@
 # Changelog
 
-## v0.3.3
-
-Further improvements for node shutdowns during rolling releases.
-
-The shutdown adds a delay on purpose for smoothing out Kubernetes rolling releases and
-make the whole process more graceful, because a whole new leader election might be necessary.
-The delay will be the `max(1500, sqlite.election_timeout_max, cache.election_timeout_max) * 3`
-in ms, and it will be added before shutting down the Raft layer and afterward as well.
-
-In future versions, there will be the possibility to trigger a graceful leader election
-upfront, but this has not been stabilized in this version.
-
 ## v0.3.2
 
 This version will make Raft cluster formation and re-joins of nodes after restarts more robust. Additional checks and

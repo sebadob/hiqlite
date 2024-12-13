@@ -165,10 +165,8 @@ impl Client {
     /// Perform a graceful shutdown for this Raft node.
     /// Works on local clients only and can't shut down remote nodes.
     ///
-    /// The shutdown adds a delay on purpose for smoothing out Kubernetes rolling releases and
+    /// The shutdown adds a 10 delay on purpose for smoothing out Kubernetes rolling releases and
     /// make the whole process more graceful, because a whole new leader election might be necessary.
-    /// The delay will be the `max(1500, sqlite.election_timeout_max, cache.election_timeout_max) * 3`
-    /// in ms, and it will be added before shutting down the Raft layer and afterward as well.
     ///
     /// In future versions, there will be the possibility to trigger a graceful leader election
     /// upfront, but this has not been stabilized in this version.
