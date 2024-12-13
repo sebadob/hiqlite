@@ -296,7 +296,7 @@ impl Client {
         // don't make sense to me yet - needs further investigation until this sleep can be removed
         // safely.
         let delay = election_timeout_max * 5;
-        info!("Shutting down in {} ,s ...", delay);
+        info!("Shutting down in {} ms ...", delay);
         time::sleep(Duration::from_millis(delay)).await;
         // info!("Shutting down in 10 s ...");
         // time::sleep(Duration::from_secs(10)).await;
