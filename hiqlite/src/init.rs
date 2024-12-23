@@ -358,8 +358,6 @@ async fn try_become(
                         // -> We must check this after each error to get smooth rolling releases.
                         if let Some((Some(leader_id), Some(node))) = err.is_forward_to_leader() {
                             if leader_id == this_node {
-                                info!("This node became the raft leader in the meantime - skipping init");
-
                                 if !helpers::is_raft_initialized(state, raft_type).await? {
                                     let leader = helpers::get_raft_leader(state, raft_type).await;
                                     let metrics = helpers::get_raft_metrics(state, raft_type).await;
@@ -371,12 +369,15 @@ async fn try_become(
     Because the in-memory Raft does not save the state between restarts, you must way at least
     for the duration of a leader heartbeat timeout before trying to re-join the cluster.
 
+    Raft Type: {raft_type:?}
     This node: {this_node}
     Leader:    {leader:?}: {node:?}
     Metrics:   {metrics:?}
 "#
                                     );
                                 }
+
+                                info!("This node became the raft leader in the meantime - skipping init");
 
                                 return Ok(SkipBecome::Yes);
                             }

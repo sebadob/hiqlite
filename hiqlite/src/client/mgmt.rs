@@ -194,6 +194,12 @@ impl Client {
         #[cfg(feature = "sqlite")] tx_client_db: &flume::Sender<ClientStreamReq>,
         tx_shutdown: &Option<watch::Sender<bool>>,
     ) -> Result<(), Error> {
+        #[cfg(feature = "cache")]
+        {
+            info!("Shutting down raft cache layer");
+            state.raft_cache.raft.shutdown().await?;
+        }
+
         #[cfg(feature = "sqlite")]
         {
             info!("Shutting down raft sqlite layer");
@@ -228,10 +234,10 @@ impl Client {
             }
         }
 
-        #[cfg(feature = "sqlite")]
-        let _ = tx_client_db.send_async(ClientStreamReq::Shutdown).await;
         #[cfg(feature = "cache")]
         let _ = tx_client_cache.send_async(ClientStreamReq::Shutdown).await;
+        #[cfg(feature = "sqlite")]
+        let _ = tx_client_db.send_async(ClientStreamReq::Shutdown).await;
 
         if let Some(tx) = tx_shutdown {
             let _ = tx.send(true);
