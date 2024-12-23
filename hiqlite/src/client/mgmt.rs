@@ -17,7 +17,6 @@ use openraft::RaftMetrics;
 use openraft::ServerState;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use std::clone::Clone;
-use std::cmp::max;
 
 impl Client {
     /// Get cluster metrics for the database Raft.
@@ -188,6 +187,7 @@ impl Client {
         }
     }
 
+    #[allow(unused_variables)]
     pub(crate) async fn shutdown_execute(
         state: &Arc<AppState>,
         #[cfg(feature = "cache")] tx_client_cache: &flume::Sender<ClientStreamReq>,

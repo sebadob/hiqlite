@@ -715,9 +715,29 @@ fn last_applied_migration(
     conn: &rusqlite::Connection,
     migrations: &[Migration],
 ) -> Result<u32, Error> {
-    let mut stmt = conn.prepare("SELECT * FROM _migrations ORDER BY id ASC")?;
+    if migrations.is_empty() {
+        return Err(Error::Error("Received empty migrations".into()));
+    }
+
+    // We need the first id to skip all other existing migrations in the DB.
+    // The client is optimized to reduce requests and strip out already existing ones.
+    let first_id = migrations.first().as_ref().unwrap().id;
+
+    if first_id > 1 {
+        // double check, that we actually have the correct amount of migrations already applied.
+        let mut stmt = conn.prepare("SELECT COUNT(*) AS count FROM _migrations WHERE id < $1")?;
+        let count: u32 = stmt.query_row([first_id], |row| {
+            let count: u32 = row.get("count")?;
+            Ok(count)
+        })?;
+        if count < first_id - 1 {
+            panic!("Received optimized migrations starting at id '{}' but found only {} already applied", first_id, count);
+        }
+    }
+
+    let mut stmt = conn.prepare("SELECT * FROM _migrations WHERE id >= $1 ORDER BY id ASC")?;
     let already_applied: Vec<AppliedMigration> = stmt
-        .query_map([], |row| {
+        .query_map([first_id], |row| {
             Ok(AppliedMigration {
                 id: row.get(0)?,
                 name: row.get(1)?,
