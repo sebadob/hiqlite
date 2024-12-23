@@ -164,11 +164,12 @@ async fn shutdown_lock_sm_db_restart(client: Client, node_id: u64) -> Result<Cli
 async fn shutdown_remove_all_restart(client: Client, node_id: u64) -> Result<Client, Error> {
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
-    // time::sleep(Duration::from_millis(2000)).await;
 
     let folder = folder_base(node_id);
     log(format!("Deleting {}", folder));
     fs::remove_dir_all(folder).await?;
+
+    time::sleep(Duration::from_secs(3)).await;
 
     log(format!("Re-starting client {}", node_id));
     let client = start_node_with_cache::<Cache>(build_config(node_id).await).await?;
