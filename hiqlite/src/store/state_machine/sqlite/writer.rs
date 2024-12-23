@@ -748,7 +748,9 @@ fn last_applied_migration(
         .map(|r| r.expect("_migrations table corrupted"))
         .collect();
 
-    let mut last_applied = 0;
+    // We can safely set the last_applied here because we checked it would have thrown an error
+    // earlier otherwise already.
+    let mut last_applied = first_id - 1;
     for applied in already_applied {
         if last_applied + 1 != applied.id {
             panic!(
