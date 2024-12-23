@@ -750,6 +750,7 @@ fn last_applied_migration(
 
     // We can safely set the last_applied here because we checked it would have thrown an error
     // earlier otherwise already.
+    let applied_offset = (first_id - 1) as usize;
     let mut last_applied = first_id - 1;
     for applied in already_applied {
         if last_applied + 1 != applied.id {
@@ -761,7 +762,7 @@ fn last_applied_migration(
         }
         last_applied = applied.id;
 
-        match migrations.get(last_applied as usize - 1) {
+        match migrations.get(last_applied as usize - 1 - applied_offset) {
             None => panic!("Missing migration with id {}", last_applied),
             Some(migration) => {
                 if applied.id != migration.id {
