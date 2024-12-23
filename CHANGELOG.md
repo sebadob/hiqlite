@@ -1,6 +1,6 @@
 # Changelog
 
-## UNRELEASED
+## v0.3.3
 
 Fixes an issue where the DB writer would panic because of a mismatch in DB Migrations validation. This could have
 happened if migrations are applied between applications starts. The `hiqlite::Client` in that case would only send the
