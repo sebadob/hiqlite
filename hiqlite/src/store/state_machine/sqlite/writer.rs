@@ -715,7 +715,7 @@ fn last_applied_migration(
     conn: &rusqlite::Connection,
     migrations: &[Migration],
 ) -> Result<u32, Error> {
-    let mut stmt = conn.prepare("SELECT * FROM _migrations")?;
+    let mut stmt = conn.prepare("SELECT * FROM _migrations ORDER BY id ASC")?;
     let already_applied: Vec<AppliedMigration> = stmt
         .query_map([], |row| {
             Ok(AppliedMigration {
@@ -744,22 +744,22 @@ fn last_applied_migration(
             Some(migration) => {
                 if applied.id != migration.id {
                     panic!(
-                        "Migration id mismatch: applied {}, given {}",
-                        applied.id, migration.id
+                        "Migration id mismatch: applied {}, given {}\n{:?}",
+                        applied.id, migration.id, migrations
                     );
                 }
 
                 if applied.name != migration.name {
                     panic!(
-                        "Name for migration {} has changed: applied {}, given {}",
-                        migration.id, applied.name, migration.name
+                        "Name for migration {} has changed: applied {}, given {}\n{:?}",
+                        migration.id, applied.name, migration.name, migrations
                     );
                 }
 
                 if applied.hash != migration.hash {
                     panic!(
-                        "Hash for migration {} has changed: applied {}, given {}",
-                        migration.id, applied.hash, migration.hash
+                        "Hash for migration {} has changed: applied {}, given {}\n{:?}",
+                        migration.id, applied.hash, migration.hash, migrations
                     );
                 }
             }

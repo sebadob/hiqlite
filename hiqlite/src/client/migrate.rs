@@ -25,7 +25,7 @@ impl Client {
     #[cold]
     pub async fn migrate<T: RustEmbed>(&self) -> Result<(), Error> {
         let applied: Vec<AppliedMigration> = self
-            .query_map("SELECT * FROM _migrations", params!())
+            .query_map("SELECT * FROM _migrations ORDER BY id ASC", params!())
             .await
             .unwrap_or_default();
         let mut migrations = Migrations::build::<T>();
