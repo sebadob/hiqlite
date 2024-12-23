@@ -1,5 +1,13 @@
 # Changelog
 
+## UNRELEASED
+
+Fixes an issue where the DB writer would panic because of a mismatch in DB Migrations validation. This could have
+happened if migrations are applied between applications starts. The `hiqlite::Client` in that case would only send the
+migrations over the network that have not been applied already and optimizes already existing ones away.
+However, the additional validation inside the DB writer (to make sure the client did not mess up) was too strict, and it
+would error.
+
 ## v0.3.2
 
 This version will make Raft cluster formation and re-joins of nodes after restarts more robust. Additional checks and
