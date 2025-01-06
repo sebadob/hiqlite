@@ -81,7 +81,7 @@ impl Session {
             )
         } else {
             format!(
-                "{}={}; Secure; HttpOnly; SameSite=Lax; Max-Age={}",
+                "{}={}; Secure; HttpOnly; SameSite=Lax; Max-Age={} Path=/",
                 COOKIE_NAME, b64, max_age
             )
         };
