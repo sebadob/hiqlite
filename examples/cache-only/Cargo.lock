@@ -638,9 +638,9 @@ dependencies = [
 
 [[package]]
 name = "fastwebsockets"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26da0c7b5cef45c521a6f9cdfffdfeb6c9f5804fbac332deb5ae254634c7a6be"
+checksum = "5574849ef5c007a399f8426b9254bcf2d8a6d739039c08c739d95f47ce46c0a3"
 dependencies = [
  "async-trait",
  "axum-core",
@@ -876,7 +876,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiqlite"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "axum",
  "axum-server",
