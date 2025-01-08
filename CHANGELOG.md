@@ -1,6 +1,6 @@
 # Changelog
 
-## UNRELEASED
+## v0.4.0
 
 ### Updates
 
