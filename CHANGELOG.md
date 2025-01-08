@@ -1,5 +1,17 @@
 # Changelog
 
+## UNRELEASED
+
+### Updates
+
+Rocksdb major version has been updated from `8` to `9.9.3` under the hood.
+Some other smaller dependencies have been bumped to the latest versions as well.
+
+### Bugfix
+
+The dashboard cookie did not set a `path` when used in production and therefore browsers would reject it because of
+its `__Host-` prefix. The path has been added properly to fix this issue.
+
 ## v0.3.3
 
 Fixes an issue where the DB writer would panic because of a mismatch in DB Migrations validation. This could have
