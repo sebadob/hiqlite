@@ -13,7 +13,7 @@ use crate::client::stream::ClientStreamReq;
 use crate::dashboard::DashboardState;
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::LockRequest;
-#[cfg(feature = "listen_notify")]
+#[cfg(feature = "listen_notify_local")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::{
@@ -105,9 +105,9 @@ pub struct StateRaftCache {
     pub raft: openraft::Raft<TypeConfigKV>,
     pub lock: tokio::sync::Mutex<()>,
     pub tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
-    #[cfg(feature = "listen_notify")]
+    #[cfg(feature = "listen_notify_local")]
     pub tx_notify: flume::Sender<NotifyRequest>,
-    #[cfg(feature = "listen_notify")]
+    #[cfg(feature = "listen_notify_local")]
     pub rx_notify: flume::Receiver<(i64, Vec<u8>)>,
     #[cfg(feature = "dlock")]
     pub tx_dlock: flume::Sender<LockRequest>,

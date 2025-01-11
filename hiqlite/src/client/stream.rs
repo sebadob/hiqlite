@@ -59,7 +59,7 @@ pub(crate) enum ClientStreamReq {
     #[cfg(feature = "dlock")]
     LockAwait(ClientKVPayload),
 
-    #[cfg(feature = "listen_notify")]
+    #[cfg(feature = "listen_notify_local")]
     Notify(ClientKVPayload),
 
     Shutdown,
@@ -423,7 +423,7 @@ async fn client_stream(
                     ))
                 }
 
-                #[cfg(feature = "listen_notify")]
+                #[cfg(feature = "listen_notify_local")]
                 ClientStreamReq::Notify(ClientKVPayload {
                     request_id,
                     cache_req,
@@ -561,7 +561,7 @@ async fn client_stream(
                         "we should never receive ClientStreamReq::LockAwait from WS reader"
                     )
                 }
-                #[cfg(feature = "listen_notify")]
+                #[cfg(feature = "listen_notify_local")]
                 ClientStreamReq::Notify(_) => {
                     unreachable!("we should never receive ClientStreamReq::Notify from WS reader")
                 }
