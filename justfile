@@ -94,6 +94,7 @@ clippy:
 
     cargo clippy --no-default-features --features cache
     cargo clippy --no-default-features --features dlock
+    cargo clippy --no-default-features --features listen_notify_local
     cargo clippy --no-default-features --features listen_notify
     cargo clippy --no-default-features --features sqlite,cache
 

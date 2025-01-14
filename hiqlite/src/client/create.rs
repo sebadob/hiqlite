@@ -132,7 +132,7 @@ impl Client {
             api_secret.clone(),
         ));
 
-        #[cfg(not(feature = "listen_notify"))]
+        #[cfg(all(feature = "listen_notify_local", not(feature = "listen_notify")))]
         let rx_notify = None;
 
         let api_secret_bytes = api_secret.as_bytes().to_vec();
