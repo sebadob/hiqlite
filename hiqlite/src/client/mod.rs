@@ -17,7 +17,7 @@ pub mod dlock;
 #[cfg(feature = "sqlite")]
 mod execute;
 mod helpers;
-#[cfg(feature = "listen_notify")]
+#[cfg(feature = "listen_notify_local")]
 mod listen_notify;
 mod mgmt;
 #[cfg(feature = "sqlite")]
@@ -56,8 +56,8 @@ pub(crate) struct DbClient {
     pub(crate) api_secret: Option<String>,
     pub(crate) request_id: AtomicUsize,
     pub(crate) tx_shutdown: Option<watch::Sender<bool>>,
-    #[cfg(feature = "listen_notify")]
+    #[cfg(feature = "listen_notify_local")]
     pub(crate) app_start: i64,
-    #[cfg(feature = "listen_notify")]
+    #[cfg(feature = "listen_notify_local")]
     pub(crate) rx_notify: Option<flume::Receiver<(i64, Vec<u8>)>>,
 }

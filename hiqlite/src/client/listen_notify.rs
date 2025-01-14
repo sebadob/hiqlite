@@ -1,91 +1,98 @@
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
-use crate::network::HEADER_NAME_SECRET;
 use crate::store::state_machine::memory::state_machine::CacheRequest;
-use crate::{Client, Error, NodeId};
+use crate::{Client, Error};
 use chrono::Utc;
-use cryptr::utils::b64_decode;
-use eventsource_client::{Client as ClientES, SSE};
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::{oneshot, RwLock};
-use tokio::{task, time};
-use tracing::{error, info, warn};
+use tokio::sync::oneshot;
 
-pub(crate) struct RemoteListener;
+/// The "listen_notify" feature currently enables _remote_.
+#[cfg(feature = "listen_notify")]
+pub(crate) mod remote {
+    use crate::network::HEADER_NAME_SECRET;
+    use crate::NodeId;
+    use cryptr::utils::b64_decode;
+    use eventsource_client::{Client as ClientES, SSE};
+    use futures_util::StreamExt;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::RwLock;
+    use tokio::{task, time};
+    use tracing::{error, info, warn};
 
-impl RemoteListener {
-    pub(crate) fn spawn(
-        leader_cache: Arc<RwLock<(NodeId, String)>>,
-        tls: bool,
-        api_secret: String,
-    ) -> flume::Receiver<(i64, Vec<u8>)> {
-        let (tx, rx) = flume::unbounded();
-        task::spawn(Self::handler(leader_cache, api_secret, tls, tx));
-        rx
-    }
+    pub(crate) struct RemoteListener;
 
-    async fn handler(
-        leader_cache: Arc<RwLock<(NodeId, String)>>,
-        api_secret: String,
-        tls: bool,
-        tx: flume::Sender<(i64, Vec<u8>)>,
-    ) {
-        'main: loop {
-            let client = {
-                let url = {
-                    let scheme = if tls { "https" } else { "http" };
-                    let lock = leader_cache.read().await;
-                    format!("{}://{}/listen", scheme, lock.1)
-                };
-                info!("Connecting to listen SSE stream: {}", url);
-
-                // TODO what about tls_no_verify in this case?
-                eventsource_client::ClientBuilder::for_url(&url)
-                    .expect("invalid listen SSE URL")
-                    .header(HEADER_NAME_SECRET, &api_secret)
-                    .unwrap()
-                    .build()
-            };
-
-            let mut stream = client.stream();
-            while let Some(res) = stream.next().await {
-                match res {
-                    Ok(sse) => match sse {
-                        SSE::Connected(c) => {
-                            info!("Opened /listen events stream: {:?}", c);
-                        }
-                        SSE::Event(event) => {
-                            let (ts, data) = event
-                                .data
-                                .split_once(' ')
-                                .expect("Invalid listen event from server");
-                            let ts = ts
-                                .parse::<i64>()
-                                .expect("Cannot parse ts to i64 from listen event");
-                            let bytes =
-                                b64_decode(data).expect("Cannot decode data from listen event");
-
-                            if let Err(err) = tx.send((ts, bytes)) {
-                                error!("Error sending listen event to Client: {}", err);
-                                break 'main;
-                            }
-                        }
-                        SSE::Comment(_) => {}
-                    },
-                    Err(err) => {
-                        error!("{:?}", err);
-                        break;
-                    }
-                }
-            }
-
-            time::sleep(Duration::from_secs(1)).await;
+    impl RemoteListener {
+        pub(crate) fn spawn(
+            leader_cache: Arc<RwLock<(NodeId, String)>>,
+            tls: bool,
+            api_secret: String,
+        ) -> flume::Receiver<(i64, Vec<u8>)> {
+            let (tx, rx) = flume::unbounded();
+            task::spawn(Self::handler(leader_cache, api_secret, tls, tx));
+            rx
         }
 
-        warn!("RemoteListener exiting");
+        async fn handler(
+            leader_cache: Arc<RwLock<(NodeId, String)>>,
+            api_secret: String,
+            tls: bool,
+            tx: flume::Sender<(i64, Vec<u8>)>,
+        ) {
+            'main: loop {
+                let client = {
+                    let url = {
+                        let scheme = if tls { "https" } else { "http" };
+                        let lock = leader_cache.read().await;
+                        format!("{}://{}/listen", scheme, lock.1)
+                    };
+                    info!("Connecting to listen SSE stream: {}", url);
+
+                    // TODO what about tls_no_verify in this case?
+                    eventsource_client::ClientBuilder::for_url(&url)
+                        .expect("invalid listen SSE URL")
+                        .header(HEADER_NAME_SECRET, &api_secret)
+                        .unwrap()
+                        .build()
+                };
+
+                let mut stream = client.stream();
+                while let Some(res) = stream.next().await {
+                    match res {
+                        Ok(sse) => match sse {
+                            SSE::Connected(c) => {
+                                info!("Opened /listen events stream: {:?}", c);
+                            }
+                            SSE::Event(event) => {
+                                let (ts, data) = event
+                                    .data
+                                    .split_once(' ')
+                                    .expect("Invalid listen event from server");
+                                let ts = ts
+                                    .parse::<i64>()
+                                    .expect("Cannot parse ts to i64 from listen event");
+                                let bytes =
+                                    b64_decode(data).expect("Cannot decode data from listen event");
+
+                                if let Err(err) = tx.send((ts, bytes)) {
+                                    error!("Error sending listen event to Client: {}", err);
+                                    break 'main;
+                                }
+                            }
+                            SSE::Comment(_) => {}
+                        },
+                        Err(err) => {
+                            error!("{:?}", err);
+                            break;
+                        }
+                    }
+                }
+
+                time::sleep(Duration::from_secs(1)).await;
+            }
+
+            warn!("RemoteListener exiting");
+        }
     }
 }
 

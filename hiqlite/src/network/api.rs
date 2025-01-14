@@ -311,7 +311,7 @@ pub(crate) enum ApiStreamRequestPayload {
     KVGet(CacheRequest),
     #[cfg(feature = "dlock")]
     LockAwait(CacheRequest),
-    #[cfg(feature = "listen_notify")]
+    #[cfg(feature = "listen_notify_local")]
     Notify(CacheRequest),
 }
 
@@ -347,7 +347,7 @@ pub(crate) enum ApiStreamResponsePayload {
     #[cfg(feature = "dlock")]
     Lock(LockState),
 
-    #[cfg(feature = "listen_notify")]
+    #[cfg(feature = "listen_notify_local")]
     Notify(Result<(), Error>),
 }
 
@@ -749,7 +749,7 @@ async fn handle_socket_concurrent(
                     }
                 }
 
-                #[cfg(feature = "listen_notify")]
+                #[cfg(feature = "listen_notify_local")]
                 ApiStreamRequestPayload::Notify(cache_req) => {
                     let (ts, data) = match cache_req {
                         CacheRequest::Notify((ts, data)) => (ts, data),

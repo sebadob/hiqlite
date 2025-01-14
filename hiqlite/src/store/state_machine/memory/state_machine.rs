@@ -27,7 +27,7 @@ use uuid::Uuid;
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::{self, *};
 
-#[cfg(feature = "listen_notify")]
+#[cfg(feature = "listen_notify_local")]
 use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
 
 type Entry = openraft::Entry<TypeConfigKV>;
@@ -58,7 +58,7 @@ pub enum CacheRequest {
         cache_idx: usize,
     },
     ClearAll,
-    #[cfg(feature = "listen_notify")]
+    #[cfg(feature = "listen_notify_local")]
     Notify((i64, Vec<u8>)),
     #[cfg(feature = "dlock")]
     Lock((Cow<'static, str>, Option<u64>)),
@@ -95,9 +95,9 @@ pub struct StateMachineMemory {
     pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     tx_ttls: Vec<flume::Sender<TtlRequest>>,
 
-    #[cfg(feature = "listen_notify")]
+    #[cfg(feature = "listen_notify_local")]
     pub(crate) tx_notify: flume::Sender<NotifyRequest>,
-    #[cfg(feature = "listen_notify")]
+    #[cfg(feature = "listen_notify_local")]
     pub(crate) rx_notify: flume::Receiver<(i64, Vec<u8>)>,
 
     #[cfg(feature = "dlock")]
@@ -213,7 +213,7 @@ impl StateMachineMemory {
         #[cfg(feature = "dlock")]
         let tx_dlock = dlock_handler::spawn();
 
-        #[cfg(feature = "listen_notify")]
+        #[cfg(feature = "listen_notify_local")]
         let (tx_notify, rx_notify) = notify_handler::spawn();
 
         Ok(Self {
@@ -222,9 +222,9 @@ impl StateMachineMemory {
             snapshot: Default::default(),
             tx_caches,
             tx_ttls,
-            #[cfg(feature = "listen_notify")]
+            #[cfg(feature = "listen_notify_local")]
             tx_notify,
-            #[cfg(feature = "listen_notify")]
+            #[cfg(feature = "listen_notify_local")]
             rx_notify,
             #[cfg(feature = "dlock")]
             tx_dlock,
@@ -319,7 +319,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         CacheResponse::Ok
                     }
 
-                    #[cfg(feature = "listen_notify")]
+                    #[cfg(feature = "listen_notify_local")]
                     CacheRequest::Notify(payload) => {
                         self.tx_notify
                             .send(NotifyRequest::Notify(payload))

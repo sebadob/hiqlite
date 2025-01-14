@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::{watch, RwLock};
 
 #[cfg(feature = "listen_notify")]
-use crate::client::listen_notify::RemoteListener;
+use crate::client::listen_notify::remote::RemoteListener;
 
 #[cfg(feature = "sqlite")]
 use crate::client::stream::ClientStreamReq;
@@ -50,9 +50,9 @@ impl Client {
             api_secret: None,
             request_id: AtomicUsize::new(0),
             tx_shutdown: Some(tx_shutdown),
-            #[cfg(feature = "listen_notify")]
+            #[cfg(feature = "listen_notify_local")]
             app_start: chrono::Utc::now().timestamp_micros(),
-            #[cfg(feature = "listen_notify")]
+            #[cfg(feature = "listen_notify_local")]
             rx_notify: None,
         };
 
@@ -132,6 +132,9 @@ impl Client {
             api_secret.clone(),
         ));
 
+        #[cfg(all(feature = "listen_notify_local", not(feature = "listen_notify")))]
+        let rx_notify = None;
+
         let api_secret_bytes = api_secret.as_bytes().to_vec();
 
         let db_client = DbClient {
@@ -156,9 +159,9 @@ impl Client {
             api_secret: Some(api_secret),
             request_id: AtomicUsize::new(0),
             tx_shutdown: None,
-            #[cfg(feature = "listen_notify")]
+            #[cfg(feature = "listen_notify_local")]
             app_start: chrono::Utc::now().timestamp_micros(),
-            #[cfg(feature = "listen_notify")]
+            #[cfg(feature = "listen_notify_local")]
             rx_notify,
         };
 
