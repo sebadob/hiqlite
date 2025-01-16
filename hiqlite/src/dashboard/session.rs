@@ -32,10 +32,8 @@ pub(crate) struct Session {
     expires: i64,
 }
 
-#[axum::async_trait]
 impl<S> FromRequestParts<S> for Session
 where
-    // Arc<AppState>: FromRef<S>,
     S: Send + Sync,
 {
     type Rejection = Error;
