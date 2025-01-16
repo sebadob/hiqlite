@@ -52,7 +52,7 @@ where
         check_csrf(&parts.method, headers).await?;
 
         let jar = CookieJar::from_headers(headers);
-        Ok(Session::try_from_jar(&jar)?)
+        Session::try_from_jar(&jar)
     }
 }
 
