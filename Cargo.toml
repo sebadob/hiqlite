@@ -18,8 +18,8 @@ panic = "abort"
 [workspace.dependencies]
 argon2 = "0.5.3"
 # upgrading axum is not possible right now because of blocking fastwebsockets
-axum = { version = "0.7.5", features = ["http2", "tokio"] }
-axum-extra = { version = "0.9.3", features = ["cookie"] }
+axum = { version = "0.8.1", features = ["http2", "tokio"] }
+axum-extra = { version = "0.10.0", features = ["cookie"] }
 axum-server = { version = "0.7.1", features = [
     "tls-rustls",
     "tls-rustls-no-provider",
@@ -35,13 +35,13 @@ chrono = { version = "0.4.38", default-features = false, features = [
     #"serde",
 ] }
 clap = { version = "4.1.11", features = ["derive", "env"] }
-cron = { version = "0.14" }
+cron = { version = "0.15" }
 cryptr = { version = "0.5.1", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"
 eventsource-client = "0.13.0"
-fastwebsockets = { version = "0.9.0", features = [
+fastwebsockets = { version = "0.10.0", features = [
     "upgrade",
     "with_axum",
     "unstable-split",

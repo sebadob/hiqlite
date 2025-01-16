@@ -163,13 +163,16 @@ where
         .nest(
             "/cluster",
             Router::new()
-                .route("/add_learner/:raft_type", post(management::add_learner))
-                .route("/become_member/:raft_type", post(management::become_member))
+                .route("/add_learner/{raft_type}", post(management::add_learner))
                 .route(
-                    "/membership/:raft_type",
+                    "/become_member/{raft_type}",
+                    post(management::become_member),
+                )
+                .route(
+                    "/membership/{raft_type}",
                     get(management::get_membership).post(management::post_membership),
                 )
-                .route("/metrics/:raft_type", get(management::metrics)),
+                .route("/metrics/{raft_type}", get(management::metrics)),
         )
         // TODO
         // .route("/execute", post(api::execute))
@@ -178,7 +181,7 @@ where
         // TODO
         // .route("/query/consistent", post(api::query))
         .route("/listen", get(api::listen))
-        .route("/stream/:raft_type", get(api::stream))
+        .route("/stream/{raft_type}", get(api::stream))
         .route("/health", get(api::health))
         .route("/ping", get(api::ping));
 
@@ -205,7 +208,7 @@ where
                             )
                             .route("/tables", get(dashboard::handlers::get_tables))
                             .route(
-                                "/tables/:filter",
+                                "/tables/{filter}",
                                 get(dashboard::handlers::get_tables_filtered),
                             ),
                     )
