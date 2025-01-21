@@ -195,6 +195,7 @@ impl Client {
         #[cfg(feature = "sqlite")] tx_client_db: &flume::Sender<ClientStreamReq>,
         tx_shutdown: &Option<watch::Sender<bool>>,
     ) -> Result<(), Error> {
+        #[allow(unused_mut)]
         let mut is_single_instance: bool;
 
         #[cfg(feature = "cache")]
