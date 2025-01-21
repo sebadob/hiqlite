@@ -187,6 +187,7 @@ impl Client {
         }
     }
 
+    #[allow(unused_assignments)]
     #[allow(unused_variables)]
     pub(crate) async fn shutdown_execute(
         state: &Arc<AppState>,
@@ -194,14 +195,24 @@ impl Client {
         #[cfg(feature = "sqlite")] tx_client_db: &flume::Sender<ClientStreamReq>,
         tx_shutdown: &Option<watch::Sender<bool>>,
     ) -> Result<(), Error> {
+        let mut is_single_instance: bool;
+
         #[cfg(feature = "cache")]
         {
+            let metrics = state.raft_cache.raft.metrics().borrow().clone();
+            let node_count = metrics.membership_config.nodes().count();
+            is_single_instance = node_count == 1;
+
             info!("Shutting down raft cache layer");
             state.raft_cache.raft.shutdown().await?;
         }
 
         #[cfg(feature = "sqlite")]
         {
+            let metrics = state.raft_db.raft.metrics().borrow().clone();
+            let node_count = metrics.membership_config.nodes().count();
+            is_single_instance = node_count == 1;
+
             info!("Shutting down raft sqlite layer");
             match state.raft_db.raft.shutdown().await {
                 Ok(_) => {
@@ -243,18 +254,21 @@ impl Client {
             let _ = tx.send(true);
         }
 
-        // We need to do a short sleep only to avoid race conditions during rolling releases.
-        // This also helps to make re-joins after a restart smoother.
-        //
-        // TODO for some very weird reason, the process sometimes gets stuck during
-        // this sleep await. I only saw this behavior in integration tests though, where alle nodes
-        // are started from the same `tokio::test` task.
-        //
-        // Note: The issue is "something blocking" in `openraft` but only in some conditions that
-        // don't make sense to me yet - needs further investigation until this sleep can be removed
-        // safely.
-        info!("Shutting down in 10 s ...");
-        time::sleep(Duration::from_secs(10)).await;
+        // no need to apply the shutdown delay for a single instance (mostly used during dev)
+        if !is_single_instance {
+            // We need to do a short sleep only to avoid race conditions during rolling releases.
+            // This also helps to make re-joins after a restart smoother.
+            //
+            // TODO for some very weird reason, the process sometimes gets stuck during
+            // this sleep await. I only saw this behavior in integration tests though, where alle nodes
+            // are started from the same `tokio::test` task.
+            //
+            // Note: The issue is "something blocking" in `openraft` but only in some conditions that
+            // don't make sense to me yet - needs further investigation until this sleep can be removed
+            // safely.
+            info!("Shutting down in 10 s ...");
+            time::sleep(Duration::from_secs(10)).await;
+        }
 
         info!("Shutdown complete");
         Ok(())
