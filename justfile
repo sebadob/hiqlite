@@ -188,7 +188,7 @@ msrv-verify:
 
 # find's the new MSRV, if it needs a bump
 msrv-find:
-    cargo msrv --min {{ MSRV }}
+    cargo msrv find --min {{ MSRV }} --all-features
 
 # verify thats everything is good
 verify:
