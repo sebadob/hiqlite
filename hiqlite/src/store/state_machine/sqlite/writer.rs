@@ -10,6 +10,7 @@ use chrono::Utc;
 use flume::RecvError;
 use openraft::{LogId, SnapshotMeta, StorageError, StorageIOError, StoredMembership};
 use rusqlite::backup::Progress;
+use rusqlite::fallible_iterator::FallibleIterator;
 use rusqlite::{Batch, DatabaseName, Transaction};
 use std::borrow::Cow;
 use std::default::Default;
@@ -380,8 +381,6 @@ CREATE TABLE IF NOT EXISTS _metadata
                                 }
                                 Ok(None) => break,
                                 Err(e) => {
-                                    // The `Batch` iterator can't recover from errors
-                                    // -> exit early and do not commit the txn
                                     err = Some(Error::Sqlite(e.to_string().into()));
                                     break;
                                 }
