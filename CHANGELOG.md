@@ -1,6 +1,6 @@
 # Changelog
 
-## UNRELEASED
+## v0.5.0
 
 - All internal dependencies have been bumped to the latest stable version.
 - If you don't need the `listen_notify` feature for remote clusters, you can now choose to only used
@@ -10,6 +10,7 @@
   case during local development. This greatly improves the DX.
 - `hiqlite::Client::query_raw_not_empty()` has been removed as it was redundant. `query_raw_one()` behaves in the
   same way.
+- MSRV has been bumped to `1.82.0`
 
 ## v0.4.0
 
