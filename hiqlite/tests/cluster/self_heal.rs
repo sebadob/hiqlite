@@ -174,6 +174,8 @@ async fn shutdown_remove_all_restart(client: Client, node_id: u64) -> Result<Cli
         "Re-starting client {} after full data deletion",
         node_id
     ));
+    // TODO the start node sometimes gets stuck here, only after full data deletion
+    // no way found to reproduce it so far, probably some race condition in db cluster join
     let client = start_node_with_cache::<Cache>(build_config(node_id).await).await?;
     time::sleep(Duration::from_millis(150)).await;
 
