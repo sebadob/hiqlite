@@ -8,6 +8,8 @@
 - The `asm` feature has been removed from `sha2` to make it compile on windows.
 - The shutdown delay of 10 seconds is not being applied anymore if you only run a single instance, which usually is the
   case during local development. This greatly improves the DX.
+- `hiqlite::Client::query_raw_not_empty()` has been removed as it was redundant. `query_raw_one()` behaves in the
+  same way.
 
 ## v0.4.0
 

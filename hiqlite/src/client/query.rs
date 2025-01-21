@@ -244,27 +244,6 @@ impl Client {
 
     /// A raw query will return the bare `Row` without doing any deserialization or mapping.
     ///
-    /// This version works the same as `query_raw()` with the exception that it will return an
-    /// error, if no rows have been returned. This eliminates the need for manual `is_empty()` checks
-    /// each time.
-    pub async fn query_raw_not_empty<S>(
-        &self,
-        stmt: S,
-        params: Params,
-    ) -> Result<Vec<crate::Row>, Error>
-    where
-        S: Into<Cow<'static, str>>,
-    {
-        let rows = self.query_raw(stmt, params).await?;
-        if rows.is_empty() {
-            Err(Error::Sqlite("No rows returned".into()))
-        } else {
-            Ok(rows)
-        }
-    }
-
-    /// A raw query will return the bare `Row` without doing any deserialization or mapping.
-    ///
     /// This version will return exactly one `Row`.
     /// Throws an error if the returned rows are not exactly one.
     pub async fn query_raw_one<S>(&self, stmt: S, params: Params) -> Result<crate::Row, Error>
