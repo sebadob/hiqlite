@@ -1,4 +1,4 @@
-FROM rust:1.81.0-bookworm AS builder
+FROM rust:1.84.0-bookworm AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
