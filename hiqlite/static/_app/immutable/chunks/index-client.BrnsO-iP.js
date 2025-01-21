@@ -1,1 +1,0 @@
-import{c as o,l as t,a,u as l,b as r}from"./runtime.Zcp02Le-.js";function f(n){o===null&&t(),a&&o.l!==null?s(o).m.push(n):l(()=>{const u=r(n);if(typeof u=="function")return u})}function s(n){var u=n.l;return u.u??(u.u={a:[],b:[],m:[]})}export{f as o};
