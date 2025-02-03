@@ -349,6 +349,30 @@ impl TryFrom<ValueOwned> for Option<Vec<u8>> {
     }
 }
 
+impl<const N: usize> TryFrom<ValueOwned> for [u8; N] {
+    type Error = crate::Error;
+
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Blob(b) => Ok(b
+                .try_into()
+                .map_err(|_| Error::Sqlite("Cannot convert into [u8]: incorrect length".into()))?),
+            _ => Err(Error::Sqlite("Cannot convert into [u8]".into())),
+        }
+    }
+}
+
+impl<const N: usize> TryFrom<ValueOwned> for Option<[u8; N]> {
+    type Error = crate::Error;
+
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Null => Ok(None),
+            v => <[u8; N]>::try_from(v).map(Some),
+        }
+    }
+}
+
 impl TryFrom<ValueOwned> for NaiveDate {
     type Error = crate::Error;
 
