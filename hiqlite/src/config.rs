@@ -3,7 +3,7 @@ use crate::{Error, Node, NodeId};
 use openraft::SnapshotPolicy;
 use std::borrow::Cow;
 use std::env;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub use openraft::Config as RaftConfig;
 
@@ -295,6 +295,18 @@ impl NodeConfig {
                     "password_dashboard should be at least 14 characters long".into(),
                 ));
             }
+        }
+
+        if self.log_statements {
+            warn!(
+                r#"
+
+!!! CAUTION !!!
+Statement logging is activated - this can leak sensitive information into your logs,
+as it will log query parameters as well. Be careful when using this in production and
+clean up logs after debugging!
+"#
+            )
         }
 
         Ok(())
