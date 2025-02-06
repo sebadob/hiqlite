@@ -3,7 +3,7 @@
 ## v0.5.0
 
 - All internal dependencies have been bumped to the latest stable version.
-- If you don't need the `listen_notify` feature for remote clusters, you can now choose to only used
+- If you don't need the `listen_notify` feature for remote clusters, you can now choose to only use
   `listen_notify_local` instead, which will pull in less dependencies.
 - The `asm` feature has been removed from `sha2` to make it compile on windows.
 - The shutdown delay of 10 seconds is not being applied anymore if you only run a single instance, which usually is the
