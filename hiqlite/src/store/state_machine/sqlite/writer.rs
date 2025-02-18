@@ -5,13 +5,15 @@ use crate::store::state_machine::sqlite::state_machine;
 use crate::store::state_machine::sqlite::state_machine::{
     Params, StateMachineData, StateMachineSqlite, StoredSnapshot,
 };
+use crate::store::state_machine::sqlite::transaction_env::{ExecutedStatement, TransactionEnv, TransactionParamContext};
 use crate::{AppliedMigration, Error, Node, NodeId};
 use chrono::Utc;
 use flume::RecvError;
 use openraft::{LogId, SnapshotMeta, StorageError, StorageIOError, StoredMembership};
 use rusqlite::backup::Progress;
 use rusqlite::fallible_iterator::FallibleIterator;
-use rusqlite::{Batch, DatabaseName, Transaction};
+use rusqlite::fallible_streaming_iterator::FallibleStreamingIterator;
+use rusqlite::{Batch, DatabaseName, Rows, Transaction};
 use std::borrow::Cow;
 use std::default::Default;
 use std::ops::Sub;
@@ -298,6 +300,7 @@ CREATE TABLE IF NOT EXISTS _metadata
 
                         let mut results = Vec::with_capacity(req.queries.len());
                         let mut query_err = None;
+                        let mut txn_env = TransactionEnv::with_capacity(req.queries.len());
 
                         'outer: for state_machine::Query { sql, params } in req.queries {
                             if log_statements {
@@ -316,26 +319,88 @@ CREATE TABLE IF NOT EXISTS _metadata
 
                             let mut idx = 1;
                             for param in params {
-                                if let Err(err) = stmt.raw_bind_parameter(idx, param.into_sql()) {
-                                    let err = format!(
-                                        "Error binding param on position {} to query {}: {:?}",
-                                        idx, sql, err
-                                    );
-                                    query_err = Some(Error::QueryParams(err.to_string().into()));
-                                    break 'outer;
+                                let ctx = TransactionParamContext {
+                                    txn: &txn,
+                                    env: &mut txn_env,
+                                };
+                                match param.into_sql_txn_ctx(ctx) {
+                                    Ok(param) => {
+                                        if let Err(err) = stmt.raw_bind_parameter(idx, param) {
+                                            let err = format!(
+                                                "Error binding param on position {} to query {}: {:?}",
+                                                idx, sql, err
+                                            );
+                                            query_err = Some(Error::QueryParams(err.to_string().into()));
+                                            break 'outer;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        query_err = Some(Error::QueryParams(err));
+                                        break 'outer;
+                                    }
                                 }
 
                                 idx += 1;
                             }
 
-                            let res = stmt.raw_execute().map_err(Error::from);
-                            match res {
-                                Ok(r) => results.push(Ok(r)),
-                                Err(err) => {
-                                    query_err = Some(Error::Transaction(err.to_string().into()));
-                                    break;
+                            let column_count = stmt.column_count();
+
+                            let first_row = if column_count > 0 {
+                                let mut rows = stmt.raw_query();
+                                match rows.next().map_err(Error::from) {
+                                    Ok(Some(row)) => {
+                                        let mut row_count = 1;
+
+                                        let mut first_row = Vec::with_capacity(column_count);
+                                        for col_index in 0..column_count {
+                                            first_row.push(row.get(col_index).unwrap());
+                                        }
+
+                                        'remaining_rows: loop {
+                                            match rows.next().map_err(Error::from) {
+                                                Ok(Some(_)) => {
+                                                    row_count += 1;
+                                                }
+                                                Ok(None) => {
+                                                    break 'remaining_rows;
+                                                }
+                                                Err(err) => {
+                                                    query_err = Some(Error::Transaction(err.to_string().into()));
+                                                    break 'outer;
+                                                }
+                                            }
+                                        }
+
+                                        results.push(Ok(row_count));
+                                        first_row
+                                    }
+                                    Ok(None) => {
+                                        results.push(Ok(0));
+                                        vec![]
+                                    }
+                                    Err(err) => {
+                                        query_err = Some(Error::Transaction(err.to_string().into()));
+                                        break;
+                                    }
                                 }
-                            }
+                            } else {
+                                let res = stmt.raw_execute().map_err(Error::from);
+                                match res {
+                                    Ok(r) => {
+                                        results.push(Ok(r));
+                                        vec![]
+                                    }
+                                    Err(err) => {
+                                        query_err = Some(Error::Transaction(err.to_string().into()));
+                                        break;
+                                    }
+                                }
+                            };
+
+                            txn_env.push(ExecutedStatement {
+                                sql,
+                                first_row
+                            });
                         }
 
                         if let Some(err) = query_err {

@@ -28,7 +28,7 @@ pub use client::dlock::Lock;
 #[cfg(feature = "sqlite")]
 pub use crate::query::rows::Row;
 #[cfg(feature = "sqlite")]
-pub use crate::store::state_machine::sqlite::{param::Param, state_machine::Params};
+pub use crate::store::state_machine::sqlite::{param::Param, state_machine::Params, transaction_variable::{StmtIndex, StmtColumn}};
 #[cfg(feature = "sqlite")]
 pub use migration::AppliedMigration;
 

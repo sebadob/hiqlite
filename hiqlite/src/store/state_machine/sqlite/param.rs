@@ -1,6 +1,12 @@
+use std::borrow::Cow;
+
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rusqlite::types::{ToSqlOutput, Value};
 use serde::{Deserialize, Serialize};
+
+use crate::Error;
+
+use super::{transaction_variable::StmtColumn, transaction_env::{TransactionEnv, TransactionParamContext}};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Param {
@@ -14,6 +20,12 @@ pub enum Param {
     Text(String),
     /// The value is a blob of data
     Blob(Vec<u8>),
+    /// The value is a variable referencing the first row of a previous statement in a transaction.
+    /// The key is the statement index and a column index.
+    StmtOutputIndexed(usize, usize),
+    /// The value is a variable referencing the first row of a previous statement in a transaction.
+    /// The key is the statement index and a column name.
+    StmtOutputNamed(usize, Cow<'static, str>),
 }
 
 // impl ToSql for Param {
@@ -30,8 +42,26 @@ impl Param {
             Param::Real(r) => Value::Real(r),
             Param::Text(t) => Value::Text(t),
             Param::Blob(b) => Value::Blob(b),
+            Param::StmtOutputNamed(..) | Param::StmtOutputIndexed(..) => panic!("Param::StmtOutput is only valid inside transactions"),
         };
         ToSqlOutput::Owned(value)
+    }
+
+    pub (crate) fn into_sql_txn_ctx<'a>(self, mut ctx: TransactionParamContext) -> Result<ToSqlOutput<'a>, Cow<'static, str>> {
+        let value = match self {
+            Param::Null => Value::Null,
+            Param::Integer(i) => Value::Integer(i),
+            Param::Real(r) => Value::Real(r),
+            Param::Text(t) => Value::Text(t),
+            Param::Blob(b) => Value::Blob(b),
+            Param::StmtOutputIndexed(stmt_index, column_index) => {
+                ctx.lookup_statement_output_indexed(stmt_index, column_index)?
+            }
+            Param::StmtOutputNamed(stmt_index, column_name) => {
+                ctx.lookup_statement_output_named(stmt_index, column_name)?
+            }
+        };
+        Ok(ToSqlOutput::Owned(value))
     }
 }
 
@@ -231,5 +261,23 @@ where
             Some(x) => x.clone().into(),
             None => Param::Null,
         }
+    }
+}
+
+impl From<StmtColumn<usize>> for Param {
+    fn from(value: StmtColumn<usize>) -> Self {
+        Param::StmtOutputIndexed(value.stmt_index.0, value.column)
+    }
+}
+
+impl From<StmtColumn<&'static str>> for Param {
+    fn from(value: StmtColumn<&'static str>) -> Self {
+        Param::StmtOutputNamed(value.stmt_index.0, value.column.into())
+    }
+}
+
+impl From<StmtColumn<String>> for Param {
+    fn from(value: StmtColumn<String>) -> Self {
+        Param::StmtOutputNamed(value.stmt_index.0, value.column.into())
     }
 }
