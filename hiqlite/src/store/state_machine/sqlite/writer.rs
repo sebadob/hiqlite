@@ -5,7 +5,7 @@ use crate::store::state_machine::sqlite::state_machine;
 use crate::store::state_machine::sqlite::state_machine::{
     Params, StateMachineData, StateMachineSqlite, StoredSnapshot,
 };
-use crate::store::state_machine::sqlite::transaction_env::{ExecutedStatement, TransactionEnv, TransactionParamContext};
+use crate::store::state_machine::sqlite::transaction_env::{TransactionEnv, TransactionParamContext};
 use crate::{AppliedMigration, Error, Node, NodeId};
 use chrono::Utc;
 use flume::RecvError;
@@ -13,6 +13,7 @@ use openraft::{LogId, SnapshotMeta, StorageError, StorageIOError, StoredMembersh
 use rusqlite::backup::Progress;
 use rusqlite::fallible_iterator::FallibleIterator;
 use rusqlite::fallible_streaming_iterator::FallibleStreamingIterator;
+use rusqlite::types::Value;
 use rusqlite::{Batch, DatabaseName, Rows, Transaction};
 use std::borrow::Cow;
 use std::default::Default;
@@ -300,9 +301,9 @@ CREATE TABLE IF NOT EXISTS _metadata
 
                         let mut results = Vec::with_capacity(req.queries.len());
                         let mut query_err = None;
-                        let mut txn_env = TransactionEnv::with_capacity(req.queries.len());
+                        let mut txn_env = TransactionEnv::default();
 
-                        'outer: for state_machine::Query { sql, params } in req.queries {
+                        'outer: for (stmt_index, state_machine::Query { sql, params }) in req.queries.into_iter().enumerate() {
                             if log_statements {
                                 info!("Query::Transaction:\n{}\n{:?}", sql, params);
                             }
@@ -345,13 +346,14 @@ CREATE TABLE IF NOT EXISTS _metadata
 
                             let column_count = stmt.column_count();
 
-                            let first_row = if column_count > 0 {
+                            if column_count > 0 {
+                                // the statement is potentially "observable", because it returns columns.
                                 let mut rows = stmt.raw_query();
                                 match rows.next().map_err(Error::from) {
                                     Ok(Some(row)) => {
                                         let mut row_count = 1;
 
-                                        let mut first_row = Vec::with_capacity(column_count);
+                                        let mut first_row: Vec<Value> = Vec::with_capacity(column_count);
                                         for col_index in 0..column_count {
                                             first_row.push(row.get(col_index).unwrap());
                                         }
@@ -372,11 +374,11 @@ CREATE TABLE IF NOT EXISTS _metadata
                                         }
 
                                         results.push(Ok(row_count));
-                                        first_row
+                                        // this statement is observable because it has output columns:
+                                        txn_env.push_observable_stmt(stmt_index, sql, first_row);
                                     }
                                     Ok(None) => {
                                         results.push(Ok(0));
-                                        vec![]
                                     }
                                     Err(err) => {
                                         query_err = Some(Error::Transaction(err.to_string().into()));
@@ -388,7 +390,6 @@ CREATE TABLE IF NOT EXISTS _metadata
                                 match res {
                                     Ok(r) => {
                                         results.push(Ok(r));
-                                        vec![]
                                     }
                                     Err(err) => {
                                         query_err = Some(Error::Transaction(err.to_string().into()));
@@ -396,11 +397,6 @@ CREATE TABLE IF NOT EXISTS _metadata
                                     }
                                 }
                             };
-
-                            txn_env.push(ExecutedStatement {
-                                sql,
-                                first_row
-                            });
                         }
 
                         if let Some(err) = query_err {
