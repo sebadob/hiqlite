@@ -1,4 +1,4 @@
-use hiqlite::{params, Error, NodeConfig, Param, Row};
+use hiqlite::{params, Error, NodeConfig, Param, Row, StmtIndex};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use tracing_subscriber::EnvFilter;
@@ -124,6 +124,33 @@ async fn main() -> Result<(), Error> {
 
     // The inner value is a Vec<Result<_>> contain a result for each single execute in the
     // exact same order as they were provided.
+    for inner_res in res? {
+        let rows_affected = inner_res?;
+        assert_eq!(rows_affected, 1);
+    }
+
+    // An example of a transaction using variables as parameters.
+    // These parameter types, based on StmtIndex, are variables that refer to output columns
+    // produced earlier in the transaction.
+    // This way, we can express a clean multi-statement insertion using SQL-generated (e.g. autoincrement) primary keys,
+    // and use those later as foreign keys.
+
+    log("Testing transaction with variable parameters");
+
+    let insert_parent = "INSERT INTO parent (description) VALUES ($1) RETURNING id";
+    let insert_child = "INSERT INTO child (parent_id, description) VALUES ($1, $2)";
+    let res = client
+        .txn([
+            (insert_parent, params!("parent A")), // StmtIndex(0)
+            (insert_parent, params!("parent B")), // StmtIndex(1)
+            // Pick the first statement's first output column as the children's `parent_id`:
+            (insert_child, params!(StmtIndex(0).column(0), "child A.1")),
+            (insert_child, params!(StmtIndex(0).column(0), "child A.2")),
+            // We can also refer to a column by name. Now using "parent B":
+            (insert_child, params!(StmtIndex(1).column("id"), "child B.1")),
+        ])
+        .await;
+
     for inner_res in res? {
         let rows_affected = inner_res?;
         assert_eq!(rows_affected, 1);

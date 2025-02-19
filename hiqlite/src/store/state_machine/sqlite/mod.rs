@@ -12,6 +12,9 @@ pub mod reader;
 pub mod snapshot_builder;
 pub mod state_machine;
 pub mod writer;
+pub mod transaction_variable;
+
+mod transaction_env;
 
 openraft::declare_raft_types!(
     pub TypeConfigSqlite:
