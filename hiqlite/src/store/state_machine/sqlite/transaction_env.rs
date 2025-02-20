@@ -4,44 +4,20 @@ use rusqlite::{types::Value, Transaction};
 
 use crate::Error;
 
-/// A previously executed statement
-pub struct ExecutedStatement {
-    /// The executed SQL
-    pub sql: Cow<'static, str>,
-    /// The first returned row of the statement.
-    /// This will be empty if the statement returned no rows.
-    pub first_row: Vec<Value>,
-}
-
-impl ExecutedStatement {
-    fn by_index(statements: &[ExecutedStatement], index: usize) -> Result<&ExecutedStatement, Cow<'static, str>> {
-        Ok(statements.get(index).ok_or("statement index out of bounds")?)
-    }
-
-    fn get_first_row_value(&self, column_index: usize) -> Result<&Value, Cow<'static, str>> {
-        Ok(self.first_row.get(column_index).ok_or("column index out of bounds")?)
-    }
-}
-
 /// Data structure for supporting Param::StmtOutput
+#[derive(Default)]
 pub struct TransactionEnv {
-    /// already executed statements
-    executed_stmts: Vec<ExecutedStatement>,
+    /// observable statements: statements with row output.
+    /// It is keyed by the statement index.
+    observable_stmts: Vec<(usize, ObservableStatement)>,
 
-    /// A cache of column indexes per statement
+    /// A cache of column name->index per statement
     column_index_cache: HashMap<usize, HashMap<Cow<'static, str>, usize>>
 }
 
 impl TransactionEnv {
-    pub fn with_capacity(cap: usize) -> Self {
-        Self {
-            executed_stmts: Vec::with_capacity(cap),
-            column_index_cache: Default::default(),
-        }
-    }
-
-    pub fn push(&mut self, executed_stmt: ExecutedStatement) {
-        self.executed_stmts.push(executed_stmt);
+    pub fn push_observable_stmt(&mut self, stmt_index: usize, sql: Cow<'static, str>, first_row: Vec<Value>) {
+        self.observable_stmts.push((stmt_index, ObservableStatement { sql, first_row }));
     }
 }
 
@@ -53,12 +29,12 @@ pub struct TransactionParamContext<'a, 't> {
 
 impl TransactionParamContext<'_, '_> {
     pub fn lookup_statement_output_indexed(&mut self, statement_index: usize, column_index: usize) -> Result<Value, Cow<'static, str>> {
-        let executed_stmt = ExecutedStatement::by_index(&self.env.executed_stmts, statement_index)?;
+        let executed_stmt = ObservableStatement::by_index(&self.env.observable_stmts, statement_index)?;
         Ok(executed_stmt.get_first_row_value(column_index)?.clone())
     }
 
     pub fn lookup_statement_output_named(&mut self, statement_index: usize, column_name: Cow<'static, str>) -> Result<Value, Cow<'static, str>> {
-        let executed_stmt = ExecutedStatement::by_index(&self.env.executed_stmts, statement_index)?;
+        let executed_stmt = ObservableStatement::by_index(&self.env.observable_stmts, statement_index)?;
 
         let cache = self.env.column_index_cache.entry(statement_index).or_default();
         let column_index = match cache.entry(column_name) {
@@ -81,5 +57,30 @@ impl TransactionParamContext<'_, '_> {
         };
 
         Ok(executed_stmt.get_first_row_value(column_index)?.clone())
+    }
+}
+
+/// A previously executed statement that has output columns
+struct ObservableStatement {
+    /// The executed SQL
+    pub sql: Cow<'static, str>,
+    /// The first returned row of the statement.
+    /// This will be empty if the statement returned no rows.
+    pub first_row: Vec<Value>,
+}
+
+impl ObservableStatement {
+    fn by_index(statements: &[(usize, ObservableStatement)], index: usize) -> Result<&ObservableStatement, Cow<'static, str>> {
+        // Currently doing a linear search.
+        // Could dynamically change to binary search if the number of entries is large enough, or use hashmap.
+        statements
+            .iter()
+            .find(|(stmt_index, _)| *stmt_index == index)
+            .map(|(_, statement)| statement)
+            .ok_or_else(|| format!("StmtIndex({index}) does not have observable row output, or index out of bounds").into())
+    }
+
+    fn get_first_row_value(&self, column_index: usize) -> Result<&Value, Cow<'static, str>> {
+        Ok(self.first_row.get(column_index).ok_or("column index out of bounds")?)
     }
 }
