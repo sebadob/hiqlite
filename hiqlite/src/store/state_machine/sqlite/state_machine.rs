@@ -604,10 +604,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                         .await
                         .expect("sql writer to always be listening");
 
-                    let result = rx
-                        .await
-                        .expect("to always get a response from sql writer")
-                        .map_err(Error::from);
+                    let result = rx.await.expect("to always get a response from sql writer");
                     Response::Execute(ResponseExecute { result })
                 }
 
@@ -625,10 +622,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                         .await
                         .expect("sql writer to always be listening");
 
-                    let result = rx
-                        .await
-                        .expect("to always get a response from sql writer")
-                        .map_err(Error::from);
+                    let result = rx.await.expect("to always get a response from sql writer");
                     Response::ExecuteReturning(ResponseExecuteReturning { result })
                 }
 
@@ -646,19 +640,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                         .expect("sql writer to always be listening");
 
                     let result = rx.await.expect("to always get a response from sql writer");
-
-                    let resp = match result {
-                        Ok(res) => {
-                            let mapped = res
-                                .into_iter()
-                                .map(|res| res.map_err(Error::from))
-                                .collect();
-                            Ok(mapped)
-                        }
-                        Err(err) => Err(err),
-                    };
-
-                    Response::Transaction(resp)
+                    Response::Transaction(result)
                 }
 
                 EntryPayload::Normal(QueryWrite::Batch(sql)) => {
