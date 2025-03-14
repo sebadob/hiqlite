@@ -9,7 +9,7 @@ struct Salt(Vec<u8>);
 impl Salt {
     pub fn new() -> Result<Self, Error> {
         let mut buf = [0u8; SALT_LEN];
-        getrandom::getrandom(&mut buf).map_err(|_| Error::Error("getrandom Error".into()))?;
+        getrandom::fill(&mut buf).map_err(|_| Error::Error("getrandom Error".into()))?;
         Ok(Self(buf.to_vec()))
     }
 }

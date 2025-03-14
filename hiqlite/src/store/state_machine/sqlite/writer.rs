@@ -5,7 +5,9 @@ use crate::store::state_machine::sqlite::state_machine;
 use crate::store::state_machine::sqlite::state_machine::{
     Params, StateMachineData, StateMachineSqlite, StoredSnapshot,
 };
-use crate::store::state_machine::sqlite::transaction_env::{TransactionEnv, TransactionParamContext};
+use crate::store::state_machine::sqlite::transaction_env::{
+    TransactionEnv, TransactionParamContext,
+};
 use crate::{AppliedMigration, Error, Node, NodeId};
 use chrono::Utc;
 use flume::RecvError;
@@ -303,7 +305,9 @@ CREATE TABLE IF NOT EXISTS _metadata
                         let mut query_err = None;
                         let mut txn_env = TransactionEnv::default();
 
-                        'outer: for (stmt_index, state_machine::Query { sql, params }) in req.queries.into_iter().enumerate() {
+                        'outer: for (stmt_index, state_machine::Query { sql, params }) in
+                            req.queries.into_iter().enumerate()
+                        {
                             if log_statements {
                                 info!("Query::Transaction:\n{}\n{:?}", sql, params);
                             }
@@ -331,7 +335,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                                                 "Error binding param on position {} to query {}: {:?}",
                                                 idx, sql, err
                                             );
-                                            query_err = Some(Error::QueryParams(err.to_string().into()));
+                                            query_err =
+                                                Some(Error::QueryParams(err.to_string().into()));
                                             break 'outer;
                                         }
                                     }
@@ -353,7 +358,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                                     Ok(Some(row)) => {
                                         let mut row_count = 1;
 
-                                        let mut first_row: Vec<Value> = Vec::with_capacity(column_count);
+                                        let mut first_row: Vec<Value> =
+                                            Vec::with_capacity(column_count);
                                         for col_index in 0..column_count {
                                             first_row.push(row.get(col_index).unwrap());
                                         }
@@ -367,7 +373,9 @@ CREATE TABLE IF NOT EXISTS _metadata
                                                     break 'remaining_rows;
                                                 }
                                                 Err(err) => {
-                                                    query_err = Some(Error::Transaction(err.to_string().into()));
+                                                    query_err = Some(Error::Transaction(
+                                                        err.to_string().into(),
+                                                    ));
                                                     break 'outer;
                                                 }
                                             }
@@ -381,7 +389,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                                         results.push(Ok(0));
                                     }
                                     Err(err) => {
-                                        query_err = Some(Error::Transaction(err.to_string().into()));
+                                        query_err =
+                                            Some(Error::Transaction(err.to_string().into()));
                                         break;
                                     }
                                 }
@@ -392,7 +401,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                                         results.push(Ok(r));
                                     }
                                     Err(err) => {
-                                        query_err = Some(Error::Transaction(err.to_string().into()));
+                                        query_err =
+                                            Some(Error::Transaction(err.to_string().into()));
                                         break;
                                     }
                                 }
@@ -464,7 +474,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                     sm_data.last_applied_log_id = req.last_applied_log_id;
 
                     // TODO should be maybe always panic if migrations throw an error?
-                    let res = migrate(&mut conn, req.migrations).map_err(Error::from);
+                    let res = migrate(&mut conn, req.migrations);
 
                     if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);

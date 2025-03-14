@@ -39,7 +39,7 @@ cryptr = { version = "0.5.1", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"
-eventsource-client = "0.13.0"
+eventsource-client = "0.14"
 fastwebsockets = { version = "0.10.0", features = [
     "upgrade",
     "with_axum",
@@ -47,7 +47,7 @@ fastwebsockets = { version = "0.10.0", features = [
 ] }
 flume = "0.11.0"
 futures-util = "0.3.30"
-getrandom = { version = "0.2.15", features = ["std"] }
+getrandom = { version = "0.3", features = ["std"] }
 hex = "0.4.3"
 home = "0.5.9"
 hostname = "0.4.0"
@@ -64,7 +64,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 rocksdb = { version = "0.23.0", default-features = true, features = ["snappy"] }
-rusqlite = { version = "0.33", features = [
+rusqlite = { version = "0.34", features = [
     "backup",
     "bundled",
     "chrono",
@@ -75,10 +75,10 @@ rust-embed = { version = "8.5.0", features = [] }
 rustls = { version = "0.23.12", features = ["ring"] }
 serde = { version = "1.0.114", features = ["derive"] }
 serde_json = "1.0.57"
-serde_rusqlite = "0.37.0"
+serde_rusqlite = "0.38"
 sha2 = { version = "0.10.8", features = [] }
 spow = { version = "0.4.0", features = ["server"] }
-strum = { version = "0.26.3", features = ["derive"] }
+strum = { version = "0.27", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1.38.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.0", features = ["ring"] }
