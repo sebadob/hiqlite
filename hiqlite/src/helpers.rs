@@ -1,9 +1,32 @@
 use crate::app_state::{AppState, RaftType};
 use crate::{Error, Node};
+use bincode::error::DecodeError;
 use openraft::RaftMetrics;
+use serde::de::DeserializeOwned;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use tokio::sync::MutexGuard;
+
+/// Deserializes logs data. Includes a "backup try" for backwards compatibility with older logs
+/// saved in a `bincode-1.3.3` format. It will always try the new format first and do a second
+/// try, if the first on fails.
+///
+/// This is a bit inefficient, but only for as long as you are migrating from an older logs
+/// store until the next purge. Having the deserialization a bit slower, but fully and easy
+/// backwards compatible without managing additional state like "bincode-2 used from log id XY"
+/// is preferable.
+#[inline(always)]
+pub fn deserialize_bytes_compat<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
+    match bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::standard()) {
+        Ok((r, _)) => Ok(r),
+        Err(_) => {
+            match bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::legacy()) {
+                Ok((r, _)) => Ok(r),
+                Err(err) => Err(err),
+            }
+        }
+    }
+}
 
 pub async fn is_raft_initialized(
     state: &Arc<AppState>,

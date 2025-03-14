@@ -1,4 +1,4 @@
-use crate::helpers::set_path_access;
+use crate::helpers::{deserialize_bytes_compat, set_path_access};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::{logs, StorageResult};
 use crate::NodeId;
@@ -301,7 +301,7 @@ impl LogStoreReader {
                                         break;
                                     }
 
-                                    let entry = Self::deserialize_bytes_compat::<Entry<_>>(&value)
+                                    let entry = deserialize_bytes_compat::<Entry<_>>(&value)
                                         .map_err(read_logs_err)
                                         .unwrap();
                                     ack.send(Some(Ok(entry))).unwrap();
@@ -335,15 +335,14 @@ impl LogStoreReader {
                             }
 
                             let (_, bytes) = res.unwrap();
-                            let res =
-                                Self::deserialize_bytes_compat::<Entry<TypeConfigSqlite>>(&bytes)
-                                    .map_err(|err| {
-                                        StorageIOError::new(
-                                            ErrorSubject::Logs,
-                                            ErrorVerb::Read,
-                                            AnyError::new(&err),
-                                        )
-                                    });
+                            let res = deserialize_bytes_compat::<Entry<TypeConfigSqlite>>(&bytes)
+                                .map_err(|err| {
+                                    StorageIOError::new(
+                                        ErrorSubject::Logs,
+                                        ErrorVerb::Read,
+                                        AnyError::new(&err),
+                                    )
+                                });
 
                             match res {
                                 Ok(entry) => Some(entry.log_id),
@@ -358,7 +357,7 @@ impl LogStoreReader {
 
                         let res = db.get_cf(db.cf_handle("meta").unwrap(), KEY_LAST_PURGED);
                         let last_purged_log_id = match res {
-                            Ok(Some(bytes)) => match Self::deserialize_bytes_compat(&bytes) {
+                            Ok(Some(bytes)) => match deserialize_bytes_compat(&bytes) {
                                 Ok(log_id) => Some(log_id),
                                 Err(err) => {
                                     ack.send(Err(StorageIOError::read_logs(&err))).unwrap();
@@ -404,27 +403,6 @@ impl LogStoreReader {
         });
 
         tx
-    }
-
-    /// Deserializes logs data. Includes a "backup try" for backwards compatibility with older logs
-    /// saved in a `bincode-1.3.3` format. It will always try the new format first and do a second
-    /// try, if the first on fails.
-    ///
-    /// This is a bit inefficient, but only for as long as you are migrating from an older logs
-    /// store until the next purge. Having the deserialization a bit slower, but fully and easy
-    /// backwards compatible without managing additional state like "bincode-2 used from log id XY"
-    /// is preferable.
-    #[inline]
-    pub fn deserialize_bytes_compat<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
-        match bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::standard()) {
-            Ok((r, _)) => Ok(r),
-            Err(_) => {
-                match bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::legacy()) {
-                    Ok((r, _)) => Ok(r),
-                    Err(err) => Err(err),
-                }
-            }
-        }
     }
 }
 
@@ -609,7 +587,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::read_vote(&err),
             })??
-            .map(|b| LogStoreReader::deserialize_bytes_compat(&b).unwrap());
+            .map(|b| deserialize_bytes_compat(&b).unwrap());
 
         Ok(vote)
     }
