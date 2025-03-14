@@ -312,6 +312,13 @@ impl From<DecodeError> for Error {
     }
 }
 
+impl From<EncodeError> for Error {
+    fn from(value: EncodeError) -> Self {
+        trace!("EncodeError: {}", value);
+        Self::Bincode(value.to_string())
+    }
+}
+
 impl From<fastwebsockets::WebSocketError> for Error {
     fn from(value: WebSocketError) -> Self {
         trace!("WebSocket: {}", value);
