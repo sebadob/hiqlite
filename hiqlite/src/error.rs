@@ -305,6 +305,13 @@ impl From<serde_json::Error> for Error {
     }
 }
 
+impl From<DecodeError> for Error {
+    fn from(value: DecodeError) -> Self {
+        trace!("DecodeError: {}", value);
+        Self::Bincode(value.to_string())
+    }
+}
+
 impl From<fastwebsockets::WebSocketError> for Error {
     fn from(value: WebSocketError) -> Self {
         trace!("WebSocket: {}", value);
