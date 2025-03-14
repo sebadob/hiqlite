@@ -1,3 +1,4 @@
+use crate::helpers::deserialize_bytes_compat;
 use crate::migration::Migration;
 use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
 use crate::store::logs;
@@ -542,7 +543,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                     sm_data = conn
                         .query_row("SELECT data FROM _metadata WHERE key = 'meta'", (), |row| {
                             let meta_bytes: Vec<u8> = row.get(0)?;
-                            let metadata: StateMachineData = bincode::deserialize(&meta_bytes)
+                            let metadata: StateMachineData = deserialize_bytes_compat(&meta_bytes)
                                 .expect("Metadata to deserialize ok");
                             Ok(metadata)
                         })
@@ -562,7 +563,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             Ok(bytes)
                         }) {
                             Ok(bytes) => {
-                                sm_data = bincode::deserialize(&bytes).unwrap();
+                                sm_data = deserialize_bytes_compat(&bytes).unwrap();
                             }
                             Err(err) => {
                                 warn!("No metadata exists inside the DB yet");
@@ -671,7 +672,7 @@ fn persist_metadata(
     conn: &rusqlite::Connection,
     metadata: &StateMachineData,
 ) -> Result<(), rusqlite::Error> {
-    let meta_bytes = bincode::serialize(metadata).unwrap();
+    let meta_bytes = bincode::serde::encode_to_vec(metadata, bincode::config::standard()).unwrap();
     let mut stmt = conn.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
     stmt.execute([meta_bytes])?;
     Ok(())
