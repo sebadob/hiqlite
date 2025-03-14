@@ -30,8 +30,16 @@ pub async fn get_session(s: Session) -> Result<Json<Session>, Error> {
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     password: String,
-    // TODO not sure yet how to proceed with the `pow`. This can only be calculated on the frontend
-    // when running via TLS it seems -> investigate further
+    // TODO the dashboard can only load the WASM to calculate the pow in a secure context.
+    // This means we need to ship with self-signed TLS certificates, and the possibility to load
+    // own ones.
+    // Another solution would be to simply build our own ones at startup. This would pull in an
+    // additional dependency, but is more flexible and straight forward to use.
+    // But, there is a catch. If we do this, the client aPI will always use TLS as well, which
+    // may not be desired, if the application is maybe running inside a separate physical network,
+    // or in a service mesh which uses mTLS by default anyway.
+    // We could make the PoW an optional config option as well. Currently, it is not used at all.
+    #[allow(dead_code)]
     pow: String,
 }
 

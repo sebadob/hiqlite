@@ -125,7 +125,7 @@ where
     };
 
     let tx_caches = state_machine_store.tx_caches.clone();
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     let tx_notify = state_machine_store.tx_notify.clone();
     #[cfg(feature = "listen_notify_local")]
     let rx_notify = state_machine_store.rx_notify.clone();
@@ -163,7 +163,7 @@ where
             raft,
             lock: Default::default(),
             tx_caches,
-            #[cfg(feature = "listen_notify_local")]
+            #[cfg(feature = "listen_notify")]
             tx_notify,
             #[cfg(feature = "listen_notify_local")]
             rx_notify,
