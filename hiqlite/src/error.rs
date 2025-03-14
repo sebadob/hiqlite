@@ -3,7 +3,7 @@ use crate::Node;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use bincode::ErrorKind;
+use bincode::error::{DecodeError, EncodeError};
 use fastwebsockets::WebSocketError;
 use openraft::error::{CheckIsLeaderError, ClientWriteError, Fatal, RaftError};
 use serde::{Deserialize, Serialize};
@@ -164,9 +164,16 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<Box<bincode::ErrorKind>> for Error {
-    fn from(value: Box<ErrorKind>) -> Self {
-        trace!("bincode::ErrorKind: {}", value);
+impl From<Box<EncodeError>> for Error {
+    fn from(value: Box<EncodeError>) -> Self {
+        trace!("bincode::EncodeError: {}", value);
+        Self::Bincode(value.to_string())
+    }
+}
+
+impl From<Box<DecodeError>> for Error {
+    fn from(value: Box<DecodeError>) -> Self {
+        trace!("bincode::DecodeError: {}", value);
         Self::Bincode(value.to_string())
     }
 }
