@@ -1,5 +1,7 @@
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
+use crate::helpers::deserialize_bytes_compat;
 use crate::network::api::ApiStreamResponsePayload;
+use crate::network::serialize_network;
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
 use crate::{Client, Error};
@@ -61,7 +63,7 @@ impl Client {
         match self.get_bytes(cache, key).await {
             Ok(value) => {
                 if let Some(v) = value {
-                    Ok(Some(bincode::deserialize(&v)?))
+                    Ok(Some(deserialize_bytes_compat(&v)?))
                 } else {
                     Ok(None)
                 }
@@ -139,7 +141,7 @@ impl Client {
         K: Into<Cow<'static, str>>,
         V: Serialize,
     {
-        self.put_bytes(cache, key, bincode::serialize(value).unwrap(), ttl)
+        self.put_bytes(cache, key, serialize_network(value), ttl)
             .await?;
         Ok(())
     }

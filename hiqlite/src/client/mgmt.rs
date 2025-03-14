@@ -8,6 +8,7 @@ use tokio::sync::watch;
 use tokio::time;
 use tracing::{debug, info};
 
+use crate::helpers::deserialize_bytes_compat;
 #[cfg(feature = "sqlite")]
 use crate::store::{logs::rocksdb::ActionWrite, state_machine::sqlite::writer::WriterRequest};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
@@ -71,7 +72,7 @@ impl Client {
 
         if res.status().is_success() {
             let bytes = res.bytes().await?;
-            let resp = bincode::deserialize(bytes.as_ref())?;
+            let resp = deserialize_bytes_compat(bytes.as_ref())?;
             Ok(resp)
         } else {
             let err = res.json::<Error>().await?;

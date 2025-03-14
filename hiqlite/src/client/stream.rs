@@ -25,8 +25,10 @@ use tracing::{debug, error, info, warn};
 use crate::store::state_machine::memory::state_machine::CacheRequest;
 
 use crate::app_state::RaftType;
+use crate::helpers::deserialize_bytes_compat;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use crate::network::api::{ApiStreamRequest, ApiStreamRequestPayload};
+use crate::network::serialize_network;
 #[cfg(feature = "sqlite")]
 use crate::{migration::Migration, store::state_machine::sqlite::state_machine::Query};
 
@@ -247,7 +249,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Execute(sql),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         req.request_id,
                         ack,
                     ))
@@ -264,7 +266,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::ExecuteReturning(sql),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         request_id,
                         ack,
                     ))
@@ -281,7 +283,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Transaction(queries),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         request_id,
                         ack,
                     ))
@@ -298,7 +300,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Query(query),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         request_id,
                         ack,
                     ))
@@ -315,7 +317,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::QueryConsistent(query),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         request_id,
                         ack,
                     ))
@@ -332,7 +334,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Batch(sql),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         request_id,
                         ack,
                     ))
@@ -349,7 +351,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Migrate(migrations),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         request_id,
                         ack,
                     ))
@@ -366,7 +368,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Backup(node_id),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         request_id,
                         ack,
                     ))
@@ -383,7 +385,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::KV(cache_req),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         request_id,
                         ack,
                     ))
@@ -400,7 +402,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::KVGet(cache_req),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         request_id,
                         ack,
                     ))
@@ -417,7 +419,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::LockAwait(cache_req),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         request_id,
                         ack,
                     ))
@@ -434,7 +436,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Notify(cache_req),
                     };
                     Some((
-                        WritePayload::Payload(bincode::serialize(&req).unwrap()),
+                        WritePayload::Payload(serialize_network(&req)),
                         request_id,
                         ack,
                     ))
@@ -684,7 +686,7 @@ async fn stream_reader(
             OpCode::Text => {}
             OpCode::Binary => {
                 let bytes = frame.payload.deref();
-                let payload = bincode::deserialize::<ApiStreamResponse>(bytes).unwrap();
+                let payload = deserialize_bytes_compat::<ApiStreamResponse>(bytes).unwrap();
                 if let Err(err) = tx
                     .send_async(ClientStreamReq::StreamResponse(payload))
                     .await

@@ -1,4 +1,7 @@
+use crate::helpers::deserialize_bytes_compat;
 use crate::store::state_machine::memory::cache_ttl_handler::TtlRequest;
+#[cfg(feature = "dlock")]
+use crate::store::state_machine::memory::dlock_handler::{self, *};
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::{cache_ttl_handler, kv_handler, TypeConfigKV};
 use crate::store::StorageResult;
@@ -23,9 +26,6 @@ use tokio::fs;
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::info;
 use uuid::Uuid;
-
-#[cfg(feature = "dlock")]
-use crate::store::state_machine::memory::dlock_handler::{self, *};
 
 #[cfg(feature = "listen_notify_local")]
 use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
@@ -142,13 +142,13 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
                 let locks = rx
                     .await
                     .expect("to always receive an answer from locks handler");
-                bincode::serialize(&locks).unwrap()
+                bincode::serde::encode_to_vec(&locks, bincode::config::standard()).unwrap()
             };
             #[cfg(not(feature = "dlock"))]
             let locks_bytes: Vec<u8> = Vec::default();
 
             let snap: SnapshotDataInner = (caches, ttls, locks_bytes);
-            let snapshot_bytes = bincode::serialize(&snap)
+            let snapshot_bytes = bincode::serde::encode_to_vec(&snap, bincode::config::standard())
                 .map_err(|err| StorageIOError::read_state_machine(&err))?;
 
             let last_applied_log = data.last_applied_log_id;
@@ -405,7 +405,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     ) -> Result<(), StorageError<NodeId>> {
         let mut current_snapshot = self.snapshot.lock().await;
 
-        let (kvs, ttls, locks) = bincode::deserialize::<SnapshotDataInner>(snapshot.get_ref())
+        let (kvs, ttls, locks) = deserialize_bytes_compat::<SnapshotDataInner>(snapshot.get_ref())
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
 
         // make sure to hold the metadata lock the whole time
@@ -436,7 +436,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         #[cfg(feature = "dlock")]
         {
             let locks: HashMap<String, dlock_handler::LockQueue> =
-                bincode::deserialize(&locks).unwrap();
+                deserialize_bytes_compat(&locks).unwrap();
             let (ack, rx) = oneshot::channel();
             self.tx_dlock
                 .send(LockRequest::SnapshotInstall((locks, ack)))

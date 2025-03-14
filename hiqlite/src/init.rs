@@ -14,6 +14,7 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
 
+use crate::helpers::deserialize_bytes_compat;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use std::collections::BTreeMap;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
@@ -144,7 +145,7 @@ async fn should_node_1_skip_init(
                     if resp.status().is_success() {
                         let body = resp.bytes().await?;
                         let membership: Membership<NodeId, Node> =
-                            bincode::deserialize(body.as_ref())?;
+                            deserialize_bytes_compat(body.as_ref())?;
 
                         if membership.nodes().count() > 0 {
                             // We could check if the remote members are at least of size "quorum",
@@ -240,11 +241,14 @@ pub async fn become_cluster_member(
     let scheme = if tls { "https" } else { "http" };
 
     let this_node = get_this_node(this_node, nodes);
-    let payload = bincode::serialize(&LearnerReq {
-        node_id: this_node.id,
-        addr_api: this_node.addr_api,
-        addr_raft: this_node.addr_raft,
-    })?;
+    let payload = bincode::serde::encode_to_vec(
+        &LearnerReq {
+            node_id: this_node.id,
+            addr_api: this_node.addr_api,
+            addr_raft: this_node.addr_raft,
+        },
+        bincode::config::standard(),
+    )?;
 
     info!("Trying to become {} raft learner", raft_type.as_str());
     let _skip = try_become(
