@@ -2,6 +2,7 @@ use crate::helpers::set_path_access;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::{logs, StorageResult};
 use crate::NodeId;
+use bincode::error::DecodeError;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use byteorder::WriteBytesExt;
@@ -29,6 +30,7 @@ use rocksdb::{ColumnFamilyDescriptor, FlushOptions};
 use rocksdb::{DBCompressionType, Direction};
 use rocksdb::{LogLevel, Options};
 use rocksdb::{WriteBatch, DB};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::{BTreeMap, Bound};
@@ -295,12 +297,11 @@ impl LogStoreReader {
                             match log {
                                 Ok((id, value)) => {
                                     if bin_to_id(id.as_ref()) >= until {
-                                        // ack.send(None).unwrap();
                                         trace!("Raft logs store reader: bin_to_id(id) >= until");
                                         break;
                                     }
 
-                                    let entry: Entry<_> = bincode::deserialize(&value)
+                                    let entry = Self::deserialize_bytes_compat::<Entry<_>>(&value)
                                         .map_err(read_logs_err)
                                         .unwrap();
                                     ack.send(Some(Ok(entry))).unwrap();
@@ -334,14 +335,15 @@ impl LogStoreReader {
                             }
 
                             let (_, bytes) = res.unwrap();
-                            let res = bincode::deserialize::<Entry<TypeConfigSqlite>>(&bytes)
-                                .map_err(|err| {
-                                    StorageIOError::new(
-                                        ErrorSubject::Logs,
-                                        ErrorVerb::Read,
-                                        AnyError::new(&err),
-                                    )
-                                });
+                            let res =
+                                Self::deserialize_bytes_compat::<Entry<TypeConfigSqlite>>(&bytes)
+                                    .map_err(|err| {
+                                        StorageIOError::new(
+                                            ErrorSubject::Logs,
+                                            ErrorVerb::Read,
+                                            AnyError::new(&err),
+                                        )
+                                    });
 
                             match res {
                                 Ok(entry) => Some(entry.log_id),
@@ -356,15 +358,16 @@ impl LogStoreReader {
 
                         let res = db.get_cf(db.cf_handle("meta").unwrap(), KEY_LAST_PURGED);
                         let last_purged_log_id = match res {
-                            Ok(Some(bytes)) => Some(bincode::deserialize(&bytes).unwrap()),
+                            Ok(Some(bytes)) => match Self::deserialize_bytes_compat(&bytes) {
+                                Ok(log_id) => Some(log_id),
+                                Err(err) => {
+                                    ack.send(Err(StorageIOError::read_logs(&err))).unwrap();
+                                    continue;
+                                }
+                            },
                             Ok(None) => None,
                             Err(err) => {
-                                ack.send(Err(StorageIOError::new(
-                                    ErrorSubject::Logs,
-                                    ErrorVerb::Read,
-                                    AnyError::new(&err),
-                                )))
-                                .unwrap();
+                                ack.send(Err(StorageIOError::read_logs(&err))).unwrap();
                                 continue;
                             }
                         };
@@ -377,15 +380,15 @@ impl LogStoreReader {
                     }
 
                     ActionRead::Vote(ack) => {
-                        let res = db
-                            .get_cf(db.cf_handle("meta").unwrap(), KEY_VOTE)
-                            .map_err(|e| {
-                                StorageIOError::new(
-                                    ErrorSubject::Vote,
-                                    ErrorVerb::Read,
-                                    AnyError::new(&e),
-                                )
-                            });
+                        let res =
+                            db.get_cf(db.cf_handle("meta").unwrap(), KEY_VOTE)
+                                .map_err(|err| {
+                                    StorageIOError::new(
+                                        ErrorSubject::Vote,
+                                        ErrorVerb::Read,
+                                        AnyError::new(&err),
+                                    )
+                                });
 
                         ack.send(res).unwrap();
                     }
@@ -401,6 +404,27 @@ impl LogStoreReader {
         });
 
         tx
+    }
+
+    /// Deserializes logs data. Includes a "backup try" for backwards compatibility with older logs
+    /// saved in a `bincode-1.3.3` format. It will always try the new format first and do a second
+    /// try, if the first on fails.
+    ///
+    /// This is a bit inefficient, but only for as long as you are migrating from an older logs
+    /// store until the next purge. Having the deserialization a bit slower, but fully and easy
+    /// backwards compatible without managing additional state like "bincode-2 used from log id XY"
+    /// is preferable.
+    #[inline]
+    pub fn deserialize_bytes_compat<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
+        match bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::standard()) {
+            Ok((r, _)) => Ok(r),
+            Err(_) => {
+                match bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::legacy()) {
+                    Ok((r, _)) => Ok(r),
+                    Err(err) => Err(err),
+                }
+            }
+        }
     }
 }
 
@@ -560,7 +584,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
         let (ack, rx) = oneshot::channel();
         self.tx_writer
             .send_async(ActionWrite::Vote(ActionVote {
-                value: bincode::serialize(vote).unwrap(),
+                value: bincode::serde::encode_to_vec(vote, bincode::config::standard()).unwrap(),
                 ack,
             }))
             .await
@@ -585,7 +609,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::read_vote(&err),
             })??
-            .map(|b| bincode::deserialize(&b).unwrap());
+            .map(|b| LogStoreReader::deserialize_bytes_compat(&b).unwrap());
 
         Ok(vote)
     }
@@ -610,7 +634,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
 
         for entry in entries {
             let id = id_to_bin(entry.log_id.index);
-            let data = bincode::serialize(&entry).unwrap();
+            let data = bincode::serde::encode_to_vec(&entry, bincode::config::standard()).unwrap();
 
             tx.send_async(Some((id, data)))
                 .await
@@ -658,7 +682,8 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
 
         let from = id_to_bin(0);
         let until = id_to_bin(log_id.index + 1);
-        let last_log = Some(bincode::serialize(&log_id).unwrap());
+        let last_log =
+            Some(bincode::serde::encode_to_vec(&log_id, bincode::config::standard()).unwrap());
 
         let (ack, rx) = oneshot::channel();
         self.tx_writer
