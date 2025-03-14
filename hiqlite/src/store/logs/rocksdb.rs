@@ -661,7 +661,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
         let from = id_to_bin(0);
         let until = id_to_bin(log_id.index + 1);
         let last_log =
-            Some(bincode::serde::encode_to_vec(&log_id, bincode::config::standard()).unwrap());
+            Some(bincode::serde::encode_to_vec(log_id, bincode::config::standard()).unwrap());
 
         let (ack, rx) = oneshot::channel();
         self.tx_writer
