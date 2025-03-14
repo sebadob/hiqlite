@@ -1,4 +1,6 @@
+use crate::helpers::deserialize_bytes_compat;
 use crate::network::challenge_response::{Challenge, ChallengeResponse, ResponseFinal};
+use crate::network::serialize_network;
 use crate::{Error, NodeId};
 use fastwebsockets::{Frame, OpCode, Payload, WebSocket};
 use hyper::upgrade::Upgraded;
@@ -16,7 +18,7 @@ impl HandshakeSecret {
         let challenge_response = match frame.opcode {
             OpCode::Binary => {
                 let bytes = frame.payload.as_ref();
-                let challenge: Challenge = bincode::deserialize(bytes)?;
+                let challenge: Challenge = deserialize_bytes_compat(bytes)?;
                 ChallengeResponse::new(node_id, &challenge, secret)?
             }
             _ => {
@@ -24,16 +26,14 @@ impl HandshakeSecret {
             }
         };
 
-        let frame = Frame::binary(Payload::from(
-            bincode::serialize(&challenge_response).unwrap(),
-        ));
+        let frame = Frame::binary(Payload::from(serialize_network(&challenge_response)));
         ws.write_frame(frame).await?;
 
         let frame = ws.read_frame().await?;
         match frame.opcode {
             OpCode::Binary => {
                 let bytes = frame.payload.as_ref();
-                let response: ResponseFinal = bincode::deserialize(bytes)?;
+                let response: ResponseFinal = deserialize_bytes_compat(bytes)?;
                 response.verify(&challenge_response, secret)?;
             }
             _ => {
@@ -52,7 +52,7 @@ impl HandshakeSecret {
     ) -> Result<NodeId, Error> {
         let challenge = Challenge::new()?;
 
-        let frame = Frame::binary(Payload::from(bincode::serialize(&challenge).unwrap()));
+        let frame = Frame::binary(Payload::from(serialize_network(&challenge)));
         ws.write_frame(frame).await?;
 
         // we are not using a fragment collector and don't check for a full frame either
@@ -61,7 +61,7 @@ impl HandshakeSecret {
         let (node_id, response) = match frame.opcode {
             OpCode::Binary => {
                 let bytes = frame.payload.as_ref();
-                let challenge_response: ChallengeResponse = bincode::deserialize(bytes)?;
+                let challenge_response: ChallengeResponse = deserialize_bytes_compat(bytes)?;
                 let resp = challenge_response.verify(&challenge, secret)?;
                 (challenge_response.node_id, resp)
             }
@@ -72,7 +72,7 @@ impl HandshakeSecret {
             }
         };
 
-        let frame = Frame::binary(Payload::from(bincode::serialize(&response).unwrap()));
+        let frame = Frame::binary(Payload::from(serialize_network(&response)));
         ws.write_frame(frame).await?;
 
         Ok(node_id)

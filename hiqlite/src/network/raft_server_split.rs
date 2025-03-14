@@ -1,5 +1,5 @@
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{AppStateExt, Error};
+use crate::network::{serialize_network, AppStateExt, Error};
 use axum::response::IntoResponse;
 use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use openraft::error::{InstallSnapshotError, RaftError};
@@ -14,6 +14,7 @@ use crate::store::state_machine::memory::TypeConfigKV;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
+use crate::helpers::deserialize_bytes_compat;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
@@ -39,14 +40,16 @@ pub enum RaftStreamRequest {
 }
 
 impl From<&[u8]> for RaftStreamRequest {
+    #[inline]
     fn from(value: &[u8]) -> Self {
-        bincode::deserialize(value).unwrap()
+        deserialize_bytes_compat(value).unwrap()
     }
 }
 
 impl From<Vec<u8>> for RaftStreamRequest {
+    #[inline]
     fn from(value: Vec<u8>) -> Self {
-        bincode::deserialize(&value).unwrap()
+        deserialize_bytes_compat(&value).unwrap()
     }
 }
 
@@ -81,8 +84,9 @@ pub(crate) enum WsWriteMsg {
 }
 
 impl From<Vec<u8>> for RaftStreamResponse {
+    #[inline]
     fn from(value: Vec<u8>) -> Self {
-        bincode::deserialize(&value).unwrap()
+        deserialize_bytes_compat(&value).unwrap()
     }
 }
 
@@ -161,7 +165,7 @@ async fn handle_socket(
             }
             OpCode::Binary => {
                 let bytes = frame.payload.deref();
-                match bincode::deserialize::<RaftStreamRequest>(bytes) {
+                match deserialize_bytes_compat::<RaftStreamRequest>(bytes) {
                     Ok(req) => req,
                     Err(err) => {
                         error!("Error deserializing RaftStreamRequest: {:?}", err);
@@ -189,7 +193,7 @@ async fn handle_socket(
                         request_id,
                         payload: RaftStreamResponsePayload::AppendDB(res),
                     };
-                    bincode::serialize(&resp).unwrap()
+                    serialize_network(&resp)
                 }
                 #[cfg(feature = "sqlite")]
                 RaftStreamRequest::VoteDB((request_id, req)) => {
@@ -198,7 +202,7 @@ async fn handle_socket(
                         request_id,
                         payload: RaftStreamResponsePayload::VoteDB(res),
                     };
-                    bincode::serialize(&resp).unwrap()
+                    serialize_network(&resp)
                 }
                 #[cfg(feature = "sqlite")]
                 RaftStreamRequest::SnapshotDB((request_id, req)) => {
@@ -207,7 +211,7 @@ async fn handle_socket(
                         request_id,
                         payload: RaftStreamResponsePayload::SnapshotDB(res),
                     };
-                    bincode::serialize(&resp).unwrap()
+                    serialize_network(&resp)
                 }
 
                 #[cfg(feature = "cache")]
@@ -217,7 +221,7 @@ async fn handle_socket(
                         request_id,
                         payload: RaftStreamResponsePayload::AppendCache(res),
                     };
-                    bincode::serialize(&resp).unwrap()
+                    serialize_network(&resp)
                 }
                 #[cfg(feature = "cache")]
                 RaftStreamRequest::VoteCache((request_id, req)) => {
@@ -226,7 +230,7 @@ async fn handle_socket(
                         request_id,
                         payload: RaftStreamResponsePayload::VoteCache(res),
                     };
-                    bincode::serialize(&resp).unwrap()
+                    serialize_network(&resp)
                 }
                 #[cfg(feature = "cache")]
                 RaftStreamRequest::SnapshotCache((request_id, req)) => {
@@ -235,7 +239,7 @@ async fn handle_socket(
                         request_id,
                         payload: RaftStreamResponsePayload::SnapshotCache(res),
                     };
-                    bincode::serialize(&resp).unwrap()
+                    serialize_network(&resp)
                 }
             };
 

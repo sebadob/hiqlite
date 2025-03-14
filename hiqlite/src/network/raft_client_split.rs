@@ -31,6 +31,7 @@ use crate::store::state_machine::memory::TypeConfigKV;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
 use crate::app_state::RaftType;
+use crate::helpers::deserialize_bytes_compat;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use crate::Error;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
@@ -330,17 +331,6 @@ impl NetworkStreaming {
                     }
 
                     RaftRequest::StreamResponse(resp) => {
-                        // match in_flight.iter().position(|(id, _)| &resp.request_id == id) {
-                        //     None => {
-                        //         error!("client ack for RaftStreamResponse missing");
-                        //     }
-                        //     Some(idx) => {
-                        //         let (_id, ack) = in_flight.swap_remove(idx);
-                        //         if ack.send(Ok(resp.payload)).is_err() {
-                        //             error!("sending back stream response from raft server");
-                        //         }
-                        //     }
-                        // }
                         match in_flight.remove(&resp.request_id) {
                             None => {
                                 error!("client ack for RaftStreamResponse missing");
@@ -361,7 +351,9 @@ impl NetworkStreaming {
                 };
 
                 if let Some((ack, payload)) = stream_req {
-                    let bytes = bincode::serialize(&payload).unwrap();
+                    let bytes =
+                        bincode::serde::encode_to_vec(&payload, bincode::config::standard())
+                            .unwrap();
 
                     if let Err(err) = tx_write.send_async(WritePayload::Payload(bytes)).await {
                         let _ = ack.send(Err(Error::Connect(format!(
@@ -416,7 +408,7 @@ impl NetworkStreaming {
                 OpCode::Text => {}
                 OpCode::Binary => {
                     let bytes = frame.payload.deref();
-                    let payload = bincode::deserialize::<RaftStreamResponse>(bytes).unwrap();
+                    let payload = deserialize_bytes_compat::<RaftStreamResponse>(bytes).unwrap();
                     if let Err(err) = tx.send_async(RaftRequest::StreamResponse(payload)).await {
                         error!(
                             "Error sending Response to Raft client stream manager: {:?}",

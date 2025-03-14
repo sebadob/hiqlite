@@ -1,6 +1,6 @@
 use crate::app_state::RaftType;
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{validate_secret, AppStateExt, Error};
+use crate::network::{serialize_network, validate_secret, AppStateExt, Error};
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
@@ -31,6 +31,7 @@ use crate::{
     store::state_machine::sqlite::state_machine::{Query, QueryWrite},
 };
 
+use crate::helpers::deserialize_bytes_compat;
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 use crate::{HEALTH_CHECK_DELAY_SECS, START_TS};
@@ -411,13 +412,12 @@ async fn handle_socket_concurrent(
         while let Ok(req) = rx_write.recv_async().await {
             match req {
                 WsWriteMsg::Payload(resp) => {
-                    let bytes = bincode::serialize(&resp).unwrap();
+                    let bytes = serialize_network(&resp);
                     let frame = Frame::binary(Payload::Borrowed(&bytes));
                     if let Err(err) = write.write_frame(frame).await {
                         error!("Error during WebSocket write: {}", err);
                         // if we have a WebSocket error, save all open requests into the client_buffer
-                        let payload = bincode::serialize(&resp).unwrap();
-                        buf.push_back(payload);
+                        buf.push_back(serialize_network(&resp));
                         break;
                     }
                 }
@@ -433,8 +433,7 @@ async fn handle_socket_concurrent(
         warn!("emptying server stream writer channel into buffer");
         while let Ok(req) = rx_write.recv_async().await {
             if let WsWriteMsg::Payload(resp) = req {
-                let payload = bincode::serialize(&resp).unwrap();
-                buf.push_back(payload);
+                buf.push_back(serialize_network(&resp));
             }
         }
 
@@ -475,7 +474,7 @@ async fn handle_socket_concurrent(
             }
             OpCode::Binary => {
                 let bytes = frame.payload.deref();
-                match bincode::deserialize::<ApiStreamRequest>(bytes) {
+                match deserialize_bytes_compat::<ApiStreamRequest>(bytes) {
                     Ok(req) => req,
                     Err(err) => {
                         error!("Error deserializing ApiStreamRequest: {:?}", err);
