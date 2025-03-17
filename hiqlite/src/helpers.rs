@@ -1,9 +1,24 @@
 use crate::app_state::{AppState, RaftType};
 use crate::{Error, Node};
+use bincode::error::{DecodeError, EncodeError};
 use openraft::RaftMetrics;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use tokio::sync::MutexGuard;
+
+#[inline(always)]
+pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
+    // We are using the legacy config on purpose here. It uses fixed-width integer fields, which
+    // uses a bit more space, but is faster.
+    bincode::serde::encode_to_vec(value, bincode::config::legacy())
+}
+
+#[inline(always)]
+pub fn deserialize<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
+    bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::legacy()).map(|(res, _)| res)
+}
 
 pub async fn is_raft_initialized(
     state: &Arc<AppState>,

@@ -1,4 +1,5 @@
 use crate::app_state::RaftType;
+use crate::helpers::serialize;
 use crate::server::proxy::state::AppStateProxy;
 use crate::server::proxy::stream;
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
@@ -77,7 +78,7 @@ fn fmt_ok<S: Debug + Serialize>(headers: HeaderMap, payload: S) -> Result<Respon
             return Ok(Json(payload).into_response());
         }
     }
-    Ok(bincode::serialize(&payload).unwrap().into_response())
+    Ok(serialize(&payload)?.into_response())
 }
 
 #[inline(always)]

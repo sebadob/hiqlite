@@ -10,6 +10,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 // pub use management::LearnerReq;
+use crate::helpers::{deserialize, serialize};
 pub use raft_client_split::NetworkStreaming;
 
 pub(crate) mod api;
@@ -39,7 +40,7 @@ where
             return Ok(serde_json::from_slice(body.as_ref())?);
         }
     }
-    Ok(bincode::deserialize(body.as_ref())?)
+    Ok(deserialize(body.as_ref())?)
 }
 
 #[inline(always)]
@@ -49,7 +50,15 @@ fn fmt_ok<S: Debug + Serialize>(headers: HeaderMap, payload: S) -> Result<Respon
             return Ok(Json(payload).into_response());
         }
     }
-    Ok(bincode::serialize(&payload).unwrap().into_response())
+    Ok(serialize_network(&payload).into_response())
+}
+
+/// Serialization used for all network requests for non-raft-internal traffic and types.
+/// # Panics
+/// If the given type cannot be serialized with bincode + serde successfully
+#[inline(always)]
+pub fn serialize_network<T: Serialize>(value: &T) -> Vec<u8> {
+    serialize(value).expect("Network payload serialization should always succeed")
 }
 
 #[inline(always)]

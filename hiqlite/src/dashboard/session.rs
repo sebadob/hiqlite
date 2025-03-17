@@ -1,5 +1,6 @@
 use crate::dashboard::password;
-use crate::network::AppStateExt;
+use crate::helpers::deserialize;
+use crate::network::{serialize_network, AppStateExt};
 use crate::Error;
 use axum::extract::FromRequestParts;
 use axum::http::header::SET_COOKIE;
@@ -65,7 +66,7 @@ impl Session {
 
     fn as_cookie(&self) -> Result<String, Error> {
         // TODO decide between dev and prod
-        let bytes = bincode::serialize(self).unwrap();
+        let bytes = serialize_network(self);
         let enc = EncValue::encrypt(&bytes)?;
         let enc_bytes = enc.into_bytes().to_vec();
         let b64 = b64_encode(&enc_bytes);
@@ -107,7 +108,7 @@ impl Session {
         let enc_bytes = b64_decode(cookie.value())?;
         let dec = EncValue::try_from_bytes(enc_bytes)?.decrypt()?;
 
-        let slf: Self = bincode::deserialize(dec.as_ref()).unwrap();
+        let slf: Self = deserialize(dec.as_ref())?;
         slf.is_valid()?;
 
         Ok(slf)

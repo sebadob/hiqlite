@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::helpers::set_path_access;
+use crate::helpers::{deserialize, set_path_access};
 use crate::s3::S3Config;
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{
@@ -370,7 +370,7 @@ async fn is_metadata_ok(path_db: String) -> Result<(), Error> {
             let bytes: Vec<u8> = row.get(0)?;
             Ok(bytes)
         })?;
-        let _meta: StateMachineData = bincode::deserialize(&bytes).unwrap();
+        let _meta: StateMachineData = deserialize(&bytes).unwrap();
 
         // TODO we could maybe add the expected backup id as well, if it should make sense...
         Ok::<(), Error>(())

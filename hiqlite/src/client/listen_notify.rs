@@ -1,5 +1,7 @@
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
+use crate::helpers::deserialize;
 use crate::network::api::ApiStreamResponsePayload;
+use crate::network::serialize_network;
 use crate::store::state_machine::memory::state_machine::CacheRequest;
 use crate::{Client, Error};
 use chrono::Utc;
@@ -103,8 +105,7 @@ impl Client {
         T: for<'de> Deserialize<'de>,
     {
         let (_ts, bytes) = self.listen_rx().recv_async().await?;
-        let res = bincode::deserialize(&bytes).unwrap();
-        Ok(res)
+        Ok(deserialize(&bytes)?)
     }
 
     /// Listen to events on the distributed event bus and get the raw bytes response
@@ -118,8 +119,7 @@ impl Client {
         T: for<'de> Deserialize<'de>,
     {
         if let Ok((_, bytes)) = self.listen_rx().try_recv() {
-            let res = bincode::deserialize(&bytes).unwrap();
-            Ok(Some(res))
+            Ok(Some(deserialize(&bytes)?))
         } else {
             Ok(None)
         }
@@ -136,8 +136,7 @@ impl Client {
         loop {
             let (ts, bytes) = rx.recv_async().await?;
             if ts > after_ts_micros {
-                let res = bincode::deserialize(&bytes).unwrap();
-                return Ok(res);
+                return Ok(deserialize(&bytes)?);
             }
         }
     }
@@ -171,10 +170,7 @@ impl Client {
         let now = Utc::now().timestamp_micros();
 
         match self
-            .notify_req(CacheRequest::Notify((
-                now,
-                bincode::serialize(payload).unwrap(),
-            )))
+            .notify_req(CacheRequest::Notify((now, serialize_network(payload))))
             .await
         {
             Ok(_) => Ok(()),
@@ -187,11 +183,8 @@ impl Client {
                     )
                     .await
                 {
-                    self.notify_req(CacheRequest::Notify((
-                        now,
-                        bincode::serialize(payload).unwrap(),
-                    )))
-                    .await
+                    self.notify_req(CacheRequest::Notify((now, serialize_network(payload))))
+                        .await
                 } else {
                     Err(err)
                 }

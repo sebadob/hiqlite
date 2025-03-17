@@ -14,6 +14,7 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
 
+use crate::helpers::{deserialize, serialize};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use std::collections::BTreeMap;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
@@ -143,8 +144,7 @@ async fn should_node_1_skip_init(
                     debug!("{} status: {}", node.id, resp.status());
                     if resp.status().is_success() {
                         let body = resp.bytes().await?;
-                        let membership: Membership<NodeId, Node> =
-                            bincode::deserialize(body.as_ref())?;
+                        let membership: Membership<NodeId, Node> = deserialize(body.as_ref())?;
 
                         if membership.nodes().count() > 0 {
                             // We could check if the remote members are at least of size "quorum",
@@ -240,7 +240,7 @@ pub async fn become_cluster_member(
     let scheme = if tls { "https" } else { "http" };
 
     let this_node = get_this_node(this_node, nodes);
-    let payload = bincode::serialize(&LearnerReq {
+    let payload = serialize(&LearnerReq {
         node_id: this_node.id,
         addr_api: this_node.addr_api,
         addr_raft: this_node.addr_raft,
