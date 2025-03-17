@@ -1,4 +1,4 @@
-use crate::helpers::deserialize;
+use crate::helpers::{deserialize, serialize};
 use crate::store::state_machine::memory::cache_ttl_handler::TtlRequest;
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::{self, *};
@@ -142,14 +142,14 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
                 let locks = rx
                     .await
                     .expect("to always receive an answer from locks handler");
-                bincode::serde::encode_to_vec(&locks, bincode::config::standard()).unwrap()
+                serialize(&locks).unwrap()
             };
             #[cfg(not(feature = "dlock"))]
             let locks_bytes: Vec<u8> = Vec::default();
 
             let snap: SnapshotDataInner = (caches, ttls, locks_bytes);
-            let snapshot_bytes = bincode::serde::encode_to_vec(&snap, bincode::config::standard())
-                .map_err(|err| StorageIOError::read_state_machine(&err))?;
+            let snapshot_bytes =
+                serialize(&snap).map_err(|err| StorageIOError::read_state_machine(&err))?;
 
             let last_applied_log = data.last_applied_log_id;
             let last_membership = data.last_membership.clone();

@@ -1,4 +1,4 @@
-use crate::helpers::{deserialize, set_path_access};
+use crate::helpers::{deserialize, serialize, set_path_access};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::{logs, StorageResult};
 use crate::NodeId;
@@ -562,7 +562,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
         let (ack, rx) = oneshot::channel();
         self.tx_writer
             .send_async(ActionWrite::Vote(ActionVote {
-                value: bincode::serde::encode_to_vec(vote, bincode::config::standard()).unwrap(),
+                value: serialize(vote).unwrap(),
                 ack,
             }))
             .await
@@ -612,7 +612,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
 
         for entry in entries {
             let id = id_to_bin(entry.log_id.index);
-            let data = bincode::serde::encode_to_vec(&entry, bincode::config::standard()).unwrap();
+            let data = serialize(&entry).unwrap();
 
             tx.send_async(Some((id, data)))
                 .await
@@ -631,7 +631,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
 
     #[tracing::instrument(level = "debug", skip(self))]
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> StorageResult<()> {
-        tracing::debug!("delete_log: [{:?}, +oo)", log_id);
+        debug!("delete_log: [{:?}, +oo)", log_id);
 
         let from = id_to_bin(log_id.index);
         let until = id_to_bin(u64::MAX);
@@ -656,12 +656,11 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
 
     #[tracing::instrument(level = "debug", skip(self))]
     async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
-        tracing::debug!("delete_log: [0, {:?}]", log_id);
+        debug!("delete_log: [0, {:?}]", log_id);
 
         let from = id_to_bin(0);
         let until = id_to_bin(log_id.index + 1);
-        let last_log =
-            Some(bincode::serde::encode_to_vec(log_id, bincode::config::standard()).unwrap());
+        let last_log = Some(serialize(&log_id).unwrap());
 
         let (ack, rx) = oneshot::channel();
         self.tx_writer

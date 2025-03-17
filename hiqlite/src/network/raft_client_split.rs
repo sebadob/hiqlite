@@ -31,7 +31,7 @@ use crate::store::state_machine::memory::TypeConfigKV;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
 use crate::app_state::RaftType;
-use crate::helpers::deserialize;
+use crate::helpers::{deserialize, serialize};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use crate::Error;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
@@ -351,9 +351,7 @@ impl NetworkStreaming {
                 };
 
                 if let Some((ack, payload)) = stream_req {
-                    let bytes =
-                        bincode::serde::encode_to_vec(&payload, bincode::config::standard())
-                            .unwrap();
+                    let bytes = serialize(&payload).unwrap();
 
                     if let Err(err) = tx_write.send_async(WritePayload::Payload(bytes)).await {
                         let _ = ack.send(Err(Error::Connect(format!(

@@ -1,4 +1,4 @@
-use crate::helpers::deserialize;
+use crate::helpers::{deserialize, serialize};
 use crate::migration::Migration;
 use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
 use crate::store::logs;
@@ -672,7 +672,7 @@ fn persist_metadata(
     conn: &rusqlite::Connection,
     metadata: &StateMachineData,
 ) -> Result<(), rusqlite::Error> {
-    let meta_bytes = bincode::serde::encode_to_vec(metadata, bincode::config::standard()).unwrap();
+    let meta_bytes = serialize(metadata).unwrap();
     let mut stmt = conn.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
     stmt.execute([meta_bytes])?;
     Ok(())

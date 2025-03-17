@@ -14,7 +14,7 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
 
-use crate::helpers::deserialize;
+use crate::helpers::{deserialize, serialize};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use std::collections::BTreeMap;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
@@ -240,14 +240,11 @@ pub async fn become_cluster_member(
     let scheme = if tls { "https" } else { "http" };
 
     let this_node = get_this_node(this_node, nodes);
-    let payload = bincode::serde::encode_to_vec(
-        &LearnerReq {
-            node_id: this_node.id,
-            addr_api: this_node.addr_api,
-            addr_raft: this_node.addr_raft,
-        },
-        bincode::config::standard(),
-    )?;
+    let payload = serialize(&LearnerReq {
+        node_id: this_node.id,
+        addr_api: this_node.addr_api,
+        addr_raft: this_node.addr_raft,
+    })?;
 
     info!("Trying to become {} raft learner", raft_type.as_str());
     let _skip = try_become(
