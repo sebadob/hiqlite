@@ -1,4 +1,4 @@
-use crate::helpers::deserialize_bytes_compat;
+use crate::helpers::deserialize;
 use crate::migration::Migration;
 use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
 use crate::store::logs;
@@ -543,8 +543,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                     sm_data = conn
                         .query_row("SELECT data FROM _metadata WHERE key = 'meta'", (), |row| {
                             let meta_bytes: Vec<u8> = row.get(0)?;
-                            let metadata: StateMachineData = deserialize_bytes_compat(&meta_bytes)
-                                .expect("Metadata to deserialize ok");
+                            let metadata: StateMachineData =
+                                deserialize(&meta_bytes).expect("Metadata to deserialize ok");
                             Ok(metadata)
                         })
                         .expect("Metadata query to always succeed");
@@ -563,7 +563,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             Ok(bytes)
                         }) {
                             Ok(bytes) => {
-                                sm_data = deserialize_bytes_compat(&bytes).unwrap();
+                                sm_data = deserialize(&bytes).unwrap();
                             }
                             Err(err) => {
                                 warn!("No metadata exists inside the DB yet");

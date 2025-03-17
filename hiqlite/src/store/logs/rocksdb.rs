@@ -1,4 +1,4 @@
-use crate::helpers::{deserialize_bytes_compat, set_path_access};
+use crate::helpers::{deserialize, set_path_access};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::{logs, StorageResult};
 use crate::NodeId;
@@ -301,7 +301,7 @@ impl LogStoreReader {
                                         break;
                                     }
 
-                                    let entry = deserialize_bytes_compat::<Entry<_>>(&value)
+                                    let entry = deserialize::<Entry<_>>(&value)
                                         .map_err(read_logs_err)
                                         .unwrap();
                                     ack.send(Some(Ok(entry))).unwrap();
@@ -335,8 +335,8 @@ impl LogStoreReader {
                             }
 
                             let (_, bytes) = res.unwrap();
-                            let res = deserialize_bytes_compat::<Entry<TypeConfigSqlite>>(&bytes)
-                                .map_err(|err| {
+                            let res =
+                                deserialize::<Entry<TypeConfigSqlite>>(&bytes).map_err(|err| {
                                     StorageIOError::new(
                                         ErrorSubject::Logs,
                                         ErrorVerb::Read,
@@ -357,7 +357,7 @@ impl LogStoreReader {
 
                         let res = db.get_cf(db.cf_handle("meta").unwrap(), KEY_LAST_PURGED);
                         let last_purged_log_id = match res {
-                            Ok(Some(bytes)) => match deserialize_bytes_compat(&bytes) {
+                            Ok(Some(bytes)) => match deserialize(&bytes) {
                                 Ok(log_id) => Some(log_id),
                                 Err(err) => {
                                     ack.send(Err(StorageIOError::read_logs(&err))).unwrap();
@@ -587,7 +587,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::read_vote(&err),
             })??
-            .map(|b| deserialize_bytes_compat(&b).unwrap());
+            .map(|b| deserialize(&b).unwrap());
 
         Ok(vote)
     }

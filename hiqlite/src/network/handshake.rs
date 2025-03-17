@@ -1,4 +1,4 @@
-use crate::helpers::deserialize_bytes_compat;
+use crate::helpers::deserialize;
 use crate::network::challenge_response::{Challenge, ChallengeResponse, ResponseFinal};
 use crate::network::serialize_network;
 use crate::{Error, NodeId};
@@ -18,7 +18,7 @@ impl HandshakeSecret {
         let challenge_response = match frame.opcode {
             OpCode::Binary => {
                 let bytes = frame.payload.as_ref();
-                let challenge: Challenge = deserialize_bytes_compat(bytes)?;
+                let challenge: Challenge = deserialize(bytes)?;
                 ChallengeResponse::new(node_id, &challenge, secret)?
             }
             _ => {
@@ -33,7 +33,7 @@ impl HandshakeSecret {
         match frame.opcode {
             OpCode::Binary => {
                 let bytes = frame.payload.as_ref();
-                let response: ResponseFinal = deserialize_bytes_compat(bytes)?;
+                let response: ResponseFinal = deserialize(bytes)?;
                 response.verify(&challenge_response, secret)?;
             }
             _ => {
@@ -61,7 +61,7 @@ impl HandshakeSecret {
         let (node_id, response) = match frame.opcode {
             OpCode::Binary => {
                 let bytes = frame.payload.as_ref();
-                let challenge_response: ChallengeResponse = deserialize_bytes_compat(bytes)?;
+                let challenge_response: ChallengeResponse = deserialize(bytes)?;
                 let resp = challenge_response.verify(&challenge, secret)?;
                 (challenge_response.node_id, resp)
             }

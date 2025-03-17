@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::helpers::deserialize_bytes_compat;
+use crate::helpers::deserialize;
 use crate::network::HEADER_NAME_SECRET;
 use crate::{Error, Node};
 use openraft::{RaftMetrics, StoredMembership};
@@ -133,7 +133,7 @@ async fn check_compare_membership(
         }
 
         let bytes = res.bytes().await?;
-        let metrics = deserialize_bytes_compat::<RaftMetrics<u64, Node>>(&bytes)?;
+        let metrics = deserialize::<RaftMetrics<u64, Node>>(&bytes)?;
         let members = metrics.membership_config;
 
         check_nodes_in_members(path, nodes, &members);

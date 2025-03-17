@@ -1,6 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use crate::helpers::{deserialize_bytes_compat, set_path_access};
+use crate::helpers::{deserialize, set_path_access};
 use crate::migration::Migration;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::param::Param;
@@ -492,7 +492,7 @@ impl StateMachineSqlite {
                 .query_row((), |row| {
                     let meta_bytes: Vec<u8> = row.get(0)?;
                     let metadata: StateMachineData =
-                        deserialize_bytes_compat(&meta_bytes).expect("Metadata to deserialize ok");
+                        deserialize(&meta_bytes).expect("Metadata to deserialize ok");
                     Ok(metadata)
                 })
                 .map_err(|err| {

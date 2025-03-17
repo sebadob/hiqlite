@@ -1,5 +1,5 @@
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
-use crate::helpers::deserialize_bytes_compat;
+use crate::helpers::deserialize;
 use crate::network::api::ApiStreamResponsePayload;
 use crate::network::serialize_network;
 use crate::store::state_machine::memory::state_machine::CacheRequest;
@@ -105,7 +105,7 @@ impl Client {
         T: for<'de> Deserialize<'de>,
     {
         let (_ts, bytes) = self.listen_rx().recv_async().await?;
-        Ok(deserialize_bytes_compat(&bytes)?)
+        Ok(deserialize(&bytes)?)
     }
 
     /// Listen to events on the distributed event bus and get the raw bytes response
@@ -119,7 +119,7 @@ impl Client {
         T: for<'de> Deserialize<'de>,
     {
         if let Ok((_, bytes)) = self.listen_rx().try_recv() {
-            Ok(Some(deserialize_bytes_compat(&bytes)?))
+            Ok(Some(deserialize(&bytes)?))
         } else {
             Ok(None)
         }
@@ -136,7 +136,7 @@ impl Client {
         loop {
             let (ts, bytes) = rx.recv_async().await?;
             if ts > after_ts_micros {
-                return Ok(deserialize_bytes_compat(&bytes)?);
+                return Ok(deserialize(&bytes)?);
             }
         }
     }

@@ -1,3 +1,4 @@
+use crate::helpers::{deserialize, serialize};
 use crate::network::api::{
     ApiStreamRequest, ApiStreamRequestPayload, ApiStreamResponse, ApiStreamResponsePayload,
     WsWriteMsg,
@@ -38,7 +39,7 @@ pub async fn handle_socket(
         while let Ok(req) = rx_write.recv_async().await {
             match req {
                 WsWriteMsg::Payload(resp) => {
-                    let bytes = bincode::serialize(&resp).unwrap();
+                    let bytes = serialize(&resp).unwrap();
                     let frame = Frame::binary(Payload::Borrowed(&bytes));
                     if let Err(err) = write.write_frame(frame).await {
                         error!("Error during WebSocket write: {}", err);
@@ -97,7 +98,7 @@ pub async fn handle_socket(
             }
             OpCode::Binary => {
                 let bytes = frame.payload.deref();
-                match bincode::deserialize::<ApiStreamRequest>(bytes) {
+                match deserialize::<ApiStreamRequest>(bytes) {
                     Ok(req) => req,
                     Err(err) => {
                         error!("Error deserializing ApiStreamRequest: {:?}", err);

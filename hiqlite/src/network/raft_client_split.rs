@@ -31,7 +31,7 @@ use crate::store::state_machine::memory::TypeConfigKV;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
 use crate::app_state::RaftType;
-use crate::helpers::deserialize_bytes_compat;
+use crate::helpers::deserialize;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use crate::Error;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
@@ -408,7 +408,7 @@ impl NetworkStreaming {
                 OpCode::Text => {}
                 OpCode::Binary => {
                     let bytes = frame.payload.deref();
-                    let payload = deserialize_bytes_compat::<RaftStreamResponse>(bytes).unwrap();
+                    let payload = deserialize::<RaftStreamResponse>(bytes).unwrap();
                     if let Err(err) = tx.send_async(RaftRequest::StreamResponse(payload)).await {
                         error!(
                             "Error sending Response to Raft client stream manager: {:?}",

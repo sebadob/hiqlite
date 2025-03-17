@@ -31,7 +31,7 @@ use crate::{
     store::state_machine::sqlite::state_machine::{Query, QueryWrite},
 };
 
-use crate::helpers::deserialize_bytes_compat;
+use crate::helpers::deserialize;
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 use crate::{HEALTH_CHECK_DELAY_SECS, START_TS};
@@ -474,7 +474,7 @@ async fn handle_socket_concurrent(
             }
             OpCode::Binary => {
                 let bytes = frame.payload.deref();
-                match deserialize_bytes_compat::<ApiStreamRequest>(bytes) {
+                match deserialize::<ApiStreamRequest>(bytes) {
                     Ok(req) => req,
                     Err(err) => {
                         error!("Error deserializing ApiStreamRequest: {:?}", err);

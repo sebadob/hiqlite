@@ -1,5 +1,8 @@
+use crate::app_state::RaftType;
+use crate::helpers::deserialize;
 use crate::network::api::{ApiStreamResponse, ApiStreamResponsePayload};
 use crate::network::handshake::HandshakeSecret;
+use crate::network::serialize_network;
 use crate::{tls, Client, Error, Node, NodeId};
 use axum::http::header::{CONNECTION, UPGRADE};
 use axum::http::Request;
@@ -21,14 +24,10 @@ use tokio::task::JoinHandle;
 use tokio::{select, task, time};
 use tracing::{debug, error, info, warn};
 
-#[cfg(feature = "cache")]
-use crate::store::state_machine::memory::state_machine::CacheRequest;
-
-use crate::app_state::RaftType;
-use crate::helpers::deserialize_bytes_compat;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use crate::network::api::{ApiStreamRequest, ApiStreamRequestPayload};
-use crate::network::serialize_network;
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::state_machine::CacheRequest;
 #[cfg(feature = "sqlite")]
 use crate::{migration::Migration, store::state_machine::sqlite::state_machine::Query};
 
@@ -686,7 +685,7 @@ async fn stream_reader(
             OpCode::Text => {}
             OpCode::Binary => {
                 let bytes = frame.payload.deref();
-                let payload = deserialize_bytes_compat::<ApiStreamResponse>(bytes).unwrap();
+                let payload = deserialize::<ApiStreamResponse>(bytes).unwrap();
                 if let Err(err) = tx
                     .send_async(ClientStreamReq::StreamResponse(payload))
                     .await

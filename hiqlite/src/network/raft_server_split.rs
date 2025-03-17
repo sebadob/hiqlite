@@ -14,7 +14,7 @@ use crate::store::state_machine::memory::TypeConfigKV;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
-use crate::helpers::deserialize_bytes_compat;
+use crate::helpers::deserialize;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
@@ -42,14 +42,14 @@ pub enum RaftStreamRequest {
 impl From<&[u8]> for RaftStreamRequest {
     #[inline]
     fn from(value: &[u8]) -> Self {
-        deserialize_bytes_compat(value).unwrap()
+        deserialize(value).unwrap()
     }
 }
 
 impl From<Vec<u8>> for RaftStreamRequest {
     #[inline]
     fn from(value: Vec<u8>) -> Self {
-        deserialize_bytes_compat(&value).unwrap()
+        deserialize(&value).unwrap()
     }
 }
 
@@ -86,7 +86,7 @@ pub(crate) enum WsWriteMsg {
 impl From<Vec<u8>> for RaftStreamResponse {
     #[inline]
     fn from(value: Vec<u8>) -> Self {
-        deserialize_bytes_compat(&value).unwrap()
+        deserialize(&value).unwrap()
     }
 }
 
@@ -165,7 +165,7 @@ async fn handle_socket(
             }
             OpCode::Binary => {
                 let bytes = frame.payload.deref();
-                match deserialize_bytes_compat::<RaftStreamRequest>(bytes) {
+                match deserialize::<RaftStreamRequest>(bytes) {
                     Ok(req) => req,
                     Err(err) => {
                         error!("Error deserializing RaftStreamRequest: {:?}", err);

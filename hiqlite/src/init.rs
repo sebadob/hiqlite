@@ -14,7 +14,7 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
 
-use crate::helpers::deserialize_bytes_compat;
+use crate::helpers::deserialize;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use std::collections::BTreeMap;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
@@ -144,8 +144,7 @@ async fn should_node_1_skip_init(
                     debug!("{} status: {}", node.id, resp.status());
                     if resp.status().is_success() {
                         let body = resp.bytes().await?;
-                        let membership: Membership<NodeId, Node> =
-                            deserialize_bytes_compat(body.as_ref())?;
+                        let membership: Membership<NodeId, Node> = deserialize(body.as_ref())?;
 
                         if membership.nodes().count() > 0 {
                             // We could check if the remote members are at least of size "quorum",

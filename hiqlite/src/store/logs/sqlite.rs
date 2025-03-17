@@ -171,7 +171,7 @@ impl LogStore {
                             ON CONFLICT(key) DO NOTHING"#,
                     )
                     .expect("Prepare statement to succeed");
-                let meta_init = bincode::serialize(&None::<Option<Vec<u8>>>).unwrap();
+                let meta_init = serialize(&None::<Option<Vec<u8>>>).unwrap();
 
                 for key in [IDX_COMMITTED, IDX_LAST_PURGED, IDX_VOTE] {
                     stmt.execute((key, &meta_init))
@@ -281,7 +281,7 @@ impl LogStore {
                             continue;
                         }
 
-                        let data = bincode::serialize(&log_id).unwrap();
+                        let data = serialize(&log_id).unwrap();
                         match meta.execute(((IDX_LAST_PURGED), data)) {
                             Ok(_) => ack.send(Ok(())).unwrap(),
                             Err(err) => {
@@ -463,7 +463,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStore {
         &mut self,
         committed: Option<LogId<NodeId>>,
     ) -> Result<(), StorageError<NodeId>> {
-        let data = bincode::serialize(&committed).unwrap();
+        let data = serialize(&committed).unwrap();
 
         let (ack, rx) = oneshot::channel();
         self.writer_tx
@@ -497,7 +497,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn save_vote(&mut self, vote: &Vote<NodeId>) -> Result<(), StorageError<NodeId>> {
-        let data = bincode::serialize(&Some(vote)).unwrap();
+        let data = serialize(&Some(vote)).unwrap();
 
         let (ack, rx) = oneshot::channel();
         self.writer_tx
@@ -548,7 +548,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStore {
             .expect("The appender to always be running");
 
         for entry in entries {
-            let data = bincode::serialize(&entry).unwrap();
+            let data = serialize(&entry).unwrap();
             tx.send_async(Some((entry.log_id.index, data)))
                 .await
                 .unwrap();

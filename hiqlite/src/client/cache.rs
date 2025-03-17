@@ -1,5 +1,5 @@
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
-use crate::helpers::deserialize_bytes_compat;
+use crate::helpers::deserialize;
 use crate::network::api::ApiStreamResponsePayload;
 use crate::network::serialize_network;
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
@@ -63,7 +63,7 @@ impl Client {
         match self.get_bytes(cache, key).await {
             Ok(value) => {
                 if let Some(v) = value {
-                    Ok(Some(deserialize_bytes_compat(&v)?))
+                    Ok(Some(deserialize(&v)?))
                 } else {
                     Ok(None)
                 }
