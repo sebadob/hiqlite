@@ -646,6 +646,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                 }
 
                 WriterRequest::Shutdown(ack) => {
+                    // TODO only send ack after everything below has been finished
                     let _ = ack.send(());
                     break;
                 }
