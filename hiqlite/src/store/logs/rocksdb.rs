@@ -56,7 +56,7 @@ pub enum ActionWrite {
     Remove(ActionRemove),
     Vote(ActionVote),
     Sync,
-    Shutdown,
+    Shutdown(oneshot::Sender<()>),
 }
 
 pub struct ActionAppend {
@@ -111,6 +111,7 @@ impl LogStoreWriter {
             // let mut callbacks = Vec::with_capacity(8);
 
             let mut is_dirty = false;
+            let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
 
             while let Ok(action) = rx.recv() {
                 match action {
@@ -222,8 +223,9 @@ impl LogStoreWriter {
                         // assert!(callbacks.is_empty());
                     }
 
-                    ActionWrite::Shutdown => {
+                    ActionWrite::Shutdown(ack) => {
                         warn!("Raft logs store writer is being shut down");
+                        shutdown_ack = Some(ack);
                         break;
                     }
                 }
@@ -231,6 +233,11 @@ impl LogStoreWriter {
 
             db.flush_wal(true);
             warn!("Logs Writer exiting");
+
+            if let Some(ack) = shutdown_ack {
+                ack.send(())
+                    .expect("Shutdown handler to always wait for ack from logs");
+            }
         });
 
         tx

@@ -207,6 +207,8 @@ impl Client {
 
             info!("Shutting down raft cache layer");
             state.raft_cache.raft.shutdown().await?;
+            // no need to await any writer shutdowns, since the cache is ephemeral anyway
+            // -> no cleanup or flushing necessary
         }
 
         #[cfg(feature = "sqlite")]
@@ -218,28 +220,30 @@ impl Client {
             info!("Shutting down raft sqlite layer");
             match state.raft_db.raft.shutdown().await {
                 Ok(_) => {
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-
-                    info!("Shutting down sqlite writer");
-                    let _ = state
-                        .raft_db
-                        .sql_writer
-                        .send_async(WriterRequest::Shutdown(tx))
-                        .await;
+                    let (tx_logs, rx_logs) = tokio::sync::oneshot::channel();
+                    let (tx_sm, rx_sm) = tokio::sync::oneshot::channel();
 
                     info!("Shutting down sqlite logs writer");
-                    if state
+                    state
                         .raft_db
                         .logs_writer
-                        .send_async(ActionWrite::Shutdown)
+                        .send_async(ActionWrite::Shutdown(tx_logs))
                         .await
-                        .is_ok()
-                    {
-                        // this sometimes fails because of race conditions and internal drop handlers
-                        // it just depends on which task is faster, but in any case the writer
-                        // does a wal flush before exiting
-                        rx.await.expect("To always get an answer from SQL writer");
-                    }
+                        .expect("The logs writer to always be listening");
+                    rx_logs
+                        .await
+                        .expect("To always get an answer from Logs writer");
+
+                    info!("Shutting down sqlite writer");
+                    state
+                        .raft_db
+                        .sql_writer
+                        .send_async(WriterRequest::Shutdown(tx_sm))
+                        .await
+                        .expect("The state machine writer to always be listening");
+                    rx_sm
+                        .await
+                        .expect("To always get an answer from SQL writer");
                 }
                 Err(err) => {
                     return Err(Error::Error(err.to_string().into()));
@@ -253,7 +257,8 @@ impl Client {
         let _ = tx_client_db.send_async(ClientStreamReq::Shutdown).await;
 
         if let Some(tx) = tx_shutdown {
-            let _ = tx.send(true);
+            tx.send(true)
+                .expect("The global Hiqlite shutdown handler to always listen");
         }
 
         // no need to apply the shutdown delay for a single instance (mostly used during dev)

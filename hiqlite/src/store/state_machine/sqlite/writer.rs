@@ -152,6 +152,7 @@ pub fn spawn_writer(
     task::spawn_blocking(move || {
         let mut sm_data = StateMachineData::default();
         let mut ts_last_backup = None;
+        let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
 
         // TODO should we maybe save a backup task handle in case of shutdown overlap?
 
@@ -646,8 +647,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                 }
 
                 WriterRequest::Shutdown(ack) => {
-                    // TODO only send ack after everything below has been finished
-                    let _ = ack.send(());
+                    shutdown_ack = Some(ack);
                     break;
                 }
             }
@@ -663,6 +663,11 @@ CREATE TABLE IF NOT EXISTS _metadata
         }
 
         StateMachineSqlite::remove_lock_file(&path_lock_file);
+
+        if let Some(ack) = shutdown_ack {
+            ack.send(())
+                .expect("Shutdown handler to always wait for ack from statemachine");
+        }
     });
 
     tx
