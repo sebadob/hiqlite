@@ -939,9 +939,9 @@ dependencies = [
 
 [[package]]
 name = "eventsource-client"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee53bc484c1ff2390bbf8744b4f8c405fccadb38700de6ed43c8f22b8da9280c"
+checksum = "75810b04951eb0b44bd2800345f6ee15321be90894568bd93aaef9abad1b646c"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -1265,7 +1265,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiqlite"
-version = "0.5.0"
+version = "0.6.0-20250410"
 dependencies = [
  "axum",
  "axum-server",
@@ -1303,7 +1303,7 @@ dependencies = [
  "serde_json",
  "serde_rusqlite",
  "sha2",
- "strum 0.27.1",
+ "strum",
  "thiserror 2.0.3",
  "tokio",
  "tokio-rustls 0.26.0",
@@ -1832,8 +1832,6 @@ dependencies = [
  "cc",
  "libc",
  "libz-sys",
- "lz4-sys",
- "zstd-sys",
 ]
 
 [[package]]
@@ -2959,33 +2957,11 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
-version = "0.26.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
-dependencies = [
- "strum_macros 0.26.4",
-]
-
-[[package]]
-name = "strum"
 version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f64def088c51c9510a8579e3c5d67c65349dcf755e5479ad3d010aa6454e2c32"
 dependencies = [
- "strum_macros 0.27.1",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.26.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "rustversion",
- "syn 2.0.89",
+ "strum_macros",
 ]
 
 [[package]]
@@ -3512,7 +3488,7 @@ dependencies = [
  "num-traits",
  "rust-embed",
  "serde",
- "strum 0.26.3",
+ "strum",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3956,14 +3932,4 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.89",
-]
-
-[[package]]
-name = "zstd-sys"
-version = "2.0.13+zstd.1.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38ff0f21cfee8f97d94cef41359e0c89aa6113028ab0291aa8ca0038995a95aa"
-dependencies = [
- "cc",
- "pkg-config",
 ]

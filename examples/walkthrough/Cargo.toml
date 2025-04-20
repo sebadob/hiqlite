@@ -10,7 +10,7 @@ hiqlite = { path = "../../hiqlite", features = ["cache", "dlock", "listen_notify
 rust-embed = { version = "8.5.0", features = ["compression"] }
 
 # these 2 are needed for the cache index enum, as hiqlite does not re-export the full macros yet
-strum = { version = "0.26.3", features = ["derive"] }
+strum = { version = "0.27", features = ["derive"] }
 num-traits = "0.2.19"
 
 clap = { version = "4.1.11", features = ["derive", "env"] }

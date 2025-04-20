@@ -1219,7 +1219,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiqlite"
-version = "0.5.0"
+version = "0.6.0-20250410"
 dependencies = [
  "axum",
  "axum-server",

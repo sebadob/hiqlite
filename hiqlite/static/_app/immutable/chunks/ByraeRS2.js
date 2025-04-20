@@ -1,0 +1,2 @@
+import { e } from "./DEAb5m-A.js";
+e();
