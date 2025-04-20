@@ -19,6 +19,7 @@ pub fn spawn() -> (
     (tx_req, rx_local)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn handler(rx_req: flume::Receiver<NotifyRequest>, tx_local: flume::Sender<(i64, Vec<u8>)>) {
     let mut listeners: Vec<flume::Sender<Result<sse::Event, Error>>> = Vec::new();
     let mut remove_indexes = Vec::new();
