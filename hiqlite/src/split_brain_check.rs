@@ -3,14 +3,16 @@ use crate::helpers::deserialize;
 use crate::network::HEADER_NAME_SECRET;
 use crate::{Error, Node};
 use openraft::{RaftMetrics, StoredMembership};
+use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{task, time};
-use tracing::{debug, error, warn};
+use tracing::{error, info, warn};
 
 pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     let handle = task::spawn(check_split_brain(state, nodes, tls));
 
+    // TODO just a safety net until everything runs super smooth and stable
     task::spawn(async move {
         loop {
             time::sleep(Duration::from_secs(600)).await;
@@ -20,8 +22,14 @@ pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
 }
 
 async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
+    let interval = env::var("HQL_SPLIT_BRAIN_INTERVAL")
+        .as_deref()
+        .unwrap_or("300")
+        .parse::<u64>()
+        .expect("Cannot parse HQL_SPLIT_BRAIN_INTERVAL as u64");
+
     loop {
-        time::sleep(Duration::from_secs(300)).await;
+        time::sleep(Duration::from_secs(interval)).await;
 
         #[cfg(feature = "sqlite")]
         match state.raft_db.raft.current_leader().await {
@@ -44,7 +52,7 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 {
                     error!("Error during check_compare_membership: {}", err);
                 } else {
-                    debug!("Raft DB Leader: {}", leader_expected);
+                    info!("Raft DB Leader: {}", leader_expected);
                 }
             }
         };
@@ -70,7 +78,7 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 {
                     error!("Error during check_compare_membership: {}", err);
                 } else {
-                    debug!("Raft Cache Leader: {}", leader_expected);
+                    info!("Raft Cache Leader: {}", leader_expected);
                 }
             }
         };

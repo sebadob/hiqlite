@@ -1,6 +1,12 @@
 # env vars for parsing the NodeConfig
 # prefix for all of them: HIQ_
 
+# This is only a temp variable until everything is running very smooth and stable.
+# Can be adjusted to change the interval in seconds for the split brain checker.
+# This checker will be removed though as soon as everything is stable.
+# default: 300
+HQL_SPLIT_BRAIN_INTERVAL=10
+
 # Can be set to 'k8s' to try to split off the node id from the hostname
 # when Hiqlite is running as a StatefulSet inside Kubernetes.
 # Will be ignored if `HQL_NODE_ID_FROM=k8s`
@@ -80,6 +86,16 @@ HQL_LOG_STATEMENTS=true
 # snapshot creations / log purges.
 # default: 10000
 HQL_LOGS_UNTIL_SNAPSHOT=10000
+
+# The artificial shutdown delay to add in multi-node environments.
+# This value is being added before finally shutting down a node
+# to make sure rolling releases can be executed graceful with
+# proper leader switches. You may want to increase this value if
+# you are in an environment with huge in-memory caches and you
+# want to provide a bit more headroom for the snapshot replication
+# after restarts.
+# default: 5000
+HQL_SHUTDOWN_DELAY_MILLS=5000
 
 # If given, these keys / certificates will be used to establish
 # TLS connections between nodes.

@@ -1,23 +1,25 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
+use crate::helpers::deserialize;
 use crate::network::HEADER_NAME_SECRET;
 use crate::{Client, Error};
+use openraft::ServerState;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
 use tracing::{debug, info};
 
-use crate::helpers::deserialize;
 #[cfg(feature = "sqlite")]
 use crate::store::{logs::rocksdb::ActionWrite, state_machine::sqlite::writer::WriterRequest};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use crate::{Node, NodeId};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use openraft::RaftMetrics;
-use openraft::ServerState;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use std::clone::Clone;
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+use std::sync::atomic::Ordering;
 
 impl Client {
     /// Get cluster metrics for the database Raft.
@@ -201,25 +203,61 @@ impl Client {
 
         #[cfg(feature = "cache")]
         {
-            let metrics = state.raft_cache.raft.metrics().borrow().clone();
+            let mut metrics = state.raft_cache.raft.metrics().borrow().clone();
+            while metrics.current_leader.is_none() {
+                info!("No leader exists for the cache raft - waiting ...");
+                time::sleep(Duration::from_millis(500)).await;
+                metrics = state.raft_cache.raft.metrics().borrow().clone();
+            }
             let node_count = metrics.membership_config.nodes().count();
             is_single_instance = node_count == 1;
 
+            if !is_single_instance && metrics.current_leader.unwrap() == state.id {
+                // if we are the leader, we want to try to make a graceful switch
+                // before shutting down to cause less stress and hiccups
+                info!("We are the cache raft leader - disabling elect and trigger it");
+                state.raft_cache.raft.runtime_config().elect(false);
+                state.raft_cache.raft.trigger().elect().await?;
+            }
+
             info!("Shutting down raft cache layer");
             state.raft_cache.raft.shutdown().await?;
+            state
+                .raft_cache
+                .is_raft_stopped
+                .store(true, Ordering::Relaxed);
+            state.raft_cache.raft.runtime_config().heartbeat(false);
             // no need to await any writer shutdowns, since the cache is ephemeral anyway
             // -> no cleanup or flushing necessary
         }
 
         #[cfg(feature = "sqlite")]
         {
-            let metrics = state.raft_db.raft.metrics().borrow().clone();
+            let mut metrics = state.raft_db.raft.metrics().borrow().clone();
+            while metrics.current_leader.is_none() {
+                info!("No leader exists for the DB raft - waiting ...");
+                time::sleep(Duration::from_millis(500)).await;
+                metrics = state.raft_db.raft.metrics().borrow().clone();
+            }
             let node_count = metrics.membership_config.nodes().count();
             is_single_instance = node_count == 1;
 
+            if !is_single_instance && metrics.current_leader.unwrap() == state.id {
+                // if we are the leader, we want to try to make a graceful switch
+                // before shutting down to cause less stress and hiccups
+                info!("We are the DB raft leader - disabling elect and trigger it");
+                state.raft_db.raft.runtime_config().elect(false);
+                state.raft_db.raft.trigger().elect().await?;
+            }
+
             info!("Shutting down raft sqlite layer");
+            let tr = state.raft_db.raft.trigger();
+            tr.elect().await?;
             match state.raft_db.raft.shutdown().await {
                 Ok(_) => {
+                    state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
+                    state.raft_db.raft.runtime_config().heartbeat(false);
+
                     let (tx_logs, rx_logs) = tokio::sync::oneshot::channel();
                     let (tx_sm, rx_sm) = tokio::sync::oneshot::channel();
 
@@ -264,17 +302,10 @@ impl Client {
         // no need to apply the shutdown delay for a single instance (mostly used during dev)
         if !is_single_instance {
             // We need to do a short sleep only to avoid race conditions during rolling releases.
-            // This also helps to make re-joins after a restart smoother.
-            //
-            // TODO for some very weird reason, the process sometimes gets stuck during
-            // this sleep await. I only saw this behavior in integration tests though, where alle nodes
-            // are started from the same `tokio::test` task.
-            //
-            // Note: The issue is "something blocking" in `openraft` but only in some conditions that
-            // don't make sense to me yet - needs further investigation until this sleep can be removed
-            // safely.
-            info!("Shutting down in 10 s ...");
-            time::sleep(Duration::from_secs(10)).await;
+            // This also helps to make re-joins after a restart smoother in case you need to
+            // replicate a bigger snapshot for an in-memory cache.
+            info!("Shutting down in {} ms ...", state.shutdown_relay_millis);
+            time::sleep(Duration::from_millis(state.shutdown_relay_millis as u64)).await;
         }
 
         info!("Shutdown complete");

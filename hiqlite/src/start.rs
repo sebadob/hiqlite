@@ -61,7 +61,7 @@ where
     let raft_db = store::start_raft_db(node_config.clone(), raft_config.clone()).await?;
     #[cfg(feature = "cache")]
     let (is_pristine_cache_node_1, raft_cache) =
-        store::start_raft_cache::<C>(node_config.clone(), raft_config).await?;
+        store::start_raft_cache::<C>(node_config.clone(), raft_config.clone()).await?;
 
     let (api_addr, rpc_addr) = {
         let node = node_config
@@ -106,6 +106,7 @@ where
         client_request_id: std::sync::atomic::AtomicUsize::new(0),
         #[cfg(feature = "dashboard")]
         tx_client_stream: tx_client_stream.clone(),
+        shutdown_relay_millis: node_config.shutdown_delay_millis,
     });
 
     #[cfg(any(feature = "sqlite", feature = "cache"))]
@@ -124,8 +125,8 @@ where
 
     let router_internal = Router::new()
         // .route("/stream", get(raft_server_split::stream))
-        .route("/stream/sqlite", get(raft_server_split::stream))
-        .route("/stream/cache", get(raft_server_split::stream))
+        .route("/stream/sqlite", get(raft_server_split::stream_sqlite))
+        .route("/stream/cache", get(raft_server_split::stream_cache))
         .route("/health", get(api::health))
         .route("/ping", get(api::ping))
         // .layer(compression_middleware.clone().into_inner())
