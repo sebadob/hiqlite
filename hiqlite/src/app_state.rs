@@ -19,6 +19,7 @@ use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 use crate::store::state_machine::sqlite::{
     state_machine::SqlitePool, writer::WriterRequest, TypeConfigSqlite,
 };
+use std::sync::atomic::AtomicBool;
 #[cfg(feature = "dashboard")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -65,6 +66,7 @@ pub(crate) struct AppState {
     pub client_request_id: AtomicUsize,
     #[cfg(feature = "dashboard")]
     pub tx_client_stream: flume::Sender<ClientStreamReq>,
+    pub shutdown_relay_millis: u32,
 }
 
 impl AppState {
@@ -98,6 +100,7 @@ pub struct StateRaftDB {
     pub sql_writer: flume::Sender<WriterRequest>,
     pub read_pool: SqlitePool,
     pub log_statements: bool,
+    pub is_raft_stopped: AtomicBool,
 }
 
 #[cfg(feature = "cache")]
@@ -111,4 +114,5 @@ pub struct StateRaftCache {
     pub rx_notify: flume::Receiver<(i64, Vec<u8>)>,
     #[cfg(feature = "dlock")]
     pub tx_dlock: flume::Sender<LockRequest>,
+    pub is_raft_stopped: AtomicBool,
 }

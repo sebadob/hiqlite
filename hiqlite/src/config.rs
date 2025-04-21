@@ -100,6 +100,11 @@ pub struct NodeConfig {
     /// Set the password for the integrated dashboard. Must be given as argon2id hash. feature `dashboard`
     #[cfg(feature = "dashboard")]
     pub password_dashboard: Option<String>,
+    /// Artificial shutdown delay for a multi-node deployment. This should be at least:
+    /// `(raft_config.election_timeout_max + raft_config.heartbeat_interval) * 2`
+    /// You may want to increase it in case you also use a bigger cache size and need a bit more
+    /// headroom for replications during rolling releases.
+    pub shutdown_delay_millis: u32,
 }
 
 impl Default for NodeConfig {
@@ -126,6 +131,7 @@ impl Default for NodeConfig {
             s3_config: None,
             #[cfg(feature = "dashboard")]
             password_dashboard: None,
+            shutdown_delay_millis: 5000,
             // #[cfg(feature = "dashboard")]
             // insecure_cookie: false,
         }
@@ -209,16 +215,19 @@ impl NodeConfig {
                 .unwrap_or_else(|_| "hiqlite.db".to_string())
                 .into(),
             log_statements: env::var("HQL_LOG_STATEMENTS")
-                .unwrap_or_else(|_| "false".to_string())
+                .as_deref()
+                .unwrap_or("false")
                 .parse()
-                .expect("Cannot parse HQL_LOG_STATEMENTS to u64"),
+                .expect("Cannot parse HQL_LOG_STATEMENTS as u64"),
             prepared_statement_cache_capacity: 1024,
             read_pool_size: env::var("HQL_READ_POOL_SIZE")
-                .unwrap_or_else(|_| "4".to_string())
+                .as_deref()
+                .unwrap_or("4")
                 .parse()
-                .expect("Cannot parse HQL_READ_POOL_SIZE to usize"),
+                .expect("Cannot parse HQL_READ_POOL_SIZE as usize"),
             sync_immediate: env::var("HQL_SYNC_IMMEDIATE")
-                .unwrap_or_else(|_| "false".to_string())
+                .as_deref()
+                .unwrap_or("false")
                 .parse()
                 .expect("Cannot parse HQL_SYNC_IMMEDIATE as bool"),
             raft_config: Self::default_raft_config(logs_keep),
@@ -234,6 +243,11 @@ impl NodeConfig {
             s3_config: crate::s3::S3Config::try_from_env(),
             #[cfg(feature = "dashboard")]
             password_dashboard: DashboardState::from_env().password_dashboard,
+            shutdown_delay_millis: env::var("HQL_SHUTDOWN_DELAY_MILLS")
+                .as_deref()
+                .unwrap_or("5000")
+                .parse()
+                .expect("Cannot parse HQL_SHUTDOWN_DELAY_MILLS as u32"),
         };
 
         slf.is_valid()
@@ -246,6 +260,9 @@ impl NodeConfig {
     pub fn default_raft_config(logs_until_snapshot: u64) -> RaftConfig {
         RaftConfig {
             cluster_name: "hiqlite".to_string(),
+            // election_timeout_min: 150,
+            // election_timeout_max: 300,
+            // heartbeat_interval: 50,
             // election_timeout_min: 300,
             // election_timeout_max: 600,
             // heartbeat_interval: 100,

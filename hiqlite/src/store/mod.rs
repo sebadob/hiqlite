@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::fmt::Debug;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use strum::IntoEnumIterator;
 
@@ -102,6 +103,7 @@ pub(crate) async fn start_raft_db(
         sql_writer,
         read_pool,
         log_statements: node_config.log_statements,
+        is_raft_stopped: AtomicBool::new(false),
     })
 }
 
@@ -169,6 +171,7 @@ where
             rx_notify,
             #[cfg(feature = "dlock")]
             tx_dlock,
+            is_raft_stopped: AtomicBool::new(false),
         },
     ))
 }
