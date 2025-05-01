@@ -7,7 +7,7 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{task, time};
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     let handle = task::spawn(check_split_brain(state, nodes, tls));
@@ -52,7 +52,7 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 {
                     error!("Error during check_compare_membership: {}", err);
                 } else {
-                    info!("Raft DB Leader: {}", leader_expected);
+                    debug!("Raft DB Leader: {}", leader_expected);
                 }
             }
         };
@@ -78,7 +78,7 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 {
                     error!("Error during check_compare_membership: {}", err);
                 } else {
-                    info!("Raft Cache Leader: {}", leader_expected);
+                    debug!("Raft Cache Leader: {}", leader_expected);
                 }
             }
         };
