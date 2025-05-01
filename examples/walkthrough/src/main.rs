@@ -1,7 +1,8 @@
 use clap::Parser;
-use hiqlite::{
-    params, start_node_with_cache, Error, Node, NodeConfig, Param, Row, ServerTlsConfig,
-};
+use hiqlite::cache_idx::CacheIndex;
+use hiqlite::{start_node_with_cache, Error, Node, NodeConfig, Row, ServerTlsConfig};
+use hiqlite_macros::embed::*;
+use hiqlite_macros::params;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
@@ -10,7 +11,7 @@ use tokio::time;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-#[derive(rust_embed::Embed)]
+#[derive(Embed)]
 #[folder = "migrations"]
 struct Migrations;
 
@@ -79,10 +80,20 @@ struct Entity {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, hiqlite::EnumIter, hiqlite::ToPrimitive)]
+#[derive(Debug, Serialize, Deserialize, strum::EnumIter)]
 enum Cache {
     One,
     Two,
+}
+
+// This tiny block of boilerplate is necessary to index concurrent caches properly.
+// The result must always return each elements position in the iterator and this simple typecasting
+// is the easiest way to do it. It is checked for correctness and compared against the iterator
+// during startup.
+impl CacheIndex for Cache {
+    fn to_usize(self) -> usize {
+        self as usize
+    }
 }
 
 // This impl is needed for `query_map()` which gives you more control

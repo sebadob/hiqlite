@@ -1,6 +1,7 @@
 use crate::{log, Cache, Options};
 use chrono::Utc;
-use hiqlite::{params, Client, Error, Param, Params, Row};
+use hiqlite::{Client, Error, Params, Row};
+use hiqlite_macros::params;
 use serde::{Deserialize, Serialize};
 use tokio::task;
 use tokio::time::Instant;

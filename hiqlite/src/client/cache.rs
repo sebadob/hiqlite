@@ -1,3 +1,4 @@
+use crate::cache_idx::CacheIndex;
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
 use crate::helpers::deserialize;
 use crate::network::api::ApiStreamResponsePayload;
@@ -6,24 +7,19 @@ use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
 use crate::{Client, Error};
 use chrono::Utc;
-use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::fmt::Debug;
-use strum::IntoEnumIterator;
 use tokio::sync::oneshot;
 
 impl Client {
     /// Clears a single cache.
     pub async fn clear_cache<C>(&self, cache: C) -> Result<(), Error>
     where
-        C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+        C: CacheIndex,
     {
         self.cache_req_retry(
             CacheRequest::Clear {
-                cache_idx: cache
-                    .to_usize()
-                    .expect("Invalid ToPrimitive impl on Cache Index"),
+                cache_idx: cache.to_usize(),
             },
             false,
         )
@@ -56,7 +52,7 @@ impl Client {
     /// ```
     pub async fn get<C, K, V>(&self, cache: C, key: K) -> Result<Option<V>, Error>
     where
-        C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+        C: CacheIndex,
         K: Into<String>,
         V: for<'a> Deserialize<'a>,
     {
@@ -77,7 +73,7 @@ impl Client {
     /// Works in the same way as `.get()` without any value mapping.
     pub async fn get_bytes<C, K>(&self, cache: C, key: K) -> Result<Option<Vec<u8>>, Error>
     where
-        C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+        C: CacheIndex,
         K: Into<String>,
     {
         if let Some(state) = &self.inner.state {
@@ -85,7 +81,7 @@ impl Client {
             state
                 .raft_cache
                 .tx_caches
-                .get(cache.to_usize().unwrap())
+                .get(cache.to_usize())
                 .unwrap()
                 .send(CacheRequestHandler::Get((key.into(), ack)))
                 .expect("kv handler to always be running");
@@ -97,9 +93,7 @@ impl Client {
             let res = self
                 .cache_req_retry(
                     CacheRequest::Get {
-                        cache_idx: cache
-                            .to_usize()
-                            .expect("Invalid ToPrimitive impl on Cache Index"),
+                        cache_idx: cache.to_usize(),
                         key: key.into(),
                     },
                     true,
@@ -137,7 +131,7 @@ impl Client {
         ttl: Option<i64>,
     ) -> Result<(), Error>
     where
-        C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+        C: CacheIndex,
         K: Into<Cow<'static, str>>,
         V: Serialize,
     {
@@ -157,14 +151,12 @@ impl Client {
         ttl: Option<i64>,
     ) -> Result<(), Error>
     where
-        C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+        C: CacheIndex,
         K: Into<Cow<'static, str>>,
     {
         self.cache_req_retry(
             CacheRequest::Put {
-                cache_idx: cache
-                    .to_usize()
-                    .expect("Invalid ToPrimitive impl on Cache Index"),
+                cache_idx: cache.to_usize(),
                 key: key.into(),
                 value,
                 expires: ttl.map(|seconds| Utc::now().timestamp().saturating_add(seconds)),
@@ -179,14 +171,12 @@ impl Client {
     /// `Delete` a value from the cache.
     pub async fn delete<C, K>(&self, cache: C, key: K) -> Result<(), Error>
     where
-        C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+        C: CacheIndex,
         K: Into<Cow<'static, str>>,
     {
         self.cache_req_retry(
             CacheRequest::Delete {
-                cache_idx: cache
-                    .to_usize()
-                    .expect("Invalid ToPrimitive impl on Cache Index"),
+                cache_idx: cache.to_usize(),
                 key: key.into(),
             },
             false,

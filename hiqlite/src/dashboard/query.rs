@@ -2,7 +2,7 @@ use crate::network::api::ApiStreamResponsePayload;
 use crate::network::AppStateExt;
 use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
 use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
-use crate::{params, Error};
+use crate::{Error, Params};
 use tokio::sync::oneshot;
 use tokio::task;
 use tracing::info;
@@ -46,7 +46,7 @@ pub(crate) async fn dashboard_query_dynamic(
     } else {
         let sql = Query {
             sql: sql.into(),
-            params: params!(),
+            params: Params::new(),
         };
 
         // TODO check for `RETURNING` to execute `query` instead

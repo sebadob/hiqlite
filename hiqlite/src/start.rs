@@ -27,7 +27,7 @@ where
         + Serialize
         + for<'a> Deserialize<'a>
         + strum::IntoEnumIterator
-        + num_traits::ToPrimitive,
+        + crate::cache_idx::CacheIndex,
 {
     node_config.is_valid()?;
 

@@ -4,7 +4,6 @@ use crate::app_state::{AppState, RaftType};
 use crate::init::IsPristineNode1;
 use crate::network::NetworkStreaming;
 use crate::{init, Error, NodeConfig, NodeId, RaftConfig};
-use num_traits::ToPrimitive;
 use openraft::storage::RaftLogStorage;
 use openraft::{Raft, StorageError};
 use serde::{Deserialize, Serialize};
@@ -113,7 +112,11 @@ pub(crate) async fn start_raft_cache<C>(
     raft_config: Arc<RaftConfig>,
 ) -> Result<(IsPristineNode1, StateRaftCache), Error>
 where
-    C: Debug + Serialize + for<'a> Deserialize<'a> + IntoEnumIterator + ToPrimitive,
+    C: Debug
+        + Serialize
+        + for<'a> Deserialize<'a>
+        + IntoEnumIterator
+        + crate::cache_idx::CacheIndex,
 {
     let log_store = logs::memory::LogStoreMemory::new();
     let state_machine_store = Arc::new(StateMachineMemory::new::<C>().await?);

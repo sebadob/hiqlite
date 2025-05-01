@@ -1,9 +1,11 @@
-use hiqlite::{params, Error, NodeConfig, Param, Row, StmtIndex};
+use hiqlite::{Error, NodeConfig, Row, StmtIndex};
+use hiqlite_macros::embed::*;
+use hiqlite_macros::params;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use tracing_subscriber::EnvFilter;
 
-#[derive(rust_embed::Embed)]
+#[derive(Embed)]
 #[folder = "migrations"]
 struct Migrations;
 
@@ -147,7 +149,10 @@ async fn main() -> Result<(), Error> {
             (insert_child, params!(StmtIndex(0).column(0), "child A.1")),
             (insert_child, params!(StmtIndex(0).column(0), "child A.2")),
             // We can also refer to a column by name. Now using "parent B":
-            (insert_child, params!(StmtIndex(1).column("id"), "child B.1")),
+            (
+                insert_child,
+                params!(StmtIndex(1).column("id"), "child B.1"),
+            ),
         ])
         .await;
 

@@ -1,3 +1,4 @@
+use hiqlite::cache_idx::CacheIndex;
 use hiqlite::{Error, NodeConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -6,10 +7,20 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 /// This enum is used as our cache identifier.
-#[derive(Debug, Serialize, Deserialize, hiqlite::EnumIter, hiqlite::ToPrimitive)]
+#[derive(Debug, Serialize, Deserialize, strum::EnumIter)]
 enum Cache {
     One,
     Two,
+}
+
+// This tiny block of boilerplate is necessary to index concurrent caches properly.
+// The result must always return each elements position in the iterator and this simple typecasting
+// is the easiest way to do it. It is checked for correctness and compared against the iterator
+// during startup.
+impl CacheIndex for Cache {
+    fn to_usize(self) -> usize {
+        self as usize
+    }
 }
 
 /// We will use this as our test value for the cache

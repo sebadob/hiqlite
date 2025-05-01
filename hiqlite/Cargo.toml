@@ -103,8 +103,6 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 mime_guess = { workspace = true, optional = true }
-num-traits.workspace = true
-num-derive.workspace = true
 openraft.workspace = true
 # TODO not competitive for logs right now, maybe get rid of it in the future
 #redb.workspace = true

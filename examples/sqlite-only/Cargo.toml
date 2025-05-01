@@ -5,9 +5,7 @@ edition = "2021"
 
 [dependencies]
 hiqlite = { path = "../../hiqlite", features = ["shutdown-handle"] }
-
-# currently, we need this to embed migrations, as hiqlite does not re-export the full macro yet
-rust-embed = { version = "8.5.0", features = ["compression"] }
+hiqlite-macros = { path = "../../hiqlite-macros" }
 
 serde = { version = "1.0.203", features = ["derive"] }
 tokio = { version = "1.43.1", features = ["fs", "rt-multi-thread"] }

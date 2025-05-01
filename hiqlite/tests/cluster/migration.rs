@@ -1,6 +1,6 @@
 use crate::execute_query::TestData;
-use crate::{debug, log};
-use hiqlite::{params, AppliedMigration, Client, Error};
+use crate::{debug, log, params};
+use hiqlite::{AppliedMigration, Client, Error};
 use std::time::Duration;
 use tokio::time;
 

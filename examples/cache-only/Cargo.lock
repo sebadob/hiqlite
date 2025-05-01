@@ -425,7 +425,6 @@ name = "cache-only"
 version = "0.1.0"
 dependencies = [
  "hiqlite",
- "num-traits",
  "serde",
  "strum",
  "tokio",
@@ -917,8 +916,6 @@ dependencies = [
  "hyper-util",
  "lazy_static",
  "lz4-sys",
- "num-derive",
- "num-traits",
  "openraft",
  "reqwest",
  "rust-embed",
@@ -1431,17 +1428,6 @@ checksum = "77a8165726e8236064dbb45459242600304b42a5ea24ee2948e18e023bf7ba84"
 dependencies = [
  "overload",
  "winapi",
-]
-
-[[package]]
-name = "num-derive"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed3955f1a9c7c0c15e092f9c887db08b1fc683305fdf6eb6684f22555355e202"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.89",
 ]
 
 [[package]]

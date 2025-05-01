@@ -2,7 +2,7 @@ use crate::client::stream::{ClientMigratePayload, ClientStreamReq};
 use crate::migration::{Migration, Migrations};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::sqlite::state_machine::QueryWrite;
-use crate::{params, AppliedMigration, Client, Error, Response};
+use crate::{AppliedMigration, Client, Error, Params, Response};
 use rust_embed::RustEmbed;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
@@ -25,7 +25,7 @@ impl Client {
     #[cold]
     pub async fn migrate<T: RustEmbed>(&self) -> Result<(), Error> {
         let applied: Vec<AppliedMigration> = self
-            .query_map("SELECT * FROM _migrations ORDER BY id ASC", params!())
+            .query_map("SELECT * FROM _migrations ORDER BY id ASC", Params::new())
             .await
             .unwrap_or_default();
         let mut migrations = Migrations::build::<T>();
