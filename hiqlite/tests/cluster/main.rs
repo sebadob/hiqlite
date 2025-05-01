@@ -1,5 +1,6 @@
 use crate::self_heal::test_self_healing;
 use futures_util::future::join_all;
+use hiqlite::cache_idx::CacheIndex;
 use hiqlite::Error;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
@@ -29,11 +30,31 @@ mod type_conversions;
 
 pub const TEST_DATA_DIR: &str = "tests/data_test";
 
-#[derive(Debug, Serialize, Deserialize, hiqlite::EnumIter, hiqlite::ToPrimitive)]
+#[macro_export]
+macro_rules! params {
+    ( $( $param:expr ),* ) => {
+        {
+            #[allow(unused_mut)]
+            let mut params = Vec::with_capacity(2);
+            $(
+                params.push(hiqlite::Param::from($param));
+            )*
+            params
+        }
+    };
+}
+
+#[derive(Debug, Serialize, Deserialize, strum::EnumIter)]
 enum Cache {
     One,
     Two,
     Three,
+}
+
+impl CacheIndex for Cache {
+    fn to_usize(self) -> usize {
+        self as usize
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

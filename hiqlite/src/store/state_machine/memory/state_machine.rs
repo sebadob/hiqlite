@@ -1,13 +1,15 @@
+use crate::cache_idx::CacheIndex;
 use crate::helpers::{deserialize, serialize};
 use crate::store::state_machine::memory::cache_ttl_handler::TtlRequest;
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::{self, *};
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
+#[cfg(feature = "listen_notify_local")]
+use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
 use crate::store::state_machine::memory::{cache_ttl_handler, kv_handler, TypeConfigKV};
 use crate::store::StorageResult;
 use crate::{Error, Node, NodeId};
 use dotenvy::var;
-use num_traits::ToPrimitive;
 use openraft::storage::RaftStateMachine;
 use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
@@ -26,9 +28,6 @@ use tokio::fs;
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::info;
 use uuid::Uuid;
-
-#[cfg(feature = "listen_notify_local")]
-use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
 
 type Entry = openraft::Entry<TypeConfigKV>;
 type SnapshotData = Cursor<Vec<u8>>;
@@ -185,14 +184,20 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
 impl StateMachineMemory {
     pub(crate) async fn new<C>() -> Result<Self, Error>
     where
-        C: Debug + IntoEnumIterator + ToPrimitive,
+        C: Debug + IntoEnumIterator + CacheIndex,
     {
         // we must make sure that the index is correct and in order
         let mut len = 0;
         for variant in C::iter() {
-            if variant.to_usize().unwrap() != len {
+            let value = variant.to_usize();
+            if value != len {
                 return Err(Error::Config(
-                    "Cache Index enum must start at '0' and have no gaps in iter()".into(),
+                    format!(
+                        "'Cache' enum's `.to_usize()` must return each elements position in the \
+                    iterator. Expected {} for {:?}",
+                        len, value,
+                    )
+                    .into(),
                 ));
             }
             len += 1;

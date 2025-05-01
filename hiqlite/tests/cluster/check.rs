@@ -1,6 +1,6 @@
 use crate::execute_query::TestData;
-use crate::{debug, log};
-use hiqlite::{params, Client, Error, Param};
+use crate::{debug, log, params};
+use hiqlite::{Client, Error};
 
 use crate::cache::{KEY, KEY_2, VALUE, VALUE_2};
 use crate::Cache;

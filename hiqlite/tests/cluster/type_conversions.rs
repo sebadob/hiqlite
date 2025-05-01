@@ -1,6 +1,6 @@
-use crate::debug;
+use crate::{debug, params};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use hiqlite::{params, Client, Error, Param, Row};
+use hiqlite::{Client, Error, Row};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq)]

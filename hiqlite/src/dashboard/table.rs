@@ -1,7 +1,7 @@
 use crate::dashboard::handlers::TableFilterRequest;
 use crate::network::AppStateExt;
 use crate::query::query_map;
-use crate::{params, Error, Param, Row};
+use crate::{Error, Param, Params, Row};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -58,7 +58,7 @@ impl Table {
         let res: Vec<Self> = query_map(
             state,
             "SELECT type,name,tbl_name,sql FROM sqlite_master",
-            params!(),
+            Params::new(),
         )
         .await?;
 
@@ -72,7 +72,7 @@ impl Table {
         let res: Vec<Self> = query_map(
             state,
             "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE type = $1",
-            params!(filter.as_str()),
+            vec![Param::Text(filter.as_str().to_string())],
         )
         .await?;
 

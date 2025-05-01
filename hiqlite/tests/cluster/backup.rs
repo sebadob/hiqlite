@@ -1,5 +1,5 @@
-use crate::{log, TEST_DATA_DIR};
-use hiqlite::{params, Client, Error, Param};
+use crate::{log, params, TEST_DATA_DIR};
+use hiqlite::{Client, Error};
 use std::time::Duration;
 use tokio::{fs, time};
 

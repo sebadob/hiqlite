@@ -1,7 +1,7 @@
 use crate::execute_query::TestData;
-use crate::log;
+use crate::{log, params};
 use chrono::Utc;
-use hiqlite::{params, Client, Error, Param};
+use hiqlite::{Client, Error};
 use std::time::Duration;
 use tokio::time;
 

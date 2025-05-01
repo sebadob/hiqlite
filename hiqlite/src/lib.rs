@@ -17,18 +17,16 @@ pub use config::{NodeConfig, RaftConfig};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use tls::ServerTlsConfig;
 
-#[cfg(feature = "cache")]
-pub use num_derive::ToPrimitive;
-#[cfg(feature = "cache")]
-pub use strum::EnumIter;
-
-#[cfg(feature = "dlock")]
-pub use client::dlock::Lock;
-
 #[cfg(feature = "sqlite")]
 pub use crate::query::rows::Row;
 #[cfg(feature = "sqlite")]
-pub use crate::store::state_machine::sqlite::{param::Param, state_machine::Params, transaction_variable::{StmtIndex, StmtColumn}};
+pub use crate::store::state_machine::sqlite::{
+    param::Param,
+    state_machine::Params,
+    transaction_variable::{StmtColumn, StmtIndex},
+};
+#[cfg(feature = "dlock")]
+pub use client::dlock::Lock;
 #[cfg(feature = "sqlite")]
 pub use migration::AppliedMigration;
 
@@ -60,6 +58,8 @@ mod tls;
 
 #[cfg(feature = "backup")]
 mod backup;
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+pub mod cache_idx;
 #[cfg(feature = "dashboard")]
 mod dashboard;
 #[cfg(feature = "sqlite")]
@@ -92,22 +92,6 @@ pub(crate) static HEALTH_CHECK_DELAY_SECS: std::sync::LazyLock<u16> =
             .expect("Cannot parse HQL_HEALTH_CHECK_DELAY_SECS as u16")
     });
 
-/// Helper macro to created Owned Params which can be serialized and sent
-/// over the Raft network between nodes.
-#[macro_export]
-macro_rules! params {
-    ( $( $param:expr ),* ) => {
-        {
-            #[allow(unused_mut)]
-            let mut params = Vec::with_capacity(2);
-            $(
-                params.push(Param::from($param));
-            )*
-            params
-        }
-    };
-}
-
 /// A Raft / Hiqlite node
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Node {
@@ -139,10 +123,13 @@ impl Display for Node {
 /// If an incorrect `node_config` was given.
 #[cfg(feature = "sqlite")]
 pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
-    #[derive(
-        Debug, serde::Serialize, serde::Deserialize, strum::EnumIter, num_derive::ToPrimitive,
-    )]
+    #[derive(Debug, serde::Serialize, serde::Deserialize, strum::EnumIter)]
     enum Empty {}
+    impl cache_idx::CacheIndex for Empty {
+        fn to_usize(self) -> usize {
+            0
+        }
+    }
 
     start::start_node_inner::<Empty>(node_config).await
 }
@@ -159,7 +146,7 @@ where
         + Serialize
         + for<'a> Deserialize<'a>
         + strum::IntoEnumIterator
-        + num_traits::ToPrimitive,
+        + cache_idx::CacheIndex,
 {
     start::start_node_inner::<C>(node_config).await
 }
