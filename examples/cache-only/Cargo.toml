@@ -8,7 +8,6 @@ hiqlite = { path = "../../hiqlite", default-features = false, features = ["cache
 
 # these 2 are needed for the cache index enum, as hiqlite does not re-export the full macros yet
 strum = { version = "0.27", features = ["derive"] }
-num-traits = "0.2.19"
 
 serde = { version = "1.0.203", features = ["derive"] }
 tokio = { version = "1.43.1", features = ["fs", "rt-multi-thread"] }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["hiqlite"]
+members = ["hiqlite", "hiqlite-macros"]
 exclude = ["examples"]
 
 [workspace.package]
@@ -55,8 +55,6 @@ http-body-util = "0.1.2"
 hyper = { version = "1.4.1", features = ["client", "http2"] }
 hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
 mime_guess = "2.0.5"
-num-traits = "0.2.19"
-num-derive = "0.4.2"
 openraft = { version = "0.9.18", features = ["serde", "storage-v2"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "http2",

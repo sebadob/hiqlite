@@ -1,5 +1,7 @@
 use clap::Parser;
+use hiqlite::cache_idx::CacheIndex;
 use hiqlite::{start_node_with_cache, Client, Error, Node, NodeConfig};
+use hiqlite_macros::embed::*;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
@@ -9,7 +11,7 @@ use tracing_subscriber::EnvFilter;
 
 mod bench;
 
-#[derive(rust_embed::Embed)]
+#[derive(Embed)]
 #[folder = "migrations"]
 struct Migrations;
 
@@ -129,10 +131,20 @@ fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, hiqlite::EnumIter, hiqlite::ToPrimitive)]
+#[derive(Debug, Serialize, Deserialize, strum::EnumIter)]
 enum Cache {
     One,
     Two,
+}
+
+// This tiny block of boilerplate is necessary to index concurrent caches properly.
+// The result must always return each elements position in the iterator and this simple typecasting
+// is the easiest way to do it. It is checked for correctness and compared against the iterator
+// during startup.
+impl CacheIndex for Cache {
+    fn to_usize(self) -> usize {
+        self as usize
+    }
 }
 
 #[tokio::main]
