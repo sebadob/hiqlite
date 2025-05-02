@@ -1,5 +1,86 @@
 # Changelog
 
+## UNRELEASED
+
+### Breaking
+
+tl;dr
+
+For the a Cache enum, when you had before:
+
+```rust
+#[derive(Debug, serde::Serialize, serde::Deserialize, hiqlite::EnumIter, hiqlite::ToPrimitive)]
+enum Cache {
+    One,
+    Two,
+}
+```
+
+You now only need:
+
+```rust
+#[derive(Debug, strum::EnumIter)]
+enum Cache {
+    One,
+    Two,
+}
+
+impl CacheIndex for Cache {
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+}
+```
+
+And for the migrations, before:
+
+```rust
+#[derive(rust_embed::Embed)]
+#[folder = "migrations"]
+struct Migrations;
+```
+
+You now need:
+
+```rust
+use hiqlite_macros::embed::*;
+
+#[derive(Embed)]
+#[folder = "migrations"]
+struct Migrations;
+```
+
+And `hiqlite::params` has been moved into `hiqlite_macros::params`.
+
+**The long version:**
+
+`hiqlite::params` macro has been removed and is now inside a new crate `hiqlite-macros`. This made it possible to not
+need the manual import of `hiqlite::Param` each time when using this macro.
+
+Additionally, you don't need to add `rust_embed`, `num-traits` and possibly `num-derive` macros manually anymore.
+`num-traits` and `num-derive` have been dropped completely and instead of adding these external dependencies to your
+application, you now need a tiny, usually 5 lines long, boilerplate `impl CacheIndex for MyCacheEnum`. The re-export
+of the `strum` macro from `hiqlite::` has been removed as well, because it needed the dependency manually anyway, which
+was weird to use.
+
+The `rust_embed` dependency is now also re-exported from `hiqlite-macros` in a way that actually works without you
+needing to add it manually.
+
+The `serde::Serialize` + `serde::Deserialize` trait bounds for your `Cache` index enum have been removed as well.
+
+On the long run, the idea is to also be able to successfully re-export `strum`, which cannot be done currently because
+of some unfortunate limitations, or create our own macro to derive the `Iterator` trait. But for now, this is quite a
+big improvement already.
+
+### Changes
+
+- Support for fixed-size u8 array conversion.
+- You can now refer to the output from statements execute before during a `hiqlite::Client::txn()`
+  via `RETURNING` + `StmtIndex`. Take a look at the `sqlite-only` example.
+- Shutdown has been made quicker and more resilient, especially for `cache` Rafts which do not have a
+  persistent state between restarts.
+- Internal code and performance improvements and dependencies have been bumped.
+
 ## v0.5.0
 
 - All internal dependencies have been bumped to the latest stable version.
