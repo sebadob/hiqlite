@@ -11,16 +11,14 @@ use std::sync::Arc;
 
 // pub use management::LearnerReq;
 use crate::helpers::{deserialize, serialize};
-pub use raft_client_split::NetworkStreaming;
+pub use raft_client::NetworkStreaming;
 
 pub(crate) mod api;
 mod challenge_response;
 pub(crate) mod handshake;
 pub(crate) mod management;
 mod raft_client;
-mod raft_client_split;
 pub(crate) mod raft_server;
-pub(crate) mod raft_server_split;
 
 pub(crate) type AppStateExt = axum::extract::State<Arc<AppState>>;
 // pub(crate) type RaftWriteResponse = ClientWriteResponse<TypeConfigSqlite>;
