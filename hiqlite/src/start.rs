@@ -4,7 +4,6 @@ use crate::network::{api, management};
 use crate::{init, split_brain_check, store, Client, Error, NodeConfig};
 use axum::routing::{get, post};
 use axum::Router;
-use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -23,11 +22,7 @@ use crate::s3;
 #[allow(clippy::extra_unused_type_parameters)]
 pub async fn start_node_inner<C>(node_config: NodeConfig) -> Result<Client, Error>
 where
-    C: Debug
-        + Serialize
-        + for<'a> Deserialize<'a>
-        + strum::IntoEnumIterator
-        + crate::cache_idx::CacheIndex,
+    C: Debug + strum::IntoEnumIterator + crate::cache_idx::CacheIndex,
 {
     node_config.is_valid()?;
 

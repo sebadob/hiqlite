@@ -2,7 +2,6 @@ use clap::Parser;
 use hiqlite::cache_idx::CacheIndex;
 use hiqlite::{start_node_with_cache, Client, Error, Node, NodeConfig};
 use hiqlite_macros::embed::*;
-use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
 use tokio::time;
@@ -131,7 +130,7 @@ fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, strum::EnumIter)]
+#[derive(Debug, strum::EnumIter)]
 enum Cache {
     One,
     Two,
