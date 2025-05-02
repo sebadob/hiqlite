@@ -40,7 +40,7 @@ impl Client {
 
                 while let Err(err) = find_leader {
                     warn!("Find DB leader error: {}", err);
-                    time::sleep(Duration::from_millis(250)).await;
+                    time::sleep(Duration::from_millis(500)).await;
                     let metrics = state.raft_db.raft.metrics().borrow().clone();
                     find_leader = Self::find_set_leader(metrics, &self.inner.leader_db).await;
                 }
@@ -54,7 +54,7 @@ impl Client {
 
                 while let Err(err) = find_leader {
                     warn!("Find cache leader error: {}", err);
-                    time::sleep(Duration::from_millis(250)).await;
+                    time::sleep(Duration::from_millis(500)).await;
                     let metrics = state.raft_cache.raft.metrics().borrow().clone();
                     find_leader = Self::find_set_leader(metrics, &self.inner.leader_cache).await;
                 }

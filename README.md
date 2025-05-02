@@ -100,11 +100,16 @@ AMD Ryzen 9950X, DDR5-5200 with highly optimized timings, M2 SSD Gen4
 
 **SQLite:**
 
-| Concurrency | 100k single `INSERT` | 100k transactional `INSERT` | single row `SELECT` |
-|-------------|----------------------|-----------------------------|---------------------| 
-| 4           | ~22.000 / s          | ~680.000 / s                | ~16 micros          |
-| 16          | ~36.000 / s          | ~450.000 / s                |                     |
-| 64          | ~43.000 / s          | ~440.000 / s                |                     |
+| Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
+|-------------|----------------------|-----------------------------| 
+| 4           | ~22.000 / s          | ~680.000 / s                |
+| 16          | ~36.000 / s          | ~450.000 / s                |
+| 64          | ~43.000 / s          | ~440.000 / s                |
+
+For a simple `SELECT`, we have 2 different metrics. By default, `hiqlite` caches all prepared statements.
+A simple `SELECT` with a fresh connection, which has not been prepared and cached yet, it took ~150-190 micros.
+Once the connection has been used once and the statement has been cached, this drops down dramatically to
+7 -25 micros (hard to measure these short ones).
 
 **Cache:**
 
@@ -120,11 +125,11 @@ AMD Ryzen 3900X, DDR4-3000, 2x M2 SSD Gen3 as Raid 0
 
 **SQLite:**
 
-| Concurrency | 100k single `INSERT` | 100k transactional `INSERT` | single row `SELECT` |
-|-------------|----------------------|-----------------------------|---------------------| 
-| 4           | ~6.800 / s           | ~235.000 / s                | ~28 micros          |
-| 16          | ~13.300 / s          | ~180.000 / s                |                     |
-| 64          | ~20.800 / s          | ~173.000 / s                |                     |
+| Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
+|-------------|----------------------|-----------------------------| 
+| 4           | ~6.800 / s           | ~235.000 / s                |
+| 16          | ~13.300 / s          | ~180.000 / s                |
+| 64          | ~20.800 / s          | ~173.000 / s                |
 
 **Cache:**
 
