@@ -80,6 +80,7 @@ big improvement already.
 - Shutdown has been made quicker and more resilient, especially for `cache` Rafts which do not have a
   persistent state between restarts.
 - Internal code and performance improvements and dependencies have been bumped.
+- MSRV has been bumped to `1.85.1`
 
 ## v0.5.0
 
