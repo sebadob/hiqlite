@@ -9,7 +9,7 @@ use crate::store::state_machine::sqlite::writer::WriterRequest::MetadataRead;
 use crate::store::state_machine::sqlite::writer::{
     self, MetaPersistRequest, SqlBatch, SqlTransaction, WriterRequest,
 };
-use crate::store::state_machine::sqlite::{reader, TypeConfigSqlite};
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::{logs, StorageResult};
 use crate::{Error, Node, NodeId};
 use openraft::storage::RaftStateMachine;
@@ -331,27 +331,6 @@ impl StateMachineSqlite {
         }
 
         let pool = deadpool::unmanaged::Pool::from(conns);
-
-        // let pool = config
-        //     .builder(deadpool_sqlite::Runtime::Tokio1)
-        //     .unwrap()
-        //     .post_create(deadpool_sqlite::Hook::async_fn(
-        //         |conn: &mut deadpool_sync::SyncWrapper<rusqlite::Connection>, _| {
-        //             Box::pin(async move {
-        //                 conn.interact(|conn| {
-        //                     Self::apply_pragmas(conn, true).map_err(|_| InteractError::Aborted)
-        //                 })
-        //                 .await
-        //                 .map_err(|err| deadpool_sqlite::HookError::Message(err.to_string().into()))?
-        //                 .map_err(|err| {
-        //                     deadpool_sqlite::HookError::Message(err.to_string().into())
-        //                 })?;
-        //                 Ok(())
-        //             })
-        //         },
-        //     ))
-        //     .build()?;
-
         let conn = pool.get().await?;
         task::spawn_blocking(move || {
             let _ = conn.query_row("SELECT 1", (), |row| {
@@ -512,18 +491,6 @@ impl StateMachineSqlite {
             source: StorageIOError::write(&err),
         })?;
 
-        // if metadata.is_err() {
-        //     // this may happen if the whole node / OS crashes and the DB got corrupted
-        //     // -> delete snapshot and fetch from remote
-        //     error!(
-        //         "Found corrupted snapshot file, removing it: {}",
-        //         path_snapshot
-        //     );
-        //     if let Err(err) = fs::remove_file(path_snapshot).await {
-        //         error!("Error deleting corrupted snapshot: {}", err);
-        //     }
-        //     return Ok(None);
-        // }
         let metadata = metadata?;
         let snapshot_id = id.to_string();
         assert_eq!(

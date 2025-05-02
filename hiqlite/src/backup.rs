@@ -463,28 +463,3 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
 
     info!("restore_backup_finish task successful");
 }
-
-// pub async fn snapshot_after_restore(
-//     tx_writer: &flume::Sender<WriterRequest>,
-//     data_dir: &str,
-// ) -> Result<(), Error> {
-//     let snapshot_id = Uuid::now_v7();
-//     fs::create_dir_all(&self.path_snapshots)
-//         .await
-//         .map_err(|err| StorageError::IO {
-//             source: StorageIOError::write(&err),
-//         })?;
-//
-//     let path = format!("{}/{}", self.path_snapshots, snapshot_id);
-//     let (ack, rx) = oneshot::channel();
-//     let req = WriterRequest::Snapshot(SnapshotRequest {
-//         snapshot_id,
-//         // last_membership: self.last_membership.clone(),
-//         path: path.clone(),
-//         ack,
-//     });
-//     self.write_tx
-//         .send_async(req)
-//         .await
-//         .expect("Sender to always be listening");
-// }
