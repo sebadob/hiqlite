@@ -17,6 +17,6 @@ doctest = false
 all-features = true
 
 [dependencies]
-hiqlite = { version = "0.6.0-20250410", path = "../hiqlite" }
+hiqlite = { version = "0.6.0", path = "../hiqlite" }
 
 rust-embed.workspace = true
