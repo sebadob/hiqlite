@@ -72,17 +72,8 @@ pub(crate) async fn add_learner(
         let lock = helpers::lock_raft(&state, &raft_type).await;
 
         let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-
-        // if raft_type == RaftType::Cache {
-        //     info!("\n\n\nMetrics before member check:\n{:?}\n\n", metrics);
-        // }
-
         let members = metrics.membership_config;
         let is_member_already = members.nodes().any(|(id, _)| *id == node.id);
-        //
-        // if raft_type == RaftType::Cache {
-        //     info!("\n\n\nmembers {}:\n{:?}\n\n", is_member_already, members);
-        // }
 
         if is_member_already {
             let new_voters = members
@@ -95,27 +86,11 @@ pub(crate) async fn add_learner(
                 .filter_map(|(id, _)| new_voters.contains(id).then_some(*id))
                 .collect::<BTreeSet<u64>>();
 
-            // info!(
-            //     r#"
-            //
-            // Members old: {:?}
-            // new_voters:  {:?}
-            // new_members: {:?}
-            //
-            //         "#,
-            //     members, new_voters, new_members
-            // );
-
             let res = helpers::change_membership(&state, &raft_type, new_members, false).await;
             match res {
                 Ok(_) => {
                     drop(lock);
                     info!("Removed already existing member");
-
-                    // let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-                    // if raft_type == RaftType::Cache {
-                    //     info!("\n\n\nMetrics after removal:\n{:?}\n\n", metrics);
-                    // }
 
                     time::sleep(Duration::from_millis(200)).await;
 
@@ -147,7 +122,6 @@ pub(crate) async fn add_learner(
     }
 
     let res = helpers::add_new_learner(&state, &raft_type, node).await;
-    // let res = state.raft_db.raft.add_learner(node_id, node, true).await;
     match res {
         Ok(_) => {
             info!("Added node as learner");
@@ -242,24 +216,6 @@ pub(crate) async fn post_membership(
     // retain false removes current cluster members if they do not appear in the new list
     fmt_ok(headers, ())
 }
-
-// /// Initialize a single-node cluster.
-// pub(crate) async fn init(state: AppStateExt, headers: HeaderMap) -> Result<(), Error> {
-//     validate_secret(&state, &headers)?;
-//
-//     let mut nodes = BTreeMap::new();
-//     let node = Node {
-//         id: state.id,
-//         addr_api: state.addr_api.clone(),
-//         addr_raft: state.addr_raft.clone(),
-//     };
-//
-//     nodes.insert(state.id, node);
-//     match state.raft_db.raft.initialize(nodes).await {
-//         Ok(_) => Ok(()),
-//         Err(err) => Err(Error::from(err)),
-//     }
-// }
 
 /// Get the latest metrics of the cluster
 pub(crate) async fn metrics(

@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
-use super::{transaction_variable::StmtColumn, transaction_env::{TransactionEnv, TransactionParamContext}};
+use super::{
+    transaction_env::{TransactionEnv, TransactionParamContext},
+    transaction_variable::StmtColumn,
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Param {
@@ -28,12 +31,6 @@ pub enum Param {
     StmtOutputNamed(usize, Cow<'static, str>),
 }
 
-// impl ToSql for Param {
-//     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-//         todo!()
-//     }
-// }
-
 impl Param {
     pub(crate) fn into_sql<'a>(self) -> ToSqlOutput<'a> {
         let value = match self {
@@ -42,12 +39,17 @@ impl Param {
             Param::Real(r) => Value::Real(r),
             Param::Text(t) => Value::Text(t),
             Param::Blob(b) => Value::Blob(b),
-            Param::StmtOutputNamed(..) | Param::StmtOutputIndexed(..) => panic!("Param::StmtOutput is only valid inside transactions"),
+            Param::StmtOutputNamed(..) | Param::StmtOutputIndexed(..) => {
+                panic!("Param::StmtOutput is only valid inside transactions")
+            }
         };
         ToSqlOutput::Owned(value)
     }
 
-    pub (crate) fn into_sql_txn_ctx<'a>(self, mut ctx: TransactionParamContext) -> Result<ToSqlOutput<'a>, Cow<'static, str>> {
+    pub(crate) fn into_sql_txn_ctx<'a>(
+        self,
+        mut ctx: TransactionParamContext,
+    ) -> Result<ToSqlOutput<'a>, Cow<'static, str>> {
         let value = match self {
             Param::Null => Value::Null,
             Param::Integer(i) => Value::Integer(i),
@@ -85,17 +87,6 @@ impl From<isize> for Param {
         Param::Integer(i as i64)
     }
 }
-
-// #[cfg(feature = "i128_blob")]
-// #[cfg_attr(docsrs, doc(cfg(feature = "i128_blob")))]
-// impl From<i128> for Param {
-//     #[inline]
-//     fn from(i: i128) -> Param {
-//         // We store these biased (e.g. with the most significant bit flipped)
-//         // so that comparisons with negative numbers work properly.
-//         Param::Blob(i128::to_be_bytes(i ^ (1_i128 << 127)).to_vec())
-//     }
-// }
 
 impl From<uuid::Uuid> for Param {
     #[inline]

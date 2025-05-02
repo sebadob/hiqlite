@@ -3,7 +3,6 @@ use crate::Node;
 use crate::Response;
 
 pub mod param;
-pub mod reader;
 pub mod snapshot_builder;
 pub mod state_machine;
 pub mod transaction_variable;

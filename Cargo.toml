@@ -4,7 +4,7 @@ members = ["hiqlite", "hiqlite-macros"]
 exclude = ["examples"]
 
 [workspace.package]
-version = "0.6.0-20250410"
+version = "0.6.0"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Sebastian Dobe <sebastiandobe@mailbox.org"]
@@ -35,7 +35,7 @@ chrono = { version = "0.4.38", default-features = false, features = [
 ] }
 clap = { version = "4.1.11", features = ["derive", "env"] }
 cron = { version = "0.15" }
-cryptr = { version = "0.5.1", features = ["s3"] }
+cryptr = { version = "0.6", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"

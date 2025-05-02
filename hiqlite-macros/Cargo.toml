@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-rust-version = "1.82.0"
+rust-version = "1.85.1"
 categories = ["database", "caching"]
 keywords = ["database", "sql", "sqlite", "raft", "cache"]
 description = "Macros for Hiqlite"
@@ -17,6 +17,6 @@ doctest = false
 all-features = true
 
 [dependencies]
-hiqlite = { version = "0.6.0-20250410", path = "../hiqlite" }
+hiqlite = { version = "0.6.0", path = "../hiqlite" }
 
 rust-embed.workspace = true

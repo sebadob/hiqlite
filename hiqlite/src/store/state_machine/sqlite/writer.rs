@@ -34,12 +34,9 @@ pub enum WriterRequest {
     Migrate(Migrate),
     Snapshot(SnapshotRequest),
     SnapshotApply((String, oneshot::Sender<()>)),
-    // SnapshotApply((String, oneshot::Sender<StateMachineData>)),
-    // MetadataPersist(MetaPersistRequest),
     MetadataRead(oneshot::Sender<StateMachineData>),
     MetadataMembership(MetaMembershipRequest),
     Backup(BackupRequest),
-    // BackupApply(BackupApplyRequest),
     Shutdown(oneshot::Sender<()>),
     #[allow(clippy::upper_case_acronyms)]
     RTT(RTTRequest),
@@ -93,7 +90,6 @@ pub struct Migrate {
 #[derive(Debug)]
 pub struct SnapshotRequest {
     pub snapshot_id: Uuid,
-    // pub last_membership: StoredMembership<NodeId, Node>,
     pub path: String,
     pub ack: oneshot::Sender<Result<SnapshotResponse, StorageError<NodeId>>>,
 }
@@ -132,12 +128,6 @@ pub struct RTTRequest {
     pub last_applied_log_id: Option<LogId<NodeId>>,
     pub ack: oneshot::Sender<()>,
 }
-
-// #[derive(Debug)]
-// pub struct BackupApplyRequest {
-//     pub src: String,
-//     pub ack: oneshot::Sender<Result<(), Error>>,
-// }
 
 #[allow(clippy::blocks_in_conditions)]
 pub fn spawn_writer(
