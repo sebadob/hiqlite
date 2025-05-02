@@ -112,11 +112,7 @@ pub(crate) async fn start_raft_cache<C>(
     raft_config: Arc<RaftConfig>,
 ) -> Result<(IsPristineNode1, StateRaftCache), Error>
 where
-    C: Debug
-        + Serialize
-        + for<'a> Deserialize<'a>
-        + IntoEnumIterator
-        + crate::cache_idx::CacheIndex,
+    C: Debug + IntoEnumIterator + crate::cache_idx::CacheIndex,
 {
     let log_store = logs::memory::LogStoreMemory::new();
     let state_machine_store = Arc::new(StateMachineMemory::new::<C>().await?);

@@ -7,7 +7,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 /// This enum is used as our cache identifier.
-#[derive(Debug, Serialize, Deserialize, strum::EnumIter)]
+#[derive(Debug, strum::EnumIter)]
 enum Cache {
     One,
     Two,

@@ -80,7 +80,7 @@ struct Entity {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, strum::EnumIter)]
+#[derive(Debug, strum::EnumIter)]
 enum Cache {
     One,
     Two,

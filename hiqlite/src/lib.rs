@@ -123,7 +123,7 @@ impl Display for Node {
 /// If an incorrect `node_config` was given.
 #[cfg(feature = "sqlite")]
 pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
-    #[derive(Debug, serde::Serialize, serde::Deserialize, strum::EnumIter)]
+    #[derive(Debug, strum::EnumIter)]
     enum Empty {}
     impl cache_idx::CacheIndex for Empty {
         fn to_usize(self) -> usize {
@@ -142,11 +142,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
 #[cfg(feature = "cache")]
 pub async fn start_node_with_cache<C>(node_config: NodeConfig) -> Result<Client, Error>
 where
-    C: Debug
-        + Serialize
-        + for<'a> Deserialize<'a>
-        + strum::IntoEnumIterator
-        + cache_idx::CacheIndex,
+    C: Debug + strum::IntoEnumIterator + cache_idx::CacheIndex,
 {
     start::start_node_inner::<C>(node_config).await
 }

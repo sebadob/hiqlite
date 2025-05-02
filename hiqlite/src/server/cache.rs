@@ -1,8 +1,6 @@
 use crate::cache_idx::CacheIndex;
-use serde::{Deserialize, Serialize};
-use strum::EnumIter;
 
-#[derive(Debug, Serialize, Deserialize, EnumIter)]
+#[derive(Debug, strum::EnumIter)]
 pub enum Cache {
     Intern,
     Extern,
