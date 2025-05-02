@@ -9,7 +9,6 @@ use byteorder::WriteBytesExt;
 use flume::RecvError;
 use openraft::storage::Snapshot;
 use openraft::storage::{LogFlushed, LogState, RaftLogStorage};
-use openraft::BasicNode;
 use openraft::Entry;
 use openraft::EntryPayload;
 use openraft::ErrorVerb;
@@ -25,6 +24,7 @@ use openraft::StoredMembership;
 use openraft::TokioRuntime;
 use openraft::Vote;
 use openraft::{AnyError, ErrorSubject};
+use openraft::{BasicNode, LeaderId};
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction, WriteOptions};
 use rocksdb::{ColumnFamilyDescriptor, FlushOptions};
 use rocksdb::{DBCompressionType, Direction};
@@ -34,6 +34,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::{BTreeMap, Bound};
+use std::env;
 use std::error::Error;
 use std::fmt::Debug;
 use std::future::Future;
@@ -135,14 +136,7 @@ impl LogStoreWriter {
                         }
 
                         if is_ok {
-                            // TODO the callback could be batched maybe for higher throughput
-                            // TODO flushing could maybe be done on a separate path again
-                            // let db = db.clone();
-                            // task::spawn_blocking(move || {
-                            //     db.flush_wal(true);
-                            //     callback.log_io_completed(Ok(()));
-                            // });
-                            // callbacks.push(callback);
+                            // TODO with the next big openraft release, we can do async callbacks
 
                             if sync_immediate {
                                 db.flush_wal(true);
@@ -150,26 +144,6 @@ impl LogStoreWriter {
                             callback.log_io_completed(Ok(()));
                         }
                     }
-                    // ActionWrite::Append(ActionAppend { rx, callback, ack }) => {
-                    //     let mut batch = WriteBatch::default();
-                    //
-                    //     while let Ok(Some((id, data))) = rx.recv() {
-                    //         batch.put_cf(db.cf_handle("logs").unwrap(), id, data);
-                    //     }
-                    //
-                    //     let mut opts = WriteOptions::default();
-                    //     opts.set_sync(true);
-                    //
-                    //     match db.write_opt(batch, &opts) {
-                    //         Ok(_) => {
-                    //             ack.send(Ok(())).unwrap();
-                    //             callback.log_io_completed(Ok(()));
-                    //         }
-                    //         Err(err) => {
-                    //             ack.send(Err(StorageIOError::write_logs(&err))).unwrap();
-                    //         }
-                    //     }
-                    // }
                     ActionWrite::Remove(ActionRemove {
                         from,
                         until,
@@ -472,6 +446,8 @@ impl LogStoreRocksdb {
             .expect("Cannot open rocksdb files on disk");
         let db = Arc::new(db);
 
+        Self::maybe_leader_reset(db.clone()).await;
+
         let tx_writer = LogStoreWriter::spawn(db.clone(), sync_immediate);
         let tx_reader = LogStoreReader::spawn(db.clone());
 
@@ -484,6 +460,29 @@ impl LogStoreRocksdb {
             db,
             tx_writer,
             tx_reader,
+        }
+    }
+
+    async fn maybe_leader_reset(db: Arc<DB>) {
+        if env::var("HQL_DANGER_RESET_VOTE").as_deref() == Ok("true") {
+            warn!(
+                r#"
+
+    HQL_DANGER_RESET_VOTE is set to 'true'.
+    Resetting any possibliy existing old leader now.
+    This can lead to lost logs! Use with care!
+
+    Proceeding in 10 seconds...
+"#
+            );
+
+            time::sleep(Duration::from_secs(10)).await;
+
+            task::spawn_blocking(move || {
+                db.delete_cf(db.cf_handle("meta").unwrap(), KEY_VOTE)
+                    .expect("Cannot execute DANGER_LEADER_RESET");
+            })
+            .await;
         }
     }
 }
@@ -550,19 +549,6 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
             tx_reader,
         }
     }
-
-    // async fn save_committed(
-    //     &mut self,
-    //     committed: Option<LogId<NodeId>>,
-    // ) -> Result<(), StorageError<NodeId>> {
-    //     let mut lock = self.data.lock().await;
-    //     lock.commited = committed;
-    //     Ok(())
-    // }
-    //
-    // async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
-    //     Ok(self.data.lock().await.commited)
-    // }
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn save_vote(&mut self, vote: &Vote<NodeId>) -> Result<(), StorageError<NodeId>> {

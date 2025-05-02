@@ -8,4 +8,8 @@ pub enum Cache {
     Extern,
 }
 
-impl CacheIndex for Cache {}
+impl CacheIndex for Cache {
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+}
