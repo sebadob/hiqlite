@@ -4,6 +4,17 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(doc, feature(doc_auto_cfg))]
 
+#[cfg(all(feature = "mimalloc", feature = "jemalloc"))]
+compile_error!("You cannot enable both `mimalloc` and `jemalloc` at the same time");
+
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::state_machine::Response;
 pub use openraft::SnapshotPolicy;
