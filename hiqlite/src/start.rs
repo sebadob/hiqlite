@@ -78,7 +78,7 @@ where
     // }
 
     #[cfg(feature = "sqlite")]
-    let (tx_client_stream, rx_client_stream) = flume::bounded(2);
+    let (tx_client_stream, rx_client_stream) = flume::bounded(1);
 
     let state = Arc::new(AppState {
         id: node_config.node_id,

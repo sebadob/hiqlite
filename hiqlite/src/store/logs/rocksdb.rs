@@ -508,7 +508,7 @@ impl RaftLogReader<TypeConfigSqlite> for LogStoreRocksdb {
         let from = id_to_bin(start);
         // let until = id_to_bin(end);
 
-        let (ack, rx) = flume::bounded(2);
+        let (ack, rx) = flume::bounded(1);
         self.tx_reader
             .send_async(ActionRead::Logs(ActionReadLogs { from, until, ack }))
             .await
@@ -595,7 +595,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStoreRocksdb {
         I: IntoIterator<Item = Entry<TypeConfigSqlite>> + Send,
         I::IntoIter: Send,
     {
-        let (tx, rx) = flume::bounded(2);
+        let (tx, rx) = flume::bounded(1);
         let (ack, ack_rx) = oneshot::channel();
 
         self.tx_writer

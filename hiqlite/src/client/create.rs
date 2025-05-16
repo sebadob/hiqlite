@@ -31,7 +31,7 @@ impl Client {
         let leader_db = Arc::new(RwLock::new((leader_id, leader_addr)));
 
         #[cfg(feature = "cache")]
-        let (tx_client_cache, rx_client_cache) = flume::bounded(2);
+        let (tx_client_cache, rx_client_cache) = flume::bounded(1);
 
         let db_client = DbClient {
             state: Some(state),
@@ -121,9 +121,9 @@ impl Client {
         let leader_db = Arc::new(RwLock::new((node_id, node_addr)));
 
         #[cfg(feature = "sqlite")]
-        let (tx_client_db, rx_client_db) = flume::bounded(2);
+        let (tx_client_db, rx_client_db) = flume::bounded(1);
         #[cfg(feature = "cache")]
-        let (tx_client_cache, rx_client_cache) = flume::bounded(2);
+        let (tx_client_cache, rx_client_cache) = flume::bounded(1);
 
         #[cfg(feature = "listen_notify")]
         let rx_notify = Some(RemoteListener::spawn(

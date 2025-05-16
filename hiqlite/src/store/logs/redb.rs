@@ -632,7 +632,7 @@
 //         I: IntoIterator<Item = Entry<TypeConfigSqlite>> + Send,
 //         I::IntoIter: Send,
 //     {
-//         let (tx, rx) = flume::bounded(2);
+//         let (tx, rx) = flume::bounded(1);
 //         let (ack_tx, ack_rx) = oneshot::channel();
 //
 //         self.writer_tx

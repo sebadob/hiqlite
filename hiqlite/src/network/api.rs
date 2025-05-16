@@ -99,7 +99,7 @@ pub async fn listen(
 ) -> Result<sse::Sse<impl Stream<Item = Result<sse::Event, Error>>>, Error> {
     validate_secret(&state, &headers)?;
 
-    let (tx, rx) = flume::bounded(2);
+    let (tx, rx) = flume::bounded(1);
     state
         .raft_cache
         .tx_notify
