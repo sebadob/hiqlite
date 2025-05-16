@@ -74,7 +74,7 @@ impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
         info!("Building new Raft Cache client with target {}", node);
 
-        let (sender, rx) = flume::bounded(2);
+        let (sender, rx) = flume::bounded(1);
 
         let task = tokio::task::spawn(Self::ws_handler(
             self.node_id,
@@ -102,7 +102,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
         info!("Building new Raft DB client with target {}", node);
 
-        let (sender, rx) = flume::bounded(2);
+        let (sender, rx) = flume::bounded(1);
 
         let task = tokio::task::spawn(Self::ws_handler(
             self.node_id,
@@ -271,8 +271,8 @@ impl NetworkStreaming {
                 "raft in flight buffer should always be empty when restoring a connection"
             );
 
-            let (tx_write, rx_write) = flume::bounded(2);
-            let (tx_read, rx_read) = flume::bounded(2);
+            let (tx_write, rx_write) = flume::bounded(1);
+            let (tx_read, rx_read) = flume::bounded(1);
 
             // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
             let (read, write) = socket.split(tokio::io::split);

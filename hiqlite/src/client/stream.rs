@@ -205,8 +205,8 @@ async fn client_stream(
             }
         };
 
-        let (tx_write, rx_write) = flume::bounded(2);
-        let (tx_read, rx_read) = flume::bounded(2);
+        let (tx_write, rx_write) = flume::bounded(1);
+        let (tx_read, rx_read) = flume::bounded(1);
 
         // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
         let (rx, write) = ws.split(tokio::io::split);
