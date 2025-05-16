@@ -19,6 +19,8 @@ all-features = true
 
 [features]
 default = ["auto-heal", "backup", "sqlite"]
+jemalloc = ["dep:tikv-jemallocator"]
+mimalloc = ["dep:mimalloc"]
 
 auto-heal = []
 backup = ["dep:cron", "s3", "sqlite"]
@@ -133,6 +135,11 @@ lz4-sys.workspace = true
 rust_decimal.workspace = true
 tower-layer.workspace = true
 tower-service.workspace = true
+
+mimalloc = { workspace = true, optional = true }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
 
 [dev-dependencies]
 console-subscriber = "0.4.1"

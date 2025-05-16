@@ -54,6 +54,7 @@ hostname = "0.4.0"
 http-body-util = "0.1.2"
 hyper = { version = "1.4.1", features = ["client", "http2"] }
 hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
+mimalloc = "0.1.46"
 mime_guess = "2.0.5"
 openraft = { version = "0.9.18", features = ["serde", "storage-v2"] }
 reqwest = { version = "0.12", default-features = false, features = [
@@ -78,6 +79,7 @@ sha2 = { version = "0.10.8", features = [] }
 spow = { version = "0.6", features = ["server"] }
 strum = { version = "0.27", features = ["derive"] }
 thiserror = "2"
+tikv-jemallocator = "0.6.0"
 tokio = { version = "1.43.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.0", features = ["ring"] }
 tower = { version = "0.5", features = [] }

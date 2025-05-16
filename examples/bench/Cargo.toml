@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hiqlite = { path = "../../hiqlite", features = ["cache", "dlock", "listen_notify", "shutdown-handle"] }
+hiqlite = { path = "../../hiqlite", features = ["cache", "dlock", "jemalloc", "listen_notify", "shutdown-handle"] }
 hiqlite-macros = { path = "../../hiqlite-macros" }
 
 # currently, we need this to embed migrations, as hiqlite does not re-export the full macro yet
