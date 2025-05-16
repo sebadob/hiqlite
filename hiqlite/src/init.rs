@@ -342,13 +342,6 @@ async fn try_become(
                     } else {
                         let body = resp.bytes().await?;
                         let err: Error = serde_json::from_slice(&body)?;
-                        error!(
-                            "Node {} become '{}' member on remote ({}): {}",
-                            this_node,
-                            raft_type.as_str(),
-                            url,
-                            err
-                        );
 
                         // We can get into this situation when using the cache layer, because it has
                         // no persistence. This race condition can happen for a rolling release
@@ -357,6 +350,13 @@ async fn try_become(
                         //
                         // -> We must check this after each error to get smooth rolling releases.
                         if let Some((Some(leader_id), Some(node))) = err.is_forward_to_leader() {
+                            info!(
+                                "Node {} become '{}' member on remote ({}): Remote Node is not the leader - trying next",
+                                this_node,
+                                raft_type.as_str(),
+                                url,
+                            );
+
                             if leader_id == this_node {
                                 if !helpers::is_raft_initialized(state, raft_type).await? {
                                     let leader = helpers::get_raft_leader(state, raft_type).await;
@@ -381,6 +381,14 @@ async fn try_become(
 
                                 return Ok(SkipBecome::Yes);
                             }
+                        } else {
+                            error!(
+                                "Node {} become '{}' member on remote ({}): {}",
+                                this_node,
+                                raft_type.as_str(),
+                                url,
+                                err
+                            );
                         }
 
                         time::sleep(Duration::from_millis(500)).await;
