@@ -5,6 +5,8 @@ use std::fs;
 use std::fs::File;
 use std::io::Read;
 
+static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
+
 #[derive(Debug)]
 pub struct WalFile {
     pub version: u8,
@@ -51,15 +53,18 @@ impl WalFile {
         }
         let wal_no = num.parse::<u64>()?;
 
-        let mut buf = vec![0; 17];
+        let mut buf = vec![0; 24];
         let mut file = File::open(&path_full)?;
         file.read_exact(&mut buf)?;
 
-        if buf[..1] != [1u8] {
+        if buf[..7].iter().as_slice() != MAGIC_NO_WAL {
+            return Err(Error::FileCorrupted("Invalid WAL file magic number"));
+        }
+        if buf[7..8] != [1u8] {
             return Err(Error::FileCorrupted("Invalid WAL file version"));
         }
-        let id_from = bin_to_id(&buf[1..9])?;
-        let id_until = bin_to_id(&buf[9..17])?;
+        let id_from = bin_to_id(&buf[8..16])?;
+        let id_until = bin_to_id(&buf[16..24])?;
         debug_assert!(id_from < id_until);
 
         Ok(Self {
@@ -73,6 +78,7 @@ impl WalFile {
 
     #[inline]
     pub fn write_header(&self, buf: &mut Vec<u8>) -> Result<(), Error> {
+        buf.extend_from_slice(MAGIC_NO_WAL);
         buf.push(self.version);
         id_to_bin(self.id_from, buf)?;
         id_to_bin(self.id_until, buf)?;
@@ -82,7 +88,7 @@ impl WalFile {
     #[inline]
     pub fn offset_start(&self) -> usize {
         match self.version {
-            1 => 17,
+            1 => 24,
             _ => unreachable!(),
         }
     }
@@ -255,7 +261,7 @@ mod tests {
 
         let header = WalFile::new(1, &base_path, 23, 1337);
 
-        let mut buf = Vec::with_capacity(18);
+        let mut buf = Vec::with_capacity(24);
         header.write_header(&mut buf)?;
 
         // make sure we are cleaned up

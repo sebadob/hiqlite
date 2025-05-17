@@ -5,7 +5,6 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 
 static MAGIC_NO_META: &[u8] = b"HQLMETA";
-static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Metadata {
