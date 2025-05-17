@@ -26,7 +26,7 @@ pub async fn handle_socket(
         return Ok(());
     };
 
-    let (tx_write, rx_write) = flume::bounded::<WsWriteMsg>(2);
+    let (tx_write, rx_write) = flume::bounded::<WsWriteMsg>(1);
     // let (tx_write, rx_write) = flume::unbounded::<WsWriteMsg>();
     // let (tx_read, rx_read) = flume::unbounded();
 

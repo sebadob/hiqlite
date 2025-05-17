@@ -136,7 +136,7 @@ pub fn spawn_writer(
     path_lock_file: String,
     log_statements: bool,
 ) -> flume::Sender<WriterRequest> {
-    let (tx, rx) = flume::bounded::<WriterRequest>(2);
+    let (tx, rx) = flume::bounded::<WriterRequest>(1);
 
     // thread::spawn(move || {
     task::spawn_blocking(move || {
