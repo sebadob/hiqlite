@@ -1,0 +1,136 @@
+use crate::error::Error;
+use crate::utils::{crc, deserialize, serialize};
+use serde::{Deserialize, Serialize};
+use std::fs::{self, File};
+use std::io::{Read, Write};
+
+static MAGIC_NO_META: &[u8] = b"HQLMETA";
+static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Metadata {
+    pub log_from: u64,
+    pub log_until: u64,
+    pub last_purged: Option<Vec<u8>>,
+    pub vote: Option<Vec<u8>>,
+}
+
+impl Metadata {
+    pub fn read(base_path: &str) -> Result<Self, Error> {
+        let path = format!("{}/meta.hql", base_path);
+        let Ok(bytes) = fs::read(&path) else {
+            return Err(Error::InvalidPath("cannot open metadata file"));
+        };
+        if bytes.len() < 16 {
+            return Err(Error::FileCorrupted("invalid metadata file length"));
+        }
+
+        debug_assert_eq!(MAGIC_NO_META.len(), 7);
+        if bytes.get(..7) != Some(MAGIC_NO_META) {
+            return Err(Error::FileCorrupted(
+                "metadata file is corrupt - magic no does not match",
+            ));
+        }
+        let version = &bytes[7..8];
+        match version {
+            [1u8] => {
+                let crc = &bytes[8..12];
+                if crc != crc!(&bytes[12..]) {
+                    return Err(Error::FileCorrupted("metadata CRC checksum does not match"));
+                }
+                Ok(deserialize::<Self>(&bytes[12..])?)
+            }
+            _ => Err(Error::FileCorrupted("unknown metadata file version")),
+        }
+    }
+
+    #[inline]
+    pub fn write(&self, base_path: &str) -> Result<(), Error> {
+        let path = format!("{}/meta.hql", base_path);
+
+        let slf_bytes = serialize(self)?;
+
+        let _ = fs::remove_file(&path);
+        let mut file = File::create_new(&path)?;
+        // TODO overwriting the file when we started with .seek() did not work when the
+        // new meta was smaller than the old one, and therefore the CRC would not match.
+        // let mut file = OpenOptions::new()
+        //     .read(true)
+        //     .write(true)
+        //     .create(true)
+        //     .open(&path)?;
+
+        debug_assert_eq!(MAGIC_NO_META.len(), 7);
+        file.write(MAGIC_NO_META)?;
+        file.write(&[1u8])?;
+        file.write(crc!(&slf_bytes).as_slice())?;
+        file.write(&slf_bytes)?;
+        file.flush()?;
+
+        Ok(())
+    }
+}
+
+pub struct LockFile;
+
+impl LockFile {
+    pub fn write(base_path: &str) -> Result<(), Error> {
+        let path = format!("{base_path}/lock.hql");
+        match File::open(&path) {
+            Ok(_) => Err(Error::Locked("WAL is locked, cannot create lock file")),
+            Err(_) => {
+                File::create(path)?;
+                Ok(())
+            }
+        }
+    }
+
+    pub fn remove(base_path: &str) -> Result<(), Error> {
+        let path = format!("{base_path}/lock.hql");
+        fs::remove_file(path)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PATH: &str = "test_data";
+
+    #[test]
+    fn lockfile() -> Result<(), Error> {
+        LockFile::write(&PATH)?;
+        assert!(LockFile::write(&PATH).is_err());
+        LockFile::remove(&PATH)?;
+
+        LockFile::write(&PATH)?;
+        assert!(LockFile::write(&PATH).is_err());
+        LockFile::remove(&PATH)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_write_read() -> Result<(), Error> {
+        let base_path = format!("{}/metadata_write_read", PATH);
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+
+        let meta = Metadata {
+            log_from: 0,
+            log_until: 0,
+            last_purged: None,
+            vote: None,
+        };
+        meta.write(&base_path)?;
+
+        let meta_back = Metadata::read(&base_path)?;
+        assert_eq!(meta.log_from, meta_back.log_from);
+        assert_eq!(meta.log_until, meta_back.log_until);
+        assert_eq!(meta.last_purged, meta_back.last_purged);
+        assert_eq!(meta.vote, meta_back.vote);
+
+        Ok(())
+    }
+}
