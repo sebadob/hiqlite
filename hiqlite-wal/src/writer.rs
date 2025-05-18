@@ -1,7 +1,6 @@
 use crate::error::Error;
 use crate::metadata::Metadata;
-use crate::utils::id_to_bin;
-use crate::wal::{WalFile, WalFileSet, WalRecord};
+use crate::wal::WalFileSet;
 use std::{fs, thread};
 use tokio::sync::oneshot;
 use tracing::{error, warn};

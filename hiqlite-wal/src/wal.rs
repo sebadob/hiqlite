@@ -10,46 +10,6 @@ static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
 static MIN_WAL_SIZE: u32 = 2 * 1024 * 1024;
 
 #[derive(Debug)]
-pub struct WalRecord {
-    pub log_id: u64,
-    pub crc: u32,
-    pub data: Vec<u8>,
-}
-
-impl WalRecord {
-    // pub fn write_into(
-    //     id: u64,
-    //     data: Vec<u8>,
-    //     buf_id: &mut Vec<u8>,
-    //     buf: &mut Vec<u8>,
-    // ) -> Result<(), Error> {
-    //     id_to_bin(id, buf_id)?;
-    //     buf.extend_from_slice(&buf_id);
-    //
-    //     let crc = crc!(&data);
-    //     buf.extend_from_slice(crc.as_slice());
-    //
-    //     let len = buf.len() as u64;
-    //     buf_id.clear();
-    //     id_to_bin(len, buf_id)?;
-    //     buf.extend_from_slice(&buf_id);
-    //
-    //     buf.extend_from_slice(data.as_slice());
-    //
-    //     Ok(())
-    // }
-
-    // #[inline]
-    // pub fn write_header(&self, buf: &mut Vec<u8>) -> Result<(), Error> {
-    //     buf.extend_from_slice(MAGIC_NO_WAL);
-    //     buf.push(self.version);
-    //     id_to_bin(self.id_from, buf)?;
-    //     id_to_bin(self.id_until, buf)?;
-    //     Ok(())
-    // }
-}
-
-#[derive(Debug)]
 pub struct WalFile {
     pub version: u8,
     pub wal_no: u64,
@@ -110,7 +70,7 @@ impl WalFile {
 
         let mmap = self.mmap_mut.as_mut().unwrap();
         id_to_bin(id, buf)?;
-        (&mut mmap[start..]).write_all(&buf)?;
+        (&mut mmap[start..]).write_all(buf)?;
 
         let crc = crc!(&data);
         (&mut mmap[start + 8..]).write_all(crc.as_slice())?;
@@ -118,13 +78,85 @@ impl WalFile {
         let len = data.len() as u32;
         buf.clear();
         len_to_bin(len, buf)?;
-        (&mut mmap[start + 8 + 4..]).write_all(&buf)?;
+        (&mut mmap[start + 8 + 4..]).write_all(buf)?;
 
-        (&mut mmap[start + 8 + 4 + 4..]).write_all(&data)?;
+        (&mut mmap[start + 8 + 4 + 4..]).write_all(data)?;
 
         self.data_end = Some((start + 8 + 4 + 4 + data.len()) as u32);
 
         Ok(())
+    }
+
+    pub fn read_logs(
+        &self,
+        id_from: u64,
+        id_until: u64,
+        buf: &mut Vec<(u64, Vec<u8>)>,
+    ) -> Result<(), Error> {
+        debug_assert!(buf.is_empty());
+        debug_assert!(self.data_start.is_some());
+        debug_assert!(self.data_end.is_some());
+        debug_assert!(id_until >= id_from);
+
+        if self.id_from > id_from {
+            return Err(Error::Generic("`id_from` is below threshold".into()));
+        }
+        if self.id_until < id_until {
+            return Err(Error::Generic("`id_until` is above threshold".into()));
+        }
+        if id_until < id_from {
+            return Err(Error::Generic(
+                "`id_until` cannot be smaller than `id_from`".into(),
+            ));
+        }
+
+        let mut idx = self.data_start.unwrap();
+        loop {
+            // id, crc, length
+            let head = self.read_bytes(idx, idx + 8 + 4 + 4)?;
+            let id = bin_to_id(&head[..8])?;
+            let crc = &head[8..12];
+            let len = bin_to_len(&head[12..16])?;
+
+            if id >= id_from {
+                if id <= id_until {
+                    let data_from = idx + 8 + 4 + 4;
+                    debug_assert!(data_from + len <= self.data_end.unwrap());
+                    let data = self.read_bytes(data_from, data_from + len)?;
+                    if crc != crc!(data) {
+                        return Err(Error::Integrity("Invalid CRC for WAL Record".into()));
+                    }
+                    buf.push((id, data.to_vec()))
+                } else {
+                    break;
+                }
+            }
+
+            if id >= id_until {
+                break;
+            }
+
+            // add 1 because the `len` is inclusive and points at the last byte of data
+            idx += 8 + 4 + 4 + len + 1;
+            debug_assert!(idx - 1 <= self.data_end.unwrap());
+        }
+
+        debug_assert_eq!(id_until + 1 - id_from, buf.len() as u64);
+
+        Ok(())
+    }
+
+    /// Does NOT do any boundary checks for the given range!
+    #[inline(always)]
+    fn read_bytes(&self, from: u32, until: u32) -> Result<&[u8], Error> {
+        debug_assert!(from < until);
+        if let Some(mmap) = &self.mmap {
+            Ok(&mmap[from as usize..until as usize])
+        } else if let Some(mmap) = &self.mmap_mut {
+            Ok(&mmap[from as usize..until as usize])
+        } else {
+            Err(Error::Generic("No mmap exists".into()))
+        }
     }
 
     #[inline]
@@ -148,7 +180,7 @@ impl WalFile {
 
         self.build_header(buf)?;
         let mmap = self.mmap_mut.as_mut().unwrap();
-        (&mut mmap[..buf.len()]).write_all(&buf)?;
+        (&mut mmap[..buf.len()]).write_all(buf)?;
 
         Ok(())
     }
@@ -199,7 +231,7 @@ impl WalFile {
         debug_assert!(id_from <= id_until);
         debug_assert!(wal_size >= MIN_WAL_SIZE);
         if wal_size < MIN_WAL_SIZE {
-            return Err(Error::Error(
+            return Err(Error::Generic(
                 format!("min allowed `wal_size` is {}", MIN_WAL_SIZE).into(),
             ));
         }
@@ -230,7 +262,7 @@ impl WalFile {
         self.build_header(buf)?;
 
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
-        (&mut mmap[..buf.len()]).write_all(&buf)?;
+        (&mut mmap[..buf.len()]).write_all(buf)?;
         mmap.flush_async()?;
 
         Ok(())
@@ -353,13 +385,13 @@ impl WalFileSet {
     #[inline]
     pub fn active(&mut self) -> &mut WalFile {
         debug_assert!(self.active.is_some());
-        debug_assert!(self.files.len() - 1 >= self.active.unwrap());
+        debug_assert!(self.files.len() > self.active.unwrap());
         self.files.get_mut(self.active.unwrap()).unwrap()
     }
 
     fn active_index(files: &[WalFile]) -> Result<usize, Error> {
         if files.is_empty() {
-            return Err(Error::Error(
+            return Err(Error::Generic(
                 "Cannot find active WAL when files are empty".into(),
             ));
         }
@@ -515,22 +547,25 @@ mod tests {
     use std::fs;
 
     static PATH: &str = "test_data";
-    static MB10: u32 = 10 * 1024 * 1024;
+    static MB2: u32 = 2 * 1024 * 1024;
 
     #[test]
-    fn append_logs() -> Result<(), Error> {
+    fn append_read_logs() -> Result<(), Error> {
         let base_path = format!("{}/append_logs", PATH);
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
         let mut buf = Vec::with_capacity(32);
 
-        let mut wal = WalFile::new(1, &base_path, 0, 0, MB10).unwrap();
+        let mut wal = WalFile::new(1, &base_path, 0, 0, MB2).unwrap();
         wal.create_file(&mut buf)?;
         wal.mmap_mut()?;
 
         let d1 = b"Hello World".as_slice();
-        let d2 = b"I am Batman".as_slice();
+        let d2 = b"I am Batman!".as_slice();
         let d3 = b"... and not the Joker!".as_slice();
+        println!("length d1: {}", d1.len());
+        println!("length d2: {}", d2.len());
+        println!("length d3: {}", d3.len());
 
         assert!(wal.data_start.is_none());
         assert!(wal.data_end.is_none());
@@ -568,11 +603,51 @@ mod tests {
         wal.flush()?;
 
         // make sure we can successfully read it
-        let wal_disk = WalFile::read_from_file(wal.path.clone())?;
+        let mut wal_disk = WalFile::read_from_file(wal.path.clone())?;
+        wal_disk.mmap()?;
         assert_eq!(wal_disk.data_start.unwrap(), start);
         assert_eq!(wal_disk.data_end.unwrap(), end);
         assert_eq!(wal_disk.id_from, 1);
         assert_eq!(wal_disk.id_until, 3);
+
+        let mut logs = Vec::with_capacity(3);
+        buf.clear();
+        wal_disk.read_logs(1, 3, &mut logs)?;
+        assert_eq!(logs.len(), 3);
+
+        let (id, data) = logs.get(0).unwrap();
+        assert_eq!(id, &1);
+        assert_eq!(data, d1);
+        let (id, data) = logs.get(1).unwrap();
+        assert_eq!(id, &2);
+        assert_eq!(data, d2);
+        let (id, data) = logs.get(2).unwrap();
+        assert_eq!(id, &3);
+        assert_eq!(data, d3);
+
+        buf.clear();
+        logs.clear();
+        wal_disk.read_logs(2, 3, &mut logs)?;
+        assert_eq!(logs.len(), 2);
+        let (id, data) = logs.get(0).unwrap();
+        assert_eq!(id, &2);
+        assert_eq!(data, d2);
+        let (id, data) = logs.get(1).unwrap();
+        assert_eq!(id, &3);
+        assert_eq!(data, d3);
+
+        buf.clear();
+        logs.clear();
+        wal_disk.read_logs(2, 2, &mut logs)?;
+        assert_eq!(logs.len(), 1);
+        let (id, data) = logs.get(0).unwrap();
+        assert_eq!(id, &2);
+        assert_eq!(data, d2);
+
+        buf.clear();
+        logs.clear();
+        assert!(wal_disk.read_logs(1, 4, &mut logs).is_err());
+        assert!(wal_disk.read_logs(0, 2, &mut logs).is_err());
 
         Ok(())
     }
@@ -587,7 +662,7 @@ mod tests {
         let path_with_no = format!("{base_path}/0000000000000001.wal");
         let _ = fs::remove_file(&path_with_no);
 
-        let mut wal = WalFile::new(1, &base_path, 23, 1337, MB10).unwrap();
+        let mut wal = WalFile::new(1, &base_path, 23, 1337, MB2).unwrap();
         assert!(wal.data_start.is_none());
         assert!(wal.data_end.is_none());
         let mut buf = Vec::with_capacity(28);
@@ -613,12 +688,12 @@ mod tests {
 
         let mut set = WalFileSet::new(base_path);
         buf.clear();
-        set.add_file(MB10, &mut buf).unwrap();
+        set.add_file(MB2, &mut buf).unwrap();
         assert_eq!(fs::exists(&path_h1)?, true);
         assert_eq!(fs::exists(&path_h2)?, false);
 
         buf.clear();
-        set.add_file(MB10, &mut buf).unwrap();
+        set.add_file(MB2, &mut buf).unwrap();
         assert_eq!(fs::exists(&path_h2)?, true);
 
         Ok(())
@@ -649,7 +724,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -662,7 +737,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -675,7 +750,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -685,7 +760,7 @@ mod tests {
         assert_eq!(set.active().wal_no, 3);
 
         let mut buf = Vec::with_capacity(28);
-        set.add_file(MB10, &mut buf)?;
+        set.add_file(MB2, &mut buf)?;
         set.check_integrity(&meta).unwrap();
         assert_eq!(set.active().wal_no, 3);
 
@@ -701,7 +776,7 @@ mod tests {
                 id_until: 10,
                 data_start: Some(32),
                 data_end: None,
-                len_max: MB10,
+                len_max: MB2,
                 mmap: None,
                 mmap_mut: None,
             }],
@@ -719,7 +794,7 @@ mod tests {
                 id_until: 10,
                 data_start: Some(32),
                 data_end: Some(32),
-                len_max: MB10,
+                len_max: MB2,
                 mmap: None,
                 mmap_mut: None,
             }],
@@ -737,7 +812,7 @@ mod tests {
                 id_until: 10,
                 data_start: Some(32),
                 data_end: Some(40),
-                len_max: MB10,
+                len_max: MB2,
                 mmap: None,
                 mmap_mut: None,
             }],
@@ -756,7 +831,7 @@ mod tests {
                 // make integrity check work
                 data_start: None,
                 data_end: Some(32),
-                len_max: MB10,
+                len_max: MB2,
                 mmap: None,
                 mmap_mut: None,
             }],
@@ -777,7 +852,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -790,7 +865,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -811,7 +886,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -824,7 +899,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -837,7 +912,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -858,7 +933,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -871,7 +946,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -883,7 +958,7 @@ mod tests {
                     id_until: 33,
                     data_start: None,
                     data_end: None,
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -904,7 +979,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -917,7 +992,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -930,7 +1005,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -951,7 +1026,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -964,7 +1039,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },
@@ -977,7 +1052,7 @@ mod tests {
                     // make integrity check work
                     data_start: Some(32),
                     data_end: Some(64),
-                    len_max: MB10,
+                    len_max: MB2,
                     mmap: None,
                     mmap_mut: None,
                 },

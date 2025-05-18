@@ -2,7 +2,7 @@ use crate::error::Error;
 use crate::utils::{crc, deserialize, serialize};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Write;
 
 static MAGIC_NO_META: &[u8] = b"HQLMETA";
 
@@ -60,10 +60,10 @@ impl Metadata {
         //     .open(&path)?;
 
         debug_assert_eq!(MAGIC_NO_META.len(), 7);
-        file.write(MAGIC_NO_META)?;
-        file.write(&[1u8])?;
-        file.write(crc!(&slf_bytes).as_slice())?;
-        file.write(&slf_bytes)?;
+        file.write_all(MAGIC_NO_META)?;
+        file.write_all(&[1u8])?;
+        file.write_all(crc!(&slf_bytes).as_slice())?;
+        file.write_all(&slf_bytes)?;
         file.flush()?;
 
         Ok(())
