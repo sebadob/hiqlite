@@ -25,7 +25,7 @@ impl Metadata {
         }
 
         debug_assert_eq!(MAGIC_NO_META.len(), 7);
-        if bytes.get(..7) != Some(MAGIC_NO_META) {
+        if bytes[..7].iter().as_slice() != MAGIC_NO_META {
             return Err(Error::FileCorrupted(
                 "metadata file is corrupt - magic no does not match",
             ));

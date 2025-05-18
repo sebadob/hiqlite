@@ -7,6 +7,8 @@ use thiserror::Error;
 pub enum Error {
     #[error("DecodeError: {0}")]
     DecodeError(String),
+    #[error("Error: {0}")]
+    Error(Cow<'static, str>),
     #[error("EncodeError: {0}")]
     EncodeError(String),
     #[error("FileCorrupted: {0}")]
