@@ -3,9 +3,12 @@ use crate::metadata::Metadata;
 use crate::wal::WalFileSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use std::{fs, thread};
 use tokio::sync::oneshot;
-use tracing::{error, warn};
+use tokio::time::Interval;
+use tokio::{task, time};
+use tracing::{debug, error, warn};
 
 pub enum Action {
     Append {
@@ -30,6 +33,12 @@ pub enum Action {
     Shutdown(oneshot::Sender<()>),
 }
 
+#[derive(Debug, PartialEq)]
+pub enum LogSync {
+    Immediate,
+    IntervalMillis(u64),
+}
+
 #[inline]
 fn create_base_path(base_path: &str) -> Result<(), Error> {
     fs::create_dir_all(base_path)?;
@@ -45,7 +54,7 @@ fn create_base_path(base_path: &str) -> Result<(), Error> {
 
 pub fn spawn(
     base_path: String,
-    sync_immediate: bool,
+    sync: LogSync,
     wal_size: u32,
     meta: Arc<RwLock<Metadata>>,
     id_until: AtomicU64,
@@ -62,8 +71,30 @@ pub fn spawn(
     }
 
     let (tx, rx) = flume::bounded::<Action>(1);
+    let sync_immediate = sync == LogSync::Immediate;
     thread::spawn(move || run(meta, id_until, set, rx, sync_immediate, wal_size));
+
+    if !sync_immediate {
+        let LogSync::IntervalMillis(millis) = sync else {
+            unreachable!();
+        };
+        let interval = time::interval(Duration::from_millis(millis));
+        spawn_syncer(tx.clone(), interval);
+    }
+
     Ok(tx)
+}
+
+fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
+    task::spawn(async move {
+        loop {
+            interval.tick().await;
+            if tx_writer.send_async(Action::Sync).await.is_err() {
+                debug!("Error sending ActionWrite::Sync to LogStoreWriter - exiting");
+                break;
+            }
+        }
+    });
 }
 
 fn run(
