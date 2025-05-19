@@ -2,9 +2,11 @@ use crate::error::Error;
 use crate::metadata::Metadata;
 use crate::utils::{bin_to_id, bin_to_len, crc, id_to_bin, len_to_bin};
 use memmap2::{Advice, Mmap, MmapMut, MmapOptions};
+use std::collections::VecDeque;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::sync::{Arc, RwLock};
 
 static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
 static MIN_WAL_SIZE: u32 = 2 * 1024 * 1024;
@@ -39,9 +41,9 @@ impl WalFile {
         // wal entries will have:
         // - 8 byte id
         // - 4 byte crc
-        // - 8 bytes data length
+        // - 4 bytes data length
         // - variable length data
-        (self.len_max - self.data_end.unwrap_or(0)) as usize > 8 + 4 + 8 + data_len
+        (self.len_max - self.data_end.unwrap_or(0)) as usize > 8 + 4 + 4 + data_len
     }
 
     #[inline]
@@ -50,6 +52,7 @@ impl WalFile {
     }
 
     /// Expects to have enough space left -> check MUST be done upfront
+    #[inline]
     pub fn append_log(&mut self, id: u64, data: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
         debug_assert!(buf.is_empty());
         debug_assert!(self.mmap_mut.is_some());
@@ -87,12 +90,14 @@ impl WalFile {
         Ok(())
     }
 
+    /// Reads the logs into the given buffer. Returns `Ok(offset)` of the first log.
+    #[inline]
     pub fn read_logs(
         &self,
         id_from: u64,
         id_until: u64,
         buf: &mut Vec<(u64, Vec<u8>)>,
-    ) -> Result<(), Error> {
+    ) -> Result<u32, Error> {
         debug_assert!(buf.is_empty());
         debug_assert!(self.data_start.is_some());
         debug_assert!(self.data_end.is_some());
@@ -111,6 +116,7 @@ impl WalFile {
         }
 
         let mut idx = self.data_start.unwrap();
+        let mut offset = 0;
         loop {
             // id, crc, length
             let head = self.read_bytes(idx, idx + 8 + 4 + 4)?;
@@ -118,6 +124,9 @@ impl WalFile {
             let crc = &head[8..12];
             let len = bin_to_len(&head[12..16])?;
 
+            if id == id_from {
+                offset = idx;
+            }
             if id >= id_from {
                 if id <= id_until {
                     let data_from = idx + 8 + 4 + 4;
@@ -143,7 +152,7 @@ impl WalFile {
 
         debug_assert_eq!(id_until + 1 - id_from, buf.len() as u64);
 
-        Ok(())
+        Ok(offset)
     }
 
     /// Does NOT do any boundary checks for the given range!
@@ -378,7 +387,7 @@ impl WalFile {
 pub struct WalFileSet {
     pub active: Option<usize>,
     pub base_path: String,
-    pub files: Vec<WalFile>,
+    pub files: VecDeque<WalFile>,
 }
 
 impl WalFileSet {
@@ -389,79 +398,49 @@ impl WalFileSet {
         self.files.get_mut(self.active.unwrap()).unwrap()
     }
 
-    fn active_index(files: &[WalFile]) -> Result<usize, Error> {
-        if files.is_empty() {
-            return Err(Error::Generic(
-                "Cannot find active WAL when files are empty".into(),
-            ));
-        }
-
-        if files.len() > 1 {
-            let last = files.last().unwrap();
-            let before = files.get(files.len() - 2).unwrap();
-
-            if before.id_until > 0 && last.id_until == 0 {
-                return Ok(files.len() - 2);
-            }
-        }
-        Ok(files.len() - 1)
-    }
-
-    pub fn new(base_path: String) -> WalFileSet {
-        WalFileSet {
-            active: None,
-            base_path,
-            files: Vec::default(),
-        }
-    }
+    // fn active_index(files: &[WalFile]) -> Result<usize, Error> {
+    //     if files.is_empty() {
+    //         return Err(Error::Generic(
+    //             "Cannot find active WAL when files are empty".into(),
+    //         ));
+    //     }
+    //
+    //     if files.len() > 1 {
+    //         let last = files.last().unwrap();
+    //         let before = files.get(files.len() - 2).unwrap();
+    //
+    //         if before.id_until > 0 && last.id_until == 0 {
+    //             return Ok(files.len() - 2);
+    //         }
+    //     }
+    //     Ok(files.len() - 1)
+    // }
 
     /// Adds a new `Header` at the end and creates a file for it.
+    /// If `self.files` was empty before, `self.active` will be set to `0` and left untouched
+    /// otherwise. If files existed already, `self.roll_over()` will handle `active` switching.
     pub fn add_file(&mut self, wal_size: u32, buf: &mut Vec<u8>) -> Result<&WalFile, Error> {
-        let wal_no = self.files.last().map(|w| w.wal_no + 1).unwrap_or(1);
+        let wal_no = self.files.back().map(|w| w.wal_no + 1).unwrap_or(1);
         let mut wal = WalFile::new(wal_no, &self.base_path, 0, 0, wal_size)?;
         wal.create_file(buf)?;
-        self.files.push(wal);
+        self.files.push_back(wal);
 
-        Ok(self.files.last().unwrap())
-    }
-
-    pub fn read(base_path: String, wal_size: u32) -> Result<WalFileSet, Error> {
-        let mut files = Vec::with_capacity(2);
-
-        for entry in fs::read_dir(&base_path)? {
-            let entry = entry?.file_name();
-            let fname = entry.to_str().unwrap_or_default();
-            if fname.ends_with(".wal") {
-                let path_full = format!("{}/{}", base_path, fname);
-                if let Ok(wal) = WalFile::read_from_file(path_full) {
-                    files.push(wal);
-                }
-            }
+        if wal_no == 1 {
+            self.active = Some(0);
         }
 
-        let active = if files.is_empty() {
-            let mut wal = WalFile::new(1, &base_path, 0, 0, wal_size)?;
-            let mut buf = Vec::with_capacity(28);
-            wal.create_file(&mut buf)?;
-            files.push(wal);
-            1
-        } else {
-            files.sort_by(|a, b| a.wal_no.cmp(&b.wal_no));
-            files.len() - 1
-        };
-
-        Ok(Self {
-            active: Some(active),
-            base_path,
-            files,
-        })
+        Ok(self.files.back().unwrap())
     }
 
     /// Checks the integrity of the Headers and makes sure the order is strictly ascending and
     /// there are no missing log IDs.
-    pub fn check_integrity(&self, metadata: &Metadata) -> Result<(), Error> {
+    pub fn check_integrity(&self, meta: Arc<RwLock<Metadata>>) -> Result<(), Error> {
+        let (log_from, log_until) = {
+            let lock = meta.read()?;
+            (lock.log_from, lock.log_until)
+        };
         if self.files.is_empty() {
-            if metadata.log_from != 0 || metadata.log_until != 0 {
+            if log_from != 0 || log_until != 0 {
                 return Err(Error::FileCorrupted(
                     "Expected WAL files from Metadata but none found",
                 ));
@@ -479,7 +458,7 @@ impl WalFileSet {
                 "`id_from` cannot be greater than `id_until`",
             ));
         }
-        if metadata.log_from < first.id_from {
+        if log_from < first.id_from {
             return Err(Error::FileCorrupted(
                 "Metadata expected lower log ID from than found",
             ));
@@ -531,13 +510,111 @@ impl WalFileSet {
             until = wal.id_until;
         }
 
-        if metadata.log_until > until {
+        if log_until > until {
             Err(Error::FileCorrupted(
                 "Metadata expected higher log ID until than found",
             ))
         } else {
             Ok(())
         }
+    }
+
+    pub fn new(base_path: String) -> WalFileSet {
+        WalFileSet {
+            active: None,
+            base_path,
+            files: VecDeque::default(),
+        }
+    }
+
+    pub fn read(base_path: String, wal_size: u32) -> Result<WalFileSet, Error> {
+        let mut file_names = Vec::with_capacity(2);
+        for entry in fs::read_dir(&base_path)? {
+            let entry = entry?.file_name();
+            let fname = entry.to_str().unwrap_or_default();
+            if fname.ends_with(".wal") {
+                file_names.push(fname.to_string());
+            }
+        }
+        file_names.sort_by(|a, b| a.cmp(&b));
+
+        let mut files = VecDeque::with_capacity(file_names.len());
+        for name in file_names {
+            let path_full = format!("{}/{}", base_path, name);
+            if let Ok(wal) = WalFile::read_from_file(path_full) {
+                files.push_back(wal);
+            }
+        }
+
+        let active = if files.is_empty() {
+            let mut wal = WalFile::new(1, &base_path, 0, 0, wal_size)?;
+            let mut buf = Vec::with_capacity(28);
+            wal.create_file(&mut buf)?;
+            files.push_back(wal);
+            1
+        } else {
+            files.len() - 1
+        };
+
+        Ok(Self {
+            active: Some(active),
+            base_path,
+            files,
+        })
+    }
+
+    /// Rolls a new WAL file and "closes" the current one. Removes any memory-mapping and flushes
+    /// the current file to disk. Creates a new WAL with `mmap_mut`.
+    pub fn roll_over(&mut self, wal_size: u32, buf: &mut Vec<u8>) -> Result<(), Error> {
+        debug_assert!(buf.is_empty());
+        debug_assert!(!self.files.is_empty());
+        debug_assert!(self.files.back().unwrap().mmap_mut.is_some());
+
+        {
+            let active = self.active();
+            active.update_header(buf)?;
+            active.flush()?;
+            active.mmap_mut = None;
+        };
+
+        buf.clear();
+        self.add_file(wal_size, buf)?;
+        self.active = self.active.map(|a| a + 1);
+        self.active().mmap_mut()?;
+
+        Ok(())
+    }
+
+    pub fn shift_delete_logs_until(
+        &mut self,
+        id_until: u64,
+        wal_size: u32,
+        buf: &mut Vec<u8>,
+        buf_logs: &mut Vec<(u64, Vec<u8>)>,
+    ) -> Result<(), Error> {
+        while !self.files.is_empty() && self.files.front().unwrap().id_until < id_until {
+            let file = self.files.pop_front().unwrap();
+            fs::remove_file(&file.path)?;
+        }
+        if self.files.is_empty() {
+            self.add_file(wal_size, buf)?;
+        }
+
+        let first = self.files.get_mut(0).unwrap();
+        debug_assert!(first.id_until >= id_until);
+        if first.id_from < id_until {
+            first.id_from = id_until;
+            // find the offset for `id_until` -> via in-memory index in the future?
+            if first.mmap_mut.is_none() {
+                first.mmap_mut()?;
+            }
+            debug_assert!(buf_logs.is_empty());
+            let offset = first.read_logs(id_until, id_until, buf_logs)?;
+            first.data_start = Some(offset);
+        }
+        self.active = Some(self.files.len() - 1);
+
+        Ok(())
     }
 }
 
@@ -563,9 +640,6 @@ mod tests {
         let d1 = b"Hello World".as_slice();
         let d2 = b"I am Batman!".as_slice();
         let d3 = b"... and not the Joker!".as_slice();
-        println!("length d1: {}", d1.len());
-        println!("length d2: {}", d2.len());
-        println!("length d3: {}", d3.len());
 
         assert!(wal.data_start.is_none());
         assert!(wal.data_end.is_none());
@@ -705,360 +779,434 @@ mod tests {
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
 
-        let meta = Metadata {
+        let meta = Arc::new(RwLock::new(Metadata {
             log_from: 1,
             log_until: 33,
             last_purged: None,
             vote: None,
-        };
+        }));
+        let mut files = VecDeque::with_capacity(4);
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 1,
+            path: "".to_string(),
+            id_from: 1,
+            id_until: 10,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 2,
+            path: "".to_string(),
+            id_from: 11,
+            id_until: 17,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 3,
+            path: "".to_string(),
+            id_from: 18,
+            id_until: 33,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
         let mut set = WalFileSet {
             active: Some(2),
             base_path: base_path.clone(),
-            files: vec![
-                WalFile {
-                    version: 1,
-                    wal_no: 1,
-                    path: "".to_string(),
-                    id_from: 1,
-                    id_until: 10,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-                WalFile {
-                    version: 1,
-                    wal_no: 2,
-                    path: "".to_string(),
-                    id_from: 11,
-                    id_until: 17,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-                WalFile {
-                    version: 1,
-                    wal_no: 3,
-                    path: "".to_string(),
-                    id_from: 18,
-                    id_until: 33,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-            ],
+            files,
         };
-        set.check_integrity(&meta).unwrap();
+        set.check_integrity(meta.clone()).unwrap();
         assert_eq!(set.active().wal_no, 3);
 
         let mut buf = Vec::with_capacity(28);
         set.add_file(MB2, &mut buf)?;
-        set.check_integrity(&meta).unwrap();
+        set.check_integrity(meta.clone()).unwrap();
         assert_eq!(set.active().wal_no, 3);
 
         // invalid data_start / data_end
+        let mut files = VecDeque::with_capacity(4);
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 1,
+            path: "".to_string(),
+            id_from: 1,
+            id_until: 10,
+            data_start: Some(32),
+            data_end: None,
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
         let set = WalFileSet {
             active: Some(1),
             base_path: base_path.clone(),
-            files: vec![WalFile {
-                version: 1,
-                wal_no: 1,
-                path: "".to_string(),
-                id_from: 1,
-                id_until: 10,
-                data_start: Some(32),
-                data_end: None,
-                len_max: MB2,
-                mmap: None,
-                mmap_mut: None,
-            }],
+            files,
         };
-        assert!(set.check_integrity(&meta).is_err());
+        assert!(set.check_integrity(meta.clone()).is_err());
         // invalid data_start / data_end
+        let mut files = VecDeque::with_capacity(4);
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 1,
+            path: "".to_string(),
+            id_from: 1,
+            id_until: 10,
+            data_start: Some(32),
+            data_end: Some(32),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
         let set = WalFileSet {
             active: Some(1),
             base_path: base_path.clone(),
-            files: vec![WalFile {
-                version: 1,
-                wal_no: 1,
-                path: "".to_string(),
-                id_from: 1,
-                id_until: 10,
-                data_start: Some(32),
-                data_end: Some(32),
-                len_max: MB2,
-                mmap: None,
-                mmap_mut: None,
-            }],
+            files,
         };
-        assert!(set.check_integrity(&meta).is_err());
+        assert!(set.check_integrity(meta.clone()).is_err());
         // invalid data_start / data_end
+        let mut files = VecDeque::with_capacity(4);
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 1,
+            path: "".to_string(),
+            id_from: 1,
+            id_until: 10,
+            data_start: Some(32),
+            data_end: Some(40),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
         let set = WalFileSet {
             active: Some(1),
             base_path: base_path.clone(),
-            files: vec![WalFile {
-                version: 1,
-                wal_no: 1,
-                path: "".to_string(),
-                id_from: 1,
-                id_until: 10,
-                data_start: Some(32),
-                data_end: Some(40),
-                len_max: MB2,
-                mmap: None,
-                mmap_mut: None,
-            }],
+            files,
         };
-        assert!(set.check_integrity(&meta).is_err());
+        assert!(set.check_integrity(meta.clone()).is_err());
         // invalid data_start / data_end
+        let mut files = VecDeque::with_capacity(4);
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 1,
+            path: "".to_string(),
+            id_from: 1,
+            id_until: 10,
+            // make integrity check work
+            data_start: None,
+            data_end: Some(32),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
         let set = WalFileSet {
             active: Some(1),
             base_path: base_path.clone(),
-            files: vec![WalFile {
-                version: 1,
-                wal_no: 1,
-                path: "".to_string(),
-                id_from: 1,
-                id_until: 10,
-                // make integrity check work
-                data_start: None,
-                data_end: Some(32),
-                len_max: MB2,
-                mmap: None,
-                mmap_mut: None,
-            }],
+            files,
         };
-        assert!(set.check_integrity(&meta).is_err());
+        assert!(set.check_integrity(meta.clone()).is_err());
 
         // missing logs - invalid if_until -> next id_from
+        let mut files = VecDeque::with_capacity(4);
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 1,
+            path: "".to_string(),
+            id_from: 1,
+            id_until: 10,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 3,
+            path: "".to_string(),
+            id_from: 18,
+            id_until: 33,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
         let set = WalFileSet {
             active: Some(1),
             base_path: base_path.clone(),
-            files: vec![
-                WalFile {
-                    version: 1,
-                    wal_no: 1,
-                    path: "".to_string(),
-                    id_from: 1,
-                    id_until: 10,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-                WalFile {
-                    version: 1,
-                    wal_no: 3,
-                    path: "".to_string(),
-                    id_from: 18,
-                    id_until: 33,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-            ],
+            files,
         };
-        assert!(set.check_integrity(&meta).is_err());
+        assert!(set.check_integrity(meta.clone()).is_err());
 
+        let mut files = VecDeque::with_capacity(4);
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 1,
+            path: "".to_string(),
+            id_from: 1,
+            id_until: 10,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 2,
+            path: "".to_string(),
+            id_from: 11,
+            id_until: 17,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 4,
+            path: "".to_string(),
+            id_from: 18,
+            id_until: 33,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
         let set = WalFileSet {
             active: Some(2),
             base_path: base_path.clone(),
-            files: vec![
-                WalFile {
-                    version: 1,
-                    wal_no: 1,
-                    path: "".to_string(),
-                    id_from: 1,
-                    id_until: 10,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-                WalFile {
-                    version: 1,
-                    wal_no: 2,
-                    path: "".to_string(),
-                    id_from: 11,
-                    id_until: 17,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-                WalFile {
-                    version: 1,
-                    wal_no: 4,
-                    path: "".to_string(),
-                    id_from: 18,
-                    id_until: 33,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-            ],
+            files,
         };
-        assert!(set.check_integrity(&meta).is_err());
+        assert!(set.check_integrity(meta.clone()).is_err());
 
+        let mut files = VecDeque::with_capacity(4);
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 1,
+            path: "".to_string(),
+            id_from: 2,
+            id_until: 10,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 2,
+            path: "".to_string(),
+            id_from: 11,
+            id_until: 17,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 3,
+            path: "".to_string(),
+            id_from: 18,
+            id_until: 33,
+            data_start: None,
+            data_end: None,
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
         let set = WalFileSet {
             active: Some(2),
             base_path: base_path.clone(),
-            files: vec![
-                WalFile {
-                    version: 1,
-                    wal_no: 1,
-                    path: "".to_string(),
-                    id_from: 2,
-                    id_until: 10,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-                WalFile {
-                    version: 1,
-                    wal_no: 2,
-                    path: "".to_string(),
-                    id_from: 11,
-                    id_until: 17,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-                WalFile {
-                    version: 1,
-                    wal_no: 3,
-                    path: "".to_string(),
-                    id_from: 18,
-                    id_until: 33,
-                    data_start: None,
-                    data_end: None,
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-            ],
+            files,
         };
-        assert!(set.check_integrity(&meta).is_err());
+        assert!(set.check_integrity(meta.clone()).is_err());
 
+        let mut files = VecDeque::with_capacity(4);
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 1,
+            path: "".to_string(),
+            id_from: 1,
+            id_until: 10,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 2,
+            path: "".to_string(),
+            id_from: 11,
+            id_until: 17,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 3,
+            path: "".to_string(),
+            id_from: 18,
+            id_until: 32,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
         let set = WalFileSet {
             active: Some(2),
             base_path: base_path.clone(),
-            files: vec![
-                WalFile {
-                    version: 1,
-                    wal_no: 1,
-                    path: "".to_string(),
-                    id_from: 1,
-                    id_until: 10,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-                WalFile {
-                    version: 1,
-                    wal_no: 2,
-                    path: "".to_string(),
-                    id_from: 11,
-                    id_until: 17,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-                WalFile {
-                    version: 1,
-                    wal_no: 3,
-                    path: "".to_string(),
-                    id_from: 18,
-                    id_until: 32,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-            ],
+            files,
         };
-        assert!(set.check_integrity(&meta).is_err());
+        assert!(set.check_integrity(meta.clone()).is_err());
 
+        let mut files = VecDeque::with_capacity(4);
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 1,
+            path: "".to_string(),
+            id_from: 1,
+            id_until: 10,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 2,
+            path: "".to_string(),
+            id_from: 11,
+            id_until: 17,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 3,
+            path: "".to_string(),
+            id_from: 19,
+            id_until: 33,
+            // make integrity check work
+            data_start: Some(32),
+            data_end: Some(64),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+        });
         let set = WalFileSet {
             active: Some(2),
             base_path: base_path.clone(),
-            files: vec![
-                WalFile {
-                    version: 1,
-                    wal_no: 1,
-                    path: "".to_string(),
-                    id_from: 1,
-                    id_until: 10,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-                WalFile {
-                    version: 1,
-                    wal_no: 2,
-                    path: "".to_string(),
-                    id_from: 11,
-                    id_until: 17,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-                WalFile {
-                    version: 1,
-                    wal_no: 3,
-                    path: "".to_string(),
-                    id_from: 19,
-                    id_until: 33,
-                    // make integrity check work
-                    data_start: Some(32),
-                    data_end: Some(64),
-                    len_max: MB2,
-                    mmap: None,
-                    mmap_mut: None,
-                },
-            ],
+            files,
         };
-        assert!(set.check_integrity(&meta).is_err());
+        assert!(set.check_integrity(meta.clone()).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn roll_over_shift_delete() -> Result<(), Error> {
+        let base_path = format!("{}/roll_over_shift_delete", PATH);
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+        let mut buf = Vec::with_capacity(8);
+
+        let mut wal = WalFileSet::new(base_path);
+        wal.add_file(MB2, &mut buf)?;
+        wal.active().mmap_mut()?;
+
+        let d1 = b"Hello World".as_slice();
+        let d2 = b"I am Batman!".as_slice();
+        let d3 = b"... and not the Joker!".as_slice();
+        let d4 = b"I like Harley Quinn".as_slice();
+        let d5 = b"... a lot".as_slice();
+
+        buf.clear();
+        wal.active().append_log(1, d1, &mut buf)?;
+        buf.clear();
+        wal.active().append_log(2, d2, &mut buf)?;
+        assert_eq!(wal.files.len(), 1);
+        assert_eq!(wal.active().wal_no, 1);
+
+        buf.clear();
+        wal.roll_over(MB2, &mut buf)?;
+        assert_eq!(wal.files.len(), 2);
+        // active file should be shifted, old mmap be removed and new active have an mmap_mut
+        assert_eq!(wal.active().wal_no, 2);
+        assert!(wal.files.front().unwrap().mmap_mut.is_none());
+        assert!(wal.active().mmap_mut.is_some());
+
+        buf.clear();
+        wal.active().append_log(3, d3, &mut buf)?;
+        buf.clear();
+        wal.active().append_log(4, d4, &mut buf)?;
+        buf.clear();
+        wal.active().append_log(5, d5, &mut buf)?;
+
+        let mut buf_logs = Vec::with_capacity(1);
+        buf.clear();
+        // this should be a noop
+        wal.shift_delete_logs_until(1, MB2, &mut buf, &mut buf_logs)?;
+        let front = wal.files.front().unwrap();
+        assert_eq!(front.id_from, 1);
+        assert_eq!(front.data_start.unwrap() as usize, front.offset_logs());
+
+        buf.clear();
+        buf_logs.clear();
+        wal.shift_delete_logs_until(2, MB2, &mut buf, &mut buf_logs)?;
+        let front = wal.files.front().unwrap();
+        assert_eq!(front.id_from, 2);
+        let start = 8 + 4 + 4 + d1.len() + front.offset_logs() + 1;
+        assert_eq!(front.data_start.unwrap() as usize, start);
+
+        buf.clear();
+        buf_logs.clear();
+        wal.shift_delete_logs_until(3, MB2, &mut buf, &mut buf_logs)?;
+        assert_eq!(wal.files.len(), 1);
+        let front = wal.files.front().unwrap();
+        assert_eq!(front.id_from, 3);
+        assert_eq!(front.data_start.unwrap() as usize, front.offset_logs());
 
         Ok(())
     }

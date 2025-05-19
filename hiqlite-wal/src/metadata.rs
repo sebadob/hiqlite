@@ -3,6 +3,8 @@ use crate::utils::{crc, deserialize, serialize};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
+use std::ops::Deref;
+use std::sync::{Arc, RwLock};
 
 static MAGIC_NO_META: &[u8] = b"HQLMETA";
 
@@ -44,10 +46,13 @@ impl Metadata {
     }
 
     #[inline]
-    pub fn write(&self, base_path: &str) -> Result<(), Error> {
+    pub fn write(meta: Arc<RwLock<Self>>, base_path: &str) -> Result<(), Error> {
         let path = format!("{}/meta.hql", base_path);
 
-        let slf_bytes = serialize(self)?;
+        let slf_bytes = {
+            let lock = meta.read()?;
+            serialize(lock.deref())?
+        };
 
         let _ = fs::remove_file(&path);
         let mut file = File::create_new(&path)?;
@@ -116,19 +121,20 @@ mod tests {
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
 
-        let meta = Metadata {
+        let meta = Arc::new(RwLock::new(Metadata {
             log_from: 0,
             log_until: 0,
             last_purged: None,
             vote: None,
-        };
-        meta.write(&base_path)?;
+        }));
+        Metadata::write(meta.clone(), &base_path)?;
 
         let meta_back = Metadata::read(&base_path)?;
-        assert_eq!(meta.log_from, meta_back.log_from);
-        assert_eq!(meta.log_until, meta_back.log_until);
-        assert_eq!(meta.last_purged, meta_back.last_purged);
-        assert_eq!(meta.vote, meta_back.vote);
+        let lock = meta.read()?;
+        assert_eq!(lock.log_from, meta_back.log_from);
+        assert_eq!(lock.log_until, meta_back.log_until);
+        assert_eq!(lock.last_purged, meta_back.last_purged);
+        assert_eq!(lock.vote, meta_back.vote);
 
         Ok(())
     }
