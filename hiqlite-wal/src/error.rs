@@ -1,11 +1,12 @@
 use crate::metadata::Metadata;
-use crate::Action;
+use crate::{reader, writer};
 use std::borrow::Cow;
 use std::io;
 use std::num::ParseIntError;
 use std::sync::{PoisonError, RwLockReadGuard, RwLockWriteGuard};
 use thiserror::Error;
 use tokio::sync::oneshot;
+use tokio::task;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -19,6 +20,8 @@ pub enum Error {
     FileCorrupted(&'static str),
     #[error("Integrity: {0}")]
     Integrity(Cow<'static, str>),
+    #[error("Internal: {0}")]
+    Internal(Cow<'static, str>),
     #[error("InvalidPath: {0}")]
     InvalidPath(&'static str),
     #[error("InvalidFileName")]
@@ -29,6 +32,12 @@ pub enum Error {
     Locked(&'static str),
     #[error("ParseError: {0}")]
     Parse(&'static str),
+}
+
+impl From<task::JoinError> for Error {
+    fn from(err: task::JoinError) -> Self {
+        Self::Generic(err.to_string().into())
+    }
 }
 
 impl From<bincode::error::DecodeError> for Error {
@@ -61,9 +70,15 @@ impl From<PoisonError<RwLockWriteGuard<'_, Metadata>>> for Error {
     }
 }
 
-impl From<flume::SendError<Action>> for Error {
-    fn from(err: flume::SendError<Action>) -> Self {
-        Self::Generic(err.to_string().into())
+impl From<flume::SendError<writer::Action>> for Error {
+    fn from(err: flume::SendError<writer::Action>) -> Self {
+        Self::Internal(err.to_string().into())
+    }
+}
+
+impl From<flume::SendError<reader::Action>> for Error {
+    fn from(err: flume::SendError<reader::Action>) -> Self {
+        Self::Internal(err.to_string().into())
     }
 }
 

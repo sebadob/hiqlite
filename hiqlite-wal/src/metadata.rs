@@ -12,7 +12,7 @@ static MAGIC_NO_META: &[u8] = b"HQLMETA";
 pub struct Metadata {
     pub log_from: u64,
     pub log_until: u64,
-    pub last_purged: Option<Vec<u8>>,
+    pub last_purged_log_id: Option<Vec<u8>>,
     pub vote: Option<Vec<u8>>,
 }
 
@@ -122,9 +122,9 @@ mod tests {
         fs::create_dir_all(&base_path)?;
 
         let meta = Arc::new(RwLock::new(Metadata {
-            log_from: 0,
-            log_until: 0,
-            last_purged: None,
+            log_from: 13,
+            log_until: 27,
+            last_purged_log_id: Some(vec![13, 17, 43]),
             vote: None,
         }));
         Metadata::write(meta.clone(), &base_path)?;
@@ -133,7 +133,7 @@ mod tests {
         let lock = meta.read()?;
         assert_eq!(lock.log_from, meta_back.log_from);
         assert_eq!(lock.log_until, meta_back.log_until);
-        assert_eq!(lock.last_purged, meta_back.last_purged);
+        assert_eq!(lock.last_purged_log_id, meta_back.last_purged_log_id);
         assert_eq!(lock.vote, meta_back.vote);
 
         Ok(())

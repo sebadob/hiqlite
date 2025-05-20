@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::metadata::Metadata;
+use crate::metadata::{LockFile, Metadata};
 use crate::wal::WalFileSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -13,6 +13,7 @@ use tracing::{debug, error, warn};
 pub enum Action {
     Append {
         rx: flume::Receiver<Option<(u64, Vec<u8>)>>,
+        // callback: LogFlushed<dyn RaftTypeConfig<_, _, _, _, _, _, _, _, _>>,
         callback: Box<dyn FnOnce() + Send>,
         ack: oneshot::Sender<Result<(), Error>>,
         // ack: oneshot::Sender<Result<(), StorageIOError<u64>>>,
@@ -52,14 +53,26 @@ fn create_base_path(base_path: &str) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::type_complexity)]
 pub fn spawn(
     base_path: String,
     sync: LogSync,
     wal_size: u32,
     meta: Arc<RwLock<Metadata>>,
-    id_until: AtomicU64,
-) -> Result<flume::Sender<Action>, Error> {
+    id_until: Arc<AtomicU64>,
+) -> Result<
+    (
+        flume::Sender<Action>,
+        Arc<RwLock<WalFileSet>>,
+        Arc<AtomicU64>,
+    ),
+    Error,
+> {
     create_base_path(&base_path)?;
+
+    // TODO emit a warning log in that case and tell the user how to resolve or "force start" in
+    // that case
+    LockFile::write(&base_path)?;
 
     let mut set = WalFileSet::read(base_path, wal_size)?;
     // TODO emit a warning log in that case and tell the user how to resolve or "force start" in
@@ -69,6 +82,8 @@ pub fn spawn(
         let mut buf = Vec::with_capacity(28);
         set.add_file(wal_size, &mut buf)?;
     }
+    let latest_wal = Arc::new(AtomicU64::new(set.files.back().unwrap().wal_no));
+    let set_locked = Arc::new(RwLock::new(set.clone_no_map()));
 
     let (tx, rx) = flume::bounded::<Action>(1);
     let sync_immediate = sync == LogSync::Immediate;
@@ -82,7 +97,7 @@ pub fn spawn(
         spawn_syncer(tx.clone(), interval);
     }
 
-    Ok(tx)
+    Ok((tx, set_locked, latest_wal))
 }
 
 fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
@@ -99,7 +114,7 @@ fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
 
 fn run(
     meta: Arc<RwLock<Metadata>>,
-    id_until: AtomicU64,
+    id_until: Arc<AtomicU64>,
     mut wal: WalFileSet,
     rx: flume::Receiver<Action>,
     sync_immediate: bool,
@@ -110,6 +125,8 @@ fn run(
 
     let mut buf: Vec<u8> = Vec::with_capacity(8);
     let mut buf_logs: Vec<(u64, Vec<u8>)> = Vec::with_capacity(1);
+
+    wal.active().mmap_mut()?;
 
     while let Ok(action) = rx.recv() {
         match action {
@@ -123,7 +140,6 @@ fn run(
                             res = Err(Error::Generic("`data` length must not exceed u32".into()));
                             break;
                         }
-                        last_id = id;
 
                         if !active.has_space(data.len()) {
                             buf.clear();
@@ -140,10 +156,11 @@ fn run(
                             res = Err(err);
                             break;
                         }
+                        last_id = id;
                     }
                 }
-                is_dirty = true;
 
+                is_dirty = true;
                 let is_ok = res.is_ok();
                 if let Err(err) = ack.send(res) {
                     // this should usually not happen, but it may during an incorrect shutdown
@@ -155,10 +172,11 @@ fn run(
                         wal.active().flush()?;
                         is_dirty = false;
                     }
-                    id_until.store(last_id, Ordering::Relaxed);
-                    meta.write()?.log_until = last_id;
                     callback();
                 }
+
+                meta.write()?.log_until = last_id;
+                id_until.store(last_id, Ordering::Relaxed);
 
                 // Roll WAL pre-emptively if only very few space is left at this point, because
                 // if we just wrote some chunks, me probably have a very short break now until the
@@ -184,12 +202,20 @@ fn run(
                 // very last log from this WAL should be kept.
                 buf.clear();
                 buf_logs.clear();
+
+                let active = wal.active();
+                let until = if until > active.id_until {
+                    active.id_until
+                } else {
+                    until
+                };
+
                 match wal.shift_delete_logs_until(until, wal_size, &mut buf, &mut buf_logs) {
                     Ok(_) => {
                         {
                             let mut lock = meta.write()?;
                             lock.log_from = until;
-                            lock.last_purged = last_log;
+                            lock.last_purged_log_id = last_log;
                         }
                         ack.send(Ok(())).unwrap();
                     }
@@ -223,6 +249,8 @@ fn run(
 
     // TODO flush and close all files
     warn!("Logs Writer exiting");
+
+    LockFile::remove(&wal.base_path).expect("LockFile removal failed");
 
     if let Some(ack) = shutdown_ack {
         ack.send(())

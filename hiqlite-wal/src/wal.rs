@@ -196,6 +196,10 @@ impl WalFile {
 
     #[inline]
     pub fn mmap(&mut self) -> Result<(), Error> {
+        if self.mmap.is_some() {
+            return Ok(());
+        }
+
         let file = OpenOptions::new()
             .read(true)
             .write(false)
@@ -209,6 +213,11 @@ impl WalFile {
         self.mmap = Some(mmap);
 
         Ok(())
+    }
+
+    #[inline]
+    pub fn mmap_drop(&mut self) {
+        self.mmap = None;
     }
 
     #[inline]
@@ -519,12 +528,29 @@ impl WalFileSet {
         }
     }
 
-    pub fn new(base_path: String) -> WalFileSet {
-        WalFileSet {
-            active: None,
-            base_path,
-            files: VecDeque::default(),
+    /// Creates a clone of the `WalFileSet` without any active `mmap`s.
+    #[inline]
+    pub fn clone_no_map(&self) -> Self {
+        let mut slf = Self {
+            active: self.active,
+            base_path: self.base_path.clone(),
+            files: VecDeque::with_capacity(self.files.len()),
+        };
+        for file in &self.files {
+            slf.files.push_back(WalFile {
+                version: file.version,
+                wal_no: file.wal_no,
+                path: file.path.clone(),
+                id_from: file.id_from,
+                id_until: file.id_until,
+                data_start: file.data_start,
+                data_end: file.data_end,
+                len_max: file.len_max,
+                mmap: None,
+                mmap_mut: None,
+            });
         }
+        slf
     }
 
     pub fn read(base_path: String, wal_size: u32) -> Result<WalFileSet, Error> {
@@ -536,7 +562,7 @@ impl WalFileSet {
                 file_names.push(fname.to_string());
             }
         }
-        file_names.sort_by(|a, b| a.cmp(&b));
+        file_names.sort();
 
         let mut files = VecDeque::with_capacity(file_names.len());
         for name in file_names {
@@ -760,7 +786,11 @@ mod tests {
         let _ = fs::remove_file(&path_h1);
         let _ = fs::remove_file(&path_h2);
 
-        let mut set = WalFileSet::new(base_path);
+        let mut set = WalFileSet {
+            active: None,
+            base_path,
+            files: Default::default(),
+        };
         buf.clear();
         set.add_file(MB2, &mut buf).unwrap();
         assert_eq!(fs::exists(&path_h1)?, true);
@@ -782,7 +812,7 @@ mod tests {
         let meta = Arc::new(RwLock::new(Metadata {
             log_from: 1,
             log_until: 33,
-            last_purged: None,
+            last_purged_log_id: None,
             vote: None,
         }));
         let mut files = VecDeque::with_capacity(4);
@@ -1152,7 +1182,11 @@ mod tests {
         fs::create_dir_all(&base_path)?;
         let mut buf = Vec::with_capacity(8);
 
-        let mut wal = WalFileSet::new(base_path);
+        let mut wal = WalFileSet {
+            active: None,
+            base_path,
+            files: Default::default(),
+        };
         wal.add_file(MB2, &mut buf)?;
         wal.active().mmap_mut()?;
 

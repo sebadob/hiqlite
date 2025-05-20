@@ -7,9 +7,9 @@
 #[cfg(feature = "sqlite")]
 pub mod rocksdb;
 
+mod hiqlite_wal;
 #[cfg(feature = "cache")]
 pub mod memory;
-
 // #[cfg(feature = "sqlite")]
 // pub mod sqlite;
 
