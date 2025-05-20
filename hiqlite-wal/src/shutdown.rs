@@ -3,12 +3,12 @@ use crate::{reader, writer};
 use tokio::sync::oneshot;
 
 #[derive(Debug, Clone)]
-pub struct ShutdownSender {
+pub struct ShutdownHandle {
     tx_write: flume::Sender<writer::Action>,
     tx_read: flume::Sender<reader::Action>,
 }
 
-impl ShutdownSender {
+impl ShutdownHandle {
     pub(crate) fn new(
         tx_write: flume::Sender<writer::Action>,
         tx_read: flume::Sender<reader::Action>,
@@ -17,7 +17,7 @@ impl ShutdownSender {
     }
 
     #[allow(unused)]
-    pub async fn shutdown(self) -> Result<(), Error> {
+    pub async fn shutdown(&self) -> Result<(), Error> {
         let (tx_ack, ack) = oneshot::channel();
         self.tx_write
             .send_async(writer::Action::Shutdown(tx_ack))

@@ -128,7 +128,7 @@ impl StateMachineSqlite {
         // IMPORTANT: Do NOT change the order of the db exists check!
         // DB recovery will fail otherwise!
         let mut db_exists = Self::db_exists(data_dir, filename_db).await;
-        info!("db_exists in stage_machine::new(): {}", db_exists);
+        info!("db_exists in state_machine::new(): {}", db_exists);
 
         let (
             PathDb(path_db),

@@ -84,6 +84,9 @@ pub enum Error {
     Transaction(Cow<'static, str>),
     #[error("Unauthorized: {0}")]
     Unauthorized(Cow<'static, str>),
+    #[cfg(all(feature = "sqlite", not(feature = "rocksdb")))]
+    #[error("WAL: {0}")]
+    WAL(String),
     #[error("WebSocket: {0}")]
     WebSocket(String),
 }
@@ -151,6 +154,7 @@ impl IntoResponse for Error {
             Error::Token(_) => StatusCode::UNAUTHORIZED,
             Error::Transaction(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            Error::WAL(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::WebSocket(_) => StatusCode::BAD_REQUEST,
         };
 
@@ -369,5 +373,13 @@ impl From<argon2::password_hash::Error> for Error {
     fn from(value: argon2::password_hash::Error) -> Self {
         trace!("argon2::password_hash::Error: {}", value);
         Self::Unauthorized("invalid credentials".into())
+    }
+}
+
+#[cfg(all(feature = "sqlite", not(feature = "rocksdb")))]
+impl From<hiqlite_wal::error::Error> for Error {
+    fn from(value: hiqlite_wal::error::Error) -> Self {
+        trace!("hiqlite_wal::error::Error: {}", value);
+        Self::WAL(value.to_string())
     }
 }

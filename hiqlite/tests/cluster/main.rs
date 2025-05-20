@@ -65,7 +65,7 @@ async fn test_cluster() {
     set_panic_hook();
 
     // always start clean
-    env::remove_var("HQL_BACKUP_RESTORE");
+    unsafe { env::remove_var("HQL_BACKUP_RESTORE") };
     let _ = fs::remove_dir_all(TEST_DATA_DIR);
 
     let tracing_layer = tracing_subscriber::fmt::layer()

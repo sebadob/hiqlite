@@ -1,11 +1,11 @@
 use crate::error::Error;
 use crate::metadata::Metadata;
-use crate::wal::WalFileSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use crate::writer::TaskData;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::sync::oneshot;
-use tracing::warn;
+use tracing::{info, warn};
 
 #[allow(clippy::type_complexity)]
 pub enum Action {
@@ -26,40 +26,43 @@ pub struct LogState {
 }
 
 pub fn spawn(
-    meta: Arc<RwLock<Metadata>>,
-    wal_set: Arc<RwLock<WalFileSet>>,
-    id_until: Arc<AtomicU64>,
-    latest_wal: Arc<AtomicU64>,
+    data: TaskData,
+    // wal_set: Arc<RwLock<WalFileSet>>,
+    // id_until: Arc<AtomicU64>,
+    // latest_wal: Arc<AtomicU64>,
 ) -> Result<flume::Sender<Action>, Error> {
     let (tx, rx) = flume::bounded::<Action>(1);
-    thread::spawn(move || run(meta, wal_set, id_until, latest_wal, rx));
+    thread::spawn(move || run(data, rx));
     Ok(tx)
 }
 
-fn run(
-    meta: Arc<RwLock<Metadata>>,
-    wal_set: Arc<RwLock<WalFileSet>>,
-    id_until: Arc<AtomicU64>,
-    latest_wal: Arc<AtomicU64>,
-    rx: flume::Receiver<Action>,
-) {
+fn run(data: TaskData, rx: flume::Receiver<Action>) {
     // we keep the local set for faster access inside the loop and lazily update if necessary
-    let mut wal = wal_set.read().unwrap().clone_no_map();
+    let mut wal = data.wal.read().unwrap().clone_no_map();
     let mut buf = Vec::with_capacity(16);
 
     while let Ok(action) = rx.recv() {
         match action {
             Action::Logs { from, until, ack } => {
+                info!("Action::Logs: from: {from}, until: {until}");
+
+                // let latest = latest_wal.load(Ordering::Relaxed);
+                if data.latest_log_id.load(Ordering::Relaxed) == 0 {
+                    ack.send(None).unwrap();
+                    continue;
+                }
+
                 // lazily update our `WalFileSet`
                 let active = wal.active();
-                if latest_wal.load(Ordering::Relaxed) != active.wal_no {
-                    wal = wal_set.read().unwrap().clone_no_map();
+                if data.latest_wal.load(Ordering::Relaxed) != active.wal_no {
+                    wal = data.wal.read().unwrap().clone_no_map();
                 } else {
-                    active.id_until = id_until.load(Ordering::Relaxed);
+                    active.id_until = data.latest_log_id.load(Ordering::Relaxed);
                 }
 
                 let mut next = from;
                 for log in wal.files.iter_mut() {
+                    warn!("log.id_until < next -> {:?} / {}", log, next);
                     if log.id_until < next {
                         continue;
                     }
@@ -97,30 +100,39 @@ fn run(
                 ack.send(None).unwrap();
             }
             Action::LogState(ack) => {
-                let latest_id = latest_wal.load(Ordering::Relaxed);
-                let last_log = if latest_id > 0 {
+                let latest_log_id = data.latest_wal.load(Ordering::Relaxed);
+                let last_log = if latest_log_id > 0 {
                     let active = wal.active();
-                    if latest_id != active.wal_no {
-                        wal = wal_set.read().unwrap().clone_no_map();
+                    let id_until = if latest_log_id != active.wal_no {
+                        wal = data.wal.read().unwrap().clone_no_map();
+                        wal.active().id_until
                     } else {
-                        active.id_until = id_until.load(Ordering::Relaxed);
+                        let until = data.latest_log_id.load(Ordering::Relaxed);
+                        active.id_until = until;
+                        until
+                    };
+
+                    if id_until != 0 {
+                        buf.clear();
+                        let active = wal.active();
+                        active.mmap().unwrap();
+                        active.read_logs(id_until, id_until, &mut buf).unwrap();
+                        let (_, data) = buf.swap_remove(0);
+                        Some(data)
+                    } else {
+                        None
                     }
-                    buf.clear();
-                    wal.active()
-                        .read_logs(latest_id, latest_id, &mut buf)
-                        .unwrap();
-                    let (_, data) = buf.swap_remove(0);
-                    Some(data)
                 } else {
                     None
                 };
 
-                match meta.read() {
+                match data.meta.read() {
                     Ok(lock) => {
                         let st = LogState {
                             last_purged_log_id: lock.last_purged_log_id.clone(),
                             last_log,
                         };
+                        info!("Sending {:?}", st);
                         ack.send(Ok(st)).unwrap();
                     }
                     Err(err) => {
@@ -130,7 +142,7 @@ fn run(
                 };
             }
             Action::Vote(ack) => {
-                match meta.read() {
+                match data.meta.read() {
                     Ok(lock) => {
                         ack.send(Ok(lock.vote.clone())).unwrap();
                     }

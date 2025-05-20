@@ -1,5 +1,5 @@
 pub use crate::writer::LogSync;
-pub use shutdown::ShutdownSender;
+pub use shutdown::ShutdownHandle;
 pub use writer::Action;
 
 pub use log_store::{LogStore, LogStoreReader};

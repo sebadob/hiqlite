@@ -1,5 +1,4 @@
 use crate::helpers::{deserialize, serialize};
-use crate::store::logs::rocksdb::{ActionAppend, ActionRemove, ActionVote, ActionWrite};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::StorageResult;
 use crate::NodeId;

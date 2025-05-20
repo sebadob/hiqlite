@@ -4,10 +4,11 @@
 
 // pub mod redb;
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", feature = "rocksdb"))]
 pub mod rocksdb;
 
-mod hiqlite_wal;
+#[cfg(all(feature = "sqlite", not(feature = "rocksdb")))]
+pub mod hiqlite_wal;
 #[cfg(feature = "cache")]
 pub mod memory;
 // #[cfg(feature = "sqlite")]
