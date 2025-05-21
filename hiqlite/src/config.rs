@@ -78,6 +78,9 @@ pub struct NodeConfig {
     /// a lot more pressure on the disk. If you have lots of writes, it
     /// can pretty quickly kill your SSD for instance.
     pub sync_immediate: bool,
+    /// Maximum WAL size in bytes.
+    #[cfg(not(feature = "rocksdb"))]
+    pub wal_size: u32,
     /// The internal Raft config. This must be the same on each node.
     /// You will get good defaults with `NodeConfig::default_raft_config(_)`.
     pub raft_config: RaftConfig,
@@ -118,6 +121,8 @@ impl Default for NodeConfig {
             prepared_statement_cache_capacity: 1024,
             read_pool_size: 4,
             sync_immediate: false,
+            #[cfg(not(feature = "rocksdb"))]
+            wal_size: 2 * 1024 * 1024,
             raft_config: Self::default_raft_config(10_000),
             tls_raft: None,
             tls_api: None,
@@ -230,6 +235,8 @@ impl NodeConfig {
                 .unwrap_or("false")
                 .parse()
                 .expect("Cannot parse HQL_SYNC_IMMEDIATE as bool"),
+            #[cfg(not(feature = "rocksdb"))]
+            wal_size: 2 * 1024 * 1024,
             raft_config: Self::default_raft_config(logs_keep),
             tls_raft: ServerTlsConfig::from_env("RAFT"),
             tls_api: ServerTlsConfig::from_env("API"),

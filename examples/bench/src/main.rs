@@ -166,6 +166,9 @@ async fn main() -> Result<(), Error> {
         )
         .await?;
 
+        // slower systems need a second when they run all 3 nodes at once
+        time::sleep(Duration::from_secs(1)).await;
+
         let options = Options {
             concurrency: opts.concurrency,
             rows: opts.rows,
@@ -215,6 +218,16 @@ async fn start_cluster(
 
     let mut config = node_config(test_nodes(), logs_until_snapshot);
     config.data_dir = format!("data/node_{}", 1).into();
+    config.wal_size = 8 * 1024 * 1024;
+    // You could set sync immediate, which will make the logs writer `fsync` after each batch it
+    // receives. However, this will degrade your throughput for the Database on disk by a very huge
+    // factor. This might only be necessary if you run Hiqlite as a single instance, and you were
+    // unable to recover some lost logs in case of a bad server crash from other nodes.
+    //
+    // This will also put a very high amount of stress on your disk, which can kill your SSDs pretty
+    // quickly if you have a lot of throughput. By default, `fsync` will be called in fixed
+    // intervals.
+    //config.sync_immediate = true;
 
     let client_1 = start_node_with_cache::<Cache>(config.clone()).await?;
     let mut client_2 = None;

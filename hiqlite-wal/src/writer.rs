@@ -18,6 +18,11 @@ pub struct TaskData {
     pub wal: Arc<RwLock<WalFileSet>>,
 }
 
+// pub struct TaskLock {
+//     pub latest_wal: u64,
+//     pub latest_log_id: u64,
+// }
+
 pub enum Action {
     Append {
         rx: flume::Receiver<Option<(u64, Vec<u8>)>>,
@@ -58,7 +63,7 @@ pub fn spawn(
     let mut set = WalFileSet::read(base_path, wal_size)?;
     // TODO emit a warning log in that case and tell the user how to resolve or "force start" in
     // that case
-    set.check_integrity(meta.clone())?;
+    set.check_integrity()?;
     // let mut is_new_instance = false;
     if set.files.is_empty() {
         let mut buf = Vec::with_capacity(28);
@@ -74,16 +79,16 @@ pub fn spawn(
     let sync_immediate = sync == LogSync::Immediate;
 
     let data = TaskData {
-        meta: meta.clone(),
+        meta,
         latest_wal,
-        latest_log_id: latest_log_id.clone(),
+        latest_log_id,
         wal: set_locked,
     };
 
+    let dc = data.clone();
     thread::spawn(move || {
         run(
-            meta,
-            latest_log_id,
+            dc,
             set,
             rx,
             sync_immediate,
@@ -116,8 +121,7 @@ fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
 }
 
 fn run(
-    meta: Arc<RwLock<Metadata>>,
-    latest_log_id: Arc<AtomicU64>,
+    data: TaskData,
     mut wal: WalFileSet,
     rx: flume::Receiver<Action>,
     sync_immediate: bool,
@@ -126,6 +130,7 @@ fn run(
 ) -> Result<(), Error> {
     let mut is_dirty = false;
     let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
+    let data_len_limit = wal_size as usize - wal.active().offset_logs() - 2;
 
     let mut buf: Vec<u8> = Vec::with_capacity(8);
     let mut buf_logs: Vec<(u64, Vec<u8>)> = Vec::with_capacity(1);
@@ -135,70 +140,94 @@ fn run(
     while let Ok(action) = rx.recv() {
         match action {
             Action::Append { rx, callback, ack } => {
-                info!("Action::Append");
+                // info!("Action::Append");
 
                 let mut res = Ok(());
-                let mut last_id = 0;
+                let mut update_latest_wal = false;
                 {
                     let mut active = wal.active();
-                    while let Ok(Some((id, data))) = rx.recv() {
+                    while let Ok(Some((id, bytes))) = rx.recv() {
                         // we get here during late cluster joins or WAL rebuilds from remote nodes
-                        // if active.wal_no == 1 && active.id_from == 0 {
+                        // if active.id_from == 0 && active.wal_no > 1 {
                         //     active.id_from = id;
                         // }
 
-                        if data.len() > u32::MAX as usize {
-                            res = Err(Error::Generic("`data` length must not exceed u32".into()));
-                            break;
+                        // println!("{}", bytes.len());
+
+                        if bytes.len() > data_len_limit {
+                            panic!("`data` length must not exceed `wal_size` -> data length is {} vs wal_size (without header) is {}", bytes.len(), data_len_limit);
                         }
 
-                        if !active.has_space(data.len()) {
+                        if !active.has_space(bytes.len() as u32) {
                             buf.clear();
                             wal.roll_over(wal_size, &mut buf)?;
+                            {
+                                let mut lock = data.wal.write().expect("WAL locking failed");
+                                lock.active = Some(wal.files.len() - 1);
+                                lock.files = wal.files.iter().map(|f| f.clone_no_mmap()).collect();
+                            }
                             active = wal.active();
+                            update_latest_wal = true;
                         }
-                        // TODO should we handle errors or better panic in case of a storage error?
-                        // Crashing is probably the way we want, because you would probably not be able
-                        // to recover from general storage errors.
-                        //
-                        // It could also have a feature like `panic-on-storage-err` to make it optional.
+
                         buf.clear();
-                        if let Err(err) = active.append_log(id, &data, &mut buf) {
+                        if let Err(err) = active.append_log(id, &bytes, &mut buf) {
                             res = Err(err);
                             break;
                         }
-                        last_id = id;
+                        debug_assert_eq!(
+                            active.id_until, id,
+                            "active.id_until and id don't match: {} != {}",
+                            active.id_until, id
+                        );
                     }
                 }
 
-                is_dirty = true;
-                let is_ok = res.is_ok();
+                buf.clear();
+                let active = wal.active();
+                active.update_header(&mut buf)?;
+                if update_latest_wal {
+                    data.latest_wal.store(active.wal_no, Ordering::Relaxed);
+                }
+                data.latest_log_id.store(active.id_until, Ordering::Relaxed);
+
+                // let is_ok = res.is_ok();
                 if let Err(err) = ack.send(res) {
                     // this should usually not happen, but it may during an incorrect shutdown
                     error!("error sending back ack after logs append: {:?}", err);
                 }
-                if is_ok {
-                    // TODO with the next big openraft release, we can do async callbacks
-                    if sync_immediate {
-                        wal.active().flush()?;
-                        is_dirty = false;
-                    }
-                    callback();
+                // if is_ok {
+                // TODO with the next big openraft release, we can do async callbacks
+                if sync_immediate {
+                    // TODO bench vs async
+                    wal.active().flush()?;
+                    is_dirty = false;
+                } else {
+                    is_dirty = true;
                 }
+                callback();
+                // }
 
-                buf.clear();
-                wal.active().update_header(&mut buf)?;
-                // meta.write()?.log_until = last_id;
-                latest_log_id.store(last_id, Ordering::Relaxed);
+                // buf.clear();
+                // wal.active().update_header(&mut buf)?;
+                // data.latest_log_id
+                //     .store(wal.active().id_until, Ordering::Relaxed);
 
                 // Roll WAL pre-emptively if only very few space is left at this point, because
                 // if we just wrote some chunks, me probably have a very short break now until the
                 // next request comes in.
                 //
-                // TODO fixed 16kB -> make configurable
-                if wal.active().space_left() < 16 * 1024 {
+                // TODO fixed 4kB -> make configurable
+                if wal.active().space_left() < 4 * 1024 {
                     buf.clear();
                     wal.roll_over(wal_size, &mut buf)?;
+                    {
+                        let mut lock = data.wal.write().unwrap();
+                        lock.active = Some(wal.files.len() - 1);
+                        lock.files = wal.files.iter().map(|f| f.clone_no_mmap()).collect();
+                    }
+                    data.latest_wal
+                        .store(wal.active().wal_no, Ordering::Relaxed);
                 }
             }
             Action::Remove {
@@ -225,24 +254,16 @@ fn run(
 
                 match wal.shift_delete_logs_until(until, wal_size, &mut buf, &mut buf_logs) {
                     Ok(_) => {
-                        {
-                            let mut lock = meta.write()?;
-                            // lock.log_from = until;
-                            lock.last_purged_log_id = last_log;
-                        }
-                        // Metadata::write(meta.clone(), &wal.base_path)?;
+                        data.meta.write()?.last_purged_log_id = last_log;
+                        Metadata::write(data.meta.clone(), &wal.base_path)?;
                         ack.send(Ok(())).unwrap();
                     }
-                    // Err(err) => ack.send(Err(err)).unwrap(),
-                    Err(err) => {
-                        panic!("shift delete logs err: {:?}", err);
-                        ack.send(Err(err)).unwrap()
-                    }
+                    Err(err) => ack.send(Err(err)).unwrap(),
                 }
             }
             Action::Vote { value, ack } => {
-                meta.write()?.vote = Some(value);
-                let res = Metadata::write(meta.clone(), &wal.base_path);
+                data.meta.write()?.vote = Some(value);
+                let res = Metadata::write(data.meta.clone(), &wal.base_path);
                 ack.send(res).unwrap();
             }
             Action::Sync => {
@@ -251,10 +272,6 @@ fn run(
                     buf.clear();
                     active.update_header(&mut buf)?;
                     active.flush_async()?;
-
-                    // meta.write()?.log_until = id_until.load(Ordering::Relaxed);
-                    Metadata::write(meta.clone(), &wal.base_path)?;
-
                     is_dirty = false;
                 }
             }
@@ -271,8 +288,8 @@ fn run(
     let active = wal.active();
     buf.clear();
     active.update_header(&mut buf)?;
-    active.flush_async()?;
-    Metadata::write(meta.clone(), &wal.base_path)?;
+    active.flush()?;
+    Metadata::write(data.meta, &wal.base_path)?;
     LockFile::remove(&wal.base_path).expect("LockFile removal failed");
 
     if let Some(ack) = shutdown_ack {

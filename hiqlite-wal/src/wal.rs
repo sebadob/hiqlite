@@ -1,16 +1,50 @@
 use crate::error::Error;
-use crate::metadata::Metadata;
-use crate::utils::{bin_to_id, bin_to_len, crc, id_to_bin, len_to_bin};
+use crate::utils::{bin_to_id, bin_to_len, crc, deserialize, id_to_bin, len_to_bin};
 use memmap2::{Advice, Mmap, MmapMut, MmapOptions};
+use openraft::{CommittedLeaderId, Entry, EntryPayload, LogId, StorageError, StorageIOError};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::sync::{Arc, RwLock};
-use tracing::{debug, info};
+use tracing::info;
 
 static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
-static MIN_WAL_SIZE: u32 = 2 * 1024 * 1024;
+// static MIN_WAL_SIZE: u32 = 128 * 1024;
+static MIN_WAL_SIZE: u32 = 8 * 1024;
+
+#[cfg(debug_assertions)]
+mod log_dbg {
+    use super::*;
+
+    openraft::declare_raft_types!(
+        pub TypeConfigSqlite:
+            D = (),
+            R = (),
+            Node = Node,
+            SnapshotData = tokio::fs::File,
+    );
+    type NodeId = u64;
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+    pub struct Node {
+        pub id: NodeId,
+        pub addr_raft: String,
+        pub addr_api: String,
+    }
+
+    pub fn assert_data_id(data: &[u8], id: u64) {
+        let (entry, _) = bincode::serde::decode_from_slice::<Entry<TypeConfigSqlite>, _>(
+            data,
+            bincode::config::legacy(),
+        )
+        .unwrap();
+        assert_eq!(
+            entry.log_id.index, id,
+            "ID expected: {} / found {:?}",
+            id, entry.log_id.index
+        );
+    }
+}
 
 #[derive(Debug)]
 pub struct WalFile {
@@ -19,8 +53,8 @@ pub struct WalFile {
     pub path: String,
     pub id_from: u64,
     pub id_until: u64,
-    data_start: Option<u32>,
-    data_end: Option<u32>,
+    pub data_start: Option<u32>,
+    pub data_end: Option<u32>,
     len_max: u32,
     mmap: Option<Mmap>,
     mmap_mut: Option<MmapMut>,
@@ -38,13 +72,19 @@ impl Drop for WalFile {
 
 impl WalFile {
     #[inline]
-    pub fn has_space(&self, data_len: usize) -> bool {
+    pub fn has_space(&self, data_len: u32) -> bool {
         // wal entries will have:
         // - 8 byte id
         // - 4 byte crc
         // - 4 bytes data length
         // - variable length data
-        (self.len_max - self.data_end.unwrap_or(0)) as usize > 8 + 4 + 4 + data_len
+        // println!(
+        //     "self.len_max > self.data_end.unwrap_or(0) + 1 + 8 + 4 + 4 + data_len -> {} > {} : {}",
+        //     self.len_max,
+        //     self.data_end.unwrap_or(0) + 1 + 8 + 4 + 4 + data_len,
+        //     self.len_max > self.data_end.unwrap_or(0) + 1 + 8 + 4 + 4 + data_len
+        // );
+        self.len_max > self.data_end.unwrap_or(0) + 1 + 8 + 4 + 4 + data_len
     }
 
     #[inline]
@@ -58,12 +98,14 @@ impl WalFile {
     pub fn append_log(&mut self, id: u64, data: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
         debug_assert!(buf.is_empty());
         debug_assert!(self.mmap_mut.is_some());
-        debug_assert!(self.has_space(data.len()));
+        debug_assert!(data.len() <= u32::MAX as usize);
+        debug_assert!(self.has_space(data.len() as u32));
         debug_assert!(data.len() < u32::MAX as usize);
         debug_assert_eq!(self.data_start.is_some(), self.data_end.is_some());
 
         let start = if self.data_start.is_none() {
-            debug_assert_eq!(self.id_from, 0);
+            // debug_assert_eq!(self.id_from, 0);
+            // debug_assert_eq!(self.id_until, 0);
             self.id_from = id;
             let start = self.offset_logs();
             self.data_start = Some(start as u32);
@@ -88,8 +130,41 @@ impl WalFile {
         (&mut mmap[start + 8 + 4 + 4..]).write_all(data)?;
 
         self.data_end = Some((start + 8 + 4 + 4 + data.len()) as u32);
+        debug_assert!(self.data_end.unwrap() <= self.len_max);
 
         Ok(())
+    }
+
+    pub fn clone_no_mmap(&self) -> Self {
+        Self {
+            version: self.version,
+            wal_no: self.wal_no,
+            path: self.path.clone(),
+            id_from: self.id_from,
+            id_until: self.id_until,
+            data_start: self.data_start,
+            data_end: self.data_end,
+            len_max: self.len_max,
+            mmap: None,
+            mmap_mut: None,
+        }
+    }
+
+    /// Clones `other`s log id information into `self`. Does NOT do a full clone!
+    /// Leaves `path` and `mmap` untouched.
+    pub fn clone_from_no_mmap(&mut self, other: &Self) {
+        debug_assert_eq!(self.path, other.path);
+        self.id_from = other.id_from;
+        self.id_until = other.id_until;
+        self.data_start = other.data_start;
+        self.data_end = other.data_end;
+    }
+
+    /// Can only be called with an active memmap, checks by `data_start`
+    #[inline]
+    pub fn is_empty(&self) -> Result<bool, Error> {
+        debug_assert!(self.mmap_mut.is_some() || self.mmap.is_some());
+        Ok(self.read_bytes(24, 28)? == &[0, 0, 0, 0])
     }
 
     /// Reads the logs into the given buffer. Returns `Ok(offset)` of the first log.
@@ -102,7 +177,7 @@ impl WalFile {
         buf: &mut Vec<(u64, Vec<u8>)>,
     ) -> Result<u32, Error> {
         debug_assert!(buf.is_empty());
-        info!("Read Logs from {} until {} / {:?}", id_from, id_until, self);
+        // println!("Read Logs from {} until {}", id_from, id_until);
         debug_assert!(id_until >= id_from);
 
         if self.id_from > id_from {
@@ -119,6 +194,8 @@ impl WalFile {
 
         let data_start = bin_to_len(self.read_bytes(24, 28)?)?;
         let data_end = bin_to_len(self.read_bytes(28, 32)?)?;
+        debug_assert!(data_start <= data_end);
+        debug_assert!(data_end <= self.len_max);
 
         let mut idx = data_start;
         let mut offset = 0;
@@ -140,6 +217,10 @@ impl WalFile {
                     if crc != crc!(data) {
                         return Err(Error::Integrity("Invalid CRC for WAL Record".into()));
                     }
+
+                    #[cfg(debug_assertions)]
+                    log_dbg::assert_data_id(data, id);
+
                     buf.push((id, data.to_vec()))
                 } else {
                     break;
@@ -155,7 +236,12 @@ impl WalFile {
             debug_assert!(idx - 1 <= data_end);
         }
 
-        debug_assert_eq!(id_until + 1 - id_from, buf.len() as u64);
+        debug_assert_eq!(
+            id_until + 1 - id_from,
+            buf.len() as u64,
+            "expected id_from {id_from} until {id_until}: {:?}",
+            self
+        );
 
         Ok(offset)
     }
@@ -235,7 +321,7 @@ impl WalFile {
             .open(&self.path)?;
 
         let mmap = unsafe { MmapOptions::new().populate().map_mut(&file)? };
-        mmap.advise(Advice::Sequential)?;
+        // mmap.advise(Advice::Sequential)?;
 
         self.mmap_mut = Some(mmap);
 
@@ -389,7 +475,6 @@ impl WalFile {
         );
         #[cfg(debug_assertions)]
         {
-            println!("path: {path}");
             let (base, name) = path.rsplit_once('/').unwrap();
             debug_assert_eq!(base, base_path);
             let name = name.strip_suffix(".wal").unwrap();
@@ -457,7 +542,7 @@ impl WalFileSet {
     /// Checks the integrity of the Headers and makes sure the order is strictly ascending and
     /// there are no missing log IDs.
     #[tracing::instrument(skip_all)]
-    pub fn check_integrity(&self, meta: Arc<RwLock<Metadata>>) -> Result<(), Error> {
+    pub fn check_integrity(&self) -> Result<(), Error> {
         // let (log_from, log_until) = {
         //     let lock = meta.read()?;
         //     (lock.log_from, lock.log_until)
@@ -556,18 +641,7 @@ impl WalFileSet {
             files: VecDeque::with_capacity(self.files.len()),
         };
         for file in &self.files {
-            slf.files.push_back(WalFile {
-                version: file.version,
-                wal_no: file.wal_no,
-                path: file.path.clone(),
-                id_from: file.id_from,
-                id_until: file.id_until,
-                data_start: file.data_start,
-                data_end: file.data_end,
-                len_max: file.len_max,
-                mmap: None,
-                mmap_mut: None,
-            });
+            slf.files.push_back(file.clone_no_mmap());
         }
         slf
     }
@@ -613,21 +687,29 @@ impl WalFileSet {
     /// the current file to disk. Creates a new WAL with `mmap_mut`
     #[tracing::instrument(skip_all)]
     pub fn roll_over(&mut self, wal_size: u32, buf: &mut Vec<u8>) -> Result<(), Error> {
+        // println!("rolling over WAL: {:?}", self.active());
         debug_assert!(buf.is_empty());
         debug_assert!(!self.files.is_empty());
         debug_assert!(self.files.back().unwrap().mmap_mut.is_some());
 
-        {
+        let last_id = {
             let active = self.active();
             active.update_header(buf)?;
-            active.flush()?;
+            active.flush_async()?;
             active.mmap_mut = None;
+            active.id_until
         };
 
         buf.clear();
         self.add_file(wal_size, buf)?;
-        self.active = self.active.map(|a| a + 1);
-        self.active().mmap_mut()?;
+        self.active = Some(self.files.len() - 1);
+
+        let active = self.active();
+        active.mmap_mut()?;
+        active.id_from = last_id + 1;
+        active.id_until = last_id + 1;
+
+        // println!("\nafter roll over: {:?}\n", self);
 
         Ok(())
     }
@@ -670,7 +752,9 @@ impl WalFileSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::Metadata;
     use std::fs;
+    use std::sync::{Arc, RwLock};
 
     static PATH: &str = "test_data";
     static MB2: u32 = 2 * 1024 * 1024;
@@ -693,7 +777,7 @@ mod tests {
         assert!(wal.data_start.is_none());
         assert!(wal.data_end.is_none());
 
-        assert!(wal.has_space(d1.len()));
+        assert!(wal.has_space(d1.len() as u32));
         buf.clear();
         wal.append_log(1, d1, &mut buf)?;
         let start = wal.data_start.unwrap();
@@ -703,7 +787,7 @@ mod tests {
         assert_eq!(wal.id_from, 1);
         assert_eq!(wal.id_until, 1);
 
-        assert!(wal.has_space(d2.len()));
+        assert!(wal.has_space(d2.len() as u32));
         buf.clear();
         wal.append_log(2, d2, &mut buf)?;
         assert_eq!(wal.data_start.unwrap(), start);
@@ -712,7 +796,7 @@ mod tests {
         assert_eq!(wal.id_from, 1);
         assert_eq!(wal.id_until, 2);
 
-        assert!(wal.has_space(d3.len()));
+        assert!(wal.has_space(d3.len() as u32));
         buf.clear();
         wal.append_log(3, d3, &mut buf)?;
         assert_eq!(wal.data_start.unwrap(), start);
@@ -883,95 +967,13 @@ mod tests {
             base_path: base_path.clone(),
             files,
         };
-        set.check_integrity(meta.clone()).unwrap();
+        set.check_integrity().unwrap();
         assert_eq!(set.active().wal_no, 3);
 
         let mut buf = Vec::with_capacity(28);
         set.add_file(MB2, &mut buf)?;
-        set.check_integrity(meta.clone()).unwrap();
+        set.check_integrity().unwrap();
         assert_eq!(set.active().wal_no, 3);
-
-        // // invalid data_start / data_end
-        // let mut files = VecDeque::with_capacity(4);
-        // files.push_back(WalFile {
-        //     version: 1,
-        //     wal_no: 1,
-        //     path: "".to_string(),
-        //     id_from: 1,
-        //     id_until: 10,
-        //     data_start: Some(32),
-        //     data_end: None,
-        //     len_max: MB2,
-        //     mmap: None,
-        //     mmap_mut: None,
-        // });
-        // let set = WalFileSet {
-        //     active: Some(1),
-        //     base_path: base_path.clone(),
-        //     files,
-        // };
-        // assert!(set.check_integrity(meta.clone()).is_err());
-        // // invalid data_start / data_end
-        // let mut files = VecDeque::with_capacity(4);
-        // files.push_back(WalFile {
-        //     version: 1,
-        //     wal_no: 1,
-        //     path: "".to_string(),
-        //     id_from: 1,
-        //     id_until: 10,
-        //     data_start: Some(32),
-        //     data_end: Some(32),
-        //     len_max: MB2,
-        //     mmap: None,
-        //     mmap_mut: None,
-        // });
-        // let set = WalFileSet {
-        //     active: Some(1),
-        //     base_path: base_path.clone(),
-        //     files,
-        // };
-        // assert!(set.check_integrity(meta.clone()).is_err());
-        // // invalid data_start / data_end
-        // let mut files = VecDeque::with_capacity(4);
-        // files.push_back(WalFile {
-        //     version: 1,
-        //     wal_no: 1,
-        //     path: "".to_string(),
-        //     id_from: 1,
-        //     id_until: 10,
-        //     data_start: Some(32),
-        //     data_end: Some(40),
-        //     len_max: MB2,
-        //     mmap: None,
-        //     mmap_mut: None,
-        // });
-        // let set = WalFileSet {
-        //     active: Some(1),
-        //     base_path: base_path.clone(),
-        //     files,
-        // };
-        // assert!(set.check_integrity(meta.clone()).is_err());
-        // // invalid data_start / data_end
-        // let mut files = VecDeque::with_capacity(4);
-        // files.push_back(WalFile {
-        //     version: 1,
-        //     wal_no: 1,
-        //     path: "".to_string(),
-        //     id_from: 1,
-        //     id_until: 10,
-        //     // make integrity check work
-        //     data_start: None,
-        //     data_end: Some(32),
-        //     len_max: MB2,
-        //     mmap: None,
-        //     mmap_mut: None,
-        // });
-        // let set = WalFileSet {
-        //     active: Some(1),
-        //     base_path: base_path.clone(),
-        //     files,
-        // };
-        // assert!(set.check_integrity(meta.clone()).is_err());
 
         // missing logs - invalid if_until -> next id_from
         let mut files = VecDeque::with_capacity(4);
@@ -1006,7 +1008,7 @@ mod tests {
             base_path: base_path.clone(),
             files,
         };
-        assert!(set.check_integrity(meta.clone()).is_err());
+        assert!(set.check_integrity().is_err());
 
         let mut files = VecDeque::with_capacity(4);
         files.push_back(WalFile {
@@ -1053,7 +1055,7 @@ mod tests {
             base_path: base_path.clone(),
             files,
         };
-        assert!(set.check_integrity(meta.clone()).is_err());
+        assert!(set.check_integrity().is_err());
 
         let mut files = VecDeque::with_capacity(4);
         files.push_back(WalFile {
@@ -1099,54 +1101,7 @@ mod tests {
             base_path: base_path.clone(),
             files,
         };
-        assert!(set.check_integrity(meta.clone()).is_err());
-
-        // let mut files = VecDeque::with_capacity(4);
-        // files.push_back(WalFile {
-        //     version: 1,
-        //     wal_no: 1,
-        //     path: "".to_string(),
-        //     id_from: 1,
-        //     id_until: 10,
-        //     // make integrity check work
-        //     data_start: Some(32),
-        //     data_end: Some(64),
-        //     len_max: MB2,
-        //     mmap: None,
-        //     mmap_mut: None,
-        // });
-        // files.push_back(WalFile {
-        //     version: 1,
-        //     wal_no: 2,
-        //     path: "".to_string(),
-        //     id_from: 11,
-        //     id_until: 17,
-        //     // make integrity check work
-        //     data_start: Some(32),
-        //     data_end: Some(64),
-        //     len_max: MB2,
-        //     mmap: None,
-        //     mmap_mut: None,
-        // });
-        // files.push_back(WalFile {
-        //     version: 1,
-        //     wal_no: 3,
-        //     path: "".to_string(),
-        //     id_from: 18,
-        //     id_until: 32,
-        //     // make integrity check work
-        //     data_start: Some(32),
-        //     data_end: Some(64),
-        //     len_max: MB2,
-        //     mmap: None,
-        //     mmap_mut: None,
-        // });
-        // let set = WalFileSet {
-        //     active: Some(2),
-        //     base_path: base_path.clone(),
-        //     files,
-        // };
-        // assert!(set.check_integrity(meta.clone()).is_err());
+        assert!(set.check_integrity().is_err());
 
         let mut files = VecDeque::with_capacity(4);
         files.push_back(WalFile {
@@ -1193,7 +1148,7 @@ mod tests {
             base_path: base_path.clone(),
             files,
         };
-        assert!(set.check_integrity(meta.clone()).is_err());
+        assert!(set.check_integrity().is_err());
 
         Ok(())
     }

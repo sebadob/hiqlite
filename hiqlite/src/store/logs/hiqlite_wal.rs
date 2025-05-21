@@ -5,8 +5,8 @@ use crate::NodeId;
 use hiqlite_wal::{reader, writer, LogStore, LogStoreReader};
 use openraft::storage::{LogFlushed, RaftLogStorage};
 use openraft::{
-    AnyError, Entry, ErrorSubject, ErrorVerb, LogId, OptionalSend, RaftLogReader, RaftTypeConfig,
-    StorageError, StorageIOError, Vote,
+    AnyError, Entry, EntryPayload, ErrorSubject, ErrorVerb, LeaderId, LogId, OptionalSend,
+    RaftLogReader, RaftTypeConfig, StorageError, StorageIOError, Vote,
 };
 use std::collections::Bound;
 use std::fmt::Debug;
@@ -49,7 +49,7 @@ async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend
         Bound::Unbounded => unreachable!(),
     };
 
-    let mut res = Vec::with_capacity((until - from) as usize + 1);
+    let mut res: Vec<Entry<TypeConfigSqlite>> = Vec::with_capacity((until - from) as usize + 1);
 
     let (ack, rx) = flume::bounded(1);
     tx.send_async(reader::Action::Logs { from, until, ack })

@@ -48,7 +48,7 @@ pub(crate) async fn start_raft_db(
     let log_store = hiqlite_wal::LogStore::start(
         logs::logs_dir(&node_config.data_dir),
         LogSync::IntervalMillis(200),
-        2 * 1024 * 1024,
+        node_config.wal_size,
     )
     .await?;
     let state_machine_store = StateMachineSqlite::new(

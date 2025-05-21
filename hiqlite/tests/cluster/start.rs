@@ -73,6 +73,8 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         nodes: nodes(),
         data_dir,
         log_statements: true,
+        // very tiny WAL to make sure log roll-overs will happen during tests
+        wal_size: 8 * 1024,
         raft_config: NodeConfig::default_raft_config(1000),
         // TODO currently we can't test with TLS, because this depends on `axum_server`.
         // This does not support graceful shutdown, which we need for testing from

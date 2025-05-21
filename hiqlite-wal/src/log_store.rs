@@ -7,6 +7,13 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 use tokio::task;
 
+// #[derive(Debug)]
+// pub struct LogStoreConfig {
+//     pub base_bath: String,
+//     pub sync: LogSync,
+//     pub wal_size: u32,
+// }
+
 #[derive(Debug)]
 pub struct LogStore {
     data: TaskData,
@@ -56,7 +63,7 @@ impl LogStore {
             .await?;
         ack.await?;
 
-        let _ = self.reader.send_async(reader::Action::Shutdown);
+        let _ = self.reader.send_async(reader::Action::Shutdown).await;
 
         Ok(())
     }

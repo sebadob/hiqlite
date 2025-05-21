@@ -1,8 +1,6 @@
 use crate::error::Error;
-use crate::metadata::Metadata;
 use crate::writer::TaskData;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
@@ -25,12 +23,7 @@ pub struct LogState {
     pub last_log: Option<Vec<u8>>,
 }
 
-pub fn spawn(
-    data: TaskData,
-    // wal_set: Arc<RwLock<WalFileSet>>,
-    // id_until: Arc<AtomicU64>,
-    // latest_wal: Arc<AtomicU64>,
-) -> Result<flume::Sender<Action>, Error> {
+pub fn spawn(data: TaskData) -> Result<flume::Sender<Action>, Error> {
     let (tx, rx) = flume::bounded::<Action>(1);
     thread::spawn(move || run(data, rx));
     Ok(tx)
@@ -39,59 +32,81 @@ pub fn spawn(
 fn run(data: TaskData, rx: flume::Receiver<Action>) {
     // we keep the local set for faster access inside the loop and lazily update if necessary
     let mut wal = data.wal.read().unwrap().clone_no_map();
+    // TODO a good value would be max payload chunks
     let mut buf = Vec::with_capacity(16);
 
     while let Ok(action) = rx.recv() {
         match action {
             Action::Logs { from, until, ack } => {
-                info!("Action::Logs: from: {from}, until: {until}");
+                // println!("Action::Logs: from: {from}, until: {until}");
 
-                // let latest = latest_wal.load(Ordering::Relaxed);
-                if data.latest_log_id.load(Ordering::Relaxed) == 0 {
-                    ack.send(None).unwrap();
-                    continue;
-                }
+                // if data.latest_log_id.load(Ordering::Relaxed) == 0 {
+                //     ack.send(None).unwrap();
+                //     continue;
+                // }
 
                 // lazily update our `WalFileSet`
-                let active = wal.active();
-                if data.latest_wal.load(Ordering::Relaxed) != active.wal_no {
-                    wal = data.wal.read().unwrap().clone_no_map();
-                } else {
-                    active.id_until = data.latest_log_id.load(Ordering::Relaxed);
-                }
+                let last = wal.active();
+                // let last = wal.files.get_mut(wal.files.len() - 1).unwrap();
+                if data.latest_wal.load(Ordering::Relaxed) != last.wal_no {
+                    // println!(">>> Found difference in WAL No - Updating");
+                    let wal_upd = data.wal.read().unwrap();
+                    wal.active = wal_upd.active;
 
-                let mut next = from;
+                    for file_upd in &wal_upd.files {
+                        if let Some(file) =
+                            wal.files.iter_mut().find(|f| f.wal_no == file_upd.wal_no)
+                        {
+                            file.clone_from_no_mmap(file_upd);
+                        } else {
+                            wal.files.push_back(file_upd.clone_no_mmap());
+                        }
+                    }
+                    // println!("\nReader WALs after update:\n{:?}\n", wal);
+                } else {
+                    last.id_until = data.latest_log_id.load(Ordering::Relaxed);
+                }
+                // debug_assert!(active.id_until <= until);
+
+                let mut from_next = from;
                 for log in wal.files.iter_mut() {
-                    warn!("log.id_until < next -> {:?} / {}", log, next);
-                    if log.id_until < next {
+                    // println!("log.id_until < next -> {:?} / {}", log, next);
+                    if log.id_until < from_next {
                         continue;
                     }
 
                     // if mmap fails, there is probably no way to recover anyway
                     log.mmap().unwrap();
+                    // if log.is_empty().unwrap() {
+                    //     continue;
+                    // }
                     buf.clear();
 
                     if log.id_until < until {
                         // log reading should not fail as well, no way to recover from mmap issues
-                        log.read_logs(next, log.id_until, &mut buf).unwrap();
-                        for (_, data) in buf.drain(..) {
+                        log.read_logs(from_next, log.id_until, &mut buf).unwrap();
+                        for (_id, data) in buf.drain(..) {
+                            debug_assert!(_id >= from_next && _id <= until);
                             ack.send(Some(Ok(data))).unwrap()
                         }
+                        // #[cfg(not(debug_assertions))]
+                        // for (_, data) in buf.drain(..) {
+                        //     ack.send(Some(Ok(data))).unwrap()
+                        // }
 
                         // If the until goes beyond our current file, we want to remove the mmap
                         // to save memory. Only if the system needs a log snapshot to recover
                         // another node, it may need lower log IDs again.
                         log.mmap_drop();
 
-                        next = log.id_until + 1;
+                        from_next = log.id_until + 1;
                     } else {
                         // log reading should not fail as well, no way to recover from mmap issues
-                        log.read_logs(next, until, &mut buf).unwrap();
+                        log.read_logs(from_next, until, &mut buf).unwrap();
                         for (_, data) in buf.drain(..) {
                             ack.send(Some(Ok(data))).unwrap()
                         }
-
-                        next = until;
+                        break;
                     };
 
                     if log.id_from <= from && log.id_until >= from {}
