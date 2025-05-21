@@ -29,9 +29,9 @@ pub enum Error {
     Channel(String),
     /// Internal error when a leader-request is sent to a non-leader node
     #[error("CheckIsLeaderError: {0}")]
-    CheckIsLeaderError(RaftError<u64, CheckIsLeaderError<u64, Node>>),
+    CheckIsLeaderError(Box<RaftError<u64, CheckIsLeaderError<u64, Node>>>),
     #[error("ClientWriteError: {0}")]
-    ClientWriteError(RaftWriteError),
+    ClientWriteError(Box<RaftWriteError>),
     #[error("Config: {0}")]
     Config(Cow<'static, str>),
     #[error("Connect: {0}")]
@@ -45,7 +45,7 @@ pub enum Error {
     #[error("Error: {0}")]
     Error(Cow<'static, str>),
     #[error("InitializeError: {0}")]
-    InitializeError(RaftInitError),
+    InitializeError(Box<RaftInitError>),
     /// Error informing about a Raft leader change
     #[error("LeaderChange: {0}")]
     LeaderChange(Cow<'static, str>),
@@ -60,17 +60,17 @@ pub enum Error {
     PrepareStatement(Cow<'static, str>),
     /// Internal Raft error
     #[error("RaftError: {0}")]
-    RaftError(RaftError<u64>),
+    RaftError(Box<RaftError<u64>>),
     #[error("RaftErrorFatal: {0}")]
     /// Internal Raft error
-    RaftErrorFatal(Fatal<u64>),
+    RaftErrorFatal(Box<Fatal<u64>>),
     #[error("Request: {0}")]
     Request(String),
     #[cfg(feature = "s3")]
     #[error("S3: {0}")]
     S3(String),
     #[error("SnapshotError: {0}")]
-    SnapshotError(RaftSnapshotError),
+    SnapshotError(Box<RaftSnapshotError>),
     /// All kinds of SQLite database errors, mostly just a wrapper for the `rusqlite` error apart
     /// from `QueryReturnedNoRows`.
     #[cfg(feature = "sqlite")]
@@ -98,18 +98,21 @@ impl Error {
 
     /// Checks if the inner wrapped error is a `ForwardToLeader` error
     pub fn is_forward_to_leader(&self) -> Option<(Option<u64>, &Option<Node>)> {
-        if let Self::ClientWriteError(RaftWriteError::APIError(
-            ClientWriteError::ForwardToLeader(err),
-        )) = self
-        {
-            return Some((err.leader_id, &err.leader_node));
+        if let Self::ClientWriteError(err) = self {
+            if let Some(err) = err.api_error() {
+                match err {
+                    ClientWriteError::ForwardToLeader(err) => {
+                        return Some((err.leader_id, &err.leader_node));
+                    }
+                    ClientWriteError::ChangeMembershipError(_) => {}
+                }
+            }
         }
 
-        if let Self::CheckIsLeaderError(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(
-            err,
-        ))) = self
-        {
-            return Some((err.leader_id, &err.leader_node));
+        if let Self::CheckIsLeaderError(err) = self {
+            if let Some(err) = err.forward_to_leader() {
+                return Some((err.leader_id, &err.leader_node));
+            }
         }
 
         None
@@ -198,42 +201,42 @@ impl From<reqwest::Error> for Error {
 impl From<RaftWriteError> for Error {
     fn from(value: RaftWriteError) -> Self {
         trace!("ClientWriteError: {}", value);
-        Self::ClientWriteError(value)
+        Self::ClientWriteError(Box::new(value))
     }
 }
 
 impl From<RaftInitError> for Error {
     fn from(value: RaftInitError) -> Self {
         trace!("InitializeError: {}", value);
-        Self::InitializeError(value)
+        Self::InitializeError(Box::new(value))
     }
 }
 
 impl From<RaftSnapshotError> for Error {
     fn from(value: RaftSnapshotError) -> Self {
         trace!("SnapshotError: {}", value);
-        Self::SnapshotError(value)
+        Self::SnapshotError(Box::new(value))
     }
 }
 
 impl From<RaftError<u64>> for Error {
     fn from(value: RaftError<u64>) -> Self {
         trace!("RaftError: {}", value);
-        Self::RaftError(value)
+        Self::RaftError(Box::new(value))
     }
 }
 
 impl From<RaftError<u64, CheckIsLeaderError<u64, Node>>> for Error {
     fn from(value: RaftError<u64, CheckIsLeaderError<u64, Node>>) -> Self {
         trace!("CheckIsLeaderError: {}", value);
-        Self::CheckIsLeaderError(value)
+        Self::CheckIsLeaderError(Box::new(value))
     }
 }
 
 impl From<Fatal<u64>> for Error {
     fn from(value: Fatal<u64>) -> Self {
         trace!("RaftErrorFatal: {}", value);
-        Self::RaftErrorFatal(value)
+        Self::RaftErrorFatal(Box::new(value))
     }
 }
 
