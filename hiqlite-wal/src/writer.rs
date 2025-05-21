@@ -1,27 +1,13 @@
 use crate::error::Error;
 use crate::metadata::{LockFile, Metadata};
 use crate::wal::WalFileSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::Interval;
 use tokio::{task, time};
-use tracing::{debug, error, info, warn};
-
-#[derive(Debug, Clone)]
-pub struct TaskData {
-    pub meta: Arc<RwLock<Metadata>>,
-    pub latest_wal: Arc<AtomicU64>,
-    pub latest_log_id: Arc<AtomicU64>,
-    pub wal: Arc<RwLock<WalFileSet>>,
-}
-
-// pub struct TaskLock {
-//     pub latest_wal: u64,
-//     pub latest_log_id: u64,
-// }
+use tracing::{debug, error, warn};
 
 pub enum Action {
     Append {
@@ -55,7 +41,7 @@ pub fn spawn(
     sync: LogSync,
     wal_size: u32,
     meta: Arc<RwLock<Metadata>>,
-) -> Result<(flume::Sender<Action>, TaskData), Error> {
+) -> Result<(flume::Sender<Action>, Arc<RwLock<WalFileSet>>), Error> {
     // TODO emit a warning log in that case and tell the user how to resolve or "force start" in
     // that case
     LockFile::write(&base_path)?;
@@ -64,38 +50,18 @@ pub fn spawn(
     // TODO emit a warning log in that case and tell the user how to resolve or "force start" in
     // that case
     set.check_integrity()?;
-    // let mut is_new_instance = false;
     if set.files.is_empty() {
-        let mut buf = Vec::with_capacity(28);
+        let mut buf = Vec::with_capacity(32);
         set.add_file(wal_size, &mut buf)?;
-        // is_new_instance = true;
     }
     debug!("WalFileSet in Writer: {:?}", set);
-    let latest_log_id = Arc::new(AtomicU64::new(set.files.back().unwrap().id_until));
-    let latest_wal = Arc::new(AtomicU64::new(set.files.back().unwrap().wal_no));
-    let set_locked = Arc::new(RwLock::new(set.clone_no_map()));
+    let wal_locked = Arc::new(RwLock::new(set.clone_no_map()));
 
     let (tx, rx) = flume::bounded::<Action>(1);
     let sync_immediate = sync == LogSync::Immediate;
 
-    let data = TaskData {
-        meta,
-        latest_wal,
-        latest_log_id,
-        wal: set_locked,
-    };
-
-    let dc = data.clone();
-    thread::spawn(move || {
-        run(
-            dc,
-            set,
-            rx,
-            sync_immediate,
-            wal_size,
-            // is_new_instance,
-        )
-    });
+    let wal = wal_locked.clone();
+    thread::spawn(move || run(meta, wal, set, rx, sync_immediate, wal_size));
 
     if !sync_immediate {
         let LogSync::IntervalMillis(millis) = sync else {
@@ -105,7 +71,7 @@ pub fn spawn(
         spawn_syncer(tx.clone(), interval);
     }
 
-    Ok((tx, data))
+    Ok((tx, wal_locked))
 }
 
 fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
@@ -121,12 +87,12 @@ fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
 }
 
 fn run(
-    data: TaskData,
+    meta: Arc<RwLock<Metadata>>,
+    wal_locked: Arc<RwLock<WalFileSet>>,
     mut wal: WalFileSet,
     rx: flume::Receiver<Action>,
     sync_immediate: bool,
     wal_size: u32,
-    // mut is_new_instance: bool,
 ) -> Result<(), Error> {
     let mut is_dirty = false;
     let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
@@ -143,17 +109,9 @@ fn run(
                 // info!("Action::Append");
 
                 let mut res = Ok(());
-                let mut update_latest_wal = false;
                 {
                     let mut active = wal.active();
                     while let Ok(Some((id, bytes))) = rx.recv() {
-                        // we get here during late cluster joins or WAL rebuilds from remote nodes
-                        // if active.id_from == 0 && active.wal_no > 1 {
-                        //     active.id_from = id;
-                        // }
-
-                        // println!("{}", bytes.len());
-
                         if bytes.len() > data_len_limit {
                             panic!("`data` length must not exceed `wal_size` -> data length is {} vs wal_size (without header) is {}", bytes.len(), data_len_limit);
                         }
@@ -162,12 +120,11 @@ fn run(
                             buf.clear();
                             wal.roll_over(wal_size, &mut buf)?;
                             {
-                                let mut lock = data.wal.write().expect("WAL locking failed");
-                                lock.active = Some(wal.files.len() - 1);
-                                lock.files = wal.files.iter().map(|f| f.clone_no_mmap()).collect();
+                                let mut lock = wal_locked.write().unwrap();
+                                lock.active = wal.active;
+                                lock.clone_files_from_no_mmap(&wal.files);
                             }
                             active = wal.active();
-                            update_latest_wal = true;
                         }
 
                         buf.clear();
@@ -183,20 +140,16 @@ fn run(
                     }
                 }
 
-                buf.clear();
-                let active = wal.active();
-                active.update_header(&mut buf)?;
-                if update_latest_wal {
-                    data.latest_wal.store(active.wal_no, Ordering::Relaxed);
+                {
+                    let mut lock = wal_locked.write().unwrap();
+                    debug_assert_eq!(lock.active, wal.active);
+                    lock.active().clone_from_no_mmap(wal.active());
                 }
-                data.latest_log_id.store(active.id_until, Ordering::Relaxed);
 
-                // let is_ok = res.is_ok();
                 if let Err(err) = ack.send(res) {
                     // this should usually not happen, but it may during an incorrect shutdown
                     error!("error sending back ack after logs append: {:?}", err);
                 }
-                // if is_ok {
                 // TODO with the next big openraft release, we can do async callbacks
                 if sync_immediate {
                     // TODO bench vs async
@@ -206,28 +159,20 @@ fn run(
                     is_dirty = true;
                 }
                 callback();
-                // }
-
-                // buf.clear();
-                // wal.active().update_header(&mut buf)?;
-                // data.latest_log_id
-                //     .store(wal.active().id_until, Ordering::Relaxed);
 
                 // Roll WAL pre-emptively if only very few space is left at this point, because
                 // if we just wrote some chunks, me probably have a very short break now until the
                 // next request comes in.
                 //
-                // TODO fixed 4kB -> make configurable
+                // TODO fixed 4kB -> make configurable?
                 if wal.active().space_left() < 4 * 1024 {
                     buf.clear();
                     wal.roll_over(wal_size, &mut buf)?;
                     {
-                        let mut lock = data.wal.write().unwrap();
-                        lock.active = Some(wal.files.len() - 1);
-                        lock.files = wal.files.iter().map(|f| f.clone_no_mmap()).collect();
+                        let mut lock = wal_locked.write().unwrap();
+                        lock.active = wal.active;
+                        lock.clone_files_from_no_mmap(&wal.files);
                     }
-                    data.latest_wal
-                        .store(wal.active().wal_no, Ordering::Relaxed);
                 }
             }
             Action::Remove {
@@ -254,16 +199,21 @@ fn run(
 
                 match wal.shift_delete_logs_until(until, wal_size, &mut buf, &mut buf_logs) {
                     Ok(_) => {
-                        data.meta.write()?.last_purged_log_id = last_log;
-                        Metadata::write(data.meta.clone(), &wal.base_path)?;
+                        meta.write()?.last_purged_log_id = last_log;
+                        Metadata::write(meta.clone(), &wal.base_path)?;
+                        {
+                            let mut lock = wal_locked.write().unwrap();
+                            lock.active = wal.active;
+                            lock.clone_files_from_no_mmap(&wal.files);
+                        }
                         ack.send(Ok(())).unwrap();
                     }
                     Err(err) => ack.send(Err(err)).unwrap(),
                 }
             }
             Action::Vote { value, ack } => {
-                data.meta.write()?.vote = Some(value);
-                let res = Metadata::write(data.meta.clone(), &wal.base_path);
+                meta.write()?.vote = Some(value);
+                let res = Metadata::write(meta.clone(), &wal.base_path);
                 ack.send(res).unwrap();
             }
             Action::Sync => {
@@ -289,7 +239,7 @@ fn run(
     buf.clear();
     active.update_header(&mut buf)?;
     active.flush()?;
-    Metadata::write(data.meta, &wal.base_path)?;
+    Metadata::write(meta, &wal.base_path)?;
     LockFile::remove(&wal.base_path).expect("LockFile removal failed");
 
     if let Some(ack) = shutdown_ack {

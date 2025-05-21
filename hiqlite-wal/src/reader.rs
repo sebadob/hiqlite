@@ -1,9 +1,10 @@
 use crate::error::Error;
-use crate::writer::TaskData;
-use std::sync::atomic::Ordering;
+use crate::metadata::Metadata;
+use crate::wal::WalFileSet;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::sync::oneshot;
-use tracing::{info, warn};
+use tracing::warn;
 
 #[allow(clippy::type_complexity)]
 pub enum Action {
@@ -23,63 +24,42 @@ pub struct LogState {
     pub last_log: Option<Vec<u8>>,
 }
 
-pub fn spawn(data: TaskData) -> Result<flume::Sender<Action>, Error> {
+pub fn spawn(
+    meta: Arc<RwLock<Metadata>>,
+    wal_locked: Arc<RwLock<WalFileSet>>,
+) -> Result<flume::Sender<Action>, Error> {
     let (tx, rx) = flume::bounded::<Action>(1);
-    thread::spawn(move || run(data, rx));
+    thread::spawn(move || run(meta, wal_locked, rx));
     Ok(tx)
 }
 
-fn run(data: TaskData, rx: flume::Receiver<Action>) {
+fn run(
+    meta: Arc<RwLock<Metadata>>,
+    wal_locked: Arc<RwLock<WalFileSet>>,
+    rx: flume::Receiver<Action>,
+) {
     // we keep the local set for faster access inside the loop and lazily update if necessary
-    let mut wal = data.wal.read().unwrap().clone_no_map();
+    let mut wal = wal_locked.read().unwrap().clone_no_map();
     // TODO a good value would be max payload chunks
     let mut buf = Vec::with_capacity(16);
 
     while let Ok(action) = rx.recv() {
         match action {
             Action::Logs { from, until, ack } => {
-                // println!("Action::Logs: from: {from}, until: {until}");
-
-                // if data.latest_log_id.load(Ordering::Relaxed) == 0 {
-                //     ack.send(None).unwrap();
-                //     continue;
-                // }
-
-                // lazily update our `WalFileSet`
-                let last = wal.active();
-                // let last = wal.files.get_mut(wal.files.len() - 1).unwrap();
-                if data.latest_wal.load(Ordering::Relaxed) != last.wal_no {
-                    // println!(">>> Found difference in WAL No - Updating");
-                    let wal_upd = data.wal.read().unwrap();
+                {
+                    let wal_upd = wal_locked.read().unwrap();
                     wal.active = wal_upd.active;
-
-                    for file_upd in &wal_upd.files {
-                        if let Some(file) =
-                            wal.files.iter_mut().find(|f| f.wal_no == file_upd.wal_no)
-                        {
-                            file.clone_from_no_mmap(file_upd);
-                        } else {
-                            wal.files.push_back(file_upd.clone_no_mmap());
-                        }
-                    }
-                    // println!("\nReader WALs after update:\n{:?}\n", wal);
-                } else {
-                    last.id_until = data.latest_log_id.load(Ordering::Relaxed);
+                    wal.clone_files_from_no_mmap(&wal_upd.files);
                 }
-                // debug_assert!(active.id_until <= until);
 
                 let mut from_next = from;
                 for log in wal.files.iter_mut() {
-                    // println!("log.id_until < next -> {:?} / {}", log, next);
                     if log.id_until < from_next {
                         continue;
                     }
 
                     // if mmap fails, there is probably no way to recover anyway
                     log.mmap().unwrap();
-                    // if log.is_empty().unwrap() {
-                    //     continue;
-                    // }
                     buf.clear();
 
                     if log.id_until < until {
@@ -89,10 +69,6 @@ fn run(data: TaskData, rx: flume::Receiver<Action>) {
                             debug_assert!(_id >= from_next && _id <= until);
                             ack.send(Some(Ok(data))).unwrap()
                         }
-                        // #[cfg(not(debug_assertions))]
-                        // for (_, data) in buf.drain(..) {
-                        //     ack.send(Some(Ok(data))).unwrap()
-                        // }
 
                         // If the until goes beyond our current file, we want to remove the mmap
                         // to save memory. Only if the system needs a log snapshot to recover
@@ -115,39 +91,43 @@ fn run(data: TaskData, rx: flume::Receiver<Action>) {
                 ack.send(None).unwrap();
             }
             Action::LogState(ack) => {
-                let latest_log_id = data.latest_wal.load(Ordering::Relaxed);
-                let last_log = if latest_log_id > 0 {
-                    let active = wal.active();
-                    let id_until = if latest_log_id != active.wal_no {
-                        wal = data.wal.read().unwrap().clone_no_map();
-                        wal.active().id_until
-                    } else {
-                        let until = data.latest_log_id.load(Ordering::Relaxed);
-                        active.id_until = until;
-                        until
-                    };
+                {
+                    let wal_upd = wal_locked.read().unwrap();
+                    wal.active = wal_upd.active;
+                    wal.clone_files_from_no_mmap(&wal_upd.files);
+                }
 
-                    if id_until != 0 {
-                        buf.clear();
-                        let active = wal.active();
-                        active.mmap().unwrap();
-                        active.read_logs(id_until, id_until, &mut buf).unwrap();
-                        let (_, data) = buf.swap_remove(0);
-                        Some(data)
+                let latest_log_id = {
+                    let file = &wal.files[wal.files.len() - 1];
+                    if file.data_start.is_some() {
+                        Some(file.id_until)
+                    } else if wal.files.len() > 1 {
+                        // In this case we might just be at the edge of a log roll-over
+                        Some(wal.files[wal.files.len() - 2].id_until)
                     } else {
                         None
                     }
+                };
+
+                let last_log = if let Some(latest_log_id) = latest_log_id {
+                    buf.clear();
+                    let active = wal.active();
+                    active.mmap().unwrap();
+                    active
+                        .read_logs(latest_log_id, latest_log_id, &mut buf)
+                        .unwrap();
+                    let (_, data) = buf.swap_remove(0);
+                    Some(data)
                 } else {
                     None
                 };
 
-                match data.meta.read() {
+                match meta.read() {
                     Ok(lock) => {
                         let st = LogState {
                             last_purged_log_id: lock.last_purged_log_id.clone(),
                             last_log,
                         };
-                        info!("Sending {:?}", st);
                         ack.send(Ok(st)).unwrap();
                     }
                     Err(err) => {
@@ -157,7 +137,7 @@ fn run(data: TaskData, rx: flume::Receiver<Action>) {
                 };
             }
             Action::Vote(ack) => {
-                match data.meta.read() {
+                match meta.read() {
                     Ok(lock) => {
                         ack.send(Ok(lock.vote.clone())).unwrap();
                     }

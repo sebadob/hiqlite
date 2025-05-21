@@ -1,22 +1,16 @@
 use crate::error::Error;
 use crate::metadata::Metadata;
-use crate::writer::TaskData;
+use crate::wal::WalFileSet;
 use crate::{reader, writer, LogSync, ShutdownHandle};
 use std::fs;
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 use tokio::task;
 
-// #[derive(Debug)]
-// pub struct LogStoreConfig {
-//     pub base_bath: String,
-//     pub sync: LogSync,
-//     pub wal_size: u32,
-// }
-
 #[derive(Debug)]
 pub struct LogStore {
-    data: TaskData,
+    meta: Arc<RwLock<Metadata>>,
+    wal: Arc<RwLock<WalFileSet>>,
     pub writer: flume::Sender<writer::Action>,
     pub reader: flume::Sender<reader::Action>,
 }
@@ -35,14 +29,14 @@ impl LogStore {
             }
 
             let meta = Metadata::read_or_create(&base_path)?;
-            // let id_until = Arc::new(AtomicU64::new(meta.log_until));
             let meta = Arc::new(RwLock::new(meta));
 
-            let (writer, data) = writer::spawn(base_path, sync, wal_size, meta)?;
-            let reader = reader::spawn(data.clone())?;
+            let (writer, wal) = writer::spawn(base_path, sync, wal_size, meta.clone())?;
+            let reader = reader::spawn(meta.clone(), wal.clone())?;
 
             Ok::<Self, Error>(Self {
-                data,
+                meta,
+                wal,
                 writer,
                 reader,
             })
@@ -69,7 +63,7 @@ impl LogStore {
     }
 
     pub fn spawn_reader(&self) -> Result<LogStoreReader, Error> {
-        let tx = reader::spawn(self.data.clone())?;
+        let tx = reader::spawn(self.meta.clone(), self.wal.clone())?;
 
         Ok(LogStoreReader { tx })
     }

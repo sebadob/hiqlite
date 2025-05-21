@@ -1,21 +1,19 @@
 use crate::error::Error;
-use crate::utils::{bin_to_id, bin_to_len, crc, deserialize, id_to_bin, len_to_bin};
+use crate::utils::{bin_to_id, bin_to_len, crc, id_to_bin, len_to_bin};
 use memmap2::{Advice, Mmap, MmapMut, MmapOptions};
-use openraft::{CommittedLeaderId, Entry, EntryPayload, LogId, StorageError, StorageIOError};
-use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use tracing::info;
 
 static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
 // static MIN_WAL_SIZE: u32 = 128 * 1024;
 static MIN_WAL_SIZE: u32 = 8 * 1024;
 
+// TODO can probably be removed after enough testing and debugging
 #[cfg(debug_assertions)]
 mod log_dbg {
-    use super::*;
+    use serde::{Deserialize, Serialize};
 
     openraft::declare_raft_types!(
         pub TypeConfigSqlite:
@@ -33,7 +31,7 @@ mod log_dbg {
     }
 
     pub fn assert_data_id(data: &[u8], id: u64) {
-        let (entry, _) = bincode::serde::decode_from_slice::<Entry<TypeConfigSqlite>, _>(
+        let (entry, _) = bincode::serde::decode_from_slice::<openraft::Entry<TypeConfigSqlite>, _>(
             data,
             bincode::config::legacy(),
         )
@@ -78,12 +76,6 @@ impl WalFile {
         // - 4 byte crc
         // - 4 bytes data length
         // - variable length data
-        // println!(
-        //     "self.len_max > self.data_end.unwrap_or(0) + 1 + 8 + 4 + 4 + data_len -> {} > {} : {}",
-        //     self.len_max,
-        //     self.data_end.unwrap_or(0) + 1 + 8 + 4 + 4 + data_len,
-        //     self.len_max > self.data_end.unwrap_or(0) + 1 + 8 + 4 + 4 + data_len
-        // );
         self.len_max > self.data_end.unwrap_or(0) + 1 + 8 + 4 + 4 + data_len
     }
 
@@ -104,8 +96,6 @@ impl WalFile {
         debug_assert_eq!(self.data_start.is_some(), self.data_end.is_some());
 
         let start = if self.data_start.is_none() {
-            // debug_assert_eq!(self.id_from, 0);
-            // debug_assert_eq!(self.id_until, 0);
             self.id_from = id;
             let start = self.offset_logs();
             self.data_start = Some(start as u32);
@@ -135,6 +125,7 @@ impl WalFile {
         Ok(())
     }
 
+    #[inline]
     pub fn clone_no_mmap(&self) -> Self {
         Self {
             version: self.version,
@@ -150,21 +141,13 @@ impl WalFile {
         }
     }
 
-    /// Clones `other`s log id information into `self`. Does NOT do a full clone!
-    /// Leaves `path` and `mmap` untouched.
+    #[inline]
     pub fn clone_from_no_mmap(&mut self, other: &Self) {
         debug_assert_eq!(self.path, other.path);
         self.id_from = other.id_from;
         self.id_until = other.id_until;
         self.data_start = other.data_start;
         self.data_end = other.data_end;
-    }
-
-    /// Can only be called with an active memmap, checks by `data_start`
-    #[inline]
-    pub fn is_empty(&self) -> Result<bool, Error> {
-        debug_assert!(self.mmap_mut.is_some() || self.mmap.is_some());
-        Ok(self.read_bytes(24, 28)? == &[0, 0, 0, 0])
     }
 
     /// Reads the logs into the given buffer. Returns `Ok(offset)` of the first log.
@@ -177,8 +160,9 @@ impl WalFile {
         buf: &mut Vec<(u64, Vec<u8>)>,
     ) -> Result<u32, Error> {
         debug_assert!(buf.is_empty());
-        // println!("Read Logs from {} until {}", id_from, id_until);
         debug_assert!(id_until >= id_from);
+        debug_assert!(self.data_start.is_some());
+        debug_assert!(self.data_end.is_some());
 
         if self.id_from > id_from {
             return Err(Error::Generic("`id_from` is below threshold".into()));
@@ -192,10 +176,8 @@ impl WalFile {
             ));
         }
 
-        let data_start = bin_to_len(self.read_bytes(24, 28)?)?;
-        let data_end = bin_to_len(self.read_bytes(28, 32)?)?;
-        debug_assert!(data_start <= data_end);
-        debug_assert!(data_end <= self.len_max);
+        let data_start = self.data_start.unwrap();
+        let data_end = self.data_end.unwrap();
 
         let mut idx = data_start;
         let mut offset = 0;
@@ -504,28 +486,11 @@ impl WalFileSet {
         self.files.get_mut(self.active.unwrap()).unwrap()
     }
 
-    // fn active_index(files: &[WalFile]) -> Result<usize, Error> {
-    //     if files.is_empty() {
-    //         return Err(Error::Generic(
-    //             "Cannot find active WAL when files are empty".into(),
-    //         ));
-    //     }
-    //
-    //     if files.len() > 1 {
-    //         let last = files.last().unwrap();
-    //         let before = files.get(files.len() - 2).unwrap();
-    //
-    //         if before.id_until > 0 && last.id_until == 0 {
-    //             return Ok(files.len() - 2);
-    //         }
-    //     }
-    //     Ok(files.len() - 1)
-    // }
-
     /// Adds a new `Header` at the end and creates a file for it.
     /// If `self.files` was empty before, `self.active` will be set to `0` and left untouched
     /// otherwise. If files existed already, `self.roll_over()` will handle `active` switching.
     #[tracing::instrument(skip_all)]
+    #[inline]
     pub fn add_file(&mut self, wal_size: u32, buf: &mut Vec<u8>) -> Result<&WalFile, Error> {
         let wal_no = self.files.back().map(|w| w.wal_no + 1).unwrap_or(1);
         let mut wal = WalFile::new(wal_no, &self.base_path, 0, 0, wal_size)?;
@@ -566,16 +531,6 @@ impl WalFileSet {
                 "`id_from` cannot be greater than `id_until`",
             ));
         }
-        // if log_from < first.id_from {
-        //     panic!(
-        //         "Metadata expected lower log ID from than found.\n{:?}\n{:?}",
-        //         self,
-        //         meta.read()?
-        //     );
-        //     // return Err(Error::FileCorrupted(
-        //     //     "Metadata expected lower log ID from than found",
-        //     // ));
-        // }
 
         for wal in iter {
             if wal.data_end.unwrap_or(0) > wal.len_max {
@@ -623,13 +578,7 @@ impl WalFileSet {
             until = wal.id_until;
         }
 
-        // if log_until > until {
-        //     Err(Error::FileCorrupted(
-        //         "Metadata expected higher log ID until than found",
-        //     ))
-        // } else {
         Ok(())
-        // }
     }
 
     /// Creates a clone of the `WalFileSet` without any active `mmap`s.
@@ -644,6 +593,29 @@ impl WalFileSet {
             slf.files.push_back(file.clone_no_mmap());
         }
         slf
+    }
+
+    #[inline]
+    pub fn clone_files_from_no_mmap(&mut self, other: &VecDeque<WalFile>) {
+        // in case old WAL files have been cleaned up
+        self.files
+            .retain(|f| other.iter().any(|upd| upd.wal_no == f.wal_no));
+
+        self.files.iter_mut().enumerate().for_each(|(i, f)| {
+            // this has top work, the files MUST always be in order and we have cleanup up
+            // old files in the step before
+            let upd = &other[i];
+            debug_assert_eq!(f.wal_no, upd.wal_no);
+            f.id_from = upd.id_from;
+            f.id_until = upd.id_until;
+            f.data_start = upd.data_start;
+            f.data_end = upd.data_end;
+        });
+
+        // the last case is that `other` contains new files because of log roll-overs
+        for upd in other.iter().skip(self.files.len()) {
+            self.files.push_back(upd.clone_no_mmap());
+        }
     }
 
     #[tracing::instrument(skip_all)]
@@ -686,6 +658,7 @@ impl WalFileSet {
     /// Rolls a new WAL file and "closes" the current one. Removes any memory-mapping and flushes
     /// the current file to disk. Creates a new WAL with `mmap_mut`
     #[tracing::instrument(skip_all)]
+    #[inline]
     pub fn roll_over(&mut self, wal_size: u32, buf: &mut Vec<u8>) -> Result<(), Error> {
         // println!("rolling over WAL: {:?}", self.active());
         debug_assert!(buf.is_empty());
@@ -709,12 +682,11 @@ impl WalFileSet {
         active.id_from = last_id + 1;
         active.id_until = last_id + 1;
 
-        // println!("\nafter roll over: {:?}\n", self);
-
         Ok(())
     }
 
     #[tracing::instrument(skip_all)]
+    #[inline]
     pub fn shift_delete_logs_until(
         &mut self,
         id_until: u64,
