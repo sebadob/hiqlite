@@ -671,7 +671,7 @@ async fn stream_reader(
     while let Ok(frame) = read
         .read_frame(&mut |frame| async move {
             // TODO obligated sends should be auto ping / pong / close ? -> verify!
-            warn!(
+            debug!(
                 "Received obligated send in stream client: OpCode: {:?}: {:?}",
                 frame.opcode.clone(),
                 frame.payload

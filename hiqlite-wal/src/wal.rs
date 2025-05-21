@@ -11,38 +11,38 @@ static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
 static MIN_WAL_SIZE: u32 = 8 * 1024;
 
 // TODO can probably be removed after enough testing and debugging
-#[cfg(debug_assertions)]
-mod log_dbg {
-    use serde::{Deserialize, Serialize};
-
-    openraft::declare_raft_types!(
-        pub TypeConfigSqlite:
-            D = (),
-            R = (),
-            Node = Node,
-            SnapshotData = tokio::fs::File,
-    );
-    type NodeId = u64;
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-    pub struct Node {
-        pub id: NodeId,
-        pub addr_raft: String,
-        pub addr_api: String,
-    }
-
-    pub fn assert_data_id(data: &[u8], id: u64) {
-        let (entry, _) = bincode::serde::decode_from_slice::<openraft::Entry<TypeConfigSqlite>, _>(
-            data,
-            bincode::config::legacy(),
-        )
-        .unwrap();
-        assert_eq!(
-            entry.log_id.index, id,
-            "ID expected: {} / found {:?}",
-            id, entry.log_id.index
-        );
-    }
-}
+// #[cfg(debug_assertions)]
+// mod log_dbg {
+//     use serde::{Deserialize, Serialize};
+//
+//     openraft::declare_raft_types!(
+//         pub TypeConfigSqlite:
+//             D = (),
+//             R = (),
+//             Node = Node,
+//             SnapshotData = tokio::fs::File,
+//     );
+//     type NodeId = u64;
+//     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+//     pub struct Node {
+//         pub id: NodeId,
+//         pub addr_raft: String,
+//         pub addr_api: String,
+//     }
+//
+//     pub fn assert_data_id(data: &[u8], id: u64) {
+//         let (entry, _) = bincode::serde::decode_from_slice::<openraft::Entry<TypeConfigSqlite>, _>(
+//             data,
+//             bincode::config::legacy(),
+//         )
+//         .unwrap();
+//         assert_eq!(
+//             entry.log_id.index, id,
+//             "ID expected: {} / found {:?}",
+//             id, entry.log_id.index
+//         );
+//     }
+// }
 
 #[derive(Debug)]
 pub struct WalFile {
@@ -72,9 +72,10 @@ impl WalFile {
     #[inline]
     pub fn has_space(&self, data_len: u32) -> bool {
         // wal entries will have:
+        // - 1 byte offset -> `data_end` is inclusive
         // - 8 byte id
         // - 4 byte crc
-        // - 4 bytes data length
+        // - 4 byte data length
         // - variable length data
         self.len_max > self.data_end.unwrap_or(0) + 1 + 8 + 4 + 4 + data_len
     }
@@ -92,7 +93,6 @@ impl WalFile {
         debug_assert!(self.mmap_mut.is_some());
         debug_assert!(data.len() <= u32::MAX as usize);
         debug_assert!(self.has_space(data.len() as u32));
-        debug_assert!(data.len() < u32::MAX as usize);
         debug_assert_eq!(self.data_start.is_some(), self.data_end.is_some());
 
         let start = if self.data_start.is_none() {
@@ -199,10 +199,8 @@ impl WalFile {
                     if crc != crc!(data) {
                         return Err(Error::Integrity("Invalid CRC for WAL Record".into()));
                     }
-
-                    #[cfg(debug_assertions)]
-                    log_dbg::assert_data_id(data, id);
-
+                    // #[cfg(debug_assertions)]
+                    // log_dbg::assert_data_id(data, id);
                     buf.push((id, data.to_vec()))
                 } else {
                     break;
@@ -722,9 +720,7 @@ impl WalFileSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metadata::Metadata;
     use std::fs;
-    use std::sync::{Arc, RwLock};
 
     static PATH: &str = "test_data";
     static MB2: u32 = 2 * 1024 * 1024;
@@ -886,12 +882,6 @@ mod tests {
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
 
-        let meta = Arc::new(RwLock::new(Metadata {
-            // log_from: 1,
-            // log_until: 33,
-            last_purged_log_id: None,
-            vote: None,
-        }));
         let mut files = VecDeque::with_capacity(4);
         files.push_back(WalFile {
             version: 1,

@@ -102,6 +102,7 @@ impl Client {
                 )))
             }
         } else {
+            // tracing::error!("Unhealthy DB");
             Err(Error::LeaderChange(
                 "The DB leader voting process has not finished yet".into(),
             ))
@@ -126,6 +127,7 @@ impl Client {
                 )))
             }
         } else {
+            // tracing::error!("Unhealthy cache");
             Err(Error::LeaderChange(
                 "The cache leader voting process has not finished yet".into(),
             ))
@@ -142,6 +144,7 @@ impl Client {
                 }
                 Err(err) => {
                     debug!("Waiting for healthy Raft DB: {:?}", err);
+                    // tracing::warn!("Waiting for healthy Raft DB");
                     info!("Waiting for healthy Raft DB");
                     time::sleep(Duration::from_millis(500)).await;
                 }
@@ -159,6 +162,7 @@ impl Client {
                 }
                 Err(err) => {
                     debug!("Waiting for healthy Raft cache: {:?}", err);
+                    // tracing::warn!("Waiting for healthy Raft cache");
                     info!("Waiting for healthy Raft cache");
                     time::sleep(Duration::from_millis(500)).await;
                 }

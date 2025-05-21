@@ -10,7 +10,7 @@ use crate::{Client, Error};
 use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use std::ops::Deref;
 use tokio::task;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 pub async fn handle_socket(
     state: AppStateExt,
@@ -82,8 +82,8 @@ pub async fn handle_socket(
     while let Ok(frame) = read
         .read_frame(&mut |frame| async move {
             // TODO obligated sends should be auto ping / pong / close ? -> verify!
-            warn!(
-                "\n\nReceived obligated send in stream client: OpCode: {:?}: {:?}\n\n",
+            debug!(
+                "Received obligated send in stream client: OpCode: {:?}: {:?}",
                 frame.opcode.clone(),
                 frame.payload
             );

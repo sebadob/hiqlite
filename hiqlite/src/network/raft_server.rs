@@ -175,9 +175,9 @@ async fn handle_socket(
 
     while let Ok(frame) = read
         .read_frame(&mut |frame| async move {
-            // TODO obligated sends should be auto ping / pong / close ? -> verify!
-            warn!(
-                "\n\nReceived obligated send in stream client: OpCode: {:?}: {:?}\n\n",
+            // // TODO obligated sends should be auto ping / pong / close ? -> verify!
+            debug!(
+                "Received obligated send in stream client: OpCode: {:?}: {:?}",
                 frame.opcode.clone(),
                 frame.payload
             );

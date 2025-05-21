@@ -22,7 +22,7 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::{select, task, time};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
@@ -392,8 +392,8 @@ impl NetworkStreaming {
         while let Ok(frame) = read
             .read_frame(&mut |frame| async move {
                 // TODO obligated sends should be auto ping / pong / close ? -> verify!
-                warn!(
-                    "\n\nReceived obligated send in stream client: OpCode: {:?}: {:?}\n\n",
+                debug!(
+                    "Received obligated send in stream client: OpCode: {:?}: {:?}",
                     frame.opcode.clone(),
                     frame.payload
                 );
