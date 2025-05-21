@@ -157,6 +157,7 @@ impl IntoResponse for Error {
             Error::Token(_) => StatusCode::UNAUTHORIZED,
             Error::Transaction(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            #[cfg(all(feature = "sqlite", not(feature = "rocksdb")))]
             Error::WAL(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::WebSocket(_) => StatusCode::BAD_REQUEST,
         };

@@ -392,7 +392,6 @@ impl WalFile {
         }
         let id_from = bin_to_id(&buf[8..16])?;
         let id_until = bin_to_id(&buf[16..24])?;
-        println!("id_from: {} / id_until: {}", id_from, id_until);
 
         let data_start = bin_to_len(&buf[24..28])?;
         let data_end = bin_to_len(&buf[28..32])?;
@@ -660,7 +659,6 @@ impl WalFileSet {
     #[tracing::instrument(skip_all)]
     #[inline]
     pub fn roll_over(&mut self, wal_size: u32, buf: &mut Vec<u8>) -> Result<(), Error> {
-        // println!("rolling over WAL: {:?}", self.active());
         debug_assert!(buf.is_empty());
         debug_assert!(!self.files.is_empty());
         debug_assert!(self.files.back().unwrap().mmap_mut.is_some());

@@ -33,6 +33,12 @@ pub fn spawn(
     Ok(tx)
 }
 
+/// There are a lot of `unwrap()`s in this task. The reason is simply, if most of these fail, it can
+/// only be because of a non-recoverable error anyway and the application should crash, so that
+/// the next health check can restart it.
+///
+/// Everything related to locking and memory mapping is being `unwrap()`ped. If anything fails in
+/// this regard, it's either a physical storage or OS issue and this code an do nothing about it.
 fn run(
     meta: Arc<RwLock<Metadata>>,
     wal_locked: Arc<RwLock<WalFileSet>>,
@@ -58,34 +64,29 @@ fn run(
                         continue;
                     }
 
-                    // if mmap fails, there is probably no way to recover anyway
                     log.mmap().unwrap();
                     buf.clear();
 
                     if log.id_until < until {
-                        // log reading should not fail as well, no way to recover from mmap issues
                         log.read_logs(from_next, log.id_until, &mut buf).unwrap();
                         for (_id, data) in buf.drain(..) {
                             debug_assert!(_id >= from_next && _id <= until);
                             ack.send(Some(Ok(data))).unwrap()
                         }
 
-                        // If the until goes beyond our current file, we want to remove the mmap
+                        // If the until goes beyond our current file, we want to remove the `mmap`
                         // to save memory. Only if the system needs a log snapshot to recover
                         // another node, it may need lower log IDs again.
                         log.mmap_drop();
 
                         from_next = log.id_until + 1;
                     } else {
-                        // log reading should not fail as well, no way to recover from mmap issues
                         log.read_logs(from_next, until, &mut buf).unwrap();
                         for (_, data) in buf.drain(..) {
                             ack.send(Some(Ok(data))).unwrap()
                         }
                         break;
                     };
-
-                    if log.id_from <= from && log.id_until >= from {}
                 }
 
                 ack.send(None).unwrap();
@@ -102,7 +103,7 @@ fn run(
                     if file.data_start.is_some() {
                         Some(file.id_until)
                     } else if wal.files.len() > 1 {
-                        // In this case we might just be at the edge of a log roll-over
+                        // In this case we might just be in the middle of a log roll-over
                         Some(wal.files[wal.files.len() - 2].id_until)
                     } else {
                         None
@@ -122,30 +123,15 @@ fn run(
                     None
                 };
 
-                match meta.read() {
-                    Ok(lock) => {
-                        let st = LogState {
-                            last_purged_log_id: lock.last_purged_log_id.clone(),
-                            last_log,
-                        };
-                        ack.send(Ok(st)).unwrap();
-                    }
-                    Err(err) => {
-                        ack.send(Err(Error::Generic(err.to_string().into())))
-                            .unwrap();
-                    }
+                let st = LogState {
+                    last_purged_log_id: meta.read().unwrap().last_purged_log_id.clone(),
+                    last_log,
                 };
+                ack.send(Ok(st)).unwrap();
             }
             Action::Vote(ack) => {
-                match meta.read() {
-                    Ok(lock) => {
-                        ack.send(Ok(lock.vote.clone())).unwrap();
-                    }
-                    Err(err) => {
-                        ack.send(Err(Error::Generic(err.to_string().into())))
-                            .unwrap();
-                    }
-                };
+                let vote = meta.read().unwrap().vote.clone();
+                ack.send(Ok(vote)).unwrap();
             }
             Action::Shutdown => {
                 warn!("Raft logs store reader is being shut down");

@@ -227,7 +227,17 @@ async fn start_cluster(
     // This will also put a very high amount of stress on your disk, which can kill your SSDs pretty
     // quickly if you have a lot of throughput. By default, `fsync` will be called in fixed
     // intervals.
+    //
+    // the `sync_immediate` is only available with the `rocksdb` feature
     //config.sync_immediate = true;
+    //
+    // `hiqlite::LogSync::Immediate` will sync immediately after a chunk of logs to append has
+    // been written, but with a huge performance penalty. `hiqlite::LogSync::Immediate` will do the
+    // same but not wait for completion, and therefore not block. This will usually have no
+    // impact on performance at all.
+    // However, both `hiqlite::LogSync::Immediate` + `hiqlite::LogSync::ImmediateAsync` will put
+    // a lot of stress on your SSD in case of high traffic. The default is to sync every 200ms.
+    //config.wal_sync = hiqlite::LogSync::ImmediateAsync;
 
     let client_1 = start_node_with_cache::<Cache>(config.clone()).await?;
     let mut client_2 = None;

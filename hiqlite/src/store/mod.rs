@@ -47,7 +47,7 @@ pub(crate) async fn start_raft_db(
     #[cfg(not(feature = "rocksdb"))]
     let log_store = hiqlite_wal::LogStore::start(
         logs::logs_dir(&node_config.data_dir),
-        LogSync::IntervalMillis(200),
+        node_config.wal_sync,
         node_config.wal_size,
     )
     .await?;
@@ -112,6 +112,7 @@ pub(crate) async fn start_raft_db(
         lock: Default::default(),
         #[cfg(feature = "rocksdb")]
         logs_writer,
+        #[cfg(not(feature = "rocksdb"))]
         shutdown_sender: shutdown_handle,
         sql_writer,
         read_pool,

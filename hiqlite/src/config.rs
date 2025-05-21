@@ -5,10 +5,9 @@ use std::borrow::Cow;
 use std::env;
 use tracing::{debug, warn};
 
-pub use openraft::Config as RaftConfig;
-
 #[cfg(feature = "backup")]
 use crate::backup;
+pub use openraft::Config as RaftConfig;
 
 #[cfg(feature = "dashboard")]
 use crate::dashboard::DashboardState;
@@ -77,7 +76,11 @@ pub struct NodeConfig {
     /// `sync_immediate` will greatly reduce the write throughput and put
     /// a lot more pressure on the disk. If you have lots of writes, it
     /// can pretty quickly kill your SSD for instance.
+    #[cfg(feature = "rocksdb")]
     pub sync_immediate: bool,
+    /// When Raft logs should by synced to disk.
+    #[cfg(not(feature = "rocksdb"))]
+    pub wal_sync: hiqlite_wal::LogSync,
     /// Maximum WAL size in bytes.
     #[cfg(not(feature = "rocksdb"))]
     pub wal_size: u32,
@@ -120,7 +123,10 @@ impl Default for NodeConfig {
             log_statements: false,
             prepared_statement_cache_capacity: 1024,
             read_pool_size: 4,
+            #[cfg(feature = "rocksdb")]
             sync_immediate: false,
+            #[cfg(not(feature = "rocksdb"))]
+            wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
             #[cfg(not(feature = "rocksdb"))]
             wal_size: 2 * 1024 * 1024,
             raft_config: Self::default_raft_config(10_000),
@@ -230,11 +236,14 @@ impl NodeConfig {
                 .unwrap_or("4")
                 .parse()
                 .expect("Cannot parse HQL_READ_POOL_SIZE as usize"),
+            #[cfg(feature = "rocksdb")]
             sync_immediate: env::var("HQL_SYNC_IMMEDIATE")
                 .as_deref()
                 .unwrap_or("false")
                 .parse()
                 .expect("Cannot parse HQL_SYNC_IMMEDIATE as bool"),
+            #[cfg(not(feature = "rocksdb"))]
+            wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
             #[cfg(not(feature = "rocksdb"))]
             wal_size: 2 * 1024 * 1024,
             raft_config: Self::default_raft_config(logs_keep),

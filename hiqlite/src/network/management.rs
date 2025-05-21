@@ -47,7 +47,7 @@ pub(crate) async fn add_learner(
                 leader_id: Some(leader_id),
                 leader_node: Some(node.clone()),
             }));
-            return Err(Error::CheckIsLeaderError(err));
+            return Err(Error::CheckIsLeaderError(Box::new(err)));
         }
     } else {
         return Err(Error::LeaderChange("Leader election in progress".into()));

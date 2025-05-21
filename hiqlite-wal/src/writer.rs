@@ -29,9 +29,10 @@ pub enum Action {
     Shutdown(oneshot::Sender<()>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LogSync {
     Immediate,
+    ImmediateAsync,
     IntervalMillis(u64),
 }
 
@@ -54,20 +55,16 @@ pub fn spawn(
         let mut buf = Vec::with_capacity(32);
         set.add_file(wal_size, &mut buf)?;
     }
-    debug!("WalFileSet in Writer: {:?}", set);
     let wal_locked = Arc::new(RwLock::new(set.clone_no_map()));
 
     let (tx, rx) = flume::bounded::<Action>(1);
-    let sync_immediate = sync == LogSync::Immediate;
 
     let wal = wal_locked.clone();
-    thread::spawn(move || run(meta, wal, set, rx, sync_immediate, wal_size));
+    let snc = sync.clone();
+    thread::spawn(move || run(meta, wal, set, rx, snc, wal_size));
 
-    if !sync_immediate {
-        let LogSync::IntervalMillis(millis) = sync else {
-            unreachable!();
-        };
-        let interval = time::interval(Duration::from_millis(millis));
+    if let LogSync::IntervalMillis(millis) = &sync {
+        let interval = time::interval(Duration::from_millis(*millis));
         spawn_syncer(tx.clone(), interval);
     }
 
@@ -86,12 +83,18 @@ fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
     });
 }
 
+/// There are a lot of `unwrap()`s in this task. The reason is simply, if most of these fail, it can
+/// only be because of a non-recoverable error anyway and the application should crash, so that
+/// the next health check can restart it.
+///
+/// Everything related to locking and memory mapping is being `unwrap()`ped. If anything fails in
+/// this regard, it's either a physical storage or OS issue and this code an do nothing about it.
 fn run(
     meta: Arc<RwLock<Metadata>>,
     wal_locked: Arc<RwLock<WalFileSet>>,
     mut wal: WalFileSet,
     rx: flume::Receiver<Action>,
-    sync_immediate: bool,
+    sync: LogSync,
     wal_size: u32,
 ) -> Result<(), Error> {
     let mut is_dirty = false;
@@ -150,14 +153,15 @@ fn run(
                     // this should usually not happen, but it may during an incorrect shutdown
                     error!("error sending back ack after logs append: {:?}", err);
                 }
-                // TODO with the next big openraft release, we can do async callbacks
-                if sync_immediate {
-                    // TODO bench vs async
+
+                if sync == LogSync::Immediate {
                     wal.active().flush()?;
-                    is_dirty = false;
+                } else if sync == LogSync::ImmediateAsync {
+                    wal.active().flush_async()?;
                 } else {
                     is_dirty = true;
                 }
+                // TODO with the next big openraft release, we can do async callbacks
                 callback();
 
                 // Roll WAL pre-emptively if only very few space is left at this point, because
