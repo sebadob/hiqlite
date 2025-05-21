@@ -1,0 +1,29 @@
+[package]
+name = "hiqlite-wal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version = "1.85.1"
+categories = ["database", "caching"]
+keywords = ["database", "raft", "cache", "wal"]
+description = "WAL file implementation for Hiqlite"
+repository = "https://github.com/sebadob/hiqlite"
+
+[lib]
+doctest = false
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+bincode.workspace = true
+byteorder.workspace = true
+crc.workspace = true
+flume.workspace = true
+memmap2.workspace = true
+openraft.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

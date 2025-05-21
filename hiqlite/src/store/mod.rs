@@ -3,7 +3,13 @@
 use crate::app_state::{AppState, RaftType};
 use crate::init::IsPristineNode1;
 use crate::network::NetworkStreaming;
+#[cfg(feature = "cache")]
+use crate::{
+    app_state::StateRaftCache,
+    store::state_machine::memory::{state_machine::StateMachineMemory, TypeConfigKV},
+};
 use crate::{init, Error, NodeConfig, NodeId, RaftConfig};
+use hiqlite_wal::LogSync;
 use openraft::storage::RaftLogStorage;
 use openraft::{Raft, StorageError};
 use serde::{Deserialize, Serialize};
@@ -13,12 +19,6 @@ use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use strum::IntoEnumIterator;
-
-#[cfg(feature = "cache")]
-use crate::{
-    app_state::StateRaftCache,
-    store::state_machine::memory::{state_machine::StateMachineMemory, TypeConfigKV},
-};
 
 #[cfg(feature = "sqlite")]
 use crate::{
@@ -40,9 +40,17 @@ pub(crate) async fn start_raft_db(
     node_config: NodeConfig,
     raft_config: Arc<RaftConfig>,
 ) -> Result<StateRaftDB, Error> {
+    #[cfg(feature = "rocksdb")]
     let log_store =
         logs::rocksdb::LogStoreRocksdb::new(&node_config.data_dir, node_config.sync_immediate)
             .await;
+    #[cfg(not(feature = "rocksdb"))]
+    let log_store = hiqlite_wal::LogStore::start(
+        logs::logs_dir(&node_config.data_dir),
+        node_config.wal_sync,
+        node_config.wal_size,
+    )
+    .await?;
     let state_machine_store = StateMachineSqlite::new(
         &node_config.data_dir,
         &node_config.filename_db,
@@ -56,7 +64,11 @@ pub(crate) async fn start_raft_db(
     .await
     .unwrap();
 
+    #[cfg(feature = "rocksdb")]
     let logs_writer = log_store.tx_writer.clone();
+    #[cfg(not(feature = "rocksdb"))]
+    let shutdown_handle = log_store.shutdown_handle();
+
     let sql_writer = state_machine_store.write_tx.clone();
     let read_pool = state_machine_store.read_pool.clone();
 
@@ -98,7 +110,10 @@ pub(crate) async fn start_raft_db(
     Ok(StateRaftDB {
         raft,
         lock: Default::default(),
+        #[cfg(feature = "rocksdb")]
         logs_writer,
+        #[cfg(not(feature = "rocksdb"))]
+        shutdown_sender: shutdown_handle,
         sql_writer,
         read_pool,
         log_statements: node_config.log_statements,

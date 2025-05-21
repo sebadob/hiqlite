@@ -58,6 +58,7 @@ listen_notify_local = [
     "dep:futures-util",
     "cache"
 ]
+rocksdb = ["dep:rocksdb"]
 s3 = ["dep:cryptr", "backup"]
 server = [
     "dep:clap",
@@ -70,7 +71,6 @@ shutdown-handle = ["dep:ctrlc"]
 sqlite = [
     "dep:deadpool",
     "dep:rusqlite",
-    "dep:rocksdb",
     "dep:serde_rusqlite",
 ]
 webpki-roots = [
@@ -79,6 +79,8 @@ webpki-roots = [
 ]
 
 [dependencies]
+hiqlite-wal = { path = "../hiqlite-wal" }
+
 argon2 = { workspace = true, optional = true }
 axum.workspace = true
 axum-extra = { workspace = true, optional = true }

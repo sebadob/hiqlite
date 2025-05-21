@@ -84,6 +84,7 @@ clippy:
     cargo clippy --no-default-features
 
     cargo clippy --no-default-features --features sqlite
+    cargo clippy --no-default-features --features sqlite,rocksdb
     # auto-heal should only apply to sqlite
     cargo clippy --no-default-features --features auto-heal
     cargo clippy --no-default-features --features sqlite,auto-heal

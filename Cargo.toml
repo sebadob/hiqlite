@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["hiqlite", "hiqlite-macros"]
+members = ["hiqlite", "hiqlite-macros", "hiqlite-wal"]
 exclude = ["examples"]
 
 [workspace.package]
@@ -34,6 +34,7 @@ chrono = { version = "0.4.38", default-features = false, features = [
     #"serde",
 ] }
 clap = { version = "4.1.11", features = ["derive", "env"] }
+crc = "3.3.0"
 cron = { version = "0.15" }
 cryptr = { version = "0.6", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
@@ -54,6 +55,7 @@ hostname = "0.4.0"
 http-body-util = "0.1.2"
 hyper = { version = "1.4.1", features = ["client", "http2"] }
 hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
+memmap2 = "0.9.5"
 mimalloc = "0.1.46"
 mime_guess = "2.0.5"
 openraft = { version = "0.9.18", features = ["serde", "storage-v2"] }

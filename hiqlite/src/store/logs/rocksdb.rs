@@ -105,7 +105,7 @@ struct LogStoreWriter {
 
 impl LogStoreWriter {
     fn spawn(db: Arc<DB>, sync_immediate: bool) -> flume::Sender<ActionWrite> {
-        let (tx, rx) = flume::bounded::<ActionWrite>(2);
+        let (tx, rx) = flume::bounded::<ActionWrite>(1);
 
         std::thread::spawn(move || {
             // task::spawn_blocking(move || {
@@ -256,7 +256,7 @@ struct LogStoreReader {
 
 impl LogStoreReader {
     fn spawn(db: Arc<DB>) -> flume::Sender<ActionRead> {
-        let (tx, rx) = flume::bounded::<ActionRead>(2);
+        let (tx, rx) = flume::bounded::<ActionRead>(1);
 
         #[inline]
         fn read_logs_err(err: impl Error + 'static) -> StorageError<NodeId> {
@@ -423,12 +423,15 @@ impl LogStoreRocksdb {
         // TODO double check that our own LogsSyncer does everything properly or if we can optimize
         // opts.set_manual_wal_flush(true);
 
+        // None vs Snappy makes ~20% difference, but the WAL should never grow that big anyway,
+        // since we do a log roll-over after 10k logs by default. It's usually below 50mb anyway.
         opts.set_compression_type(DBCompressionType::None);
         // TODO maybe disable auto compaction and do it after every purge / truncate manually?
         opts.set_periodic_compaction_seconds(24 * 60 * 60);
         opts.set_max_manifest_file_size(4 * 1024 * 1024);
 
-        opts.set_write_buffer_size(128 * 1024);
+        // only contains metadata which is tiny
+        opts.set_write_buffer_size(16 * 1024);
         opts.set_max_total_wal_size(1024 * 1024);
         opts.set_wal_size_limit_mb(1);
         let meta = ColumnFamilyDescriptor::new("meta", opts.clone());

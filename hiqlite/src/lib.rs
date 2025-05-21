@@ -17,9 +17,11 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::state_machine::Response;
-pub use openraft::SnapshotPolicy;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
+
+pub use hiqlite_wal::LogSync;
+pub use openraft::SnapshotPolicy;
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use crate::{client::Client, error::Error};

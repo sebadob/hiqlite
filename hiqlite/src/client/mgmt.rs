@@ -10,8 +10,10 @@ use tokio::sync::watch;
 use tokio::time;
 use tracing::{debug, info};
 
+#[cfg(all(feature = "sqlite", feature = "rocksdb"))]
+use crate::store::logs::rocksdb::ActionWrite;
 #[cfg(feature = "sqlite")]
-use crate::store::{logs::rocksdb::ActionWrite, state_machine::sqlite::writer::WriterRequest};
+use crate::store::state_machine::sqlite::writer::WriterRequest;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use crate::{Node, NodeId};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
@@ -100,6 +102,7 @@ impl Client {
                 )))
             }
         } else {
+            // tracing::error!("Unhealthy DB");
             Err(Error::LeaderChange(
                 "The DB leader voting process has not finished yet".into(),
             ))
@@ -124,6 +127,7 @@ impl Client {
                 )))
             }
         } else {
+            // tracing::error!("Unhealthy cache");
             Err(Error::LeaderChange(
                 "The cache leader voting process has not finished yet".into(),
             ))
@@ -140,6 +144,7 @@ impl Client {
                 }
                 Err(err) => {
                     debug!("Waiting for healthy Raft DB: {:?}", err);
+                    // tracing::warn!("Waiting for healthy Raft DB");
                     info!("Waiting for healthy Raft DB");
                     time::sleep(Duration::from_millis(500)).await;
                 }
@@ -157,6 +162,7 @@ impl Client {
                 }
                 Err(err) => {
                     debug!("Waiting for healthy Raft cache: {:?}", err);
+                    // tracing::warn!("Waiting for healthy Raft cache");
                     info!("Waiting for healthy Raft cache");
                     time::sleep(Duration::from_millis(500)).await;
                 }
@@ -258,21 +264,25 @@ impl Client {
                     state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
                     state.raft_db.raft.runtime_config().heartbeat(false);
 
-                    let (tx_logs, rx_logs) = tokio::sync::oneshot::channel();
-                    let (tx_sm, rx_sm) = tokio::sync::oneshot::channel();
-
                     info!("Shutting down sqlite logs writer");
-                    state
-                        .raft_db
-                        .logs_writer
-                        .send_async(ActionWrite::Shutdown(tx_logs))
-                        .await
-                        .expect("The logs writer to always be listening");
-                    rx_logs
-                        .await
-                        .expect("To always get an answer from Logs writer");
+                    #[cfg(feature = "rocksdb")]
+                    {
+                        let (tx_logs, rx_logs) = tokio::sync::oneshot::channel();
+                        state
+                            .raft_db
+                            .logs_writer
+                            .send_async(ActionWrite::Shutdown(tx_logs))
+                            .await
+                            .expect("The logs writer to always be listening");
+                        rx_logs
+                            .await
+                            .expect("To always get an answer from Logs writer");
+                    }
+                    #[cfg(not(feature = "rocksdb"))]
+                    state.raft_db.shutdown_sender.shutdown().await?;
 
                     info!("Shutting down sqlite writer");
+                    let (tx_sm, rx_sm) = tokio::sync::oneshot::channel();
                     state
                         .raft_db
                         .sql_writer

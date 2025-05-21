@@ -3,6 +3,7 @@ use chrono::Utc;
 use hiqlite::{Client, Error, Params, Row};
 use hiqlite_macros::params;
 use serde::{Deserialize, Serialize};
+use std::cmp::max;
 use tokio::task;
 use tokio::time::Instant;
 
@@ -35,7 +36,7 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     client.execute("DELETE FROM _bench", params!()).await?;
 
     let elapsed = insert_concurrent(client.clone(), &options, data.clone(), false).await?;
-    let per_second = rows * 1000 / elapsed as usize;
+    let per_second = rows * 1000 / max(elapsed as usize, 1);
     log(format!(
         "{} single INSERTs with concurrency {} took:\n{} ms -> {} inserts / s",
         rows, concurrency, elapsed, per_second
@@ -46,7 +47,7 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     // hold these big messages.
     cleanup(&client).await?;
     let elapsed = insert_concurrent(client.clone(), &options, data.clone(), true).await?;
-    let per_second = rows * 1000 / elapsed as usize;
+    let per_second = rows * 1000 / max(elapsed as usize, 1);
     log(format!(
         "{} transactional / batched INSERTs with concurrency {} took:\n{} ms -> {} inserts / s",
         rows, concurrency, elapsed, per_second
@@ -55,7 +56,7 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     select_timings(client.clone(), remote).await?;
 
     let elapsed = put_cache(client.clone(), &options, data).await?;
-    let per_second = rows * 1000 / elapsed as usize;
+    let per_second = rows * 1000 / max(elapsed as usize, 1);
     log(format!(
         "{} single cache PUTs with concurrency {} took:\n{} ms -> {} inserts / s",
         rows, concurrency, elapsed, per_second
