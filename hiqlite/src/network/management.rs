@@ -171,6 +171,44 @@ pub(crate) async fn become_member(
     }
 }
 
+// /// Remove the requesting node from the membership config
+// pub(crate) async fn remove_membership(
+//     state: AppStateExt,
+//     headers: HeaderMap,
+//     Path(raft_type): Path<RaftType>,
+//     body: body::Bytes,
+// ) -> Result<Response, Error> {
+//     validate_secret(&state, &headers)?;
+//
+//     let payload = get_payload::<Node>(&headers, body)?;
+//     info!("Node drop membership request: {:?}\n", payload);
+//
+//     // we want to hold the lock until we finished to not end up with race conditions
+//     let _lock = helpers::lock_raft(&state, &raft_type).await;
+//
+//     let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+//     let members = metrics.membership_config;
+//
+//     let mut nodes_set = BTreeSet::new();
+//     for (id, _node) in members.nodes() {
+//         if *id != payload.id {
+//             nodes_set.insert(*id);
+//         }
+//     }
+//
+//     let res = helpers::change_membership(&state, &raft_type, nodes_set, false).await;
+//     match res {
+//         Ok(_) => {
+//             info!("Added removed as member");
+//             fmt_ok(headers, ())
+//         }
+//         Err(err) => {
+//             error!("Error removing node from members: {:?}", err);
+//             Err(err)
+//         }
+//     }
+// }
+
 pub(crate) async fn get_membership(
     state: AppStateExt,
     headers: HeaderMap,

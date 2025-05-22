@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::{reader, writer};
 use tokio::sync::oneshot;
+use tracing::info;
 
 /// A `ShutdownHandle` making it possible to do a graceful shutdown of the WAL logs tasks.
 /// You must call `.shutdown()` for a clean shutdown.
@@ -21,11 +22,14 @@ impl ShutdownHandle {
     #[allow(unused)]
     pub async fn shutdown(&self) -> Result<(), Error> {
         let (tx_ack, ack) = oneshot::channel();
+        info!("Sending Action::Shutdown to WAL writer");
         self.tx_write
             .send_async(writer::Action::Shutdown(tx_ack))
             .await?;
         ack.await?;
+        info!("WAL writer Shutdown complete");
 
+        info!("Sending Action::Shutdown to WAL reader");
         self.tx_read.send_async(reader::Action::Shutdown);
 
         Ok(())

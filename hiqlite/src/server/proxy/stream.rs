@@ -249,6 +249,11 @@ pub async fn handle_socket(
                     }
                 }
 
+                ApiStreamRequestPayload::MembershipRemove(_) => {
+                    error!("Received ApiStreamRequestPayload::MembershipRemove which should never happen for the proxy");
+                    return;
+                }
+
                 ApiStreamRequestPayload::LockAwait(cache_req) => {
                     match client.lock_req_retry(cache_req, true).await {
                         Ok(res) => ApiStreamResponse {

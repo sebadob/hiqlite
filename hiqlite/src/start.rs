@@ -101,7 +101,7 @@ where
         client_request_id: std::sync::atomic::AtomicUsize::new(0),
         #[cfg(feature = "dashboard")]
         tx_client_stream: tx_client_stream.clone(),
-        shutdown_relay_millis: node_config.shutdown_delay_millis,
+        shutdown_delay_millis: node_config.shutdown_delay_millis,
     });
 
     #[cfg(any(feature = "sqlite", feature = "cache"))]

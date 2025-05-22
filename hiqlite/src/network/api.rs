@@ -1,9 +1,12 @@
 use crate::app_state::RaftType;
+use crate::helpers::deserialize;
 use crate::network::handshake::HandshakeSecret;
 use crate::network::{serialize_network, validate_secret, AppStateExt, Error};
+use crate::{HEALTH_CHECK_DELAY_SECS, START_TS};
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
+use chrono::Utc;
 use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -14,10 +17,14 @@ use tokio::{task, time};
 use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "cache")]
+use crate::helpers;
+#[cfg(feature = "cache")]
 use crate::store::state_machine::memory::{
     kv_handler::CacheRequestHandler,
     state_machine::{CacheRequest, CacheResponse},
 };
+#[cfg(feature = "cache")]
+use std::collections::BTreeSet;
 
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::{
@@ -31,13 +38,10 @@ use crate::{
     store::state_machine::sqlite::state_machine::{Query, QueryWrite},
 };
 
-use crate::helpers::deserialize;
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
-use crate::{HEALTH_CHECK_DELAY_SECS, START_TS};
 #[cfg(feature = "listen_notify")]
 use axum::response::sse;
-use chrono::Utc;
 #[cfg(feature = "listen_notify")]
 use futures_util::stream::Stream;
 
@@ -160,6 +164,8 @@ pub(crate) enum ApiStreamRequestPayload {
 
     #[cfg(feature = "cache")]
     KV(CacheRequest),
+    #[cfg(feature = "cache")]
+    MembershipRemove(u64),
 
     // remote-only clients
     #[cfg(feature = "sqlite")]
@@ -200,6 +206,8 @@ pub(crate) enum ApiStreamResponsePayload {
 
     #[cfg(feature = "cache")]
     KV(Result<CacheResponse, Error>),
+    #[cfg(feature = "cache")]
+    MembershipRemove(Result<(), Error>),
 
     #[cfg(feature = "dlock")]
     Lock(LockState),
@@ -578,6 +586,36 @@ async fn handle_socket_concurrent(
                     ApiStreamResponse {
                         request_id,
                         result: ApiStreamResponsePayload::KV(Ok(CacheResponse::Value(value))),
+                    }
+                }
+
+                #[cfg(feature = "cache")]
+                ApiStreamRequestPayload::MembershipRemove(node_id) => {
+                    info!("Node drop membership request for Node: {}\n", client_id);
+
+                    // we want to hold the lock until we finished to not end up with race conditions
+                    let _lock = helpers::lock_raft(&state, &RaftType::Cache).await;
+
+                    let metrics = helpers::get_raft_metrics(&state, &RaftType::Cache).await;
+                    let members = metrics.membership_config;
+
+                    let mut nodes_set = BTreeSet::new();
+                    for (id, _node) in members.nodes() {
+                        if *id != node_id {
+                            nodes_set.insert(*id);
+                        }
+                    }
+
+                    let res =
+                        helpers::change_membership(&state, &RaftType::Cache, nodes_set, false)
+                            .await;
+                    if let Err(err) = &res {
+                        tracing::error!("\n\nError removing remote Cache Member: {:?}\n", err);
+                    }
+
+                    ApiStreamResponse {
+                        request_id,
+                        result: ApiStreamResponsePayload::MembershipRemove(res),
                     }
                 }
 

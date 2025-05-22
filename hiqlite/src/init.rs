@@ -261,6 +261,9 @@ pub async fn become_cluster_member(
     .await?;
     info!("Successfully became {} raft learner", raft_type.as_str());
 
+    // if we try the next step too fast, we can get unlucky and end up in a race-condition
+    time::sleep(Duration::from_secs(1)).await;
+
     // Again, for the same reason as above, an im-memory cache member must always do a full
     // re-join after restarts.
     #[cfg(feature = "sqlite")]
