@@ -218,7 +218,22 @@ async fn start_cluster(
 
     let mut config = node_config(test_nodes(), logs_until_snapshot);
     config.data_dir = format!("data/node_{}", 1).into();
+
+    // The only reason we set the WAL size to 8MB here is because of the possibly huge transactional
+    // inserts with a high row count and low concurrency. At least for `hiqlite-wal`, the WAL size
+    // should not have any negative impact on performance, as long as you don't go crazy low like
+    // only a few kB. This value basically just needs tuning to each application specifically.
+    // The default value here is `2MB`. If you adjust it, you should do it in combination with
+    // `HQL_LOGS_UNTIL_SNAPSHOT` / `logs_until_snapshot`. Try to aim for having max 3-4 WAL files
+    // around at all times. Exact values cannot be given, since it depends on the size of DB
+    // queries your application uses.
+    //
+    // The only very important thing to note is, that the `wal_size` should be at least 3x your
+    // biggest query size. If a query does not fit inside a single WAL, you will get a panic at
+    // runtime. Usually, this should never be any issue at all, as long as you're not writing very
+    // huge batch queries for instance.
     config.wal_size = 8 * 1024 * 1024;
+
     // You could set sync immediate, which will make the logs writer `fsync` after each batch it
     // receives. However, this will degrade your throughput for the Database on disk by a very huge
     // factor. This might only be necessary if you run Hiqlite as a single instance, and you were
@@ -229,6 +244,7 @@ async fn start_cluster(
     // intervals.
     //
     // the `sync_immediate` is only available with the `rocksdb` feature
+    //
     //config.sync_immediate = true;
     //
     // `hiqlite::LogSync::Immediate` will sync immediately after a chunk of logs to append has
@@ -237,7 +253,8 @@ async fn start_cluster(
     // impact on performance at all.
     // However, both `hiqlite::LogSync::Immediate` + `hiqlite::LogSync::ImmediateAsync` will put
     // a lot of stress on your SSD in case of high traffic. The default is to sync every 200ms.
-    //config.wal_sync = hiqlite::LogSync::ImmediateAsync;
+    //
+    //config.wal_sync = hiqlite::LogSync::IntervalMillis(200);
 
     let client_1 = start_node_with_cache::<Cache>(config.clone()).await?;
     let mut client_2 = None;
