@@ -43,13 +43,11 @@ pub fn spawn(
     wal_size: u32,
     meta: Arc<RwLock<Metadata>>,
 ) -> Result<(flume::Sender<Action>, Arc<RwLock<WalFileSet>>), Error> {
-    // TODO emit a warning log in that case and tell the user how to resolve or "force start" in
-    // that case
     LockFile::write(&base_path)?;
 
     let mut set = WalFileSet::read(base_path, wal_size)?;
     // TODO emit a warning log in that case and tell the user how to resolve or "force start" in
-    // that case
+    // that case?
     set.check_integrity()?;
     if set.files.is_empty() {
         let mut buf = Vec::with_capacity(32);

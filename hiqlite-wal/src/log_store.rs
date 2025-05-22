@@ -2,20 +2,31 @@ use crate::error::Error;
 use crate::metadata::Metadata;
 use crate::wal::WalFileSet;
 use crate::{reader, writer, LogSync, ShutdownHandle};
+use openraft::RaftTypeConfig;
 use std::fs;
+use std::marker::PhantomData;
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 use tokio::task;
 
+/// `T::NodeId` MUST be a `u64` for the `LogStore` to work correctly.
 #[derive(Debug)]
-pub struct LogStore {
+pub struct LogStore<T>
+where
+    T: RaftTypeConfig,
+{
     meta: Arc<RwLock<Metadata>>,
     wal: Arc<RwLock<WalFileSet>>,
     pub writer: flume::Sender<writer::Action>,
     pub reader: flume::Sender<reader::Action>,
+    _marker: PhantomData<T>,
 }
 
-impl LogStore {
+impl<T> LogStore<T>
+where
+    T: RaftTypeConfig,
+{
+    /// Start the LogStore
     pub async fn start(base_path: String, sync: LogSync, wal_size: u32) -> Result<Self, Error> {
         let slf = task::spawn_blocking(move || {
             fs::create_dir_all(&base_path)?;
@@ -39,6 +50,7 @@ impl LogStore {
                 wal,
                 writer,
                 reader,
+                _marker: Default::default(),
             })
         })
         .await??;
@@ -46,6 +58,8 @@ impl LogStore {
         Ok(slf)
     }
 
+    /// Gives you a raw handle to the writer channel to perform manual migrations. Does not start
+    /// a log store and does not do anything on its own.
     #[cfg(feature = "migration")]
     pub async fn start_writer_migration(
         base_path: String,
@@ -76,14 +90,21 @@ impl LogStore {
         Ok(())
     }
 
-    pub fn spawn_reader(&self) -> Result<LogStoreReader, Error> {
+    pub(crate) fn spawn_reader(&self) -> Result<LogStoreReader<T>, Error> {
         let tx = reader::spawn(self.meta.clone(), self.wal.clone())?;
 
-        Ok(LogStoreReader { tx })
+        Ok(LogStoreReader {
+            tx,
+            _marker: self._marker,
+        })
     }
 }
 
 #[derive(Debug)]
-pub struct LogStoreReader {
+pub struct LogStoreReader<T>
+where
+    T: RaftTypeConfig,
+{
     pub tx: flume::Sender<reader::Action>,
+    _marker: PhantomData<T>,
 }

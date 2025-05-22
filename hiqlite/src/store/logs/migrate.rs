@@ -45,7 +45,9 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
 
     if let Some(db) = try_open_db(&logs_dir) {
         info!("Found existing rocksdb, starting hiqlite-wal writer for migration");
-        let writer = LogStore::start_writer_migration(logs_dir.clone(), wal_size).await?;
+        let writer =
+            LogStore::<TypeConfigSqlite>::start_writer_migration(logs_dir.clone(), wal_size)
+                .await?;
         task::spawn_blocking(move || async {
             if let Err(err) = migrate(db, writer).await {
                 panic!("Cannot migrate from rocksdb: {:?}", err);

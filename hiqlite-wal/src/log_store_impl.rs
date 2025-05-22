@@ -1,43 +1,62 @@
-use crate::helpers::{deserialize, serialize};
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
-use crate::store::StorageResult;
-use crate::NodeId;
-use hiqlite_wal::{reader, writer, LogStore, LogStoreReader};
+use crate::{reader, writer, LogStore, LogStoreReader};
+use bincode::error::{DecodeError, EncodeError};
 use openraft::storage::{LogFlushed, RaftLogStorage};
 use openraft::{
-    AnyError, Entry, EntryPayload, ErrorSubject, ErrorVerb, LeaderId, LogId, OptionalSend,
-    RaftLogReader, RaftTypeConfig, StorageError, StorageIOError, Vote,
+    AnyError, ErrorSubject, ErrorVerb, LogId, OptionalSend, RaftLogId, RaftLogReader,
+    RaftTypeConfig, StorageError, StorageIOError, Vote,
 };
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::collections::Bound;
 use std::fmt::Debug;
-use std::future::Future;
 use std::ops::RangeBounds;
 use tokio::sync::oneshot;
 use tracing::debug;
 
-impl RaftLogReader<TypeConfigSqlite> for LogStore {
+#[inline(always)]
+pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
+    // We are using the legacy config on purpose here. It uses fixed-width integer fields, which
+    // uses a bit more space, but is faster.
+    bincode::serde::encode_to_vec(value, bincode::config::legacy())
+}
+
+#[inline(always)]
+pub fn deserialize<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
+    bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::legacy()).map(|(res, _)| res)
+}
+
+impl<T> RaftLogReader<T> for LogStore<T>
+where
+    T: RaftTypeConfig,
+{
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
         range: RB,
-    ) -> StorageResult<Vec<Entry<TypeConfigSqlite>>> {
-        try_get_log_entries(&self.reader, range).await
+    ) -> Result<Vec<T::Entry>, StorageError<T::NodeId>> {
+        try_get_log_entries::<T, _>(&self.reader, range).await
     }
 }
 
-impl RaftLogReader<TypeConfigSqlite> for LogStoreReader {
+impl<T> RaftLogReader<T> for LogStoreReader<T>
+where
+    T: RaftTypeConfig,
+{
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
         range: RB,
-    ) -> StorageResult<Vec<Entry<TypeConfigSqlite>>> {
-        try_get_log_entries(&self.tx, range).await
+    ) -> Result<Vec<T::Entry>, StorageError<T::NodeId>> {
+        try_get_log_entries::<T, _>(&self.tx, range).await
     }
 }
 
 #[inline(always)]
-async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
+async fn try_get_log_entries<
+    T: RaftTypeConfig,
+    RB: RangeBounds<u64> + Clone + Debug + OptionalSend,
+>(
     tx: &flume::Sender<reader::Action>,
     range: RB,
-) -> StorageResult<Vec<Entry<TypeConfigSqlite>>> {
+) -> Result<Vec<T::Entry>, StorageError<T::NodeId>> {
     let from = match range.start_bound() {
         Bound::Included(i) => *i,
         Bound::Excluded(i) => *i + 1,
@@ -49,7 +68,7 @@ async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend
         Bound::Unbounded => unreachable!(),
     };
 
-    let mut res: Vec<Entry<TypeConfigSqlite>> = Vec::with_capacity((until - from) as usize + 1);
+    let mut res: Vec<T::Entry> = Vec::with_capacity((until - from) as usize + 1);
 
     let (ack, rx) = flume::bounded(1);
     tx.send_async(reader::Action::Logs { from, until, ack })
@@ -60,8 +79,8 @@ async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend
         let data = data_res.map_err(|err| StorageError::IO {
             source: StorageIOError::read_logs(&err),
         })?;
-        let entry = deserialize::<Entry<_>>(&data).map_err(|err| StorageError::IO {
-            source: StorageIOError::<NodeId>::read_logs(&err),
+        let entry = deserialize::<T::Entry>(&data).map_err(|err| StorageError::IO {
+            source: StorageIOError::<T::NodeId>::read_logs(&err),
         })?;
         res.push(entry);
     }
@@ -69,10 +88,13 @@ async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend
     Ok(res)
 }
 
-impl RaftLogStorage<TypeConfigSqlite> for LogStore {
-    type LogReader = LogStoreReader;
+impl<T> RaftLogStorage<T> for LogStore<T>
+where
+    T: RaftTypeConfig,
+{
+    type LogReader = LogStoreReader<T>;
 
-    async fn get_log_state(&mut self) -> StorageResult<openraft::LogState<TypeConfigSqlite>> {
+    async fn get_log_state(&mut self) -> Result<openraft::LogState<T>, StorageError<T::NodeId>> {
         let (ack, rx) = oneshot::channel();
         self.reader
             .send_async(reader::Action::LogState(ack))
@@ -112,7 +134,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStore {
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
-    async fn save_vote(&mut self, vote: &Vote<NodeId>) -> Result<(), StorageError<NodeId>> {
+    async fn save_vote(&mut self, vote: &Vote<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
         let (ack, rx) = oneshot::channel();
         self.writer
             .send_async(writer::Action::Vote {
@@ -129,7 +151,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStore {
         Ok(())
     }
 
-    async fn read_vote(&mut self) -> Result<Option<Vote<NodeId>>, StorageError<NodeId>> {
+    async fn read_vote(&mut self) -> Result<Option<Vote<T::NodeId>>, StorageError<T::NodeId>> {
         let (ack, rx) = oneshot::channel();
 
         self.reader
@@ -154,10 +176,10 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStore {
     async fn append<I>(
         &mut self,
         entries: I,
-        callback: LogFlushed<TypeConfigSqlite>,
-    ) -> StorageResult<()>
+        callback: LogFlushed<T>,
+    ) -> Result<(), StorageError<T::NodeId>>
     where
-        I: IntoIterator<Item = Entry<TypeConfigSqlite>> + Send,
+        I: IntoIterator<Item = T::Entry> + Send,
         I::IntoIter: Send,
     {
         let (tx, rx) = flume::bounded(1);
@@ -171,7 +193,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStore {
 
         for entry in entries {
             let data = serialize(&entry).unwrap();
-            tx.send_async(Some((entry.log_id.index, data)))
+            tx.send_async(Some((entry.get_log_id().index, data)))
                 .await
                 .map_err(|err| StorageIOError::write_logs(&err))?;
         }
@@ -181,13 +203,14 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStore {
 
         ack_rx
             .await
+            .unwrap()
             .map_err(|err| StorageIOError::write_logs(&err))?;
 
         Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    async fn truncate(&mut self, log_id: LogId<NodeId>) -> StorageResult<()> {
+    async fn truncate(&mut self, log_id: LogId<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
         debug!("delete_log: [{:?}, +oo)", log_id);
 
         let (ack, rx) = oneshot::channel();
@@ -209,7 +232,7 @@ impl RaftLogStorage<TypeConfigSqlite> for LogStore {
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
+    async fn purge(&mut self, log_id: LogId<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
         debug!("delete_log: [0, {:?}]", log_id);
 
         let last_log = Some(serialize(&log_id).unwrap());

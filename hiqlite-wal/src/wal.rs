@@ -505,16 +505,7 @@ impl WalFileSet {
     /// there are no missing log IDs.
     #[tracing::instrument(skip_all)]
     pub fn check_integrity(&self) -> Result<(), Error> {
-        // let (log_from, log_until) = {
-        //     let lock = meta.read()?;
-        //     (lock.log_from, lock.log_until)
-        // };
         if self.files.is_empty() {
-            // if log_from != 0 || log_until != 0 {
-            //     return Err(Error::FileCorrupted(
-            //         "Expected WAL files from Metadata but none found",
-            //     ));
-            // }
             return Ok(());
         }
 
