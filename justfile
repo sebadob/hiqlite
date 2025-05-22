@@ -85,6 +85,7 @@ clippy:
 
     cargo clippy --no-default-features --features sqlite
     cargo clippy --no-default-features --features sqlite,rocksdb
+    cargo clippy --no-default-features --features sqlite,migrate-rocksdb
     # auto-heal should only apply to sqlite
     cargo clippy --no-default-features --features auto-heal
     cargo clippy --no-default-features --features sqlite,auto-heal
@@ -175,10 +176,18 @@ run ty="server" node_id="1":
 
     if [[ {{ ty }} == "server" ]]; then
       HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server -- serve -c config --node-id {{ node_id }}
+      #HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server,rocksdb -- serve -c config --node-id {{ node_id }}
     elif [[ {{ ty }} == "ui" ]]; then
       cd dashboard
       npm run dev -- --host=0.0.0.0
     fi
+
+test-migrate:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    clear
+    cp -r data/logs_bkp/* data/server_1/logs/
+    HQL_DATA_DIR=data/server_1 cargo run --features server,migrate-rocksdb -- serve -c config --node-id 1
 
 # verifies the MSRV
 msrv-verify:

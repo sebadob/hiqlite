@@ -7,6 +7,11 @@
 #[cfg(all(feature = "mimalloc", feature = "jemalloc"))]
 compile_error!("You cannot enable both `mimalloc` and `jemalloc` at the same time");
 
+#[cfg(all(feature = "rocksdb", feature = "migrate-rocksdb"))]
+compile_error!(
+    "Feature `migrate-rocksdb` only makes sense when `rocksdb` is not used as logs store"
+);
+
 #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
