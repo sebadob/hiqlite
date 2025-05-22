@@ -40,6 +40,13 @@ pub(crate) async fn start_raft_db(
     node_config: NodeConfig,
     raft_config: Arc<RaftConfig>,
 ) -> Result<StateRaftDB, Error> {
+    #[cfg(feature = "migrate-rocksdb")]
+    logs::migrate::check_migrate_rocksdb(
+        logs::logs_dir(&node_config.data_dir),
+        node_config.wal_size,
+    )
+    .await?;
+
     #[cfg(feature = "rocksdb")]
     let log_store =
         logs::rocksdb::LogStoreRocksdb::new(&node_config.data_dir, node_config.sync_immediate)

@@ -46,6 +46,20 @@ impl LogStore {
         Ok(slf)
     }
 
+    #[cfg(feature = "migration")]
+    pub async fn start_writer_migration(
+        base_path: String,
+        wal_size: u32,
+    ) -> Result<flume::Sender<writer::Action>, Error> {
+        task::spawn_blocking(move || {
+            let meta = Metadata::read_or_create(&base_path)?;
+            let meta = Arc::new(RwLock::new(meta));
+            let (writer, _) = writer::spawn(base_path, LogSync::ImmediateAsync, wal_size, meta)?;
+            Ok(writer)
+        })
+        .await?
+    }
+
     pub fn shutdown_handle(&self) -> ShutdownHandle {
         ShutdownHandle::new(self.writer.clone(), self.reader.clone())
     }

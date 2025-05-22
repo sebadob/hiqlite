@@ -11,6 +11,8 @@ pub mod rocksdb;
 pub mod hiqlite_wal;
 #[cfg(feature = "cache")]
 pub mod memory;
+#[cfg(all(feature = "sqlite", feature = "migrate-rocksdb"))]
+pub mod migrate;
 // #[cfg(feature = "sqlite")]
 // pub mod sqlite;
 
