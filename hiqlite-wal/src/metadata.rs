@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::utils::{crc, deserialize, serialize};
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs::{self, File};
 use std::io::Write;
 use std::ops::Deref;
@@ -96,7 +97,21 @@ impl LockFile {
     pub fn write(base_path: &str) -> Result<(), Error> {
         let path = format!("{base_path}/lock.hql");
         match File::open(&path) {
-            Ok(_) => Err(Error::Locked("WAL is locked, cannot create lock file")),
+            Ok(_) => {
+                let ignore = env::var("HQL_IGNORE_LOCKED_WAL")
+                    .as_deref()
+                    .unwrap_or("false")
+                    .parse::<bool>()
+                    .expect("Cannot parse HQL_IGNORE_LOCKED_WAL as bool");
+
+                if ignore {
+                    Ok(())
+                } else {
+                    Err(Error::Locked(
+                        "WAL is locked, take a look at `HQL_IGNORE_LOCKED_WAL`",
+                    ))
+                }
+            }
             Err(_) => {
                 File::create(path)?;
                 Ok(())
