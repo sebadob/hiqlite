@@ -11,8 +11,6 @@ static MAGIC_NO_META: &[u8] = b"HQLMETA";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Metadata {
-    // pub log_from: u64,
-    // pub log_until: u64,
     pub last_purged_log_id: Option<Vec<u8>>,
     pub vote: Option<Vec<u8>>,
 }
@@ -24,8 +22,6 @@ impl Metadata {
         if !fs::exists(&path)? {
             info!("WAL Metadata does not exist, creating new file: {}", path);
             let slf = Self {
-                // log_from: 0,
-                // log_until: 0,
                 last_purged_log_id: None,
                 vote: None,
             };
@@ -37,7 +33,7 @@ impl Metadata {
         let Ok(bytes) = fs::read(&path) else {
             return Err(Error::InvalidPath("cannot open metadata file"));
         };
-        if bytes.len() < 16 {
+        if bytes.len() < 14 {
             return Err(Error::FileCorrupted("invalid metadata file length"));
         }
 

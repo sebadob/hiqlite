@@ -7,9 +7,11 @@ use openraft::{
     AnyError, Entry, ErrorSubject, ErrorVerb, LogId, RaftTypeConfig, StorageIOError, Vote,
 };
 use rocksdb::{ColumnFamilyDescriptor, DBWithThreadMode, Direction, Options, SingleThreaded, DB};
+use std::time::Duration;
 use tokio::sync::oneshot;
-use tokio::{fs, task};
-use tracing::{debug, error, info, trace};
+use tokio::{fs, task, time};
+use tracing::log::__private_api::loc;
+use tracing::{debug, error, info, trace, warn};
 
 static KEY_LAST_PURGED: &[u8] = b"last_purged";
 static KEY_VOTE: &[u8] = b"vote";
@@ -36,11 +38,13 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
             files.push(fname.to_string());
         }
     }
+    info!("Cleaning up existing hiqlite-wal files: {:?}", files);
     for file in files.drain(..) {
-        fs::remove_file(file).await?;
+        fs::remove_file(format!("{}/{}", logs_dir, file)).await?;
     }
 
     if let Some(db) = try_open_db(&logs_dir) {
+        info!("Found existing rocksdb, starting hiqlite-wal writer for migration");
         let writer = LogStore::start_writer_migration(logs_dir.clone(), wal_size).await?;
         task::spawn_blocking(move || async {
             if let Err(err) = migrate(db, writer).await {
@@ -50,7 +54,6 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
         .await?;
 
         // cleanup old rocksdb files
-        info!("Cleaning up old rocksdb files");
         let mut dirs = Vec::with_capacity(2);
         let mut dir = fs::read_dir(&logs_dir).await?;
         while let Some(entry) = dir.next_entry().await? {
@@ -65,11 +68,20 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
                 }
             }
         }
+        info!("Cleaning up old rocksdb files: {:?}", files);
         for file in files {
-            fs::remove_file(file).await?;
+            fs::remove_file(format!("{}/{}", logs_dir, file)).await?;
         }
+        info!("Cleaning up old rocksdb dirs: {:?}", dirs);
         for dir in dirs {
-            fs::remove_dir_all(dir).await?;
+            fs::remove_dir_all(format!("{}/{}", logs_dir, dir)).await?;
+        }
+
+        // wait for writer shutdown
+        let lock_file = format!("{}/lock.hql", logs_dir);
+        while fs::try_exists(&lock_file).await? {
+            info!("Writer is still shutting down - waiting ...");
+            time::sleep(Duration::from_millis(500)).await;
         }
     }
 
@@ -144,5 +156,6 @@ async fn migrate(
     rx.await.unwrap();
 
     info!("Migration finished");
+
     Ok(())
 }
