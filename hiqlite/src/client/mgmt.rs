@@ -182,15 +182,32 @@ impl Client {
     /// upfront, but this has not been stabilized in this version.
     pub async fn shutdown(&self) -> Result<(), Error> {
         if let Some(state) = &self.inner.state {
-            Self::shutdown_execute(
-                state,
-                #[cfg(feature = "cache")]
-                &self.inner.tx_client_cache,
-                #[cfg(feature = "sqlite")]
-                &self.inner.tx_client_db,
-                &self.inner.tx_shutdown,
+            if time::timeout(
+                Duration::from_secs(10),
+                Self::shutdown_execute(
+                    state,
+                    #[cfg(feature = "cache")]
+                    &self.inner.tx_client_cache,
+                    #[cfg(feature = "sqlite")]
+                    &self.inner.tx_client_db,
+                    &self.inner.tx_shutdown,
+                ),
             )
             .await
+            .is_err()
+            {
+                warn!("Timeout while waiting for Client::shutdown_execute()");
+            };
+            Ok(())
+            // Self::shutdown_execute(
+            //     state,
+            //     #[cfg(feature = "cache")]
+            //     &self.inner.tx_client_cache,
+            //     #[cfg(feature = "sqlite")]
+            //     &self.inner.tx_client_db,
+            //     &self.inner.tx_shutdown,
+            // )
+            // .await
         } else {
             Err(Error::Error(
                 "Shutdown for remote Raft clients is not yet implemented".into(),
@@ -244,7 +261,9 @@ impl Client {
             {
                 tracing::error!("Error sending Membership remove request: {:?}", err);
             }
-            rx.await.unwrap()?;
+            if time::timeout(Duration::from_secs(2), rx).await.is_err() {
+                warn!("Timeout while waiting for ClientStreamReq::MembershipRemove response");
+            }
             info!("Cache membership remove finished");
 
             info!("Shutting down raft cache layer");

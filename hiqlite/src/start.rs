@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::network::raft_server;
 use crate::network::{api, management};
-use crate::{init, split_brain_check, store, Client, Error, NodeConfig};
+use crate::{init, store, Client, Error, NodeConfig};
 use axum::routing::{get, post};
 use axum::Router;
 use std::fmt::Debug;
@@ -103,13 +103,6 @@ where
         tx_client_stream: tx_client_stream.clone(),
         shutdown_delay_millis: node_config.shutdown_delay_millis,
     });
-
-    #[cfg(any(feature = "sqlite", feature = "cache"))]
-    split_brain_check::spawn(
-        state.clone(),
-        node_config.nodes.clone(),
-        node_config.tls_api.is_some(),
-    );
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     if backup_applied {
