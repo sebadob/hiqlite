@@ -98,17 +98,17 @@ impl LockFile {
         let path = format!("{base_path}/lock.hql");
         match File::open(&path) {
             Ok(_) => {
-                let ignore = env::var("HQL_IGNORE_LOCKED_WAL")
+                let ignore = env::var("HQL_IGNORE_WAL_LOCK")
                     .as_deref()
                     .unwrap_or("false")
                     .parse::<bool>()
-                    .expect("Cannot parse HQL_IGNORE_LOCKED_WAL as bool");
+                    .expect("Cannot parse HQL_IGNORE_WAL_LOCK as bool");
 
                 if ignore {
                     Ok(())
                 } else {
                     Err(Error::Locked(
-                        "WAL is locked, take a look at `HQL_IGNORE_LOCKED_WAL`",
+                        "WAL is locked, take a look at `HQL_IGNORE_WAL_LOCK`",
                     ))
                 }
             }

@@ -220,7 +220,7 @@ HQL_INSECURE_COOKIE=true
 # IMPORTANT: Even though the Database can "heal" itself by
 # simply rebuilding from the existing Raft log files without
 # even needing to think about it, you may want to only
-# set `HQL_IGNORE_LOCKED_WAL` when necessary to have more
+# set `HQL_IGNORE_WAL_LOCK` when necessary to have more
 # control. Depending on the type of crash (whole OS, maybe
 # immediate power loss, force killed, ...), it may be the
 # case that the WAL files + metadata could not be synced
@@ -235,4 +235,4 @@ HQL_INSECURE_COOKIE=true
 # process is still running and accessing the WAL files!
 #
 # default: false
-#HQL_IGNORE_LOCKED_WAL=true
+#HQL_IGNORE_WAL_LOCK=true
