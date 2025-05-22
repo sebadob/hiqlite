@@ -110,8 +110,6 @@ hyper.workspace = true
 hyper-util.workspace = true
 mime_guess = { workspace = true, optional = true }
 openraft.workspace = true
-# TODO not competitive for logs right now, maybe get rid of it in the future
-#redb.workspace = true
 reqwest.workspace = true
 rocksdb = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }

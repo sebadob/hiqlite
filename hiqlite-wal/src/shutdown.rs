@@ -2,6 +2,8 @@ use crate::error::Error;
 use crate::{reader, writer};
 use tokio::sync::oneshot;
 
+/// A `ShutdownHandle` making it possible to do a graceful shutdown of the WAL logs tasks.
+/// You must call `.shutdown()` for a clean shutdown.
 #[derive(Debug, Clone)]
 pub struct ShutdownHandle {
     tx_write: flume::Sender<writer::Action>,

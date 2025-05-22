@@ -52,7 +52,7 @@ pub(crate) async fn start_raft_db(
         logs::rocksdb::LogStoreRocksdb::new(&node_config.data_dir, node_config.sync_immediate)
             .await;
     #[cfg(not(feature = "rocksdb"))]
-    let log_store = hiqlite_wal::LogStore::start(
+    let log_store = hiqlite_wal::LogStore::<TypeConfigSqlite>::start(
         logs::logs_dir(&node_config.data_dir),
         node_config.wal_sync,
         node_config.wal_size,
@@ -79,8 +79,6 @@ pub(crate) async fn start_raft_db(
     let sql_writer = state_machine_store.write_tx.clone();
     let read_pool = state_machine_store.read_pool.clone();
 
-    // Create the network layer that will connect and communicate the raft instances and
-    // will be used in conjunction with the store created above.
     let network = NetworkStreaming {
         node_id: node_config.node_id,
         tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
@@ -89,7 +87,6 @@ pub(crate) async fn start_raft_db(
         heartbeat_interval: node_config.raft_config.heartbeat_interval,
     };
 
-    // Create a local raft instance.
     let raft = openraft::Raft::new(
         node_config.node_id,
         raft_config.clone(),

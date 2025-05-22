@@ -6,6 +6,7 @@ pub use log_store::{LogStore, LogStoreReader};
 
 pub mod error;
 mod log_store;
+mod log_store_impl;
 mod metadata;
 pub mod reader;
 mod shutdown;
