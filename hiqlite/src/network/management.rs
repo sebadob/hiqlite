@@ -63,6 +63,7 @@ pub(crate) async fn add_learner(
         addr_raft,
         addr_api,
     };
+    info!("Node membership request: {:?}", node);
 
     // Check if the node is maybe already a member.
     // If this is the case, it might do the request because it tries to recover from volume loss.
@@ -76,6 +77,7 @@ pub(crate) async fn add_learner(
         let is_member_already = members.nodes().any(|(id, _)| *id == node.id);
 
         if is_member_already {
+            info!("Node{:?} is already a member - removing it first", node);
             let new_voters = members
                 .voter_ids()
                 .filter(|id| *id != node.id)
@@ -143,7 +145,7 @@ pub(crate) async fn become_member(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    let payload = get_payload::<Node>(&headers, body)?;
+    let payload = get_payload::<LearnerReq>(&headers, body)?;
     info!("Node membership request: {:?}\n", payload);
 
     // we want to hold the lock until we finished to not end up with race conditions
@@ -151,12 +153,13 @@ pub(crate) async fn become_member(
 
     let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
     let members = metrics.membership_config;
+    info!("Members before add: {:?}", members);
 
     let mut nodes_set = BTreeSet::new();
     for (id, _node) in members.nodes() {
         nodes_set.insert(*id);
     }
-    nodes_set.insert(payload.id);
+    nodes_set.insert(payload.node_id);
 
     let res = helpers::change_membership(&state, &raft_type, nodes_set, true).await;
     match res {
@@ -170,44 +173,6 @@ pub(crate) async fn become_member(
         }
     }
 }
-
-// /// Remove the requesting node from the membership config
-// pub(crate) async fn remove_membership(
-//     state: AppStateExt,
-//     headers: HeaderMap,
-//     Path(raft_type): Path<RaftType>,
-//     body: body::Bytes,
-// ) -> Result<Response, Error> {
-//     validate_secret(&state, &headers)?;
-//
-//     let payload = get_payload::<Node>(&headers, body)?;
-//     info!("Node drop membership request: {:?}\n", payload);
-//
-//     // we want to hold the lock until we finished to not end up with race conditions
-//     let _lock = helpers::lock_raft(&state, &raft_type).await;
-//
-//     let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-//     let members = metrics.membership_config;
-//
-//     let mut nodes_set = BTreeSet::new();
-//     for (id, _node) in members.nodes() {
-//         if *id != payload.id {
-//             nodes_set.insert(*id);
-//         }
-//     }
-//
-//     let res = helpers::change_membership(&state, &raft_type, nodes_set, false).await;
-//     match res {
-//         Ok(_) => {
-//             info!("Added removed as member");
-//             fmt_ok(headers, ())
-//         }
-//         Err(err) => {
-//             error!("Error removing node from members: {:?}", err);
-//             Err(err)
-//         }
-//     }
-// }
 
 pub(crate) async fn get_membership(
     state: AppStateExt,

@@ -591,31 +591,44 @@ async fn handle_socket_concurrent(
 
                 #[cfg(feature = "cache")]
                 ApiStreamRequestPayload::MembershipRemove(node_id) => {
-                    info!("Node drop membership request for Node: {}\n", client_id);
-
-                    // we want to hold the lock until we finished to not end up with race conditions
-                    let _lock = helpers::lock_raft(&state, &RaftType::Cache).await;
-
-                    let metrics = helpers::get_raft_metrics(&state, &RaftType::Cache).await;
-                    let members = metrics.membership_config;
-
-                    let mut nodes_set = BTreeSet::new();
-                    for (id, _node) in members.nodes() {
-                        if *id != node_id {
-                            nodes_set.insert(*id);
+                    if node_id == client_id {
+                        info!("MembershipRemove for ourselves - ignoring it");
+                        ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::MembershipRemove(Err(
+                                Error::BadRequest(
+                                    "Cannot remove ourselves from membership as the current leader"
+                                        .into(),
+                                ),
+                            )),
                         }
-                    }
+                    } else {
+                        info!("Node drop membership request for Node: {}\n", node_id);
 
-                    let res =
-                        helpers::change_membership(&state, &RaftType::Cache, nodes_set, false)
-                            .await;
-                    if let Err(err) = &res {
-                        tracing::error!("\n\nError removing remote Cache Member: {:?}\n", err);
-                    }
+                        // we want to hold the lock until we finished to not end up with race conditions
+                        let _lock = helpers::lock_raft(&state, &RaftType::Cache).await;
 
-                    ApiStreamResponse {
-                        request_id,
-                        result: ApiStreamResponsePayload::MembershipRemove(res),
+                        let metrics = helpers::get_raft_metrics(&state, &RaftType::Cache).await;
+                        let members = metrics.membership_config;
+
+                        let mut nodes_set = BTreeSet::new();
+                        for (id, _node) in members.nodes() {
+                            if *id != node_id {
+                                nodes_set.insert(*id);
+                            }
+                        }
+
+                        let res =
+                            helpers::change_membership(&state, &RaftType::Cache, nodes_set, false)
+                                .await;
+                        if let Err(err) = &res {
+                            tracing::error!("\n\nError removing remote Cache Member: {:?}\n", err);
+                        }
+
+                        ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::MembershipRemove(res),
+                        }
                     }
                 }
 

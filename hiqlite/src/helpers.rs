@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use tokio::sync::MutexGuard;
+use tracing::info;
 
 #[inline(always)]
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
@@ -116,6 +117,7 @@ pub async fn add_new_learner(
     raft_type: &RaftType,
     node: Node,
 ) -> Result<(), Error> {
+    info!("Adding Node as new Leader: {:?}", node);
     match raft_type {
         #[cfg(feature = "sqlite")]
         RaftType::Sqlite => {
@@ -141,6 +143,7 @@ pub async fn change_membership(
     members: BTreeSet<u64>,
     retain: bool,
 ) -> Result<(), Error> {
+    info!("Changing Raft membership: {:?}", members);
     match raft_type {
         #[cfg(feature = "sqlite")]
         RaftType::Sqlite => {
