@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tokio::task;
 use tracing::{debug, info};
 
@@ -55,8 +56,7 @@ where
     #[cfg(feature = "sqlite")]
     let raft_db = store::start_raft_db(node_config.clone(), raft_config.clone()).await?;
     #[cfg(feature = "cache")]
-    let (is_pristine_cache_node_1, raft_cache) =
-        store::start_raft_cache::<C>(node_config.clone(), raft_config.clone()).await?;
+    let raft_cache = store::start_raft_cache::<C>(node_config.clone(), raft_config.clone()).await?;
 
     let (api_addr, rpc_addr) = {
         let node = node_config
@@ -87,12 +87,13 @@ where
         raft_db,
         #[cfg(feature = "cache")]
         raft_cache,
+        raft_lock: Arc::new(Mutex::new(())),
         secret_api: node_config.secret_api,
         secret_raft: node_config.secret_raft,
-        #[cfg(feature = "sqlite")]
-        client_buffers_db: Default::default(),
-        #[cfg(feature = "cache")]
-        client_buffers_cache: Default::default(),
+        // #[cfg(feature = "sqlite")]
+        // client_buffers_db: Default::default(),
+        // #[cfg(feature = "cache")]
+        // client_buffers_cache: Default::default(),
         #[cfg(feature = "dashboard")]
         dashboard: dashboard::DashboardState {
             password_dashboard: node_config.password_dashboard,
@@ -101,7 +102,7 @@ where
         client_request_id: std::sync::atomic::AtomicUsize::new(0),
         #[cfg(feature = "dashboard")]
         tx_client_stream: tx_client_stream.clone(),
-        shutdown_relay_millis: node_config.shutdown_delay_millis,
+        shutdown_delay_millis: node_config.shutdown_delay_millis,
     });
 
     #[cfg(any(feature = "sqlite", feature = "cache"))]
@@ -166,7 +167,9 @@ where
                 )
                 .route(
                     "/membership/{raft_type}",
-                    get(management::get_membership).post(management::post_membership),
+                    get(management::get_membership)
+                        .post(management::post_membership)
+                        .delete(management::leave_cluster),
                 )
                 .route("/metrics/{raft_type}", get(management::metrics)),
         )
@@ -253,7 +256,6 @@ where
                 &crate::app_state::RaftType::Sqlite,
                 node_config.node_id,
                 &nodes,
-                false,
                 node_config.raft_config.election_timeout_max,
                 tls_raft,
                 tls_no_verify,
@@ -273,7 +275,6 @@ where
                 &crate::app_state::RaftType::Cache,
                 node_config.node_id,
                 &nodes,
-                is_pristine_cache_node_1,
                 node_config.raft_config.election_timeout_max,
                 tls_raft,
                 tls_no_verify,

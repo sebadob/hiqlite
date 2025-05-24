@@ -7,6 +7,11 @@ pub mod memory;
 pub mod migrate;
 
 #[cfg(feature = "sqlite")]
-pub fn logs_dir(data_dir: &str) -> String {
+pub fn logs_dir_db(data_dir: &str) -> String {
     format!("{}/logs", data_dir)
+}
+
+#[cfg(feature = "cache")]
+pub fn logs_dir_cache(data_dir: &str) -> String {
+    format!("{}/logs_cache", data_dir)
 }

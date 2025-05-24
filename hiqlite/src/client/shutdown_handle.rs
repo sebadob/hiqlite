@@ -2,8 +2,10 @@ use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
 use crate::{Client, Error};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::watch;
-use tracing::info;
+use tokio::time;
+use tracing::{info, warn};
 
 pub struct ShutdownHandle {
     state: Arc<AppState>,
@@ -19,15 +21,33 @@ impl ShutdownHandle {
     pub async fn wait(&mut self) -> Result<(), Error> {
         let _ = self.rx_shutdown.changed().await;
         info!("ShutdownHandle received shutdown signal - shutting down the Raft node now");
-        Client::shutdown_execute(
-            &self.state,
-            #[cfg(feature = "cache")]
-            &self.tx_client_cache,
-            #[cfg(feature = "sqlite")]
-            &self.tx_client_db,
-            &self.tx_shutdown,
+
+        if time::timeout(
+            Duration::from_secs(10),
+            Client::shutdown_execute(
+                &self.state,
+                #[cfg(feature = "cache")]
+                &self.tx_client_cache,
+                #[cfg(feature = "sqlite")]
+                &self.tx_client_db,
+                &self.tx_shutdown,
+            ),
         )
         .await
+        .is_err()
+        {
+            warn!("Timeout reached while waiting for Client::shutdown_execute");
+        }
+        Ok(())
+        // Client::shutdown_execute(
+        //     &self.state,
+        //     #[cfg(feature = "cache")]
+        //     &self.tx_client_cache,
+        //     #[cfg(feature = "sqlite")]
+        //     &self.tx_client_db,
+        //     &self.tx_shutdown,
+        // )
+        // .await
     }
 }
 

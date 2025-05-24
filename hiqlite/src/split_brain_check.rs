@@ -7,7 +7,7 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{task, time};
-use tracing::{debug, error, warn};
+use tracing::{error, info, warn};
 
 pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     let handle = task::spawn(check_split_brain(state, nodes, tls));
@@ -24,7 +24,7 @@ pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
 async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     let interval = env::var("HQL_SPLIT_BRAIN_INTERVAL")
         .as_deref()
-        .unwrap_or("300")
+        .unwrap_or("5")
         .parse::<u64>()
         .expect("Cannot parse HQL_SPLIT_BRAIN_INTERVAL as u64");
 
@@ -37,6 +37,7 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 warn!("No leader for DB");
             }
             Some(leader_expected) => {
+                info!("Raft DB Leader: {}", leader_expected);
                 let metrics = state.raft_db.raft.metrics().borrow().clone();
                 let membership = metrics.membership_config;
 
@@ -51,8 +52,6 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 .await
                 {
                     error!("Error during check_compare_membership: {}", err);
-                } else {
-                    debug!("Raft DB Leader: {}", leader_expected);
                 }
             }
         };
@@ -63,6 +62,7 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 warn!("No leader for Cache");
             }
             Some(leader_expected) => {
+                info!("Raft Cache Leader: {}", leader_expected);
                 let metrics = state.raft_cache.raft.metrics().borrow().clone();
                 let membership = metrics.membership_config;
 
@@ -77,8 +77,6 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 .await
                 {
                     error!("Error during check_compare_membership: {}", err);
-                } else {
-                    debug!("Raft Cache Leader: {}", leader_expected);
                 }
             }
         };

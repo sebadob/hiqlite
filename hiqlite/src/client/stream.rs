@@ -56,6 +56,8 @@ pub(crate) enum ClientStreamReq {
     KV(ClientKVPayload),
     #[cfg(feature = "cache")]
     KVGet(ClientKVPayload),
+    #[cfg(feature = "cache")]
+    MembershipRemove(ClientMembershipPayload),
 
     #[cfg(feature = "dlock")]
     LockAwait(ClientKVPayload),
@@ -126,6 +128,15 @@ pub struct ClientBackupPayload {
 pub struct ClientKVPayload {
     pub request_id: usize,
     pub cache_req: CacheRequest,
+    pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
+}
+
+#[cfg(feature = "cache")]
+#[derive(Debug)]
+pub struct ClientMembershipPayload {
+    pub request_id: usize,
+    pub node_id: u64,
+    pub downgrade_to_learner: bool,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
@@ -407,6 +418,27 @@ async fn client_stream(
                     ))
                 }
 
+                #[cfg(feature = "cache")]
+                ClientStreamReq::MembershipRemove(ClientMembershipPayload {
+                    request_id,
+                    node_id,
+                    downgrade_to_learner,
+                    ack,
+                }) => {
+                    let req = ApiStreamRequest {
+                        request_id,
+                        payload: ApiStreamRequestPayload::MembershipRemove {
+                            node_id,
+                            downgrade_to_learner,
+                        },
+                    };
+                    Some((
+                        WritePayload::Payload(serialize_network(&req)),
+                        request_id,
+                        ack,
+                    ))
+                }
+
                 #[cfg(feature = "dlock")]
                 ClientStreamReq::LockAwait(ClientKVPayload {
                     request_id,
@@ -480,6 +512,7 @@ async fn client_stream(
                 }
 
                 ClientStreamReq::Shutdown => {
+                    // TODO notify remote of shutdown?
                     shutdown = true;
                     break;
                 }
@@ -556,6 +589,12 @@ async fn client_stream(
                 ClientStreamReq::KVGet(_) => {
                     unreachable!("we should never receive ClientStreamReq::KVGet from WS reader")
                 }
+                #[cfg(feature = "cache")]
+                ClientStreamReq::MembershipRemove(_) => {
+                    unreachable!(
+                        "we should never receive ClientStreamReq::MembershipRemove from WS reader"
+                    )
+                }
                 #[cfg(feature = "dlock")]
                 ClientStreamReq::LockAwait(_) => {
                     unreachable!(
@@ -587,7 +626,15 @@ async fn client_stream(
         }
 
         // copy all existing in-flight to in-flight buffer to make sure we use them first
-        info!("copy all existing in-flight to in-flight buffer to make sure we use them first");
+        // info!("copy all existing in-flight to in-flight buffer to make sure we use them first");
+        // for (_req_id, ack) in in_flight.drain() {
+        //     ack.send(Err(Error::WebSocket("Lost Connection".to_string())))
+        //         .unwrap();
+        //     // in_flight_buf.insert(req_id, ack);
+        // }
+        // // assert!(in_flight.is_empty());
+        // // reset to a reasonable size for the next start to keep memory usage under control
+        // // in_flight = HashMap::with_capacity(8);
         for (req_id, ack) in in_flight.drain() {
             in_flight_buf.insert(req_id, ack);
         }

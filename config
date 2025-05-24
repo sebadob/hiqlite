@@ -1,12 +1,6 @@
 # env vars for parsing the NodeConfig
 # prefix for all of them: HIQ_
 
-# This is only a temp variable until everything is running very smooth and stable.
-# Can be adjusted to change the interval in seconds for the split brain checker.
-# This checker will be removed though as soon as everything is stable.
-# default: 300
-HQL_SPLIT_BRAIN_INTERVAL=10
-
 # Can be set to 'k8s' to try to split off the node id from the hostname
 # when Hiqlite is running as a StatefulSet inside Kubernetes.
 # Will be ignored if `HQL_NODE_ID_FROM=k8s`

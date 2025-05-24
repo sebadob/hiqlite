@@ -22,11 +22,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::state_machine::Response;
-use serde::{Deserialize, Serialize};
-use std::fmt::{Debug, Display};
-
 pub use hiqlite_wal::LogSync;
 pub use openraft::SnapshotPolicy;
+use serde::{Deserialize, Serialize};
+use std::fmt::{Debug, Display};
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use crate::{client::Client, error::Error};
@@ -47,11 +46,6 @@ pub use crate::store::state_machine::sqlite::{
 pub use client::dlock::Lock;
 #[cfg(feature = "sqlite")]
 pub use migration::AppliedMigration;
-
-// TODO remove after enough crash testing and making sure we can never get into a
-// split brain situation
-#[cfg(any(feature = "sqlite", feature = "cache"))]
-mod split_brain_check;
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 mod app_state;
@@ -84,6 +78,7 @@ mod dashboard;
 mod migration;
 #[cfg(feature = "sqlite")]
 mod query;
+mod split_brain_check;
 
 /// Exports and types to set up a connection to an S3 storage bucket.
 /// Needs the feature `s3` enabled.
