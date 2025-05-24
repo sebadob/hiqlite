@@ -78,6 +78,7 @@ mod dashboard;
 mod migration;
 #[cfg(feature = "sqlite")]
 mod query;
+mod split_brain_check;
 
 /// Exports and types to set up a connection to an S3 storage bucket.
 /// Needs the feature `s3` enabled.

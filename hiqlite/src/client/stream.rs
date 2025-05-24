@@ -136,6 +136,7 @@ pub struct ClientKVPayload {
 pub struct ClientMembershipPayload {
     pub request_id: usize,
     pub node_id: u64,
+    pub downgrade_to_learner: bool,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
@@ -421,11 +422,15 @@ async fn client_stream(
                 ClientStreamReq::MembershipRemove(ClientMembershipPayload {
                     request_id,
                     node_id,
+                    downgrade_to_learner,
                     ack,
                 }) => {
                     let req = ApiStreamRequest {
                         request_id,
-                        payload: ApiStreamRequestPayload::MembershipRemove(node_id),
+                        payload: ApiStreamRequestPayload::MembershipRemove {
+                            node_id,
+                            downgrade_to_learner,
+                        },
                     };
                     Some((
                         WritePayload::Payload(serialize_network(&req)),
@@ -507,6 +512,7 @@ async fn client_stream(
                 }
 
                 ClientStreamReq::Shutdown => {
+                    // TODO notify remote of shutdown?
                     shutdown = true;
                     break;
                 }
@@ -620,7 +626,15 @@ async fn client_stream(
         }
 
         // copy all existing in-flight to in-flight buffer to make sure we use them first
-        info!("copy all existing in-flight to in-flight buffer to make sure we use them first");
+        // info!("copy all existing in-flight to in-flight buffer to make sure we use them first");
+        // for (_req_id, ack) in in_flight.drain() {
+        //     ack.send(Err(Error::WebSocket("Lost Connection".to_string())))
+        //         .unwrap();
+        //     // in_flight_buf.insert(req_id, ack);
+        // }
+        // // assert!(in_flight.is_empty());
+        // // reset to a reasonable size for the next start to keep memory usage under control
+        // // in_flight = HashMap::with_capacity(8);
         for (req_id, ack) in in_flight.drain() {
             in_flight_buf.insert(req_id, ack);
         }

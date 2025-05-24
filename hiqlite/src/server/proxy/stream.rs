@@ -249,7 +249,7 @@ pub async fn handle_socket(
                     }
                 }
 
-                ApiStreamRequestPayload::MembershipRemove(_) => {
+                ApiStreamRequestPayload::MembershipRemove { .. } => {
                     error!("Received ApiStreamRequestPayload::MembershipRemove which should never happen for the proxy");
                     return;
                 }

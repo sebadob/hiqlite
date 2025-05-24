@@ -113,7 +113,6 @@ pub(crate) async fn start_raft_db(
 
     Ok(StateRaftDB {
         raft,
-        lock: Default::default(),
         #[cfg(feature = "rocksdb")]
         logs_writer,
         #[cfg(not(feature = "rocksdb"))]
@@ -181,7 +180,6 @@ where
         is_pristine,
         StateRaftCache {
             raft,
-            lock: Default::default(),
             tx_caches,
             #[cfg(feature = "listen_notify")]
             tx_notify,

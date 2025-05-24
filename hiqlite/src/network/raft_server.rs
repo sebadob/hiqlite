@@ -271,7 +271,7 @@ async fn handle_socket(
                 info!("Node drop membership request for Node: {}\n", node_id);
 
                 // we want to hold the lock until we finished to not end up with race conditions
-                let _lock = helpers::lock_raft(&state, &RaftType::Cache).await;
+                let _lock = state.raft_lock.lock().await;
 
                 let metrics = helpers::get_raft_metrics(&state, &RaftType::Cache).await;
                 let members = metrics.membership_config;

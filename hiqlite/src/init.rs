@@ -236,6 +236,8 @@ pub async fn become_cluster_member(
     let client = reqwest::Client::builder()
         .http2_prior_knowledge()
         .danger_accept_invalid_certs(tls_no_verify)
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(5))
         .build()?;
     let scheme = if tls { "https" } else { "http" };
 

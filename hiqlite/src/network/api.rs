@@ -127,9 +127,10 @@ pub async fn stream(
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
     let (response, socket) = ws.upgrade()?;
+    info!("New Raft Stream for {:?}", raft_type);
 
     tokio::task::spawn(async move {
-        if let Err(err) = handle_socket_concurrent(state, raft_type, socket).await {
+        if let Err(err) = handle_socket_concurrent(state, socket).await {
             // if let Err(err) = handle_socket_sequential(state, socket).await {
             error!("Error in websocket connection: {}", err);
         }
@@ -165,7 +166,10 @@ pub(crate) enum ApiStreamRequestPayload {
     #[cfg(feature = "cache")]
     KV(CacheRequest),
     #[cfg(feature = "cache")]
-    MembershipRemove(u64),
+    MembershipRemove {
+        node_id: u64,
+        downgrade_to_learner: bool,
+    },
 
     // remote-only clients
     #[cfg(feature = "sqlite")]
@@ -224,13 +228,12 @@ pub(crate) enum WsWriteMsg {
 
 async fn handle_socket_concurrent(
     state: AppStateExt,
-    raft_type: RaftType,
     socket: upgrade::UpgradeFut,
 ) -> Result<(), fastwebsockets::WebSocketError> {
     let mut ws = socket.await?;
     ws.set_auto_close(true);
 
-    let client_id = match HandshakeSecret::server(&mut ws, state.secret_api.as_bytes()).await {
+    let _client_id = match HandshakeSecret::server(&mut ws, state.secret_api.as_bytes()).await {
         Ok(id) => id,
         Err(err) => {
             error!("Error during WebSocket handshake: {}", err);
@@ -246,30 +249,30 @@ async fn handle_socket_concurrent(
     // IMPORTANT: the reader is NOT CANCEL SAFE in v0.8!
     let mut read = FragmentCollectorRead::new(rx);
 
-    {
-        // make sure to NEVER lose the result of an execute from remote!
-        // if we received one which is being executed and the TCP stream dies in between, we MUST
-        // ENSURE that in case it was an Ok(_), the result gets to the client! Otherwise, with retry
-        // logic we might end up modifying something twice!
-        let mut buf = {
-            let mut map = state.get_buf_lock(&raft_type).await;
-            map.remove(&client_id).unwrap_or_default()
-        };
+    // {
+    //     // make sure to NEVER lose the result of an execute from remote!
+    //     // if we received one which is being executed and the TCP stream dies in between, we MUST
+    //     // ENSURE that in case it was an Ok(_), the result gets to the client! Otherwise, with retry
+    //     // logic we might end up modifying something twice!
+    //     let mut buf = {
+    //         let mut map = state.get_buf_lock(&raft_type).await;
+    //         map.remove(&client_id).unwrap_or_default()
+    //     };
+    //
+    //     info!("Emptying buffered Client Stream responses");
+    //     while let Some(payload) = buf.pop_front() {
+    //         let frame = Frame::binary(Payload::Owned(payload));
+    //         if let Err(err) = write.write_frame(frame).await {
+    //             // if we error again, we will throw the buffer away, since the problem is bigger
+    //             // for sure and messages will most probably not be relevant anymore when we are
+    //             // back online
+    //             error!("Error during WebSocket handshake: {}", err);
+    //             return Ok(());
+    //         }
+    //     }
+    // }
 
-        info!("Emptying buffered Client Stream responses");
-        while let Some(payload) = buf.pop_front() {
-            let frame = Frame::binary(Payload::Owned(payload));
-            if let Err(err) = write.write_frame(frame).await {
-                // if we error again, we will throw the buffer away, since the problem is bigger
-                // for sure and messages will most probably not be relevant anymore when we are
-                // back online
-                error!("Error during WebSocket handshake: {}", err);
-                return Ok(());
-            }
-        }
-    }
-
-    let st = state.clone();
+    // let st = state.clone();
     let handle_write = task::spawn(async move {
         let mut buf = VecDeque::default();
 
@@ -301,16 +304,16 @@ async fn handle_socket_concurrent(
             }
         }
 
-        {
-            let mut lock = st.get_buf_lock(&raft_type).await;
-            let old = lock.insert(client_id, buf);
-            assert!(
-                old.is_none() || old == Some(VecDeque::default()),
-                "client buffer for {} should never exist already when we insert a new one:\n{:?}",
-                raft_type.as_str(),
-                old
-            );
-        }
+        // {
+        //     let mut lock = st.get_buf_lock(&raft_type).await;
+        //     let old = lock.insert(client_id, buf);
+        //     assert!(
+        //         old.is_none() || old == Some(VecDeque::default()),
+        //         "client buffer for {} should never exist already when we insert a new one:\n{:?}",
+        //         raft_type.as_str(),
+        //         old
+        //     );
+        // }
 
         let _ = write
             .write_frame(Frame::close(1000, b"Invalid Request"))
@@ -590,44 +593,110 @@ async fn handle_socket_concurrent(
                 }
 
                 #[cfg(feature = "cache")]
-                ApiStreamRequestPayload::MembershipRemove(node_id) => {
-                    if node_id == client_id {
-                        info!("MembershipRemove for ourselves - ignoring it");
+                ApiStreamRequestPayload::MembershipRemove {
+                    node_id,
+                    downgrade_to_learner,
+                } => {
+                    warn!(
+                        "\n\nApiStreamRequestPayload::MembershipRemove request from node {}\n",
+                        node_id
+                    );
+
+                    let metrics = state.raft_cache.raft.metrics().borrow().clone();
+                    if let Some(leader) = metrics.current_leader {
+                        if leader != _client_id {
+                            ApiStreamResponse {
+                                request_id,
+                                result: ApiStreamResponsePayload::MembershipRemove(Err(
+                                    Error::BadRequest(
+                                        "Cannot remove from membership as non-leader".into(),
+                                    ),
+                                )),
+                            }
+                        } else {
+                            info!("Node drop membership request for Node: {}\n", node_id);
+
+                            let res = {
+                                let _lock = state.raft_lock.lock().await;
+
+                                let mut metrics =
+                                    helpers::get_raft_metrics(&state, &RaftType::Cache).await;
+                                let members = metrics.membership_config;
+
+                                let mut nodes_set = BTreeSet::new();
+                                for (id, _node) in members.nodes() {
+                                    if *id != node_id {
+                                        nodes_set.insert(*id);
+                                    }
+                                }
+
+                                match helpers::change_membership(
+                                    &state,
+                                    &RaftType::Cache,
+                                    nodes_set.clone(),
+                                    downgrade_to_learner,
+                                )
+                                .await
+                                {
+                                    Ok(_) => {
+                                        drop(_lock);
+
+                                        let mut in_progress = true;
+                                        while in_progress {
+                                            info!("\n\nWaiting until membership change has finished\n");
+                                            time::sleep(Duration::from_millis(500)).await;
+                                            metrics =
+                                                helpers::get_raft_metrics(&state, &RaftType::Cache)
+                                                    .await;
+
+                                            if downgrade_to_learner {
+                                                in_progress = metrics
+                                                    .membership_config
+                                                    .voter_ids()
+                                                    .any(|id| id == node_id);
+                                            } else {
+                                                in_progress = metrics
+                                                    .membership_config
+                                                    .membership()
+                                                    .get_node(&node_id)
+                                                    .is_some();
+                                            }
+                                        }
+                                        #[cfg(debug_assertions)]
+                                        {
+                                            metrics =
+                                                helpers::get_raft_metrics(&state, &RaftType::Cache)
+                                                    .await;
+                                            info!(
+                                                "\n\nMembership change has finished:\n{:?}\n",
+                                                metrics.membership_config
+                                            );
+                                        }
+                                        info!("\n\nMembership change has finished:\n",);
+
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err),
+                                }
+                            };
+                            if let Err(err) = &res {
+                                tracing::error!(
+                                    "\n\nError removing remote Cache Member: {:?}\n",
+                                    err
+                                );
+                            }
+
+                            ApiStreamResponse {
+                                request_id,
+                                result: ApiStreamResponsePayload::MembershipRemove(res),
+                            }
+                        }
+                    } else {
                         ApiStreamResponse {
                             request_id,
                             result: ApiStreamResponsePayload::MembershipRemove(Err(
-                                Error::BadRequest(
-                                    "Cannot remove ourselves from membership as the current leader"
-                                        .into(),
-                                ),
+                                Error::LeaderChange("No leader exsists".into()),
                             )),
-                        }
-                    } else {
-                        info!("Node drop membership request for Node: {}\n", node_id);
-
-                        // we want to hold the lock until we finished to not end up with race conditions
-                        let _lock = helpers::lock_raft(&state, &RaftType::Cache).await;
-
-                        let metrics = helpers::get_raft_metrics(&state, &RaftType::Cache).await;
-                        let members = metrics.membership_config;
-
-                        let mut nodes_set = BTreeSet::new();
-                        for (id, _node) in members.nodes() {
-                            if *id != node_id {
-                                nodes_set.insert(*id);
-                            }
-                        }
-
-                        let res =
-                            helpers::change_membership(&state, &RaftType::Cache, nodes_set, false)
-                                .await;
-                        if let Err(err) = &res {
-                            tracing::error!("\n\nError removing remote Cache Member: {:?}\n", err);
-                        }
-
-                        ApiStreamResponse {
-                            request_id,
-                            result: ApiStreamResponsePayload::MembershipRemove(res),
                         }
                     }
                 }

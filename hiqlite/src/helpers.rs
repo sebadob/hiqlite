@@ -6,7 +6,6 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use tokio::sync::MutexGuard;
 use tracing::info;
 
 #[inline(always)]
@@ -97,27 +96,12 @@ pub async fn get_raft_metrics(
     }
 }
 
-/// Raft locking - necessary for auto-cluster-join scenarios of remote notes to prevent
-/// race conditions.
-pub async fn lock_raft<'a>(
-    state: &'a Arc<AppState>,
-    raft_type: &'a RaftType,
-) -> MutexGuard<'a, ()> {
-    match raft_type {
-        #[cfg(feature = "sqlite")]
-        RaftType::Sqlite => state.raft_db.lock.lock().await,
-        #[cfg(feature = "cache")]
-        RaftType::Cache => state.raft_cache.lock.lock().await,
-        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
-    }
-}
-
 pub async fn add_new_learner(
     state: &Arc<AppState>,
     raft_type: &RaftType,
     node: Node,
 ) -> Result<(), Error> {
-    info!("Adding Node as new Leader: {:?}", node);
+    info!("Adding Node as new {:?} Learner: {:?}", raft_type, node);
     match raft_type {
         #[cfg(feature = "sqlite")]
         RaftType::Sqlite => {
@@ -143,7 +127,7 @@ pub async fn change_membership(
     members: BTreeSet<u64>,
     retain: bool,
 ) -> Result<(), Error> {
-    info!("Changing Raft membership: {:?}", members);
+    info!("Changing {:?} Raft membership to: {:?}", raft_type, members);
     match raft_type {
         #[cfg(feature = "sqlite")]
         RaftType::Sqlite => {

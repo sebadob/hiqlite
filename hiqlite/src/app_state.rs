@@ -1,11 +1,9 @@
-use crate::NodeId;
-use serde::Deserialize;
-use std::collections::{HashMap, VecDeque};
-use std::fmt::Debug;
-use tokio::sync::{Mutex, MutexGuard};
-
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::{kv_handler::CacheRequestHandler, TypeConfigKV};
+use crate::NodeId;
+use serde::Deserialize;
+use std::fmt::Debug;
+use std::sync::Arc;
 
 #[cfg(feature = "dashboard")]
 use crate::client::stream::ClientStreamReq;
@@ -22,6 +20,7 @@ use crate::store::state_machine::sqlite::{
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "dashboard")]
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -54,12 +53,13 @@ pub(crate) struct AppState {
     pub raft_db: StateRaftDB,
     #[cfg(feature = "cache")]
     pub raft_cache: StateRaftCache,
+    pub raft_lock: Arc<Mutex<()>>,
     pub secret_raft: String,
     pub secret_api: String,
-    #[cfg(feature = "sqlite")]
-    pub client_buffers_db: Mutex<HashMap<NodeId, VecDeque<Vec<u8>>>>,
-    #[cfg(feature = "cache")]
-    pub client_buffers_cache: Mutex<HashMap<NodeId, VecDeque<Vec<u8>>>>,
+    // #[cfg(feature = "sqlite")]
+    // pub client_buffers_db: Mutex<HashMap<NodeId, VecDeque<Vec<u8>>>>,
+    // #[cfg(feature = "cache")]
+    // pub client_buffers_cache: Mutex<HashMap<NodeId, VecDeque<Vec<u8>>>>,
     #[cfg(feature = "dashboard")]
     pub dashboard: DashboardState,
     #[cfg(feature = "dashboard")]
@@ -69,20 +69,20 @@ pub(crate) struct AppState {
     pub shutdown_delay_millis: u32,
 }
 
-impl AppState {
-    pub async fn get_buf_lock(
-        &self,
-        raft_type: &RaftType,
-    ) -> MutexGuard<HashMap<NodeId, VecDeque<Vec<u8>>>> {
-        match raft_type {
-            #[cfg(feature = "sqlite")]
-            RaftType::Sqlite => self.client_buffers_db.lock().await,
-            #[cfg(feature = "cache")]
-            RaftType::Cache => self.client_buffers_cache.lock().await,
-            RaftType::Unknown => unreachable!("Invalid RaftType"),
-        }
-    }
-}
+// impl AppState {
+//     pub async fn get_buf_lock(
+//         &self,
+//         raft_type: &RaftType,
+//     ) -> MutexGuard<HashMap<NodeId, VecDeque<Vec<u8>>>> {
+//         match raft_type {
+//             #[cfg(feature = "sqlite")]
+//             RaftType::Sqlite => self.client_buffers_db.lock().await,
+//             #[cfg(feature = "cache")]
+//             RaftType::Cache => self.client_buffers_cache.lock().await,
+//             RaftType::Unknown => unreachable!("Invalid RaftType"),
+//         }
+//     }
+// }
 
 #[cfg(feature = "dashboard")]
 impl AppState {
@@ -95,7 +95,6 @@ impl AppState {
 #[cfg(feature = "sqlite")]
 pub struct StateRaftDB {
     pub raft: openraft::Raft<TypeConfigSqlite>,
-    pub lock: tokio::sync::Mutex<()>,
     #[cfg(all(feature = "sqlite", feature = "rocksdb"))]
     pub logs_writer: flume::Sender<crate::store::logs::rocksdb::ActionWrite>,
     #[cfg(all(feature = "sqlite", not(feature = "rocksdb")))]
@@ -109,7 +108,6 @@ pub struct StateRaftDB {
 #[cfg(feature = "cache")]
 pub struct StateRaftCache {
     pub raft: openraft::Raft<TypeConfigKV>,
-    pub lock: tokio::sync::Mutex<()>,
     pub tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     #[cfg(feature = "listen_notify")]
     pub tx_notify: flume::Sender<NotifyRequest>,

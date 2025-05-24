@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::network::raft_server;
 use crate::network::{api, management};
-use crate::{init, store, Client, Error, NodeConfig};
+use crate::{init, split_brain_check, store, Client, Error, NodeConfig};
 use axum::routing::{get, post};
 use axum::Router;
 use std::fmt::Debug;
@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tokio::task;
 use tracing::{debug, info};
 
@@ -87,12 +88,13 @@ where
         raft_db,
         #[cfg(feature = "cache")]
         raft_cache,
+        raft_lock: Arc::new(Mutex::new(())),
         secret_api: node_config.secret_api,
         secret_raft: node_config.secret_raft,
-        #[cfg(feature = "sqlite")]
-        client_buffers_db: Default::default(),
-        #[cfg(feature = "cache")]
-        client_buffers_cache: Default::default(),
+        // #[cfg(feature = "sqlite")]
+        // client_buffers_db: Default::default(),
+        // #[cfg(feature = "cache")]
+        // client_buffers_cache: Default::default(),
         #[cfg(feature = "dashboard")]
         dashboard: dashboard::DashboardState {
             password_dashboard: node_config.password_dashboard,
@@ -103,6 +105,13 @@ where
         tx_client_stream: tx_client_stream.clone(),
         shutdown_delay_millis: node_config.shutdown_delay_millis,
     });
+
+    #[cfg(any(feature = "sqlite", feature = "cache"))]
+    split_brain_check::spawn(
+        state.clone(),
+        node_config.nodes.clone(),
+        node_config.tls_api.is_some(),
+    );
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     if backup_applied {
@@ -159,7 +168,9 @@ where
                 )
                 .route(
                     "/membership/{raft_type}",
-                    get(management::get_membership).post(management::post_membership),
+                    get(management::get_membership)
+                        .post(management::post_membership)
+                        .delete(management::leave_cluster),
                 )
                 .route("/metrics/{raft_type}", get(management::metrics)),
         )
