@@ -396,7 +396,7 @@ pub struct LogStoreRocksdb {
 
 impl LogStoreRocksdb {
     pub async fn new(data_dir: &str, sync_immediate: bool) -> Self {
-        let dir = logs::logs_dir(data_dir);
+        let dir = logs::logs_dir_db(data_dir);
         fs::create_dir_all(&dir)
             .await
             .expect("Cannot create logs path");

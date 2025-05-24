@@ -297,7 +297,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
         PathSnapshots(path_snapshots),
         PathLockFile(path_lock_file),
     ) = StateMachineSqlite::build_folders(&node_config.data_dir, false).await;
-    let path_logs = logs::logs_dir(&node_config.data_dir);
+    let path_logs = logs::logs_dir_db(&node_config.data_dir);
 
     fs::create_dir_all(&path_backups).await?;
     set_path_access(&path_backups, 0o700).await?;

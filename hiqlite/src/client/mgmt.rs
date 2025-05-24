@@ -234,9 +234,9 @@ impl Client {
         let mut is_single_instance: bool;
 
         #[cfg(feature = "cache")]
-        let remote_cache_voters = {
+        {
             info!("Shutting down raft cache layer");
-            state.raft_cache.raft.runtime_config().heartbeat(false);
+            // state.raft_cache.raft.runtime_config().heartbeat(false);
             state
                 .raft_cache
                 .is_raft_stopped
@@ -244,181 +244,28 @@ impl Client {
             warn!("1");
 
             let mut metrics = state.raft_cache.raft.metrics().borrow().clone();
-            // for _ in 0..5 {
-            //     if let Some(id) = metrics.current_leader {
-            //         if id == state.id {
-            //             info!("\n\nI am Cache leader, waiting for change\n");
-            //         } else {
-            //             info!("\n\nCurrent Cache leader: {} - shutting down\n", id);
-            //             break;
-            //         }
-            //     }
-            //     info!("\n\nNo leader exists for the cache raft - waiting ...\n");
-            //     time::sleep(Duration::from_millis(500)).await;
-            //     metrics = state.raft_cache.raft.metrics().borrow().clone();
-            // }
             let node_count = metrics.membership_config.nodes().count();
             is_single_instance = node_count == 1;
 
             warn!("2");
-            // state.raft_cache.raft.shutdown().await?;
-            // warn!("2.5");
-
-            // if !is_single_instance && metrics.current_leader == Some(state.id) {
-            //     // if we are the leader, we want to try to make a graceful switch
-            //     // before shutting down to cause less stress and hiccups
-            //     info!("We are the cache raft leader - disabling elect and trigger it");
-            //     state.raft_cache.raft.runtime_config().tick(false);
-            //     state.raft_cache.raft.trigger().elect().await?;
-            //
-            //     for _ in 0..5 {
-            //         metrics = state.raft_cache.raft.metrics().borrow().clone();
-            //         if metrics.current_leader.is_some() {
-            //             break;
-            //         }
-            //         time::sleep(Duration::from_millis(500)).await;
-            //     }
-            //     info!(
-            //         "\n\nLeader after cache elect trigger: {:?}\n",
-            //         metrics.current_leader
-            //     );
-            // }
-
-            // info!("Shutting down raft cache layer");
-            // state.raft_cache.raft.runtime_config().heartbeat(false);
-            // state.raft_cache.raft.runtime_config().elect(false);
-            // warn!("1");
-            // state
-            //     .raft_cache
-            //     .is_raft_stopped
-            //     .store(true, Ordering::Relaxed);
-            // warn!("1.5");
-            // state.raft_cache.raft.shutdown().await?;
-            // warn!("2");
-
-            // info!("\n\nSending cache membership remove request - downgrade to learner\n");
-            // let (ack, rx) = tokio::sync::oneshot::channel();
-            // let payload = ClientMembershipPayload {
-            //     request_id: usize::MAX,
-            //     node_id: state.id,
-            //     downgrade_to_learner: true,
-            //     ack,
-            // };
-            // if let Err(err) = tx_client_cache
-            //     .send_async(ClientStreamReq::MembershipRemove(payload))
-            //     .await
-            // {
-            //     tracing::error!("Error sending Membership downgrade request: {:?}", err);
-            // }
-            // match time::timeout(Duration::from_secs(5), rx).await {
-            //     Ok(Ok(res)) => match res {
-            //         Ok(_) => {
-            //             info!("\n\nMembership downgrade successful\n");
-            //         }
-            //         Err(err) => {
-            //             if let Error::LeaderChange(s) = err {
-            //                 // TODO
-            //                 todo!()
-            //             } else {
-            //                 error!("Error downgrading membership: {:?}", err);
-            //             }
-            //         }
-            //     },
-            //     Ok(Err(_)) => {
-            //         error!("Receive error while waiting for Membership downgrade response");
-            //     }
-            //     Err(err) => {
-            //         warn!("Timeout while waiting for ClientStreamReq::MembershipRemove response");
-            //     }
-            // }
-            let voters = metrics
-                .membership_config
-                .voter_ids()
-                .filter(|id| *id != state.id)
-                .collect::<Vec<_>>();
-            let nodes = metrics
-                .membership_config
-                .membership()
-                .nodes()
-                .filter_map(|(id, node)| {
-                    if voters.contains(id) {
-                        Some(node.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
 
             state.raft_cache.raft.shutdown().await?;
+            state.raft_cache.shutdown_sender.shutdown().await?;
             let _ = tx_client_cache.send_async(ClientStreamReq::Shutdown).await;
-
-            // Self::remove_membership(state, nodes, RaftType::Cache, false).await;
-            nodes
-
-            // let _ = tx_client_cache.send_async(ClientStreamReq::Shutdown).await;
         };
 
         #[cfg(feature = "sqlite")]
         {
             // TODO probably not needed
             state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
-            // state.raft_db.raft.runtime_config().tick(false);
-            // state.raft_db.raft.trigger().elect().await?;
 
             let mut metrics = state.raft_db.raft.metrics().borrow().clone();
             let node_count = metrics.membership_config.nodes().count();
             is_single_instance = node_count == 1;
 
-            // warn!("3");
-            // for _ in 0..5 {
-            //     if let Some(id) = metrics.current_leader {
-            //         if id == state.id {
-            //             info!("\n\nI am DB leader, waiting for change\n");
-            //         } else {
-            //             info!("\n\nCurrent DB leader: {} - shutting down\n", id);
-            //             break;
-            //         }
-            //     }
-            //     info!("\n\nNo leader exists for the DB raft - waiting ...\n");
-            //     time::sleep(Duration::from_millis(500)).await;
-            //     metrics = state.raft_db.raft.metrics().borrow().clone();
-            // }
-
-            // while metrics.current_leader.is_none() {
-            //     info!("No leader exists for the DB raft - waiting ...");
-            //     time::sleep(Duration::from_millis(500)).await;
-            //     metrics = state.raft_db.raft.metrics().borrow().clone();
-            // }
-
             warn!("4");
 
-            // if !is_single_instance && metrics.current_leader == Some(state.id) {
-            //     // if we are the leader, we want to try to make a graceful switch
-            //     // before shutting down to cause less stress and hiccups
-            //     info!("We are the DB raft leader - disabling elect and trigger it");
-            //     state.raft_db.raft.runtime_config().elect(false);
-            //     warn!("5");
-            //     state.raft_db.raft.trigger().elect().await?;
-            //     warn!("6");
-            //     for _ in 0..5 {
-            //         metrics = state.raft_db.raft.metrics().borrow().clone();
-            //         if metrics.current_leader.is_some() {
-            //             break;
-            //         }
-            //         time::sleep(Duration::from_millis(500)).await;
-            //     }
-            //     info!(
-            //         "\n\nLeader after sqlite elect trigger: {:?}\n",
-            //         metrics.current_leader
-            //     );
-            // }
-
             info!("Shutting down raft sqlite layer");
-            // let tr = state.raft_db.raft.trigger();
-            // tr.elect().await?;
-            // state.raft_db.raft.runtime_config().heartbeat(false);
-            // state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
-            // warn!("7");
             state.raft_db.raft.shutdown().await?;
             warn!("8");
             info!("Shutting down sqlite logs writer");
@@ -480,8 +327,8 @@ impl Client {
             // main thread.
             time::sleep(Duration::from_millis(state.shutdown_delay_millis as u64)).await;
 
-            #[cfg(feature = "cache")]
-            Self::remove_membership(state, remote_cache_voters, RaftType::Cache, false).await;
+            // #[cfg(feature = "cache")]
+            // Self::remove_membership(state, remote_cache_voters, RaftType::Cache, false).await;
             // {
             //     // info!("\n\nSending cache membership remove request - full remove\n");
             //     // let (ack, rx) = tokio::sync::oneshot::channel();
@@ -520,115 +367,115 @@ impl Client {
         Ok(())
     }
 
-    #[cfg(feature = "cache")]
-    async fn remove_membership(
-        state: &Arc<AppState>,
-        remote_voters: Vec<Node>,
-        raft_type: RaftType,
-        stay_as_learner: bool,
-    ) {
-        let downgrade = if stay_as_learner {
-            "downgrade"
-        } else {
-            "remove"
-        };
-
-        let client = reqwest::Client::builder()
-            .http2_prior_knowledge()
-            // .danger_accept_invalid_certs(state.) // TODO add to state
-            .connect_timeout(Duration::from_secs(3))
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let scheme = "http"; // TODO
-                             // let scheme = if tls { "https" } else { "http" };
-        let payload = serialize(&ClusterLeaveReq {
-            node_id: state.id,
-            stay_as_learner,
-        })
-        .unwrap();
-
-        for _ in 0..10 {
-            info!(
-                "\n\nSending cache membership remove request - {} to learner\n",
-                downgrade
-            );
-
-            for node in &remote_voters {
-                let url = format!(
-                    "{}://{}/cluster/membership/{}",
-                    scheme,
-                    node.addr_api,
-                    raft_type.as_str()
-                );
-
-                let res = client
-                    .delete(&url)
-                    .header(HEADER_NAME_SECRET, &state.secret_api)
-                    .body(payload.to_vec())
-                    .send()
-                    .await;
-                match res {
-                    Ok(res) => {
-                        if res.status().is_success() {
-                            info!(
-                                "\n\nThis node has been removed as {:?} cluster member\n",
-                                raft_type
-                            );
-                            break;
-                        }
-
-                        // let bytes = res.bytes().await.unwrap();
-
-                        match res.json::<Error>().await {
-                            // match deserialize::<Error>(bytes.as_ref()) {
-                            Ok(err) => match err {
-                                Error::CheckIsLeaderError(err) => {
-                                    if let Some(leader) = err.forward_to_leader() {
-                                        match leader.leader_id {
-                                            None => {
-                                                info!(
-                                                "\n\nCluster is currently doing a leader change\n"
-                                            );
-                                            }
-                                            Some(id) => {
-                                                if id == state.id {
-                                                    info!("\n\nRemote node still has us as leader - waiting ...\n");
-                                                }
-                                            }
-                                        }
-                                        time::sleep(Duration::from_millis(500)).await;
-                                    }
-                                }
-                                Error::LeaderChange(s) => {
-                                    info!(
-                                        "\n\nCluster is currently doing a leader change: {}\n",
-                                        s
-                                    );
-                                    time::sleep(Duration::from_millis(500)).await;
-                                }
-                                err => {
-                                    error!(
-                                        "\n\nError leaving cluster on remote node {}: {:?}\n",
-                                        node.id, err
-                                    );
-                                }
-                            },
-                            Err(err) => {
-                                error!("\n\nCluster leave error: {}\n", err);
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        error!(
-                            "\n\nError sending request to remote node {}\n: {:?}",
-                            node.id, err
-                        );
-                    }
-                }
-            }
-        }
-    }
+    // #[cfg(feature = "cache")]
+    // async fn remove_membership(
+    //     state: &Arc<AppState>,
+    //     remote_voters: Vec<Node>,
+    //     raft_type: RaftType,
+    //     stay_as_learner: bool,
+    // ) {
+    //     let downgrade = if stay_as_learner {
+    //         "downgrade"
+    //     } else {
+    //         "remove"
+    //     };
+    //
+    //     let client = reqwest::Client::builder()
+    //         .http2_prior_knowledge()
+    //         // .danger_accept_invalid_certs(state.) // TODO add to state
+    //         .connect_timeout(Duration::from_secs(3))
+    //         .timeout(Duration::from_secs(5))
+    //         .build()
+    //         .unwrap();
+    //     let scheme = "http"; // TODO
+    //                          // let scheme = if tls { "https" } else { "http" };
+    //     let payload = serialize(&ClusterLeaveReq {
+    //         node_id: state.id,
+    //         stay_as_learner,
+    //     })
+    //     .unwrap();
+    //
+    //     for _ in 0..10 {
+    //         info!(
+    //             "\n\nSending cache membership remove request - {} to learner\n",
+    //             downgrade
+    //         );
+    //
+    //         for node in &remote_voters {
+    //             let url = format!(
+    //                 "{}://{}/cluster/membership/{}",
+    //                 scheme,
+    //                 node.addr_api,
+    //                 raft_type.as_str()
+    //             );
+    //
+    //             let res = client
+    //                 .delete(&url)
+    //                 .header(HEADER_NAME_SECRET, &state.secret_api)
+    //                 .body(payload.to_vec())
+    //                 .send()
+    //                 .await;
+    //             match res {
+    //                 Ok(res) => {
+    //                     if res.status().is_success() {
+    //                         info!(
+    //                             "\n\nThis node has been removed as {:?} cluster member\n",
+    //                             raft_type
+    //                         );
+    //                         break;
+    //                     }
+    //
+    //                     // let bytes = res.bytes().await.unwrap();
+    //
+    //                     match res.json::<Error>().await {
+    //                         // match deserialize::<Error>(bytes.as_ref()) {
+    //                         Ok(err) => match err {
+    //                             Error::CheckIsLeaderError(err) => {
+    //                                 if let Some(leader) = err.forward_to_leader() {
+    //                                     match leader.leader_id {
+    //                                         None => {
+    //                                             info!(
+    //                                             "\n\nCluster is currently doing a leader change\n"
+    //                                         );
+    //                                         }
+    //                                         Some(id) => {
+    //                                             if id == state.id {
+    //                                                 info!("\n\nRemote node still has us as leader - waiting ...\n");
+    //                                             }
+    //                                         }
+    //                                     }
+    //                                     time::sleep(Duration::from_millis(500)).await;
+    //                                 }
+    //                             }
+    //                             Error::LeaderChange(s) => {
+    //                                 info!(
+    //                                     "\n\nCluster is currently doing a leader change: {}\n",
+    //                                     s
+    //                                 );
+    //                                 time::sleep(Duration::from_millis(500)).await;
+    //                             }
+    //                             err => {
+    //                                 error!(
+    //                                     "\n\nError leaving cluster on remote node {}: {:?}\n",
+    //                                     node.id, err
+    //                                 );
+    //                             }
+    //                         },
+    //                         Err(err) => {
+    //                             error!("\n\nCluster leave error: {}\n", err);
+    //                         }
+    //                     }
+    //                 }
+    //                 Err(err) => {
+    //                     error!(
+    //                         "\n\nError sending request to remote node {}\n: {:?}",
+    //                         node.id, err
+    //                     );
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
     // #[cfg(feature = "cache")]
     // async fn remove_membership(

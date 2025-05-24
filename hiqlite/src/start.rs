@@ -56,8 +56,7 @@ where
     #[cfg(feature = "sqlite")]
     let raft_db = store::start_raft_db(node_config.clone(), raft_config.clone()).await?;
     #[cfg(feature = "cache")]
-    let (is_pristine_cache_node_1, raft_cache) =
-        store::start_raft_cache::<C>(node_config.clone(), raft_config.clone()).await?;
+    let raft_cache = store::start_raft_cache::<C>(node_config.clone(), raft_config.clone()).await?;
 
     let (api_addr, rpc_addr) = {
         let node = node_config
@@ -257,7 +256,6 @@ where
                 &crate::app_state::RaftType::Sqlite,
                 node_config.node_id,
                 &nodes,
-                false,
                 node_config.raft_config.election_timeout_max,
                 tls_raft,
                 tls_no_verify,
@@ -277,7 +275,6 @@ where
                 &crate::app_state::RaftType::Cache,
                 node_config.node_id,
                 &nodes,
-                is_pristine_cache_node_1,
                 node_config.raft_config.election_timeout_max,
                 tls_raft,
                 tls_no_verify,
