@@ -115,7 +115,7 @@ pub(crate) async fn start_raft_db(
         #[cfg(feature = "rocksdb")]
         logs_writer,
         #[cfg(not(feature = "rocksdb"))]
-        shutdown_sender: shutdown_handle,
+        shutdown_handle,
         sql_writer,
         read_pool,
         log_statements: node_config.log_statements,
@@ -138,7 +138,7 @@ where
         node_config.wal_size,
     )
     .await?;
-    let shutdown_sender = log_store.shutdown_handle();
+    let shutdown_handle = log_store.shutdown_handle();
 
     let state_machine_store = Arc::new(StateMachineMemory::new::<C>().await?);
 
@@ -169,7 +169,7 @@ where
     .await
     .expect("Raft create failed");
 
-    let is_pristine = init::init_pristine_node_1_cache(
+    init::init_pristine_node_1_cache(
         &raft,
         node_config.node_id,
         &node_config.nodes,
@@ -193,6 +193,6 @@ where
         #[cfg(feature = "dlock")]
         tx_dlock,
         is_raft_stopped: AtomicBool::new(false),
-        shutdown_sender,
+        shutdown_handle,
     })
 }

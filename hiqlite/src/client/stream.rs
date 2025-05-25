@@ -56,8 +56,6 @@ pub(crate) enum ClientStreamReq {
     KV(ClientKVPayload),
     #[cfg(feature = "cache")]
     KVGet(ClientKVPayload),
-    #[cfg(feature = "cache")]
-    MembershipRemove(ClientMembershipPayload),
 
     #[cfg(feature = "dlock")]
     LockAwait(ClientKVPayload),
@@ -128,15 +126,6 @@ pub struct ClientBackupPayload {
 pub struct ClientKVPayload {
     pub request_id: usize,
     pub cache_req: CacheRequest,
-    pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
-}
-
-#[cfg(feature = "cache")]
-#[derive(Debug)]
-pub struct ClientMembershipPayload {
-    pub request_id: usize,
-    pub node_id: u64,
-    pub downgrade_to_learner: bool,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
@@ -418,27 +407,6 @@ async fn client_stream(
                     ))
                 }
 
-                #[cfg(feature = "cache")]
-                ClientStreamReq::MembershipRemove(ClientMembershipPayload {
-                    request_id,
-                    node_id,
-                    downgrade_to_learner,
-                    ack,
-                }) => {
-                    let req = ApiStreamRequest {
-                        request_id,
-                        payload: ApiStreamRequestPayload::MembershipRemove {
-                            node_id,
-                            downgrade_to_learner,
-                        },
-                    };
-                    Some((
-                        WritePayload::Payload(serialize_network(&req)),
-                        request_id,
-                        ack,
-                    ))
-                }
-
                 #[cfg(feature = "dlock")]
                 ClientStreamReq::LockAwait(ClientKVPayload {
                     request_id,
@@ -588,12 +556,6 @@ async fn client_stream(
                 #[cfg(feature = "cache")]
                 ClientStreamReq::KVGet(_) => {
                     unreachable!("we should never receive ClientStreamReq::KVGet from WS reader")
-                }
-                #[cfg(feature = "cache")]
-                ClientStreamReq::MembershipRemove(_) => {
-                    unreachable!(
-                        "we should never receive ClientStreamReq::MembershipRemove from WS reader"
-                    )
                 }
                 #[cfg(feature = "dlock")]
                 ClientStreamReq::LockAwait(_) => {

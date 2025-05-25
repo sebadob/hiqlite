@@ -98,7 +98,7 @@ pub struct StateRaftDB {
     #[cfg(all(feature = "sqlite", feature = "rocksdb"))]
     pub logs_writer: flume::Sender<crate::store::logs::rocksdb::ActionWrite>,
     #[cfg(all(feature = "sqlite", not(feature = "rocksdb")))]
-    pub shutdown_sender: hiqlite_wal::ShutdownHandle,
+    pub shutdown_handle: hiqlite_wal::ShutdownHandle,
     pub sql_writer: flume::Sender<WriterRequest>,
     pub read_pool: SqlitePool,
     pub log_statements: bool,
@@ -116,5 +116,5 @@ pub struct StateRaftCache {
     #[cfg(feature = "dlock")]
     pub tx_dlock: flume::Sender<LockRequest>,
     pub is_raft_stopped: AtomicBool,
-    pub shutdown_sender: hiqlite_wal::ShutdownHandle,
+    pub shutdown_handle: hiqlite_wal::ShutdownHandle,
 }

@@ -68,7 +68,12 @@ pub(crate) async fn add_learner(
         .any(|(id, _)| *id == node.id);
 
     if is_member_already {
-        if raft_type == RaftType::Cache {
+        #[cfg(feature = "cache")]
+        let is_cache = raft_type == RaftType::Cache;
+        #[cfg(not(feature = "cache"))]
+        let is_cache = false;
+
+        if is_cache {
             warn!(
                 "\n\nNode{:?} is already a cache member - removing it first\n",
                 node
@@ -302,11 +307,11 @@ pub async fn leave_cluster(
 }
 
 async fn are_we_leader(state: &AppStateExt, raft_type: &RaftType) -> Result<(), Error> {
-    if let Some(leader_id) = helpers::get_raft_leader(&state, &raft_type).await {
+    if let Some(leader_id) = helpers::get_raft_leader(state, raft_type).await {
         if leader_id == state.id {
             Ok(())
         } else {
-            let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+            let metrics = helpers::get_raft_metrics(state, raft_type).await;
             let leader = metrics
                 .membership_config
                 .membership()
