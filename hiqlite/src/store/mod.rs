@@ -140,7 +140,7 @@ where
     .await?;
     let shutdown_handle = log_store.shutdown_handle();
 
-    let state_machine_store = Arc::new(StateMachineMemory::new::<C>().await?);
+    let state_machine_store = Arc::new(StateMachineMemory::new::<C>(&node_config.data_dir).await?);
 
     let network = NetworkStreaming {
         node_id: node_config.node_id,

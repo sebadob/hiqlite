@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 #[cfg(all(feature = "sqlite", feature = "rocksdb"))]
 use crate::store::logs::rocksdb::ActionWrite;
@@ -278,7 +278,6 @@ impl Client {
             info!("Shutting down in {} ms ...", state.shutdown_delay_millis);
             time::sleep(Duration::from_millis(state.shutdown_delay_millis as u64)).await;
         }
-        warn!("15");
 
         info!("Shutdown complete");
         Ok(())

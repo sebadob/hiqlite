@@ -24,7 +24,7 @@ pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
 async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     let interval = env::var("HQL_SPLIT_BRAIN_INTERVAL")
         .as_deref()
-        .unwrap_or("5")
+        .unwrap_or("60")
         .parse::<u64>()
         .expect("Cannot parse HQL_SPLIT_BRAIN_INTERVAL as u64");
 

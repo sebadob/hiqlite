@@ -1,4 +1,5 @@
 use crate::app_state::{AppState, RaftType};
+use crate::helpers::{deserialize, serialize};
 use crate::network::management::LearnerReq;
 use crate::network::HEADER_NAME_SECRET;
 use crate::{helpers, Error, Node, NodeId};
@@ -14,7 +15,6 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
 
-use crate::helpers::{deserialize, serialize};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use std::collections::BTreeMap;
 #[cfg(any(feature = "cache", feature = "sqlite"))]

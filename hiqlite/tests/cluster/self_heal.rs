@@ -3,6 +3,7 @@ use crate::{cache, check, log, Cache, TEST_DATA_DIR};
 use futures_util::future::join_all;
 use hiqlite::{start_node_with_cache, Client, Error};
 use std::time::Duration;
+use tokio::time::Instant;
 use tokio::{fs, time};
 
 pub async fn test_self_healing(
@@ -105,7 +106,8 @@ async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Resul
     // everything is fine after the restart and replication
     let key = "purge_key";
     let value = "after snap value".to_string();
-    let ttl = 15u64;
+    let ttl = 10u64;
+    let inserted = Instant::now();
     client
         .put(Cache::One, key, &value, Some(ttl as i64))
         .await?;
@@ -122,8 +124,13 @@ async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Resul
     check::is_client_db_healthy(&client, Some(node_id)).await?;
     // panic!("############### client id {}", node_id);
 
-    time::sleep(Duration::from_millis(100)).await;
-    let v: String = client.get(Cache::One, key).await?.unwrap();
+    time::sleep(Duration::from_millis(1000)).await;
+    assert!(inserted.elapsed().as_secs() < ttl);
+    log(format!("Elapsed: {}", inserted.elapsed().as_secs()));
+    let v: String = client
+        .get(Cache::One, key)
+        .await?
+        .expect("Cache value to still be there after restart and before expiry");
     assert_eq!(v, value);
 
     // TODO for some reason this node loses the leader and gets stuck after some sleeping
@@ -133,12 +140,10 @@ async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Resul
     // -> somehow, when the sleep is too long, it seems to affect the network answers and the raft
     //    appears a being stopped even when it is not?
 
-    // // wait until the TTL for the values has expired to make sure it's gone after restart + sync
-    // let mut v: Option<String> = client.get(Cache::One, key).await?;
-    // while v.is_some() {
-    //     time::sleep(Duration::from_millis(100)).await;
-    //     v = client.get(Cache::One, key).await?;
-    // }
+    time::sleep(Duration::from_secs(ttl + 2 - inserted.elapsed().as_secs())).await;
+    let v: Option<String> = client.get(Cache::One, key).await?;
+    assert!(v.is_none());
+    panic!("uh oh");
 
     Ok(client)
 }
