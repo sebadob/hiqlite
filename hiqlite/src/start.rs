@@ -83,10 +83,6 @@ where
         raft_lock: Arc::new(Mutex::new(())),
         secret_api: node_config.secret_api,
         secret_raft: node_config.secret_raft,
-        // #[cfg(feature = "sqlite")]
-        // client_buffers_db: Default::default(),
-        // #[cfg(feature = "cache")]
-        // client_buffers_cache: Default::default(),
         #[cfg(feature = "dashboard")]
         dashboard: dashboard::DashboardState {
             password_dashboard: node_config.password_dashboard,

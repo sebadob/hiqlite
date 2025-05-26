@@ -36,7 +36,6 @@ pub async fn is_raft_initialized(
                 } else {
                     Ok(false)
                 }
-                // Ok(false)
             } else {
                 /*
                 We can get in a tricky situation here.
@@ -86,7 +85,6 @@ pub async fn is_raft_initialized(
                 } else {
                     Ok(false)
                 }
-                // Ok(false)
             } else {
                 /*
                 We can get in a tricky situation here.

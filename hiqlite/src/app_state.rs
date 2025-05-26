@@ -56,10 +56,6 @@ pub(crate) struct AppState {
     pub raft_lock: Arc<Mutex<()>>,
     pub secret_raft: String,
     pub secret_api: String,
-    // #[cfg(feature = "sqlite")]
-    // pub client_buffers_db: Mutex<HashMap<NodeId, VecDeque<Vec<u8>>>>,
-    // #[cfg(feature = "cache")]
-    // pub client_buffers_cache: Mutex<HashMap<NodeId, VecDeque<Vec<u8>>>>,
     #[cfg(feature = "dashboard")]
     pub dashboard: DashboardState,
     #[cfg(feature = "dashboard")]
@@ -68,21 +64,6 @@ pub(crate) struct AppState {
     pub tx_client_stream: flume::Sender<ClientStreamReq>,
     pub shutdown_delay_millis: u32,
 }
-
-// impl AppState {
-//     pub async fn get_buf_lock(
-//         &self,
-//         raft_type: &RaftType,
-//     ) -> MutexGuard<HashMap<NodeId, VecDeque<Vec<u8>>>> {
-//         match raft_type {
-//             #[cfg(feature = "sqlite")]
-//             RaftType::Sqlite => self.client_buffers_db.lock().await,
-//             #[cfg(feature = "cache")]
-//             RaftType::Cache => self.client_buffers_cache.lock().await,
-//             RaftType::Unknown => unreachable!("Invalid RaftType"),
-//         }
-//     }
-// }
 
 #[cfg(feature = "dashboard")]
 impl AppState {

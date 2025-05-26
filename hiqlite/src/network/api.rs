@@ -127,7 +127,6 @@ pub async fn stream(
 
     tokio::task::spawn(async move {
         if let Err(err) = handle_socket_concurrent(state, socket).await {
-            // if let Err(err) = handle_socket_sequential(state, socket).await {
             error!("Error in websocket connection: {}", err);
         }
     });
@@ -240,30 +239,6 @@ async fn handle_socket_concurrent(
     // IMPORTANT: the reader is NOT CANCEL SAFE in v0.8!
     let mut read = FragmentCollectorRead::new(rx);
 
-    // {
-    //     // make sure to NEVER lose the result of an execute from remote!
-    //     // if we received one which is being executed and the TCP stream dies in between, we MUST
-    //     // ENSURE that in case it was an Ok(_), the result gets to the client! Otherwise, with retry
-    //     // logic we might end up modifying something twice!
-    //     let mut buf = {
-    //         let mut map = state.get_buf_lock(&raft_type).await;
-    //         map.remove(&client_id).unwrap_or_default()
-    //     };
-    //
-    //     info!("Emptying buffered Client Stream responses");
-    //     while let Some(payload) = buf.pop_front() {
-    //         let frame = Frame::binary(Payload::Owned(payload));
-    //         if let Err(err) = write.write_frame(frame).await {
-    //             // if we error again, we will throw the buffer away, since the problem is bigger
-    //             // for sure and messages will most probably not be relevant anymore when we are
-    //             // back online
-    //             error!("Error during WebSocket handshake: {}", err);
-    //             return Ok(());
-    //         }
-    //     }
-    // }
-
-    // let st = state.clone();
     let handle_write = task::spawn(async move {
         let mut buf = VecDeque::default();
 
@@ -294,17 +269,6 @@ async fn handle_socket_concurrent(
                 buf.push_back(serialize_network(&resp));
             }
         }
-
-        // {
-        //     let mut lock = st.get_buf_lock(&raft_type).await;
-        //     let old = lock.insert(client_id, buf);
-        //     assert!(
-        //         old.is_none() || old == Some(VecDeque::default()),
-        //         "client buffer for {} should never exist already when we insert a new one:\n{:?}",
-        //         raft_type.as_str(),
-        //         old
-        //     );
-        // }
 
         let _ = write
             .write_frame(Frame::close(1000, b"Invalid Request"))

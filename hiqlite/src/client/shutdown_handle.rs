@@ -23,7 +23,7 @@ impl ShutdownHandle {
         info!("ShutdownHandle received shutdown signal - shutting down the Raft node now");
 
         if time::timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(15),
             Client::shutdown_execute(
                 &self.state,
                 #[cfg(feature = "cache")]
@@ -39,15 +39,6 @@ impl ShutdownHandle {
             warn!("Timeout reached while waiting for Client::shutdown_execute");
         }
         Ok(())
-        // Client::shutdown_execute(
-        //     &self.state,
-        //     #[cfg(feature = "cache")]
-        //     &self.tx_client_cache,
-        //     #[cfg(feature = "sqlite")]
-        //     &self.tx_client_db,
-        //     &self.tx_shutdown,
-        // )
-        // .await
     }
 }
 
