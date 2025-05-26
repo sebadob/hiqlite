@@ -218,6 +218,7 @@ async fn start_cluster(
 
     let mut config = node_config(test_nodes(), logs_until_snapshot);
     config.data_dir = format!("data/node_{}", 1).into();
+    // config.cache_storage_disk = true;
 
     // The only reason we set the WAL size to 8MB here is because of the possibly huge transactional
     // inserts with a high row count and low concurrency. At least for `hiqlite-wal`, the WAL size

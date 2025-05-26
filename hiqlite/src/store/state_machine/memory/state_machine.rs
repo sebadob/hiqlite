@@ -1,14 +1,12 @@
 use crate::cache_idx::CacheIndex;
-use crate::helpers::{deserialize, serialize};
+use crate::helpers::{deserialize, serialize, set_path_access};
 use crate::store::state_machine::memory::cache_ttl_handler::TtlRequest;
-#[cfg(feature = "dlock")]
-use crate::store::state_machine::memory::dlock_handler::{self, *};
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
-#[cfg(feature = "listen_notify_local")]
-use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
 use crate::store::state_machine::memory::{cache_ttl_handler, kv_handler, TypeConfigKV};
 use crate::store::StorageResult;
 use crate::{Error, Node, NodeId};
+use chrono::Utc;
+use cryptr::utils::secure_random_alnum;
 use dotenvy::var;
 use openraft::storage::RaftStateMachine;
 use openraft::{
@@ -25,17 +23,30 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use strum::IntoEnumIterator;
 use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::unix::pipe::OpenOptions;
 use tokio::sync::{oneshot, Mutex, RwLock};
-use tracing::info;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+#[cfg(feature = "dlock")]
+use crate::store::state_machine::memory::dlock_handler::{self, *};
+#[cfg(feature = "listen_notify_local")]
+use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
+use crate::store::state_machine::sqlite::state_machine::StoredSnapshot;
+
 type Entry = openraft::Entry<TypeConfigKV>;
-type SnapshotData = Cursor<Vec<u8>>;
+type SnapshotData = fs::File;
 
 type SnapshotKVs = Vec<BTreeMap<String, Vec<u8>>>;
 type SnapshotTTLs = Vec<BTreeMap<i64, String>>;
 type SnapshotLocks = Vec<u8>;
-type SnapshotDataInner = (SnapshotKVs, SnapshotTTLs, SnapshotLocks);
+type SnapshotDataContent = (
+    SnapshotMeta<NodeId, Node>,
+    SnapshotKVs,
+    SnapshotTTLs,
+    SnapshotLocks,
+);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CacheRequest {
@@ -88,8 +99,7 @@ pub struct StateMachineData {
 #[derive(Debug)]
 pub struct StateMachineMemory {
     data: RwLock<StateMachineData>,
-    snapshot_idx: AtomicU64,
-    snapshot: Mutex<Option<Snapshot<TypeConfigKV>>>,
+    path_snapshots: String,
 
     pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     tx_ttls: Vec<flume::Sender<TtlRequest>>,
@@ -105,7 +115,7 @@ pub struct StateMachineMemory {
 
 impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfigKV>, StorageError<NodeId>> {
-        let (last_log_id, last_membership, snapshot_bytes) = {
+        let (meta, snapshot_bytes) = {
             let data = self.data.read().await;
 
             // TODO should we include notifications in snapshots as well? -> unsure if it makes sense or not
@@ -146,46 +156,55 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             #[cfg(not(feature = "dlock"))]
             let locks_bytes: Vec<u8> = Vec::default();
 
-            let snap: SnapshotDataInner = (caches, ttls, locks_bytes);
+            let now = Utc::now().timestamp();
+            let snapshot_id = if let Some(last) = data.last_applied_log_id {
+                format!("{}-{}-{}", now, last.leader_id, last.index)
+            } else {
+                format!("{}--", now)
+            };
+
+            let meta = SnapshotMeta {
+                last_log_id: data.last_applied_log_id,
+                last_membership: data.last_membership.clone(),
+                snapshot_id,
+            };
+
+            let snap: SnapshotDataContent = (meta.clone(), caches, ttls, locks_bytes);
             let snapshot_bytes =
-                serialize(&snap).map_err(|err| StorageIOError::read_state_machine(&err))?;
+                serialize(&snap).map_err(|err| StorageIOError::write_state_machine(&err))?;
 
-            let last_applied_log = data.last_applied_log_id;
-            let last_membership = data.last_membership.clone();
-
-            (last_applied_log, last_membership, snapshot_bytes)
+            (meta, snapshot_bytes)
         };
 
-        let snapshot_idx = self.snapshot_idx.fetch_add(1, Ordering::Relaxed) + 1;
-        let snapshot_id = if let Some(last) = last_log_id {
-            format!("{}-{}-{}", last.leader_id, last.index, snapshot_idx)
-        } else {
-            format!("--{}", snapshot_idx)
-        };
+        let path = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
+        let mut file = fs::File::create_new(&path)
+            .await
+            .map_err(|err| StorageIOError::read_state_machine(&err))?;
+        file.write_all(&snapshot_bytes)
+            .await
+            .map_err(|err| StorageIOError::read_state_machine(&err))?;
 
         let snapshot = Snapshot {
-            meta: SnapshotMeta {
-                last_log_id,
-                last_membership,
-                snapshot_id,
-            },
-            snapshot: Box::new(Cursor::new(snapshot_bytes)),
+            meta,
+            snapshot: Box::new(file),
         };
-
-        {
-            let mut current_snapshot = self.snapshot.lock().await;
-            *current_snapshot = Some(snapshot.clone());
-        }
 
         Ok(snapshot)
     }
 }
 
 impl StateMachineMemory {
-    pub(crate) async fn new<C>() -> Result<Self, Error>
+    pub(crate) async fn new<C>(base_path: &str) -> Result<Self, Error>
     where
         C: Debug + IntoEnumIterator + CacheIndex,
     {
+        let path_sm = format!("{}/state_machine_cache", base_path);
+        let path_snapshots = format!("{}/snapshots", path_sm);
+        fs::create_dir_all(&path_snapshots).await?;
+        set_path_access(&path_sm, 0o700)
+            .await
+            .expect("Cannot set access rights for path_sm");
+
         // we must make sure that the index is correct and in order
         let mut len = 0;
         for variant in C::iter() {
@@ -221,10 +240,9 @@ impl StateMachineMemory {
         #[cfg(feature = "listen_notify_local")]
         let (tx_notify, rx_notify) = notify_handler::spawn();
 
-        Ok(Self {
-            data: Default::default(),
-            snapshot_idx: AtomicU64::new(0),
-            snapshot: Default::default(),
+        let slf = Self {
+            data: RwLock::new(StateMachineData::default()),
+            path_snapshots,
             tx_caches,
             tx_ttls,
             #[cfg(feature = "listen_notify_local")]
@@ -233,7 +251,158 @@ impl StateMachineMemory {
             rx_notify,
             #[cfg(feature = "dlock")]
             tx_dlock,
-        })
+        };
+
+        if let Some((_, content)) = slf
+            .read_current_snapshot()
+            .await
+            .expect("Cannot read current snapshot")
+        {
+            slf.update_state_machine(content).await;
+        }
+
+        Ok(slf)
+    }
+
+    async fn update_state_machine(&self, content: SnapshotDataContent) {
+        let (meta, kvs, ttls, locks) = content;
+
+        // make sure to hold the metadata lock the whole time
+        let mut data = self.data.write().await;
+
+        for (idx, kv_data) in kvs.into_iter().enumerate() {
+            let (ack, rx) = oneshot::channel();
+            self.tx_caches
+                .get(idx)
+                .unwrap()
+                .send(CacheRequestHandler::SnapshotInstall((kv_data, ack)))
+                .expect("kv handler to always be running");
+            rx.await
+                .expect("to always receive an answer from the kv handler");
+        }
+
+        for (idx, kv_data) in ttls.into_iter().enumerate() {
+            let (ack, rx) = oneshot::channel();
+            self.tx_ttls
+                .get(idx)
+                .unwrap()
+                .send(TtlRequest::SnapshotInstall((kv_data, ack)))
+                .expect("ttl handler to always be running");
+            rx.await
+                .expect("to always receive an answer from the ttl handler");
+        }
+
+        #[cfg(feature = "dlock")]
+        {
+            let locks: HashMap<String, dlock_handler::LockQueue> = deserialize(&locks).unwrap();
+            let (ack, rx) = oneshot::channel();
+            self.tx_dlock
+                .send(LockRequest::SnapshotInstall((locks, ack)))
+                .expect("locks handler to always be running");
+            rx.await
+                .expect("to always get an answer from locks handler");
+        }
+
+        data.last_applied_log_id = meta.last_log_id;
+        data.last_membership = meta.last_membership;
+    }
+
+    pub async fn read_current_snapshot(
+        &self,
+    ) -> StorageResult<Option<(String, SnapshotDataContent)>> {
+        let mut list = tokio::fs::read_dir(&self.path_snapshots)
+            .await
+            .map_err(|err| StorageError::IO {
+                source: StorageIOError::read(&err),
+            })?;
+
+        let mut latest_ts: Option<i64> = None;
+        let mut latest_file_name = None;
+        while let Ok(Some(entry)) = list.next_entry().await {
+            let file_name = entry.file_name();
+            let name = file_name.to_str().unwrap_or_default();
+
+            let meta = entry.metadata().await.map_err(|err| StorageError::IO {
+                source: StorageIOError::read(&err),
+            })?;
+            if meta.is_dir() {
+                warn!("Invalid folder in snapshots dir: {}", name);
+                continue;
+            }
+
+            let Some((ts, rest)) = name.split_once('-') else {
+                warn!("Invalid filename in snapshots dir: {}", name);
+                continue;
+            };
+            let Ok(ts) = ts.parse::<i64>() else {
+                warn!(
+                    "Invalid filename in snapshots dir, does not start with TS: {}",
+                    name
+                );
+                continue;
+            };
+
+            if let Some(latest) = latest_ts {
+                if ts > latest {
+                    latest_ts = Some(ts);
+                    latest_file_name = Some(name.to_string());
+                } else if ts == latest {
+                    // may happen if 2 snapshots have been created at the exact same second
+                    let Some((rest_, log_id)) = name.rsplit_once('-') else {
+                        warn!("Invalid filename in snapshots dir: {}", name);
+                        continue;
+                    };
+                    let Ok(log_id) = log_id.parse::<i64>() else {
+                        warn!(
+                            "Invalid filename in snapshots dir, invalid log id: {}",
+                            name
+                        );
+                        continue;
+                    };
+
+                    let last_name = latest_file_name.as_deref().unwrap_or_default();
+                    let Some((rest_, log_id_latest)) = name.rsplit_once('-') else {
+                        warn!("Invalid filename in snapshots dir: {}", name);
+                        continue;
+                    };
+                    let Ok(log_id_latest) = log_id_latest.parse::<i64>() else {
+                        warn!(
+                            "Invalid filename in snapshots dir, invalid log id: {}",
+                            name
+                        );
+                        continue;
+                    };
+
+                    if log_id > log_id_latest {
+                        latest_ts = Some(ts);
+                        latest_file_name = Some(name.to_string());
+                    }
+                }
+            } else {
+                latest_ts = Some(ts);
+                latest_file_name = Some(name.to_string());
+            }
+        }
+        if latest_ts.is_none() {
+            return Ok(None);
+        }
+
+        debug_assert!(latest_file_name.is_some());
+        let path = format!(
+            "{}/{}",
+            self.path_snapshots,
+            latest_file_name.unwrap_or_default()
+        );
+
+        let bytes = fs::read(&path)
+            .await
+            .map_err(|e| StorageIOError::read_snapshot(None, &e))?;
+
+        Ok(Some((
+            path,
+            deserialize::<SnapshotDataContent>(&bytes)
+                .map_err(|e| StorageIOError::read_snapshot(None, &e))?,
+        )))
     }
 }
 
@@ -397,67 +566,52 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         self.clone()
     }
 
-    async fn begin_receiving_snapshot(
-        &mut self,
-    ) -> Result<Box<Cursor<Vec<u8>>>, StorageError<NodeId>> {
-        Ok(Box::new(Cursor::new(Vec::new())))
+    #[tracing::instrument(skip_all)]
+    async fn begin_receiving_snapshot(&mut self) -> Result<Box<fs::File>, StorageError<NodeId>> {
+        let path = format!("{}/temp", self.path_snapshots);
+        info!("Saving incoming snapshot to {}", path);
+
+        // clean up possible existing old data
+        let _ = fs::remove_file(&path).await;
+
+        match fs::File::create(path).await {
+            Ok(file) => Ok(Box::new(file)),
+            Err(err) => Err(StorageError::IO {
+                source: StorageIOError::write(&err),
+            }),
+        }
     }
 
+    #[tracing::instrument(skip_all)]
     async fn install_snapshot(
         &mut self,
         meta: &SnapshotMeta<NodeId, Node>,
         snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
-        let mut current_snapshot = self.snapshot.lock().await;
+        let src = format!("{}/temp", self.path_snapshots);
+        let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
+        fs::copy(&src, &dest)
+            .await
+            .map_err(|err| StorageError::IO {
+                source: StorageIOError::write(&err),
+            })?;
 
-        let (kvs, ttls, locks) = deserialize::<SnapshotDataInner>(snapshot.get_ref())
+        fs::remove_file(src).await.map_err(|err| StorageError::IO {
+            source: StorageIOError::write(&err),
+        })?;
+
+        let bytes = fs::read(dest)
+            .await
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
 
-        // make sure to hold the metadata lock the whole time
-        let mut data = self.data.write().await;
+        let (meta_snap, kvs, ttls, locks) = deserialize::<SnapshotDataContent>(&bytes)
+            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+        debug_assert_eq!(meta.snapshot_id, meta_snap.snapshot_id);
+        debug_assert_eq!(meta.last_log_id, meta_snap.last_log_id);
+        debug_assert_eq!(meta.last_membership, meta_snap.last_membership);
 
-        for (idx, kv_data) in kvs.into_iter().enumerate() {
-            let (ack, rx) = oneshot::channel();
-            self.tx_caches
-                .get(idx)
-                .unwrap()
-                .send(CacheRequestHandler::SnapshotInstall((kv_data, ack)))
-                .expect("kv handler to always be running");
-            rx.await
-                .expect("to always receive an answer from the kv handler");
-        }
-
-        for (idx, kv_data) in ttls.into_iter().enumerate() {
-            let (ack, rx) = oneshot::channel();
-            self.tx_ttls
-                .get(idx)
-                .unwrap()
-                .send(TtlRequest::SnapshotInstall((kv_data, ack)))
-                .expect("ttl handler to always be running");
-            rx.await
-                .expect("to always receive an answer from the ttl handler");
-        }
-
-        #[cfg(feature = "dlock")]
-        {
-            let locks: HashMap<String, dlock_handler::LockQueue> = deserialize(&locks).unwrap();
-            let (ack, rx) = oneshot::channel();
-            self.tx_dlock
-                .send(LockRequest::SnapshotInstall((locks, ack)))
-                .expect("locks handler to always be running");
-            rx.await
-                .expect("to always get an answer from locks handler");
-        }
-
-        let snapshot_new = Snapshot {
-            meta: meta.clone(),
-            snapshot: snapshot.clone(),
-        };
-
-        data.last_applied_log_id = meta.last_log_id;
-        data.last_membership = meta.last_membership.clone();
-
-        *current_snapshot = Some(snapshot_new);
+        self.update_state_machine((meta_snap, kvs, ttls, locks))
+            .await;
 
         Ok(())
     }
@@ -465,6 +619,20 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfigKV>>, StorageError<NodeId>> {
-        Ok(self.snapshot.lock().await.clone())
+        match self.read_current_snapshot().await? {
+            None => Ok(None),
+            Some((path, (meta, kvs, ttls, locks))) => {
+                let file = fs::File::open(path).await.map_err(|err| StorageError::IO {
+                    source: StorageIOError::read(&err),
+                })?;
+
+                let snapshot = Snapshot {
+                    meta,
+                    snapshot: Box::new(file),
+                };
+
+                Ok(Some(snapshot))
+            }
+        }
     }
 }

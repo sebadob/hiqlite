@@ -84,6 +84,17 @@ pub struct NodeConfig {
     /// Maximum WAL size in bytes.
     #[cfg(not(feature = "rocksdb"))]
     pub wal_size: u32,
+    /// Set to `true` to store the cache WAL + Snapshots on disk instead of keeping them in memory.
+    /// The Caches themselves will always be in-memory only. The default is `false`, but `true` will
+    /// effectively reduce the total memory used, because otherwise the WAL + Snapshot in memory
+    /// would be duplicate data. WAL + Snapshots on disk should always be used for bigger caches,
+    /// because it would not require a complete cluster re-join and snapshot + WAL sync after a
+    /// restart and make the Cache persistent, as then in-memory Caches will be rebuilt from disk.
+    ///
+    /// Keep in mind that the in-memory WAL storage is roughly 4 times faster than the one on disk,
+    /// even with memory mapped WAL files (depending on your disk of course).
+    #[cfg(feature = "cache")]
+    pub cache_storage_disk: bool,
     /// The internal Raft config. This must be the same on each node.
     /// You will get good defaults with `NodeConfig::default_raft_config(_)`.
     pub raft_config: RaftConfig,
@@ -107,7 +118,7 @@ pub struct NodeConfig {
     #[cfg(feature = "dashboard")]
     pub password_dashboard: Option<String>,
     /// Artificial shutdown delay for a multi-node deployment. This should be at least:
-    /// `(raft_config.election_timeout_max + raft_config.heartbeat_interval) * 2`
+    /// `raft_config.election_timeout_max + raft_config.heartbeat_interval`
     /// You may want to increase it in case you also use a bigger cache size and need a bit more
     /// headroom for replications during rolling releases.
     pub shutdown_delay_millis: u32,
@@ -129,6 +140,8 @@ impl Default for NodeConfig {
             wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
             #[cfg(not(feature = "rocksdb"))]
             wal_size: 2 * 1024 * 1024,
+            #[cfg(feature = "cache")]
+            cache_storage_disk: false,
             raft_config: Self::default_raft_config(10_000),
             tls_raft: None,
             tls_api: None,
@@ -200,6 +213,13 @@ impl NodeConfig {
                 .expect("Cannot parse HQL_NODE_ID to u64")
         };
 
+        #[cfg(feature = "cache")]
+        let cache_storage_disk = env::var("HQL_CACHE_STORAGE_DISK")
+            .as_deref()
+            .unwrap_or("false")
+            .parse::<bool>()
+            .expect("Cannot parse HQL_CACHE_STORAGE_DISK as bool");
+
         let logs_keep = env::var("HQL_LOGS_UNTIL_SNAPSHOT")
             .unwrap_or_else(|_| "10000".to_string())
             .parse::<u64>()
@@ -246,6 +266,8 @@ impl NodeConfig {
             wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
             #[cfg(not(feature = "rocksdb"))]
             wal_size: 2 * 1024 * 1024,
+            #[cfg(feature = "cache")]
+            cache_storage_disk,
             raft_config: Self::default_raft_config(logs_keep),
             tls_raft: ServerTlsConfig::from_env("RAFT"),
             tls_api: ServerTlsConfig::from_env("API"),
@@ -261,7 +283,7 @@ impl NodeConfig {
             password_dashboard: DashboardState::from_env().password_dashboard,
             shutdown_delay_millis: env::var("HQL_SHUTDOWN_DELAY_MILLS")
                 .as_deref()
-                .unwrap_or("5000")
+                .unwrap_or("3000")
                 .parse()
                 .expect("Cannot parse HQL_SHUTDOWN_DELAY_MILLS as u32"),
         };

@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use tokio::sync::MutexGuard;
+use tracing::info;
 
 #[inline(always)]
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
@@ -28,7 +28,14 @@ pub async fn is_raft_initialized(
         #[cfg(feature = "sqlite")]
         RaftType::Sqlite => {
             if !state.raft_db.raft.is_initialized().await? {
-                Ok(false)
+                // We might have an initialized Raft from old ticks, but still be in an
+                // un-initialized state with no members after a volume loss
+                let members = get_raft_metrics(state, raft_type).await.membership_config;
+                if members.membership().nodes().count() > 0 {
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
             } else {
                 /*
                 We can get in a tricky situation here.
@@ -68,7 +75,54 @@ pub async fn is_raft_initialized(
             }
         }
         #[cfg(feature = "cache")]
-        RaftType::Cache => Ok(state.raft_cache.raft.is_initialized().await?),
+        RaftType::Cache => {
+            if !state.raft_cache.raft.is_initialized().await? {
+                // We might have an initialized Raft from old ticks, but still be in an
+                // un-initialized state with no members after a volume loss
+                let members = get_raft_metrics(state, raft_type).await.membership_config;
+                if members.membership().nodes().count() > 0 {
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            } else {
+                /*
+                We can get in a tricky situation here.
+                In most cases, the `.is_initialized()` gives just the information we want.
+                But, if *this* node lost its volume and therefore membership state, and another
+                leader is still running and trying to reach *this* node before it can fully start
+                up (race condition), the raft will report being initialized via this check, while
+                it actually is not, because it lost all its state.
+                If we get into this situation, we will have a committed leader vote, but no other
+                data like logs and membership config.
+                 */
+
+                let metrics = state.raft_cache.raft.server_metrics().borrow().clone();
+
+                #[cfg(debug_assertions)]
+                if metrics.current_leader.is_none()
+                    && metrics.vote.leader_id().node_id == state.id
+                    && metrics.vote.committed
+                {
+                    panic!(
+                        "current_leader.is_none() && metrics.vote.leader_id().node_id == \
+                        state.id && metrics.vote.committed:\n{:?}",
+                        metrics
+                    )
+                }
+
+                if metrics.vote.committed
+                    && metrics.vote.leader_id.node_id != state.id
+                    && metrics.current_leader.is_none()
+                {
+                    // If we get here, we have a race condition and a remote leader initialized this
+                    // node after a data volume loss before it had a change to re-join and sync data.
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
+            }
+        }
         RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
     }
 }
@@ -96,26 +150,12 @@ pub async fn get_raft_metrics(
     }
 }
 
-/// Raft locking - necessary for auto-cluster-join scenarios of remote notes to prevent
-/// race conditions.
-pub async fn lock_raft<'a>(
-    state: &'a Arc<AppState>,
-    raft_type: &'a RaftType,
-) -> MutexGuard<'a, ()> {
-    match raft_type {
-        #[cfg(feature = "sqlite")]
-        RaftType::Sqlite => state.raft_db.lock.lock().await,
-        #[cfg(feature = "cache")]
-        RaftType::Cache => state.raft_cache.lock.lock().await,
-        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
-    }
-}
-
 pub async fn add_new_learner(
     state: &Arc<AppState>,
     raft_type: &RaftType,
     node: Node,
 ) -> Result<(), Error> {
+    info!("Adding Node as new {:?} Learner: {:?}", raft_type, node);
     match raft_type {
         #[cfg(feature = "sqlite")]
         RaftType::Sqlite => {
@@ -141,6 +181,7 @@ pub async fn change_membership(
     members: BTreeSet<u64>,
     retain: bool,
 ) -> Result<(), Error> {
+    info!("Changing {:?} Raft membership to: {:?}", raft_type, members);
     match raft_type {
         #[cfg(feature = "sqlite")]
         RaftType::Sqlite => {

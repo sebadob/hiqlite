@@ -2,7 +2,9 @@ use crate::start::build_config;
 use crate::{cache, check, log, Cache, TEST_DATA_DIR};
 use futures_util::future::join_all;
 use hiqlite::{start_node_with_cache, Client, Error};
+use std::env;
 use std::time::Duration;
+use tokio::time::Instant;
 use tokio::{fs, time};
 
 pub async fn test_self_healing(
@@ -10,11 +12,14 @@ pub async fn test_self_healing(
     mut client_2: Client,
     client_3: Client,
 ) -> Result<(), Error> {
+    // make sure to ignore WAL file locks for self-healing tests
+    unsafe { env::set_var("HQL_IGNORE_WAL_LOCK", "true") }
+
     check::is_client_db_healthy(&client_1, Some(1)).await?;
     check::is_client_db_healthy(&client_2, Some(2)).await?;
     check::is_client_db_healthy(&client_3, Some(3)).await?;
 
-    log("Test cache recovery from snapshot + logs");
+    log("Test cache recovery from local snapshot + logs");
     time::sleep(Duration::from_secs(2)).await;
     let metrics = client_1.metrics_cache().await?;
     assert!(metrics.last_log_index.unwrap() > 5);
@@ -104,8 +109,9 @@ async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Resul
     // at this point, we have a snapshot -> insert a new value with TTL and make sure
     // everything is fine after the restart and replication
     let key = "purge_key";
-    let value = "after snap value".to_string();
-    let ttl = 15u64;
+    let value = "after snap value";
+    let ttl = 10u64;
+    let inserted = Instant::now();
     client
         .put(Cache::One, key, &value, Some(ttl as i64))
         .await?;
@@ -122,23 +128,22 @@ async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Resul
     check::is_client_db_healthy(&client, Some(node_id)).await?;
     // panic!("############### client id {}", node_id);
 
-    time::sleep(Duration::from_millis(100)).await;
-    let v: String = client.get(Cache::One, key).await?.unwrap();
+    let millis = inserted.elapsed().as_millis() as u64;
+    assert!(millis < ttl * 1000);
+    log(format!("Elapsed: {} ms", millis));
+    time::sleep(Duration::from_millis(ttl * 1000 - millis - 1000)).await;
+    let v: String = client
+        .get(Cache::One, key)
+        .await?
+        .expect("Cache value to still be there after restart and before expiry");
     assert_eq!(v, value);
 
-    // TODO for some reason this node loses the leader and gets stuck after some sleeping
-    // -> is this maybe only test-related again because of weird timers handling under the hood
-    //    and everything being started from the same test context?
-    // -> never saw this in any "real" deployment so far
-    // -> somehow, when the sleep is too long, it seems to affect the network answers and the raft
-    //    appears a being stopped even when it is not?
-
-    // // wait until the TTL for the values has expired to make sure it's gone after restart + sync
-    // let mut v: Option<String> = client.get(Cache::One, key).await?;
-    // while v.is_some() {
-    //     time::sleep(Duration::from_millis(100)).await;
-    //     v = client.get(Cache::One, key).await?;
-    // }
+    time::sleep(Duration::from_millis(
+        ttl * 1000 - inserted.elapsed().as_millis() as u64 + 1500,
+    ))
+    .await;
+    let v: Option<String> = client.get(Cache::One, key).await?;
+    assert!(v.is_none());
 
     Ok(client)
 }

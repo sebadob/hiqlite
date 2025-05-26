@@ -1,7 +1,6 @@
 #![allow(unused)]
 
 use crate::app_state::{AppState, RaftType};
-use crate::init::IsPristineNode1;
 use crate::network::NetworkStreaming;
 #[cfg(feature = "cache")]
 use crate::{
@@ -42,7 +41,7 @@ pub(crate) async fn start_raft_db(
 ) -> Result<StateRaftDB, Error> {
     #[cfg(feature = "migrate-rocksdb")]
     logs::migrate::check_migrate_rocksdb(
-        logs::logs_dir(&node_config.data_dir),
+        logs::logs_dir_db(&node_config.data_dir),
         node_config.wal_size,
     )
     .await?;
@@ -53,7 +52,7 @@ pub(crate) async fn start_raft_db(
             .await;
     #[cfg(not(feature = "rocksdb"))]
     let log_store = hiqlite_wal::LogStore::<TypeConfigSqlite>::start(
-        logs::logs_dir(&node_config.data_dir),
+        logs::logs_dir_db(&node_config.data_dir),
         node_config.wal_sync,
         node_config.wal_size,
     )
@@ -113,11 +112,10 @@ pub(crate) async fn start_raft_db(
 
     Ok(StateRaftDB {
         raft,
-        lock: Default::default(),
         #[cfg(feature = "rocksdb")]
         logs_writer,
         #[cfg(not(feature = "rocksdb"))]
-        shutdown_sender: shutdown_handle,
+        shutdown_handle,
         sql_writer,
         read_pool,
         log_statements: node_config.log_statements,
@@ -129,13 +127,11 @@ pub(crate) async fn start_raft_db(
 pub(crate) async fn start_raft_cache<C>(
     node_config: NodeConfig,
     raft_config: Arc<RaftConfig>,
-) -> Result<(IsPristineNode1, StateRaftCache), Error>
+) -> Result<StateRaftCache, Error>
 where
     C: Debug + IntoEnumIterator + crate::cache_idx::CacheIndex,
 {
-    let log_store = logs::memory::LogStoreMemory::new();
-    let state_machine_store = Arc::new(StateMachineMemory::new::<C>().await?);
-
+    let state_machine_store = Arc::new(StateMachineMemory::new::<C>(&node_config.data_dir).await?);
     let network = NetworkStreaming {
         node_id: node_config.node_id,
         tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
@@ -153,18 +149,43 @@ where
     #[cfg(feature = "dlock")]
     let tx_dlock = state_machine_store.tx_dlock.clone();
 
-    let raft = openraft::Raft::new(
-        node_config.node_id,
-        raft_config.clone(),
-        network,
-        log_store,
-        state_machine_store,
-    )
-    .await
-    .expect("Raft create failed");
+    let (raft, shutdown_handle) = if node_config.cache_storage_disk {
+        let log_store = hiqlite_wal::LogStore::<TypeConfigKV>::start(
+            logs::logs_dir_cache(&node_config.data_dir),
+            node_config.wal_sync,
+            node_config.wal_size,
+        )
+        .await?;
+        let shutdown_handle = log_store.shutdown_handle();
 
-    let is_pristine = init::init_pristine_node_1_cache(
+        let raft = openraft::Raft::new(
+            node_config.node_id,
+            raft_config.clone(),
+            network,
+            log_store,
+            state_machine_store,
+        )
+        .await
+        .expect("Raft create failed");
+
+        (raft, Some(shutdown_handle))
+    } else {
+        let raft = openraft::Raft::new(
+            node_config.node_id,
+            raft_config.clone(),
+            network,
+            logs::memory::LogStoreMemory::new(),
+            state_machine_store,
+        )
+        .await
+        .expect("Raft create failed");
+
+        (raft, None)
+    };
+
+    init::init_pristine_node_1_cache(
         &raft,
+        node_config.cache_storage_disk,
         node_config.node_id,
         &node_config.nodes,
         &node_config.secret_api,
@@ -177,19 +198,17 @@ where
     )
     .await?;
 
-    Ok((
-        is_pristine,
-        StateRaftCache {
-            raft,
-            lock: Default::default(),
-            tx_caches,
-            #[cfg(feature = "listen_notify")]
-            tx_notify,
-            #[cfg(feature = "listen_notify_local")]
-            rx_notify,
-            #[cfg(feature = "dlock")]
-            tx_dlock,
-            is_raft_stopped: AtomicBool::new(false),
-        },
-    ))
+    Ok(StateRaftCache {
+        raft,
+        tx_caches,
+        #[cfg(feature = "listen_notify")]
+        tx_notify,
+        #[cfg(feature = "listen_notify_local")]
+        rx_notify,
+        #[cfg(feature = "dlock")]
+        tx_dlock,
+        is_raft_stopped: AtomicBool::new(false),
+        shutdown_handle,
+        cache_storage_disk: node_config.cache_storage_disk,
+    })
 }

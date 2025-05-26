@@ -17,5 +17,5 @@ openraft::declare_raft_types!(
         D = CacheRequest,
         R = CacheResponse,
         Node = Node,
-        SnapshotData = Cursor<Vec<u8>>,
+        SnapshotData = tokio::fs::File,
 );

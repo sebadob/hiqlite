@@ -586,14 +586,10 @@ async fn client_stream(
             break;
         }
 
-        // copy all existing in-flight to in-flight buffer to make sure we use them first
-        info!("copy all existing in-flight to in-flight buffer to make sure we use them first");
         for (req_id, ack) in in_flight.drain() {
             in_flight_buf.insert(req_id, ack);
         }
         assert!(in_flight.is_empty());
-        // reset to a reasonable size for the next start to keep memory usage under control
-        in_flight = HashMap::with_capacity(8);
 
         info!("client stream tasks killed - re-connecting now");
     }

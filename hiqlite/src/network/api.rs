@@ -1,9 +1,12 @@
 use crate::app_state::RaftType;
+use crate::helpers::deserialize;
 use crate::network::handshake::HandshakeSecret;
 use crate::network::{serialize_network, validate_secret, AppStateExt, Error};
+use crate::{HEALTH_CHECK_DELAY_SECS, START_TS};
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
+use chrono::Utc;
 use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -31,13 +34,10 @@ use crate::{
     store::state_machine::sqlite::state_machine::{Query, QueryWrite},
 };
 
-use crate::helpers::deserialize;
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
-use crate::{HEALTH_CHECK_DELAY_SECS, START_TS};
 #[cfg(feature = "listen_notify")]
 use axum::response::sse;
-use chrono::Utc;
 #[cfg(feature = "listen_notify")]
 use futures_util::stream::Stream;
 
@@ -123,10 +123,10 @@ pub async fn stream(
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
     let (response, socket) = ws.upgrade()?;
+    info!("New Raft Stream for {:?}", raft_type);
 
     tokio::task::spawn(async move {
-        if let Err(err) = handle_socket_concurrent(state, raft_type, socket).await {
-            // if let Err(err) = handle_socket_sequential(state, socket).await {
+        if let Err(err) = handle_socket_concurrent(state, socket).await {
             error!("Error in websocket connection: {}", err);
         }
     });
@@ -200,6 +200,8 @@ pub(crate) enum ApiStreamResponsePayload {
 
     #[cfg(feature = "cache")]
     KV(Result<CacheResponse, Error>),
+    #[cfg(feature = "cache")]
+    MembershipRemove(Result<(), Error>),
 
     #[cfg(feature = "dlock")]
     Lock(LockState),
@@ -216,13 +218,12 @@ pub(crate) enum WsWriteMsg {
 
 async fn handle_socket_concurrent(
     state: AppStateExt,
-    raft_type: RaftType,
     socket: upgrade::UpgradeFut,
 ) -> Result<(), fastwebsockets::WebSocketError> {
     let mut ws = socket.await?;
     ws.set_auto_close(true);
 
-    let client_id = match HandshakeSecret::server(&mut ws, state.secret_api.as_bytes()).await {
+    let _client_id = match HandshakeSecret::server(&mut ws, state.secret_api.as_bytes()).await {
         Ok(id) => id,
         Err(err) => {
             error!("Error during WebSocket handshake: {}", err);
@@ -238,30 +239,6 @@ async fn handle_socket_concurrent(
     // IMPORTANT: the reader is NOT CANCEL SAFE in v0.8!
     let mut read = FragmentCollectorRead::new(rx);
 
-    {
-        // make sure to NEVER lose the result of an execute from remote!
-        // if we received one which is being executed and the TCP stream dies in between, we MUST
-        // ENSURE that in case it was an Ok(_), the result gets to the client! Otherwise, with retry
-        // logic we might end up modifying something twice!
-        let mut buf = {
-            let mut map = state.get_buf_lock(&raft_type).await;
-            map.remove(&client_id).unwrap_or_default()
-        };
-
-        info!("Emptying buffered Client Stream responses");
-        while let Some(payload) = buf.pop_front() {
-            let frame = Frame::binary(Payload::Owned(payload));
-            if let Err(err) = write.write_frame(frame).await {
-                // if we error again, we will throw the buffer away, since the problem is bigger
-                // for sure and messages will most probably not be relevant anymore when we are
-                // back online
-                error!("Error during WebSocket handshake: {}", err);
-                return Ok(());
-            }
-        }
-    }
-
-    let st = state.clone();
     let handle_write = task::spawn(async move {
         let mut buf = VecDeque::default();
 
@@ -291,17 +268,6 @@ async fn handle_socket_concurrent(
             if let WsWriteMsg::Payload(resp) = req {
                 buf.push_back(serialize_network(&resp));
             }
-        }
-
-        {
-            let mut lock = st.get_buf_lock(&raft_type).await;
-            let old = lock.insert(client_id, buf);
-            assert!(
-                old.is_none() || old == Some(VecDeque::default()),
-                "client buffer for {} should never exist already when we insert a new one:\n{:?}",
-                raft_type.as_str(),
-                old
-            );
         }
 
         let _ = write

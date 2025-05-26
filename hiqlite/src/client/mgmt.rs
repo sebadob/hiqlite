@@ -162,7 +162,6 @@ impl Client {
                 }
                 Err(err) => {
                     debug!("Waiting for healthy Raft cache: {:?}", err);
-                    // tracing::warn!("Waiting for healthy Raft cache");
                     info!("Waiting for healthy Raft cache");
                     time::sleep(Duration::from_millis(500)).await;
                 }
@@ -209,100 +208,64 @@ impl Client {
 
         #[cfg(feature = "cache")]
         {
-            let mut metrics = state.raft_cache.raft.metrics().borrow().clone();
-            while metrics.current_leader.is_none() {
-                info!("No leader exists for the cache raft - waiting ...");
-                time::sleep(Duration::from_millis(500)).await;
-                metrics = state.raft_cache.raft.metrics().borrow().clone();
-            }
-            let node_count = metrics.membership_config.nodes().count();
-            is_single_instance = node_count == 1;
-
-            if !is_single_instance && metrics.current_leader.unwrap() == state.id {
-                // if we are the leader, we want to try to make a graceful switch
-                // before shutting down to cause less stress and hiccups
-                info!("We are the cache raft leader - disabling elect and trigger it");
-                state.raft_cache.raft.runtime_config().elect(false);
-                state.raft_cache.raft.trigger().elect().await?;
-            }
-
             info!("Shutting down raft cache layer");
-            state.raft_cache.raft.shutdown().await?;
             state
                 .raft_cache
                 .is_raft_stopped
                 .store(true, Ordering::Relaxed);
-            state.raft_cache.raft.runtime_config().heartbeat(false);
-            // no need to await any writer shutdowns, since the cache is ephemeral anyway
-            // -> no cleanup or flushing necessary
-        }
 
-        #[cfg(feature = "sqlite")]
-        {
-            let mut metrics = state.raft_db.raft.metrics().borrow().clone();
-            while metrics.current_leader.is_none() {
-                info!("No leader exists for the DB raft - waiting ...");
-                time::sleep(Duration::from_millis(500)).await;
-                metrics = state.raft_db.raft.metrics().borrow().clone();
-            }
+            let metrics = state.raft_cache.raft.metrics().borrow().clone();
             let node_count = metrics.membership_config.nodes().count();
             is_single_instance = node_count == 1;
 
-            if !is_single_instance && metrics.current_leader.unwrap() == state.id {
-                // if we are the leader, we want to try to make a graceful switch
-                // before shutting down to cause less stress and hiccups
-                info!("We are the DB raft leader - disabling elect and trigger it");
-                state.raft_db.raft.runtime_config().elect(false);
-                state.raft_db.raft.trigger().elect().await?;
+            state.raft_cache.raft.shutdown().await?;
+            if let Some(handle) = &state.raft_cache.shutdown_handle {
+                handle.shutdown().await?;
             }
+            let _ = tx_client_cache.send_async(ClientStreamReq::Shutdown).await;
+        };
+
+        #[cfg(feature = "sqlite")]
+        {
+            state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
+
+            let metrics = state.raft_db.raft.metrics().borrow().clone();
+            let node_count = metrics.membership_config.nodes().count();
+            is_single_instance = node_count == 1;
 
             info!("Shutting down raft sqlite layer");
-            let tr = state.raft_db.raft.trigger();
-            tr.elect().await?;
-            match state.raft_db.raft.shutdown().await {
-                Ok(_) => {
-                    state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
-                    state.raft_db.raft.runtime_config().heartbeat(false);
-
-                    info!("Shutting down sqlite logs writer");
-                    #[cfg(feature = "rocksdb")]
-                    {
-                        let (tx_logs, rx_logs) = tokio::sync::oneshot::channel();
-                        state
-                            .raft_db
-                            .logs_writer
-                            .send_async(ActionWrite::Shutdown(tx_logs))
-                            .await
-                            .expect("The logs writer to always be listening");
-                        rx_logs
-                            .await
-                            .expect("To always get an answer from Logs writer");
-                    }
-                    #[cfg(not(feature = "rocksdb"))]
-                    state.raft_db.shutdown_sender.shutdown().await?;
-
-                    info!("Shutting down sqlite writer");
-                    let (tx_sm, rx_sm) = tokio::sync::oneshot::channel();
-                    state
-                        .raft_db
-                        .sql_writer
-                        .send_async(WriterRequest::Shutdown(tx_sm))
-                        .await
-                        .expect("The state machine writer to always be listening");
-                    rx_sm
-                        .await
-                        .expect("To always get an answer from SQL writer");
-                }
-                Err(err) => {
-                    return Err(Error::Error(err.to_string().into()));
-                }
+            state.raft_db.raft.shutdown().await?;
+            info!("Shutting down sqlite logs writer");
+            #[cfg(feature = "rocksdb")]
+            {
+                let (tx_logs, rx_logs) = tokio::sync::oneshot::channel();
+                state
+                    .raft_db
+                    .logs_writer
+                    .send_async(ActionWrite::Shutdown(tx_logs))
+                    .await
+                    .expect("The logs writer to always be listening");
+                rx_logs
+                    .await
+                    .expect("To always get an answer from Logs writer");
             }
-        }
+            #[cfg(not(feature = "rocksdb"))]
+            state.raft_db.shutdown_handle.shutdown().await?;
 
-        #[cfg(feature = "cache")]
-        let _ = tx_client_cache.send_async(ClientStreamReq::Shutdown).await;
-        #[cfg(feature = "sqlite")]
-        let _ = tx_client_db.send_async(ClientStreamReq::Shutdown).await;
+            info!("Shutting down sqlite writer");
+            let (tx_sm, rx_sm) = tokio::sync::oneshot::channel();
+            state
+                .raft_db
+                .sql_writer
+                .send_async(WriterRequest::Shutdown(tx_sm))
+                .await
+                .expect("The state machine writer to always be listening");
+            rx_sm
+                .await
+                .expect("To always get an answer from SQL writer");
+
+            let _ = tx_client_db.send_async(ClientStreamReq::Shutdown).await;
+        }
 
         if let Some(tx) = tx_shutdown {
             tx.send(true)
@@ -314,8 +277,8 @@ impl Client {
             // We need to do a short sleep only to avoid race conditions during rolling releases.
             // This also helps to make re-joins after a restart smoother in case you need to
             // replicate a bigger snapshot for an in-memory cache.
-            info!("Shutting down in {} ms ...", state.shutdown_relay_millis);
-            time::sleep(Duration::from_millis(state.shutdown_relay_millis as u64)).await;
+            info!("Shutting down in {} ms ...", state.shutdown_delay_millis);
+            time::sleep(Duration::from_millis(state.shutdown_delay_millis as u64)).await;
         }
 
         info!("Shutdown complete");

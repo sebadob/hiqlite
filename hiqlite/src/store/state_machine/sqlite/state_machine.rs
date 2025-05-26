@@ -299,7 +299,6 @@ impl StateMachineSqlite {
         .await?
     }
 
-    /// TODO provide a way to pass in conn pool size
     async fn connect_read_pool(
         path: &str,
         filename_db: &str,
@@ -421,8 +420,6 @@ impl StateMachineSqlite {
             let meta = entry.metadata().await.map_err(|err| StorageError::IO {
                 source: StorageIOError::read(&err),
             })?;
-
-            // we only expect sub-dirs in the snapshot dir
             if meta.is_dir() {
                 warn!("Invalid folder in snapshots dir: {}", name);
                 continue;
@@ -740,16 +737,18 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         _snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
         let src = format!("{}/temp", self.path_snapshots);
-        let tar = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
-        fs::copy(&src, &tar).await.map_err(|err| StorageError::IO {
-            source: StorageIOError::write(&err),
-        })?;
+        let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
+        fs::copy(&src, &dest)
+            .await
+            .map_err(|err| StorageError::IO {
+                source: StorageIOError::write(&err),
+            })?;
 
         fs::remove_file(src).await.map_err(|err| StorageError::IO {
             source: StorageIOError::write(&err),
         })?;
 
-        self.update_state_machine_(tar).await?;
+        self.update_state_machine_(dest).await?;
 
         Ok(())
     }
