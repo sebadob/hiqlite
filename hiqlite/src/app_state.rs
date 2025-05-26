@@ -116,5 +116,5 @@ pub struct StateRaftCache {
     #[cfg(feature = "dlock")]
     pub tx_dlock: flume::Sender<LockRequest>,
     pub is_raft_stopped: AtomicBool,
-    pub shutdown_handle: hiqlite_wal::ShutdownHandle,
+    pub shutdown_handle: Option<hiqlite_wal::ShutdownHandle>,
 }

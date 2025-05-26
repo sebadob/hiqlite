@@ -219,7 +219,9 @@ impl Client {
             is_single_instance = node_count == 1;
 
             state.raft_cache.raft.shutdown().await?;
-            state.raft_cache.shutdown_handle.shutdown().await?;
+            if let Some(handle) = &state.raft_cache.shutdown_handle {
+                handle.shutdown().await?;
+            }
             let _ = tx_client_cache.send_async(ClientStreamReq::Shutdown).await;
         };
 
