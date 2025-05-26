@@ -61,86 +61,75 @@ pub(crate) async fn add_learner(
     // -> remove the membership and re-add it as a new learner, so it can catch up again.
     let _lock = state.raft_lock.lock().await;
 
-    let mut metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-    let is_member_already = metrics
-        .membership_config
-        .nodes()
-        .any(|(id, _)| *id == node.id);
-
-    if is_member_already {
-        #[cfg(feature = "cache")]
-        let is_cache = raft_type == RaftType::Cache;
-        #[cfg(not(feature = "cache"))]
-        let is_cache = false;
-
-        if is_cache {
-            warn!(
-                "\n\nNode{:?} is already a cache member - removing it first\n",
-                node
-            );
-            let mut is_voter = metrics
-                .membership_config
-                .voter_ids()
-                .any(|id| id != node.id);
-            let members_remove = metrics
-                .membership_config
-                .nodes()
-                .filter_map(|(id, _)| if *id != node.id { Some(*id) } else { None })
-                .collect::<BTreeSet<u64>>();
-
-            if is_voter {
-                if let Err(err) =
-                    helpers::change_membership(&state, &raft_type, members_remove.clone(), true)
-                        .await
-                {
-                    error!(
-                        "\n\nError setting existing voter node as cache learner: {:?}\n",
-                        err
-                    );
-                    return Err(err);
-                }
-
-                while is_voter {
-                    time::sleep(Duration::from_millis(250)).await;
-                    metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-                    is_voter = metrics
-                        .membership_config
-                        .voter_ids()
-                        .any(|id| id != node.id);
-                }
-            }
-
-            if let Err(err) =
-                helpers::change_membership(&state, &raft_type, members_remove, false).await
-            {
-                error!(
-                    "\n\nError removing existing node from cache members: {:?}\n",
-                    err
-                );
-                return Err(err);
-            }
-            time::sleep(Duration::from_millis(500)).await;
-
-            metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-            let mut is_member = metrics
-                .membership_config
-                .membership()
-                .get_node(&node.id)
-                .is_some();
-            while is_member {
-                time::sleep(Duration::from_millis(100)).await;
-                metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-                is_member = metrics
-                    .membership_config
-                    .membership()
-                    .get_node(&node.id)
-                    .is_some();
-            }
-        } else {
-            info!("\n\nNode is a {:?} Learner already\n", raft_type);
-            return fmt_ok(headers, ());
-        }
-    }
+    // let mut metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+    // let is_member_already = metrics
+    //     .membership_config
+    //     .nodes()
+    //     .any(|(id, _)| *id == node.id);
+    //
+    // if is_member_already {
+    //     warn!(
+    //         "\n\nNode{:?} is already a cache member - removing it first\n",
+    //         node
+    //     );
+    //     let mut is_voter = metrics
+    //         .membership_config
+    //         .voter_ids()
+    //         .any(|id| id != node.id);
+    //     let members_remove = metrics
+    //         .membership_config
+    //         .nodes()
+    //         .filter_map(|(id, _)| if *id != node.id { Some(*id) } else { None })
+    //         .collect::<BTreeSet<u64>>();
+    //
+    //     if is_voter {
+    //         if let Err(err) =
+    //             helpers::change_membership(&state, &raft_type, members_remove.clone(), true).await
+    //         {
+    //             error!(
+    //                 "\n\nError setting existing voter node as cache learner: {:?}\n",
+    //                 err
+    //             );
+    //             return Err(err);
+    //         }
+    //
+    //         while is_voter {
+    //             time::sleep(Duration::from_millis(250)).await;
+    //             metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+    //             is_voter = metrics
+    //                 .membership_config
+    //                 .voter_ids()
+    //                 .any(|id| id != node.id);
+    //         }
+    //     }
+    //
+    //     if let Err(err) =
+    //         helpers::change_membership(&state, &raft_type, members_remove, false).await
+    //     {
+    //         error!(
+    //             "\n\nError removing existing node from cache members: {:?}\n",
+    //             err
+    //         );
+    //         return Err(err);
+    //     }
+    //     time::sleep(Duration::from_millis(500)).await;
+    //
+    //     metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+    //     let mut is_member = metrics
+    //         .membership_config
+    //         .membership()
+    //         .get_node(&node.id)
+    //         .is_some();
+    //     while is_member {
+    //         time::sleep(Duration::from_millis(100)).await;
+    //         metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+    //         is_member = metrics
+    //             .membership_config
+    //             .membership()
+    //             .get_node(&node.id)
+    //             .is_some();
+    //     }
+    // }
 
     let res = helpers::add_new_learner(&state, &raft_type, node).await;
     match res {

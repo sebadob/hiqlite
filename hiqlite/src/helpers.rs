@@ -1,12 +1,12 @@
 use crate::app_state::{AppState, RaftType};
-use crate::{helpers, Error, Node};
+use crate::{Error, Node};
 use bincode::error::{DecodeError, EncodeError};
 use openraft::RaftMetrics;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::info;
 
 #[inline(always)]
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
@@ -31,16 +31,9 @@ pub async fn is_raft_initialized(
                 // We might have an initialized Raft from old ticks, but still be in an
                 // un-initialized state with no members after a volume loss
                 let members = get_raft_metrics(state, raft_type).await.membership_config;
-                let count = members.membership().nodes().count();
-                if count > 0 {
-                    warn!(
-                        "Raft is already initialized. Node Count: {}\n{:?}",
-                        count,
-                        members.membership()
-                    );
+                if members.membership().nodes().count() > 0 {
                     Ok(true)
                 } else {
-                    warn!("Raft is initialized but the membership config is empty\n{:?}\nnodes count {count}", members.membership());
                     Ok(false)
                 }
                 // Ok(false)
@@ -88,16 +81,9 @@ pub async fn is_raft_initialized(
                 // We might have an initialized Raft from old ticks, but still be in an
                 // un-initialized state with no members after a volume loss
                 let members = get_raft_metrics(state, raft_type).await.membership_config;
-                let count = members.membership().nodes().count();
-                if count > 0 {
-                    warn!(
-                        "Raft is already initialized. Node Count: {}\n{:?}",
-                        count,
-                        members.membership()
-                    );
+                if members.membership().nodes().count() > 0 {
                     Ok(true)
                 } else {
-                    warn!("Raft is initialized but the membership config is empty\n{:?}\nnodes count {count}", members.membership());
                     Ok(false)
                 }
                 // Ok(false)

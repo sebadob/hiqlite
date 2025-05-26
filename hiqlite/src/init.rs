@@ -3,7 +3,7 @@ use crate::helpers::{deserialize, serialize};
 use crate::network::management::LearnerReq;
 use crate::network::HEADER_NAME_SECRET;
 use crate::{helpers, Error, Node, NodeId};
-use openraft::{metrics, Membership};
+use openraft::Membership;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
@@ -437,18 +437,18 @@ async fn is_initialized_timeout_sqlite(
     node_id: u64,
     raft: &openraft::Raft<TypeConfigSqlite>,
 ) -> Result<bool, Error> {
-    // Do not try to initialize already initialized nodes
-    if raft.is_initialized().await? {
-        if raft
-            .metrics()
+    let has_any_nodes = || {
+        raft.metrics()
             .borrow()
             .membership_config
             .membership()
             .nodes()
             .any(|(id, _)| *id == node_id)
-        {
-            return Ok(true);
-        }
+    };
+
+    // Do not try to initialize already initialized nodes
+    if raft.is_initialized().await? && has_any_nodes() {
+        return Ok(true);
     }
 
     // If it is not initialized, wait long enough to make sure this
@@ -459,14 +459,7 @@ async fn is_initialized_timeout_sqlite(
 
     // Make sure we are not initialized by now, otherwise go on
     if raft.is_initialized().await? {
-        if raft
-            .metrics()
-            .borrow()
-            .membership_config
-            .membership()
-            .nodes()
-            .any(|(id, _)| *id == node_id)
-        {
+        if has_any_nodes() {
             Ok(true)
         } else {
             warn!("Raft is initialized but the membership config is empty");
@@ -482,18 +475,18 @@ async fn is_initialized_timeout_cache(
     node_id: u64,
     raft: &openraft::Raft<TypeConfigKV>,
 ) -> Result<bool, Error> {
-    // Do not try to initialize already initialized nodes
-    if raft.is_initialized().await? {
-        if raft
-            .metrics()
+    let has_any_nodes = || {
+        raft.metrics()
             .borrow()
             .membership_config
             .membership()
             .nodes()
             .any(|(id, _)| *id == node_id)
-        {
-            return Ok(true);
-        }
+    };
+
+    // Do not try to initialize already initialized nodes
+    if raft.is_initialized().await? && has_any_nodes() {
+        return Ok(true);
     }
 
     // If it is not initialized, wait long enough to make sure this
@@ -504,14 +497,7 @@ async fn is_initialized_timeout_cache(
 
     // Make sure we are not initialized by now, otherwise go on
     if raft.is_initialized().await? {
-        if raft
-            .metrics()
-            .borrow()
-            .membership_config
-            .membership()
-            .nodes()
-            .any(|(id, _)| *id == node_id)
-        {
+        if has_any_nodes() {
             Ok(true)
         } else {
             warn!("Raft is initialized but the membership config is empty");
