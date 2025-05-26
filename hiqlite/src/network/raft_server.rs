@@ -286,7 +286,7 @@ async fn handle_socket(
                 if let Err(err) =
                     helpers::change_membership(&state, &RaftType::Cache, nodes_set, false).await
                 {
-                    error!("\n\nError removing remote Cache Member: {:?}\n", err);
+                    error!("Error removing remote Cache Member: {:?}", err);
                 }
                 break;
             }

@@ -88,6 +88,7 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         s3_config: hiqlite::s3::S3Config::try_from_env(),
         #[cfg(feature = "dashboard")]
         password_dashboard: Some("DoesNotMatterHere".to_string()),
+        cache_storage_disk: true,
         ..Default::default()
     }
 }

@@ -128,16 +128,20 @@ async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Resul
     check::is_client_db_healthy(&client, Some(node_id)).await?;
     // panic!("############### client id {}", node_id);
 
-    time::sleep(Duration::from_millis(1000)).await;
-    assert!(inserted.elapsed().as_secs() < ttl);
-    log(format!("Elapsed: {}", inserted.elapsed().as_secs()));
+    let millis = inserted.elapsed().as_millis() as u64;
+    assert!(millis < ttl * 1000);
+    log(format!("Elapsed: {} ms", millis));
+    time::sleep(Duration::from_millis(ttl * 1000 - millis - 1000)).await;
     let v: String = client
         .get(Cache::One, key)
         .await?
         .expect("Cache value to still be there after restart and before expiry");
     assert_eq!(v, value);
 
-    time::sleep(Duration::from_secs(ttl + 2 - inserted.elapsed().as_secs())).await;
+    time::sleep(Duration::from_millis(
+        ttl * 1000 - inserted.elapsed().as_millis() as u64 + 1500,
+    ))
+    .await;
     let v: Option<String> = client.get(Cache::One, key).await?;
     assert!(v.is_none());
 

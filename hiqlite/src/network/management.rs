@@ -51,97 +51,94 @@ pub(crate) async fn add_learner(
         addr_raft,
         addr_api,
     };
-    info!(
-        "\n\n{:?} requests to be added as {:?} Learner",
-        node, raft_type
-    );
+    info!("{:?} requests to be added as {:?} Learner", node, raft_type);
 
     // Check if the node is maybe already a member.
     // If this is the case, it might do the request because it tries to recover from volume loss.
     // -> remove the membership and re-add it as a new learner, so it can catch up again.
     let _lock = state.raft_lock.lock().await;
 
-    // let mut metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-    // let is_member_already = metrics
-    //     .membership_config
-    //     .nodes()
-    //     .any(|(id, _)| *id == node.id);
-    //
-    // if is_member_already {
-    //     warn!(
-    //         "\n\nNode{:?} is already a cache member - removing it first\n",
-    //         node
-    //     );
-    //     let mut is_voter = metrics
-    //         .membership_config
-    //         .voter_ids()
-    //         .any(|id| id != node.id);
-    //     let members_remove = metrics
-    //         .membership_config
-    //         .nodes()
-    //         .filter_map(|(id, _)| if *id != node.id { Some(*id) } else { None })
-    //         .collect::<BTreeSet<u64>>();
-    //
-    //     if is_voter {
-    //         if let Err(err) =
-    //             helpers::change_membership(&state, &raft_type, members_remove.clone(), true).await
-    //         {
-    //             error!(
-    //                 "\n\nError setting existing voter node as cache learner: {:?}\n",
-    //                 err
-    //             );
-    //             return Err(err);
-    //         }
-    //
-    //         while is_voter {
-    //             time::sleep(Duration::from_millis(250)).await;
-    //             metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-    //             is_voter = metrics
-    //                 .membership_config
-    //                 .voter_ids()
-    //                 .any(|id| id != node.id);
-    //         }
-    //     }
-    //
-    //     if let Err(err) =
-    //         helpers::change_membership(&state, &raft_type, members_remove, false).await
-    //     {
-    //         error!(
-    //             "\n\nError removing existing node from cache members: {:?}\n",
-    //             err
-    //         );
-    //         return Err(err);
-    //     }
-    //     time::sleep(Duration::from_millis(500)).await;
-    //
-    //     metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-    //     let mut is_member = metrics
-    //         .membership_config
-    //         .membership()
-    //         .get_node(&node.id)
-    //         .is_some();
-    //     while is_member {
-    //         time::sleep(Duration::from_millis(100)).await;
-    //         metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-    //         is_member = metrics
-    //             .membership_config
-    //             .membership()
-    //             .get_node(&node.id)
-    //             .is_some();
-    //     }
-    // }
+    #[cfg(feature = "cache")]
+    {
+        let mut metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+        let is_member_already = metrics
+            .membership_config
+            .nodes()
+            .any(|(id, _)| *id == node.id);
+
+        // in-memory only caches must always re-join the cluster and do a full sync after restart
+        if raft_type == RaftType::Cache && !state.raft_cache.cache_storage_disk && is_member_already
+        {
+            warn!(
+                "Node{:?} is already a cache member - removing it first",
+                node
+            );
+            let mut is_voter = metrics
+                .membership_config
+                .voter_ids()
+                .any(|id| id != node.id);
+            let members_remove = metrics
+                .membership_config
+                .nodes()
+                .filter_map(|(id, _)| if *id != node.id { Some(*id) } else { None })
+                .collect::<BTreeSet<u64>>();
+
+            if is_voter {
+                if let Err(err) =
+                    helpers::change_membership(&state, &raft_type, members_remove.clone(), true)
+                        .await
+                {
+                    error!(
+                        "Error setting existing voter node as cache learner: {:?}",
+                        err
+                    );
+                    return Err(err);
+                }
+
+                while is_voter {
+                    time::sleep(Duration::from_millis(250)).await;
+                    metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+                    is_voter = metrics
+                        .membership_config
+                        .voter_ids()
+                        .any(|id| id != node.id);
+                }
+            }
+
+            if let Err(err) =
+                helpers::change_membership(&state, &raft_type, members_remove, false).await
+            {
+                error!("Error removing existing node from cache members: {:?}", err);
+                return Err(err);
+            }
+            time::sleep(Duration::from_millis(500)).await;
+
+            metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+            let mut is_member = metrics
+                .membership_config
+                .membership()
+                .get_node(&node.id)
+                .is_some();
+            while is_member {
+                time::sleep(Duration::from_millis(250)).await;
+                metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+                is_member = metrics
+                    .membership_config
+                    .membership()
+                    .get_node(&node.id)
+                    .is_some();
+            }
+        }
+    }
 
     let res = helpers::add_new_learner(&state, &raft_type, node).await;
     match res {
         Ok(_) => {
-            info!("\n\nAdded node as {:?} learner\n", raft_type);
+            info!("Added node as {:?} learner", raft_type);
             fmt_ok(headers, ())
         }
         Err(err) => {
-            error!(
-                "\n\nError adding node as {:?} learner: {:?}\n",
-                raft_type, err
-            );
+            error!("Error adding node as {:?} learner: {:?}", raft_type, err);
             Err(err)
         }
     }
@@ -216,7 +213,7 @@ pub async fn leave_cluster(
         .any(|(id, _)| *id == payload.node_id);
 
     if is_member_already {
-        warn!("\n\nNode{:?} is a member - removing it\n", payload.node_id);
+        warn!("Node{:?} is a member - removing it", payload.node_id);
         let mut is_voter = metrics
             .membership_config
             .voter_ids()
@@ -237,13 +234,13 @@ pub async fn leave_cluster(
             if let Err(err) =
                 helpers::change_membership(&state, &raft_type, members_remove.clone(), true).await
             {
-                error!("\n\nError setting existing voters: {:?}\n", err);
+                error!("Error setting existing voters: {:?}", err);
                 return Err(err);
             }
 
             while is_voter {
                 info!(
-                    "\n\nWaiting until Node {} is not a voter anymore\n",
+                    "Waiting until Node {} is not a voter anymore",
                     payload.node_id
                 );
                 time::sleep(Duration::from_millis(250)).await;
@@ -259,7 +256,7 @@ pub async fn leave_cluster(
             if let Err(err) =
                 helpers::change_membership(&state, &raft_type, members_remove, false).await
             {
-                error!("\n\nError updating cluster members: {:?}\n", err);
+                error!("Error updating cluster members: {:?}", err);
                 return Err(err);
             }
             time::sleep(Duration::from_millis(250)).await;
@@ -272,7 +269,7 @@ pub async fn leave_cluster(
                 .is_some();
             while is_member {
                 info!(
-                    "\n\nWaiting until Node {} is not a member anymore\n",
+                    "Waiting until Node {} is not a member anymore",
                     payload.node_id
                 );
                 time::sleep(Duration::from_millis(100)).await;
@@ -287,7 +284,7 @@ pub async fn leave_cluster(
     }
 
     info!(
-        "\n\nNode {} has left the cluster:\n\n{:?}\n",
+        "Node {} has left the cluster: {:?}",
         payload.node_id,
         metrics.membership_config.membership()
     );

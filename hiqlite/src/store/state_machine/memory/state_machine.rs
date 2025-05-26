@@ -184,8 +184,6 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             .await
             .map_err(|err| StorageIOError::read_state_machine(&err))?;
 
-        info!("\n\nBuilt Cache Snapshot:\n{}\n{:?}\n", path, meta);
-
         let snapshot = Snapshot {
             meta,
             snapshot: Box::new(file),
@@ -268,7 +266,6 @@ impl StateMachineMemory {
 
     async fn update_state_machine(&self, content: SnapshotDataContent) {
         let (meta, kvs, ttls, locks) = content;
-        info!("\n\nInstall Cache Snapshot:\n{:?}\n", meta);
 
         // make sure to hold the metadata lock the whole time
         let mut data = self.data.write().await;
@@ -591,8 +588,6 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         meta: &SnapshotMeta<NodeId, Node>,
         snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
-        info!("\n\nInstall Cache Snapshot:\n{:?}\n", meta);
-
         let src = format!("{}/temp", self.path_snapshots);
         let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
         fs::copy(&src, &dest)
@@ -627,8 +622,6 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         match self.read_current_snapshot().await? {
             None => Ok(None),
             Some((path, (meta, kvs, ttls, locks))) => {
-                info!("\n\nCurrent Cache Snapshot:\n{:?}\n", meta);
-
                 let file = fs::File::open(path).await.map_err(|err| StorageError::IO {
                     source: StorageIOError::read(&err),
                 })?;

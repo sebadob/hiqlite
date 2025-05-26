@@ -58,6 +58,7 @@ pub async fn init_pristine_node_1_db(
 #[cfg(feature = "cache")]
 pub async fn init_pristine_node_1_cache(
     raft: &openraft::Raft<TypeConfigKV>,
+    cache_store_disk: bool,
     node_id: u64,
     nodes: &[Node],
     secret_api: &str,
@@ -67,7 +68,7 @@ pub async fn init_pristine_node_1_cache(
     if node_id == 1 {
         let this_node = get_this_node(node_id, nodes);
 
-        if is_initialized_timeout_cache(node_id, raft).await? {
+        if cache_store_disk && is_initialized_timeout_cache(node_id, raft).await? {
             info!("node 1 raft is already initialized");
             return Ok(());
         }
@@ -148,10 +149,6 @@ async fn should_node_1_skip_init(
                         let membership: Membership<NodeId, Node> = deserialize(body.as_ref())?;
 
                         if membership.nodes().count() > 0 {
-                            // We could check if the remote members are at least of size "quorum",
-                            // but this could possibly lead to a situation where you would not be
-                            // able to recover a cluster with only 1 healthy node left, which is a
-                            // possible situation.
                             return Ok(true);
                         } else {
                             panic!(
@@ -164,8 +161,6 @@ async fn should_node_1_skip_init(
                         let body = resp.bytes().await?;
                         let err: Error = serde_json::from_slice(&body)?;
                         error!("{}", err);
-                        // TODO should we even track "quorum" nodes or simply join if any configured
-                        // remote node is already initialized?
                         skip_nodes.push(node.id);
                     }
                 }
@@ -195,6 +190,7 @@ enum SkipBecome {
 #[allow(clippy::too_many_arguments)]
 pub async fn become_cluster_member(
     state: Arc<AppState>,
+    cache_store_disk: bool,
     raft_type: &RaftType,
     this_node: u64,
     nodes: &[Node],
@@ -202,7 +198,7 @@ pub async fn become_cluster_member(
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
-    if is_initialized_timeout(&state, raft_type, election_timeout_max).await? {
+    if cache_store_disk && is_initialized_timeout(&state, raft_type, election_timeout_max).await? {
         let metrics = helpers::get_raft_metrics(&state, raft_type).await;
         info!(
             "Node {}: {} Raft is already initialized - skipping become_cluster_member()\n\n{:?}",
@@ -253,7 +249,7 @@ pub async fn become_cluster_member(
         true,
     )
     .await?;
-    if skip == SkipBecome::Yes {
+    if cache_store_disk && skip == SkipBecome::Yes {
         // can happen in a race condition situation during a rolling release
         info!(
             "Node {}: Became a {:?} Raft member in the meantime - skipping further init",

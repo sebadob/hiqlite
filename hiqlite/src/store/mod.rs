@@ -131,17 +131,7 @@ pub(crate) async fn start_raft_cache<C>(
 where
     C: Debug + IntoEnumIterator + crate::cache_idx::CacheIndex,
 {
-    // let log_store = logs::memory::LogStoreMemory::new();
-    // let log_store = hiqlite_wal::LogStore::<TypeConfigKV>::start(
-    //     logs::logs_dir_cache(&node_config.data_dir),
-    //     node_config.wal_sync,
-    //     node_config.wal_size,
-    // )
-    // .await?;
-    // let shutdown_handle = log_store.shutdown_handle();
-
     let state_machine_store = Arc::new(StateMachineMemory::new::<C>(&node_config.data_dir).await?);
-
     let network = NetworkStreaming {
         node_id: node_config.node_id,
         tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
@@ -193,18 +183,9 @@ where
         (raft, None)
     };
 
-    // let raft = openraft::Raft::new(
-    //     node_config.node_id,
-    //     raft_config.clone(),
-    //     network,
-    //     log_store,
-    //     state_machine_store,
-    // )
-    // .await
-    // .expect("Raft create failed");
-
     init::init_pristine_node_1_cache(
         &raft,
+        node_config.cache_storage_disk,
         node_config.node_id,
         &node_config.nodes,
         &node_config.secret_api,
@@ -228,5 +209,6 @@ where
         tx_dlock,
         is_raft_stopped: AtomicBool::new(false),
         shutdown_handle,
+        cache_storage_disk: node_config.cache_storage_disk,
     })
 }
