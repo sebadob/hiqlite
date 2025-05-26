@@ -209,10 +209,6 @@ impl NetworkStreaming {
             usize,
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
         > = HashMap::with_capacity(8);
-        // let mut in_flight: Vec<(
-        //     usize,
-        //     oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-        // )> = Vec::with_capacity(8);
         let mut shutdown = false;
 
         loop {

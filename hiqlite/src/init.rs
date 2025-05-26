@@ -263,6 +263,11 @@ pub async fn become_cluster_member(
         raft_type.as_str()
     );
 
+    // If we try to become a member too fast and the request arrives on remote directly in between
+    // closing and re-opening the socket to us again, and it then also badly overlaps with the raft
+    // membership modification, we can get into a deadlock situation on the leader.
+    time::sleep(Duration::from_secs(1)).await;
+
     info!(
         "Node {}: Trying to become {:?} raft member",
         state.id, raft_type
