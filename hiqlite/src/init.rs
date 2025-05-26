@@ -266,7 +266,23 @@ pub async fn become_cluster_member(
     // If we try to become a member too fast and the request arrives on remote directly in between
     // closing and re-opening the socket to us again, and it then also badly overlaps with the raft
     // membership modification, we can get into a deadlock situation on the leader.
-    time::sleep(Duration::from_secs(1)).await;
+    // We want to wait until we are a commited Raft learner.
+    {
+        let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
+        let mut are_we_learner = metrics
+            .membership_config
+            .nodes()
+            .any(|(id, _)| *id == state.id);
+        while !are_we_learner {
+            info!("We are not a commited learner yet - waiting ...");
+            time::sleep(Duration::from_millis(500)).await;
+            metrics = helpers::get_raft_metrics(&state, raft_type).await;
+            are_we_learner = metrics
+                .membership_config
+                .nodes()
+                .any(|(id, _)| *id == state.id);
+        }
+    }
 
     info!(
         "Node {}: Trying to become {:?} raft member",
