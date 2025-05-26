@@ -7,7 +7,7 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{task, time};
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     let handle = task::spawn(check_split_brain(state, nodes, tls));
@@ -37,7 +37,7 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 warn!("Node {}: No leader for DB", state.id);
             }
             Some(leader_expected) => {
-                info!("Node {}: Raft DB Leader: {}", state.id, leader_expected);
+                debug!("Node {}: Raft DB Leader: {}", state.id, leader_expected);
                 let metrics = state.raft_db.raft.metrics().borrow().clone();
                 let membership = metrics.membership_config;
 
@@ -65,7 +65,7 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 warn!("Node {}: No leader for Cache", state.id);
             }
             Some(leader_expected) => {
-                info!("Node {}: Raft Cache Leader: {}", state.id, leader_expected);
+                debug!("Node {}: Raft Cache Leader: {}", state.id, leader_expected);
                 let metrics = state.raft_cache.raft.metrics().borrow().clone();
                 let membership = metrics.membership_config;
 
