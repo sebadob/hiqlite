@@ -299,7 +299,6 @@ impl StateMachineSqlite {
         .await?
     }
 
-    /// TODO provide a way to pass in conn pool size
     async fn connect_read_pool(
         path: &str,
         filename_db: &str,

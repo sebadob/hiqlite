@@ -143,6 +143,7 @@ impl Client {
     ) -> Result<(), Error> {
         let leader_id = match metrics.current_leader {
             None => {
+                warn!("{:?}", metrics);
                 return Err(Error::Connect("Leader vote is in progress".to_string()));
             }
             Some(leader_id) => leader_id,

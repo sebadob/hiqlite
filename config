@@ -229,4 +229,4 @@ HQL_INSECURE_COOKIE=true
 # process is still running and accessing the WAL files!
 #
 # default: false
-#HQL_IGNORE_WAL_LOCK=true
+HQL_IGNORE_WAL_LOCK=true

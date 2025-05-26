@@ -243,7 +243,7 @@ impl StateMachineMemory {
         let (tx_notify, rx_notify) = notify_handler::spawn();
 
         let slf = Self {
-            data: Default::default(),
+            data: RwLock::new(StateMachineData::default()),
             path_snapshots,
             tx_caches,
             tx_ttls,
@@ -569,8 +569,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         self.clone()
     }
 
+    #[tracing::instrument(skip_all)]
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<fs::File>, StorageError<NodeId>> {
         let path = format!("{}/temp", self.path_snapshots);
+        info!("Saving incoming snapshot to {}", path);
 
         // clean up possible existing old data
         let _ = fs::remove_file(&path).await;

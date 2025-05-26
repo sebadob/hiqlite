@@ -34,10 +34,10 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
         #[cfg(feature = "sqlite")]
         match state.raft_db.raft.current_leader().await {
             None => {
-                warn!("No leader for DB");
+                warn!("Node {}: No leader for DB", state.id);
             }
             Some(leader_expected) => {
-                info!("Raft DB Leader: {}", leader_expected);
+                info!("Node {}: Raft DB Leader: {}", state.id, leader_expected);
                 let metrics = state.raft_db.raft.metrics().borrow().clone();
                 let membership = metrics.membership_config;
 
@@ -51,7 +51,10 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 )
                 .await
                 {
-                    error!("Error during check_compare_membership: {}", err);
+                    error!(
+                        "Node {}: Error during check_compare_membership: {}",
+                        state.id, err
+                    );
                 }
             }
         };
@@ -59,10 +62,10 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
         #[cfg(feature = "cache")]
         match state.raft_cache.raft.current_leader().await {
             None => {
-                warn!("No leader for Cache");
+                warn!("Node {}: No leader for Cache", state.id);
             }
             Some(leader_expected) => {
-                info!("Raft Cache Leader: {}", leader_expected);
+                info!("Node {}: Raft Cache Leader: {}", state.id, leader_expected);
                 let metrics = state.raft_cache.raft.metrics().borrow().clone();
                 let membership = metrics.membership_config;
 
@@ -76,7 +79,10 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
                 )
                 .await
                 {
-                    error!("Error during check_compare_membership: {}", err);
+                    error!(
+                        "Node {}: Error during check_compare_membership: {}",
+                        state.id, err
+                    );
                 }
             }
         };
@@ -84,7 +90,9 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
 }
 
 fn check_nodes_in_members(
+    node_id: u64,
     typ: &str,
+    node_id_remote: u64,
     nodes: &[Node],
     membership: &Arc<StoredMembership<u64, Node>>,
 ) {
@@ -95,11 +103,11 @@ fn check_nodes_in_members(
             warn!(
                 r#"
 
-{} node {} not in membership config: {:?}
+Node {}: {} node {} not in membership config from Node {node_id_remote}: {:?}
 If the missing node is up and running, this is a split brain and should not happen.
 If however the missing node is currently offline or just starting up, you can ignore this message.
 "#,
-                typ, node.id, members
+                node_id, typ, node.id, members
             );
         }
     }
@@ -142,12 +150,12 @@ async fn check_compare_membership(
         let metrics = deserialize::<RaftMetrics<u64, Node>>(&bytes)?;
         let members = metrics.membership_config;
 
-        check_nodes_in_members(path, nodes, &members);
+        check_nodes_in_members(state.id, path, node.id, nodes, &members);
 
         if members != membership {
             error!(
-                "Difference in membership config for {}:\n\nlocal:\n{:?}\n\nremote:\n{:?}",
-                path, membership, members
+                "Difference in membership config on Node {} for {}:\n\nlocal:\n{:?}\n\nremote ({}):\n{:?}",
+                state.id, path, membership, node.id, members
             );
         }
     }

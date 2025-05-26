@@ -70,13 +70,6 @@ where
         (api_addr, addr_raft)
     };
 
-    // TODO put behind Mutex to make it dynamic?
-    // let mut client_buffers = Default::default();
-    // for node in &node_config.nodes {
-    //     let (tx, rx) = flume::unbounded();
-    //     client_buffers.insert(node.id, (tx, rx));
-    // }
-
     #[cfg(feature = "sqlite")]
     let (tx_client_stream, rx_client_stream) = flume::bounded(1);
 

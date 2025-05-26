@@ -3,11 +3,11 @@ use crate::helpers::{deserialize, serialize};
 use crate::network::management::LearnerReq;
 use crate::network::HEADER_NAME_SECRET;
 use crate::{helpers, Error, Node, NodeId};
-use openraft::Membership;
+use openraft::{metrics, Membership};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
@@ -24,16 +24,16 @@ use tracing::info;
 #[cfg(feature = "sqlite")]
 pub async fn init_pristine_node_1_db(
     raft: &openraft::Raft<TypeConfigSqlite>,
-    this_node: u64,
+    node_id: u64,
     nodes: &[Node],
     secret_api: &str,
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
-    if this_node == 1 {
-        let this_node = get_this_node(this_node, nodes);
+    if node_id == 1 {
+        let this_node = get_this_node(node_id, nodes);
 
-        if is_initialized_timeout_sqlite(raft).await? {
+        if is_initialized_timeout_sqlite(node_id, raft).await? {
             info!("node 1 raft is already initialized");
             return Ok(());
         }
@@ -58,16 +58,16 @@ pub async fn init_pristine_node_1_db(
 #[cfg(feature = "cache")]
 pub async fn init_pristine_node_1_cache(
     raft: &openraft::Raft<TypeConfigKV>,
-    this_node: u64,
+    node_id: u64,
     nodes: &[Node],
     secret_api: &str,
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
-    if this_node == 1 {
-        let this_node = get_this_node(this_node, nodes);
+    if node_id == 1 {
+        let this_node = get_this_node(node_id, nodes);
 
-        if is_initialized_timeout_cache(raft).await? {
+        if is_initialized_timeout_cache(node_id, raft).await? {
             info!("node 1 raft is already initialized");
             return Ok(());
         }
@@ -98,6 +98,7 @@ fn get_this_node(this_node: u64, nodes: &[Node]) -> Node {
     (*node).clone()
 }
 
+#[tracing::instrument(skip(nodes, secret_api, tls, tls_no_verify))]
 async fn should_node_1_skip_init(
     raft_type: &RaftType,
     nodes: &[Node],
@@ -155,8 +156,7 @@ async fn should_node_1_skip_init(
                         } else {
                             panic!(
                                 "The remote node {} is initialized but has no configured members. \
-                            This should never happen, but it may occur for a cache-only node and \
-                            a too fast restart -> wait at least for the leader heartbeat timeout.",
+                            This should never happen",
                                 node.id
                             );
                         }
@@ -203,20 +203,22 @@ pub async fn become_cluster_member(
     tls_no_verify: bool,
 ) -> Result<(), Error> {
     if is_initialized_timeout(&state, raft_type, election_timeout_max).await? {
+        let metrics = helpers::get_raft_metrics(&state, raft_type).await;
         info!(
-            "{} raft is already initialized - skipping become_cluster_member()",
-            raft_type.as_str()
+            "Node {}: {} Raft is already initialized - skipping become_cluster_member()\n\n{:?}",
+            state.id,
+            raft_type.as_str(),
+            metrics
         );
         return Ok(());
     }
 
-    // TODO if raft type is cache:
     // - pristine node 1 first init will always be initialized here, no matter what
     // - nodes joining an existing cluster must always re-join - even node 1
     // - somehow check here, if this is a pristine node 1 or a node 1 re-joining an existing cluster
 
     // If this node is neither node 1 nor initialized, we always want to reach
-    // out to node 1 and yell at it, that we want to join the party as well.
+    // out to node 1 and tell it, that we want to join the party as well.
     // During a normal init, this is not necessary, but it is in case of a node
     // recovery from failure in case the leader does not recognize our issues.
     let client = reqwest::Client::builder()
@@ -234,8 +236,12 @@ pub async fn become_cluster_member(
         addr_raft: this_node.addr_raft,
     })?;
 
-    info!("Trying to become {} raft learner", raft_type.as_str());
-    let _skip = try_become(
+    info!(
+        "Node {}: Trying to become {} raft learner",
+        state.id,
+        raft_type.as_str()
+    );
+    let skip = try_become(
         &state,
         raft_type,
         &client,
@@ -247,21 +253,24 @@ pub async fn become_cluster_member(
         true,
     )
     .await?;
-    info!("Successfully became {} raft learner", raft_type.as_str());
-
-    // if we try the next step too fast, we can get unlucky and end up in a race-condition
-    time::sleep(Duration::from_secs(1)).await;
-
-    // Again, for the same reason as above, an im-memory cache member must always do a full
-    // re-join after restarts.
-    #[cfg(feature = "sqlite")]
-    if _skip == SkipBecome::Yes {
+    if skip == SkipBecome::Yes {
         // can happen in a race condition situation during a rolling release
-        info!("Became a Raft member in the meantime - skipping further init");
+        info!(
+            "Node {}: Became a {:?} Raft member in the meantime - skipping further init",
+            state.id, raft_type,
+        );
         return Ok(());
     }
+    info!(
+        "Node {}: Successfully became {} raft learner",
+        state.id,
+        raft_type.as_str()
+    );
 
-    info!("Trying to become {} raft member", raft_type.as_str());
+    info!(
+        "Node {}: Trying to become {:?} raft member",
+        state.id, raft_type
+    );
     try_become(
         &state,
         raft_type,
@@ -274,7 +283,11 @@ pub async fn become_cluster_member(
         false,
     )
     .await?;
-    info!("Successfully became {} raft member", raft_type.as_str());
+    info!(
+        "Node {}: Successfully became {} raft member",
+        state.id,
+        raft_type.as_str()
+    );
 
     Ok(())
 }
@@ -421,11 +434,21 @@ async fn is_initialized_timeout(
 
 #[cfg(feature = "sqlite")]
 async fn is_initialized_timeout_sqlite(
+    node_id: u64,
     raft: &openraft::Raft<TypeConfigSqlite>,
 ) -> Result<bool, Error> {
     // Do not try to initialize already initialized nodes
     if raft.is_initialized().await? {
-        return Ok(true);
+        if raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .membership()
+            .nodes()
+            .any(|(id, _)| *id == node_id)
+        {
+            return Ok(true);
+        }
     }
 
     // If it is not initialized, wait long enough to make sure this
@@ -436,17 +459,41 @@ async fn is_initialized_timeout_sqlite(
 
     // Make sure we are not initialized by now, otherwise go on
     if raft.is_initialized().await? {
-        Ok(true)
+        if raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .membership()
+            .nodes()
+            .any(|(id, _)| *id == node_id)
+        {
+            Ok(true)
+        } else {
+            warn!("Raft is initialized but the membership config is empty");
+            Ok(false)
+        }
     } else {
         Ok(false)
     }
 }
 
 #[cfg(feature = "cache")]
-async fn is_initialized_timeout_cache(raft: &openraft::Raft<TypeConfigKV>) -> Result<bool, Error> {
+async fn is_initialized_timeout_cache(
+    node_id: u64,
+    raft: &openraft::Raft<TypeConfigKV>,
+) -> Result<bool, Error> {
     // Do not try to initialize already initialized nodes
     if raft.is_initialized().await? {
-        return Ok(true);
+        if raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .membership()
+            .nodes()
+            .any(|(id, _)| *id == node_id)
+        {
+            return Ok(true);
+        }
     }
 
     // If it is not initialized, wait long enough to make sure this
@@ -457,7 +504,19 @@ async fn is_initialized_timeout_cache(raft: &openraft::Raft<TypeConfigKV>) -> Re
 
     // Make sure we are not initialized by now, otherwise go on
     if raft.is_initialized().await? {
-        Ok(true)
+        if raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .membership()
+            .nodes()
+            .any(|(id, _)| *id == node_id)
+        {
+            Ok(true)
+        } else {
+            warn!("Raft is initialized but the membership config is empty");
+            Ok(false)
+        }
     } else {
         Ok(false)
     }
