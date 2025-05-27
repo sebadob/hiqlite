@@ -179,15 +179,26 @@ impl Client {
     /// upfront, but this has not been stabilized in this version.
     pub async fn shutdown(&self) -> Result<(), Error> {
         if let Some(state) = &self.inner.state {
-            Self::shutdown_execute(
-                state,
-                #[cfg(feature = "cache")]
-                &self.inner.tx_client_cache,
-                #[cfg(feature = "sqlite")]
-                &self.inner.tx_client_db,
-                &self.inner.tx_shutdown,
+            if tokio::time::timeout(
+                Duration::from_secs(15),
+                Self::shutdown_execute(
+                    state,
+                    #[cfg(feature = "cache")]
+                    &self.inner.tx_client_cache,
+                    #[cfg(feature = "sqlite")]
+                    &self.inner.tx_client_db,
+                    &self.inner.tx_shutdown,
+                ),
             )
             .await
+            .is_err()
+            {
+                Err(Error::Error(
+                    "Timeout reached while shutting down Raft".into(),
+                ))
+            } else {
+                Ok(())
+            }
         } else {
             Err(Error::Error(
                 "Shutdown for remote Raft clients is not yet implemented".into(),
