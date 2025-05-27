@@ -1,3 +1,7 @@
+// Copyright 2025 Sebastian Dobe <sebastiandobe@mailbox.org>
+
+#![doc = include_str!("../README.md")]
+
 pub use crate::writer::LogSync;
 pub use shutdown::ShutdownHandle;
 pub use writer::Action;
