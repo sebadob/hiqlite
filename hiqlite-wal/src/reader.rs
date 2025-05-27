@@ -113,10 +113,20 @@ fn run(
                 let last_log = if let Some(latest_log_id) = latest_log_id {
                     buf.clear();
                     let active = wal.active();
-                    active.mmap().unwrap();
-                    active
-                        .read_logs(latest_log_id, latest_log_id, &mut buf)
-                        .unwrap();
+                    if active.data_start.is_some() {
+                        active.mmap().unwrap();
+                        active
+                            .read_logs(latest_log_id, latest_log_id, &mut buf)
+                            .unwrap();
+                    } else if wal.files.len() > 1 {
+                        // this is an edge case, when we shut down beforehand exactly after rolling
+                        // over WAL files but without adding anything to the new file
+                        let file = wal.files.get_mut(wal.files.len() - 2).unwrap();
+                        file.mmap().unwrap();
+                        file.read_logs(latest_log_id, latest_log_id, &mut buf)
+                            .unwrap();
+                        file.mmap_drop();
+                    }
                     let (_, data) = buf.swap_remove(0);
                     Some(data)
                 } else {

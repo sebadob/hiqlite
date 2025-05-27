@@ -17,21 +17,6 @@ pub async fn start_test_cluster() -> Result<(Client, Client, Client), Error> {
     Ok((client_1, client_2, client_3))
 }
 
-// pub async fn start_test_cluster() -> Result<(Client, Client, Client), Error> {
-//     let handle_client_1 =
-//         tokio_test::task::spawn(start_node_with_cache::<Cache>(build_config(1).await));
-//     let handle_client_2 =
-//         tokio_test::task::spawn(start_node_with_cache::<Cache>(build_config(2).await));
-//     let handle_client_3 =
-//         tokio_test::task::spawn(start_node_with_cache::<Cache>(build_config(3).await));
-//
-//     let client_1 = handle_client_1.await?;
-//     let client_2 = handle_client_2.await?;
-//     let client_3 = handle_client_3.await?;
-//
-//     Ok((client_1, client_2, client_3))
-// }
-
 pub fn nodes() -> Vec<Node> {
     vec![
         Node {
@@ -88,7 +73,7 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         s3_config: hiqlite::s3::S3Config::try_from_env(),
         #[cfg(feature = "dashboard")]
         password_dashboard: Some("DoesNotMatterHere".to_string()),
-        cache_storage_disk: true,
+        cache_storage_disk: false,
         ..Default::default()
     }
 }

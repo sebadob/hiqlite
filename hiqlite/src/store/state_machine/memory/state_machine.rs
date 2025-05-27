@@ -26,6 +26,7 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::pipe::OpenOptions;
 use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::task;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -100,6 +101,7 @@ pub struct StateMachineData {
 pub struct StateMachineMemory {
     data: RwLock<StateMachineData>,
     path_snapshots: String,
+    in_memory_only: bool,
 
     pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     tx_ttls: Vec<flume::Sender<TtlRequest>>,
@@ -184,6 +186,20 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             .await
             .map_err(|err| StorageIOError::read_state_machine(&err))?;
 
+        // cleanup task for old snapshots
+        let id = meta.snapshot_id.clone();
+        let path = self.path_snapshots.clone();
+        task::spawn(async move {
+            let mut dir = fs::read_dir(&path).await.unwrap();
+            while let Ok(Some(entry)) = dir.next_entry().await {
+                let fname = entry.file_name();
+                let name = fname.to_str().unwrap_or_default();
+                if !name.is_empty() && name != id {
+                    fs::remove_file(format!("{}/{}", path, name)).await.unwrap();
+                }
+            }
+        });
+
         let snapshot = Snapshot {
             meta,
             snapshot: Box::new(file),
@@ -194,12 +210,18 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
 }
 
 impl StateMachineMemory {
-    pub(crate) async fn new<C>(base_path: &str) -> Result<Self, Error>
+    pub(crate) async fn new<C>(base_path: &str, in_memory_only: bool) -> Result<Self, Error>
     where
         C: Debug + IntoEnumIterator + CacheIndex,
     {
         let path_sm = format!("{}/state_machine_cache", base_path);
         let path_snapshots = format!("{}/snapshots", path_sm);
+
+        if in_memory_only {
+            // in this case we must always start clean,
+            // because otherwise there would be a gap in logs
+            let _ = fs::remove_dir_all(&path_snapshots).await;
+        }
         fs::create_dir_all(&path_snapshots).await?;
         set_path_access(&path_sm, 0o700)
             .await
@@ -243,6 +265,7 @@ impl StateMachineMemory {
         let slf = Self {
             data: RwLock::new(StateMachineData::default()),
             path_snapshots,
+            in_memory_only,
             tx_caches,
             tx_ttls,
             #[cfg(feature = "listen_notify_local")]

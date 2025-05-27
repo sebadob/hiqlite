@@ -10,40 +10,6 @@ static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
 // static MIN_WAL_SIZE: u32 = 128 * 1024;
 static MIN_WAL_SIZE: u32 = 8 * 1024;
 
-// TODO can probably be removed after enough testing and debugging
-// #[cfg(debug_assertions)]
-// mod log_dbg {
-//     use serde::{Deserialize, Serialize};
-//
-//     openraft::declare_raft_types!(
-//         pub TypeConfigSqlite:
-//             D = (),
-//             R = (),
-//             Node = Node,
-//             SnapshotData = tokio::fs::File,
-//     );
-//     type NodeId = u64;
-//     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-//     pub struct Node {
-//         pub id: NodeId,
-//         pub addr_raft: String,
-//         pub addr_api: String,
-//     }
-//
-//     pub fn assert_data_id(data: &[u8], id: u64) {
-//         let (entry, _) = bincode::serde::decode_from_slice::<openraft::Entry<TypeConfigSqlite>, _>(
-//             data,
-//             bincode::config::legacy(),
-//         )
-//         .unwrap();
-//         assert_eq!(
-//             entry.log_id.index, id,
-//             "ID expected: {} / found {:?}",
-//             id, entry.log_id.index
-//         );
-//     }
-// }
-
 #[derive(Debug)]
 pub struct WalFile {
     pub version: u8,
@@ -537,25 +503,28 @@ impl WalFileSet {
             if wal.id_from == 0 && wal.id_until == 0 {
                 break;
             }
-            if wal.data_start.is_none() || wal.data_end.is_none() {
+            if wal.data_start.is_some() != wal.data_end.is_some() {
                 return Err(Error::Integrity(
                     "Invalid `data_start` / `data_end` values for WAL with data".into(),
                 ));
             }
-            let data_start = wal.data_start.unwrap();
-            let data_end = wal.data_end.unwrap();
+            if let Some(data_start) = wal.data_start {
+                debug_assert!(wal.data_end.is_some());
+                let data_end = wal.data_end.unwrap();
 
-            if data_start < wal.offset_logs() as u32 {
-                return Err(Error::Integrity(
-                    "`data_start` cannot be smaller than header offset".into(),
-                ));
+                if data_start < wal.offset_logs() as u32 {
+                    return Err(Error::Integrity(
+                        "`data_start` cannot be smaller than header offset".into(),
+                    ));
+                }
+                // head for record: id + crc + data_len
+                if data_start == data_end || data_start + 8 + 4 + 4 > data_end {
+                    return Err(Error::Integrity(
+                        "`data_start` does not match `data_end` - data cannot fit".into(),
+                    ));
+                }
             }
-            // head for record: id + crc + data_len
-            if data_start == data_end || data_start + 8 + 4 + 4 > data_end {
-                return Err(Error::Integrity(
-                    "`data_start` does not match `data_end` - data cannot fit".into(),
-                ));
-            }
+
             if until + 1 != wal.id_from {
                 return Err(Error::Integrity(
                     format!("Missing logs between IDs {} and {}", until + 1, wal.id_from).into(),
@@ -997,52 +966,6 @@ mod tests {
             // make integrity check work
             data_start: Some(32),
             data_end: Some(64),
-            len_max: MB2,
-            mmap: None,
-            mmap_mut: None,
-        });
-        let set = WalFileSet {
-            active: Some(2),
-            base_path: base_path.clone(),
-            files,
-        };
-        assert!(set.check_integrity().is_err());
-
-        let mut files = VecDeque::with_capacity(4);
-        files.push_back(WalFile {
-            version: 1,
-            wal_no: 1,
-            path: "".to_string(),
-            id_from: 2,
-            id_until: 10,
-            // make integrity check work
-            data_start: Some(32),
-            data_end: Some(64),
-            len_max: MB2,
-            mmap: None,
-            mmap_mut: None,
-        });
-        files.push_back(WalFile {
-            version: 1,
-            wal_no: 2,
-            path: "".to_string(),
-            id_from: 11,
-            id_until: 17,
-            // make integrity check work
-            data_start: Some(32),
-            data_end: Some(64),
-            len_max: MB2,
-            mmap: None,
-            mmap_mut: None,
-        });
-        files.push_back(WalFile {
-            version: 1,
-            wal_no: 3,
-            path: "".to_string(),
-            id_from: 18,
-            id_until: 33,
-            data_start: None,
-            data_end: None,
             len_max: MB2,
             mmap: None,
             mmap_mut: None,

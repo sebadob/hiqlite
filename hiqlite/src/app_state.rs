@@ -98,5 +98,4 @@ pub struct StateRaftCache {
     pub tx_dlock: flume::Sender<LockRequest>,
     pub is_raft_stopped: AtomicBool,
     pub shutdown_handle: Option<hiqlite_wal::ShutdownHandle>,
-    pub cache_storage_disk: bool,
 }

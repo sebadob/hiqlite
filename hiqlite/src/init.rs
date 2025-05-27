@@ -190,7 +190,6 @@ enum SkipBecome {
 #[allow(clippy::too_many_arguments)]
 pub async fn become_cluster_member(
     state: Arc<AppState>,
-    wal_on_disk: bool,
     raft_type: &RaftType,
     this_node: u64,
     nodes: &[Node],
@@ -198,10 +197,10 @@ pub async fn become_cluster_member(
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
-    if wal_on_disk && is_initialized_timeout(&state, raft_type, election_timeout_max).await? {
+    if is_initialized_timeout(&state, raft_type, election_timeout_max).await? {
         let metrics = helpers::get_raft_metrics(&state, raft_type).await;
         info!(
-            "Node {}: {} Raft is already initialized - skipping become_cluster_member()\n\n{:?}",
+            "Node {}: {} Raft is already initialized - skipping become_cluster_member()\n{:?}",
             state.id,
             raft_type.as_str(),
             metrics
@@ -209,19 +208,11 @@ pub async fn become_cluster_member(
         return Ok(());
     }
 
-    // - pristine node 1 first init will always be initialized here, no matter what
-    // - nodes joining an existing cluster must always re-join - even node 1
-    // - somehow check here, if this is a pristine node 1 or a node 1 re-joining an existing cluster
-
-    // If this node is neither node 1 nor initialized, we always want to reach
-    // out to node 1 and tell it, that we want to join the party as well.
-    // During a normal init, this is not necessary, but it is in case of a node
-    // recovery from failure in case the leader does not recognize our issues.
     let client = reqwest::Client::builder()
         .http2_prior_knowledge()
         .danger_accept_invalid_certs(tls_no_verify)
         .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
         .build()?;
     let scheme = if tls { "https" } else { "http" };
 
@@ -249,8 +240,7 @@ pub async fn become_cluster_member(
         true,
     )
     .await?;
-    if wal_on_disk && skip == SkipBecome::Yes {
-        // can happen in a race condition situation during a rolling release
+    if skip == SkipBecome::Yes {
         info!(
             "Node {}: Became a {:?} Raft member in the meantime - skipping further init",
             state.id, raft_type,
@@ -313,7 +303,6 @@ pub async fn become_cluster_member(
 async fn try_become(
     state: &Arc<AppState>,
     raft_type: &RaftType,
-    // raft: &Raft<TypeConfigSqlite>,
     client: &reqwest::Client,
     scheme: &str,
     suffix: &str,
@@ -378,6 +367,7 @@ async fn try_become(
                                 url,
                             );
 
+                            // should never happen at this point
                             if leader_id == this_node {
                                 if !helpers::is_raft_initialized(state, raft_type).await? {
                                     let leader = helpers::get_raft_leader(state, raft_type).await;

@@ -131,7 +131,10 @@ pub(crate) async fn start_raft_cache<C>(
 where
     C: Debug + IntoEnumIterator + crate::cache_idx::CacheIndex,
 {
-    let state_machine_store = Arc::new(StateMachineMemory::new::<C>(&node_config.data_dir).await?);
+    let state_machine_store = Arc::new(
+        StateMachineMemory::new::<C>(&node_config.data_dir, !node_config.cache_storage_disk)
+            .await?,
+    );
     let network = NetworkStreaming {
         node_id: node_config.node_id,
         tls_config: node_config.tls_raft.as_ref().map(|tls| tls.client_config()),
@@ -209,6 +212,5 @@ where
         tx_dlock,
         is_raft_stopped: AtomicBool::new(false),
         shutdown_handle,
-        cache_storage_disk: node_config.cache_storage_disk,
     })
 }

@@ -119,6 +119,11 @@ async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Resul
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
 
+    // delete all cache files and make sure, we can re-sync just fine
+    // only makes sense when cache WAL on disk is used of course
+    let _ = fs::remove_dir_all(format!("{}/logs_cache", folder_base(node_id))).await;
+    let _ = fs::remove_dir_all(format!("{}/state_machine_cache", folder_base(node_id))).await;
+
     log(format!("Re-starting client {}", node_id));
     let client = start_node_with_cache::<Cache>(build_config(node_id).await).await?;
     time::sleep(Duration::from_millis(100)).await;
