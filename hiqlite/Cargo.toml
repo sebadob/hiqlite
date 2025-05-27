@@ -19,8 +19,6 @@ all-features = true
 
 [features]
 default = ["auto-heal", "backup", "sqlite"]
-jemalloc = ["dep:tikv-jemallocator"]
-mimalloc = ["dep:mimalloc"]
 
 auto-heal = []
 backup = ["dep:cron", "s3", "sqlite"]
@@ -49,6 +47,7 @@ full = [
     "sqlite",
     "webpki-roots",
 ]
+jemalloc = ["dep:tikv-jemallocator"]
 listen_notify = [
     "dep:eventsource-client",
     "listen_notify_local"

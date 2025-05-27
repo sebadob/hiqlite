@@ -1,3 +1,5 @@
+// Copyright 2025 Sebastian Dobe <sebastiandobe@mailbox.org>
+
 pub mod embed {
     pub use rust_embed::{self, *};
 }

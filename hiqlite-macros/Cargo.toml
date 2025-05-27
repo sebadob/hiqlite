@@ -10,12 +10,6 @@ keywords = ["database", "sql", "sqlite", "raft", "cache"]
 description = "Macros for Hiqlite"
 repository = "https://github.com/sebadob/hiqlite"
 
-[lib]
-doctest = false
-
-[package.metadata.docs.rs]
-all-features = true
-
 [dependencies]
 hiqlite = { version = "0.6.0", path = "../hiqlite" }
 
