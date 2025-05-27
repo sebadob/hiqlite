@@ -238,15 +238,11 @@ where
     let member_db = {
         let st = state.clone();
         let nodes = node_config.nodes.clone();
-        #[cfg(feature = "cache")]
-        let cache_store_disk = node_config.cache_storage_disk;
-        #[cfg(not(feature = "cache"))]
-        let cache_store_disk = false;
 
         task::spawn(async move {
             init::become_cluster_member(
                 st,
-                cache_store_disk,
+                true,
                 &crate::app_state::RaftType::Sqlite,
                 node_config.node_id,
                 &nodes,
