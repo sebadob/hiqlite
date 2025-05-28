@@ -57,6 +57,7 @@ pub struct ArgsGenerate {
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum LogLevel {
+    Debug,
     Info,
     Warn,
     Error,
@@ -65,6 +66,7 @@ pub enum LogLevel {
 impl LogLevel {
     pub fn as_str(&self) -> &str {
         match self {
+            LogLevel::Debug => "debug",
             LogLevel::Info => "info",
             LogLevel::Warn => "warn",
             LogLevel::Error => "error",

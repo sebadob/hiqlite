@@ -156,18 +156,10 @@ where
                 )
                 .route(
                     "/membership/{raft_type}",
-                    get(management::get_membership)
-                        .post(management::post_membership)
-                        .delete(management::leave_cluster),
+                    get(management::get_membership).post(management::post_membership),
                 )
                 .route("/metrics/{raft_type}", get(management::metrics)),
         )
-        // TODO
-        // .route("/execute", post(api::execute))
-        // TODO
-        // .route("/query", post(api::query))
-        // TODO
-        // .route("/query/consistent", post(api::query))
         .route("/listen", get(api::listen))
         .route("/stream/{raft_type}", get(api::stream))
         .route("/health", get(api::health))
@@ -242,7 +234,6 @@ where
         task::spawn(async move {
             init::become_cluster_member(
                 st,
-                true,
                 &crate::app_state::RaftType::Sqlite,
                 node_config.node_id,
                 &nodes,
@@ -262,7 +253,6 @@ where
         task::spawn(async move {
             init::become_cluster_member(
                 st,
-                node_config.cache_storage_disk,
                 &crate::app_state::RaftType::Cache,
                 node_config.node_id,
                 &nodes,
