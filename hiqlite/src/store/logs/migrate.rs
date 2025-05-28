@@ -28,23 +28,24 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
         return Ok(());
     }
 
-    // cleanup possibly existing hiqlite-wal files
-    let mut files = Vec::with_capacity(4);
-    let mut dir = fs::read_dir(&logs_dir).await?;
-    while let Some(entry) = dir.next_entry().await? {
-        let name = entry.file_name();
-        let fname = name.to_str().unwrap_or_default();
-        if fname.ends_with(".hql") || fname.ends_with(".wal") {
-            files.push(fname.to_string());
-        }
-    }
-    info!("Cleaning up existing hiqlite-wal files: {:?}", files);
-    for file in files.drain(..) {
-        fs::remove_file(format!("{}/{}", logs_dir, file)).await?;
-    }
-
     if let Some(db) = try_open_db(&logs_dir) {
-        info!("Found existing rocksdb, starting hiqlite-wal writer for migration");
+        info!("Found existing rocksdb");
+        // cleanup possibly existing hiqlite-wal files
+        let mut files = Vec::with_capacity(4);
+        let mut dir = fs::read_dir(&logs_dir).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let name = entry.file_name();
+            let fname = name.to_str().unwrap_or_default();
+            if fname.ends_with(".hql") || fname.ends_with(".wal") {
+                files.push(fname.to_string());
+            }
+        }
+        info!("Cleaning up existing hiqlite-wal files: {:?}", files);
+        for file in files.drain(..) {
+            fs::remove_file(format!("{}/{}", logs_dir, file)).await?;
+        }
+
+        info!("starting hiqlite-wal writer for migration");
         let writer =
             LogStore::<TypeConfigSqlite>::start_writer_migration(logs_dir.clone(), wal_size)
                 .await?;
