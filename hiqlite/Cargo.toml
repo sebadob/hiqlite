@@ -137,8 +137,6 @@ rust_decimal.workspace = true
 tower-layer.workspace = true
 tower-service.workspace = true
 
-mimalloc = { workspace = true, optional = true }
-
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
 
