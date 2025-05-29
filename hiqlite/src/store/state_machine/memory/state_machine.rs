@@ -34,7 +34,6 @@ use uuid::Uuid;
 use crate::store::state_machine::memory::dlock_handler::{self, *};
 #[cfg(feature = "listen_notify_local")]
 use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
-use crate::store::state_machine::sqlite::state_machine::StoredSnapshot;
 
 type Entry = openraft::Entry<TypeConfigKV>;
 type SnapshotData = fs::File;

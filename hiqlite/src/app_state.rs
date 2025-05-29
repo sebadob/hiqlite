@@ -48,6 +48,8 @@ impl RaftType {
 // instances of raft, store and more.
 pub(crate) struct AppState {
     pub id: NodeId,
+    #[cfg(feature = "cache")]
+    pub nodes: Vec<crate::Node>,
     pub addr_api: String,
     #[cfg(feature = "sqlite")]
     pub raft_db: StateRaftDB,
@@ -83,7 +85,7 @@ pub struct StateRaftDB {
     pub sql_writer: flume::Sender<WriterRequest>,
     pub read_pool: SqlitePool,
     pub log_statements: bool,
-    pub is_raft_stopped: AtomicBool,
+    pub is_raft_stopped: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "cache")]
@@ -96,6 +98,8 @@ pub struct StateRaftCache {
     pub rx_notify: flume::Receiver<(i64, Vec<u8>)>,
     #[cfg(feature = "dlock")]
     pub tx_dlock: flume::Sender<LockRequest>,
-    pub is_raft_stopped: AtomicBool,
+    pub is_raft_stopped: Arc<AtomicBool>,
     pub shutdown_handle: Option<hiqlite_wal::ShutdownHandle>,
+    #[cfg(feature = "cache")]
+    pub cache_storage_disk: bool,
 }

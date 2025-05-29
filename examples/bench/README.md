@@ -13,6 +13,11 @@ When data is inserted into a local cluster, it is being done from the leader nod
 round-trip for each insert. A way to decide between leader and follower may be implemented in the future to actually
 see the difference.
 
+We activate the `jemalloc` feature, which is quite a bit faster than glibc `malloc`. For cache performance, remember
+that we use them in the disk-backed version and not purely in-memory. Disk-backed provides a lot more consistency and
+can even rebuild the whole in-memory cache from the WAL + Snapshot on disk, which means even a restart does not make
+you lose cached data. A pure in-memory version will be a lot faster though.
+
 ## Running Benchmarks
 
 The most important thing: You should always run these in release mode. The results will be a lot different.

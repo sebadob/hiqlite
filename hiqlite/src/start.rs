@@ -42,6 +42,20 @@ where
         .map(|c| c.danger_tls_no_verify)
         .unwrap_or(false);
 
+    // TODO
+    // - check if we are a pristine node for both sqlite + cache
+    // - if not pristine, go on as usual and skip the other points
+    // - if pristine, start special API with only the metrics endpoints used in try_become
+    //   to tell other nodes that we don't have any data yet
+    // - if this is node 1 and we have reached nodes / 2 un-initialized ones, init fresh cluster
+    // - if not node 1 and nodes / 2 are pristine, keep the API running and query node 1 until
+    //   it is available and initialized a fresh cluster, then shutdown and join
+    // - if we are pristine and there is already another cluster:
+    //     - find the cluster leader
+    //     - query metrics from elader and check if we are a cluster members and maybe lost our volume
+    //     - if we are a member on remote, force-leave the cluster
+    //     - query metrics until we are removed from the cluster, then shutdown and re-join
+
     #[cfg(feature = "s3")]
     s3::init_enc_keys(&node_config.enc_keys_from)?;
 
@@ -75,6 +89,8 @@ where
 
     let state = Arc::new(AppState {
         id: node_config.node_id,
+        #[cfg(feature = "cache")]
+        nodes: node_config.nodes.clone(),
         addr_api: api_addr.clone(),
         #[cfg(feature = "sqlite")]
         raft_db,
@@ -156,7 +172,9 @@ where
                 )
                 .route(
                     "/membership/{raft_type}",
-                    get(management::get_membership).post(management::post_membership),
+                    get(management::get_membership)
+                        .post(management::post_membership)
+                        .delete(management::leave_cluster),
                 )
                 .route("/metrics/{raft_type}", get(management::metrics)),
         )
@@ -237,7 +255,6 @@ where
                 &crate::app_state::RaftType::Sqlite,
                 node_config.node_id,
                 &nodes,
-                node_config.raft_config.election_timeout_max,
                 tls_raft,
                 tls_no_verify,
             )
@@ -256,7 +273,6 @@ where
                 &crate::app_state::RaftType::Cache,
                 node_config.node_id,
                 &nodes,
-                node_config.raft_config.election_timeout_max,
                 tls_raft,
                 tls_no_verify,
             )
@@ -272,6 +288,8 @@ where
     let client = Client::new_local(
         state,
         tls_api_client_config,
+        #[cfg(feature = "cache")]
+        tls_no_verify,
         #[cfg(feature = "sqlite")]
         tx_client_stream,
         #[cfg(feature = "sqlite")]

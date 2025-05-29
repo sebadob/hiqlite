@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 use std::sync::atomic::Ordering;
 use tokio::task;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "cache")]
 use crate::app_state::RaftType;
@@ -17,8 +17,6 @@ use crate::helpers;
 use crate::store::state_machine::memory::TypeConfigKV;
 #[cfg(feature = "cache")]
 use std::collections::BTreeSet;
-#[cfg(feature = "cache")]
-use tracing::info;
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
@@ -109,6 +107,7 @@ pub async fn stream_cache(
 
     #[cfg(feature = "cache")]
     if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
+        info!("Cache Raft has been stopped - rejecting streaming connection");
         return Err(Error::BadRequest("Raft has been stopped".into()));
     }
 
@@ -130,6 +129,7 @@ pub async fn stream_sqlite(
 
     #[cfg(feature = "sqlite")]
     if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
+        info!("Sqlite Raft has been stopped - rejecting streaming connection");
         return Err(Error::BadRequest("Raft has been stopped".into()));
     }
 

@@ -16,6 +16,7 @@ impl Client {
     pub(crate) async fn new_local(
         state: Arc<AppState>,
         tls_config: Option<Arc<rustls::ClientConfig>>,
+        #[cfg(feature = "cache")] tls_no_verify: bool,
         #[cfg(feature = "sqlite")] tx_client_db: flume::Sender<ClientStreamReq>,
         #[cfg(feature = "sqlite")] rx_client_db: flume::Receiver<ClientStreamReq>,
         tx_shutdown: watch::Sender<bool>,
@@ -47,6 +48,8 @@ impl Client {
             #[cfg(feature = "sqlite")]
             tx_client_db,
             tls_config,
+            #[cfg(feature = "cache")]
+            tls_no_verify,
             api_secret: None,
             request_id: AtomicUsize::new(0),
             tx_shutdown: Some(tx_shutdown),
@@ -147,15 +150,16 @@ impl Client {
             client: Some(
                 reqwest::Client::builder()
                     .http2_prior_knowledge()
-                    // TODO
-                    .build()
-                    .unwrap(),
+                    .danger_accept_invalid_certs(tls_no_verify)
+                    .build()?,
             ),
             #[cfg(feature = "cache")]
             tx_client_cache,
             #[cfg(feature = "sqlite")]
             tx_client_db,
             tls_config,
+            #[cfg(feature = "cache")]
+            tls_no_verify,
             api_secret: Some(api_secret),
             request_id: AtomicUsize::new(0),
             tx_shutdown: None,

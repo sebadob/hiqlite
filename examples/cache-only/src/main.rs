@@ -3,6 +3,7 @@ use hiqlite::{Error, NodeConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::time::Duration;
+use tokio::fs;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -33,6 +34,9 @@ struct Value {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    // make sure we always start clean
+    let _ = fs::remove_dir_all("./data").await;
+
     tracing_subscriber::fmt()
         .with_target(true)
         .with_level(true)
@@ -40,6 +44,20 @@ async fn main() -> Result<(), Error> {
         .init();
 
     let config = NodeConfig::from_env_file("config");
+    // Hiqlite Caches are (by default) disk-backed. This means they provide the consistency of Raft
+    // and can rebuild their in-memory data after a restart and never lose it. With
+    // `config.cache_storage_disk = true`, the Cache WAL files + Snapshots will be persisted to
+    // disk. This is of course quite a bit slower than keeping everything in-memory only, but in
+    // return, you get lower memory usage and higher consistency + you never lose state.
+    //
+    // You can also keep everything in-memory only, which will be a lot faster, but can lead to
+    // instabilities in the whole Raft cluster, if a node cannot do a graceful shutdown (and leave
+    // the cluster cleanly). This is due to the lost Raft state and coming up in an inconsistent
+    // state after restart, because the current Leader expects the node to still have the last known
+    // state applied.
+    //
+    //config.cache_storage_disk = true;
+
     let client = hiqlite::start_node_with_cache::<Cache>(config).await?;
 
     let key = "my key 1";
@@ -85,6 +103,8 @@ async fn main() -> Result<(), Error> {
     assert_ne!(v1, v2);
 
     info!("All tests successful");
+
+    client.shutdown().await?;
 
     // In case of cache-only, we don't care about a graceful shutdown, since all data
     // exists in-memory only anyway.

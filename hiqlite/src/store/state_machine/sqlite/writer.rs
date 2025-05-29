@@ -138,7 +138,6 @@ pub fn spawn_writer(
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(1);
 
-    // thread::spawn(move || {
     task::spawn_blocking(move || {
         let mut sm_data = StateMachineData::default();
         let mut ts_last_backup = None;

@@ -1,17 +1,19 @@
-use crate::app_state::RaftType;
+use crate::app_state::{AppState, RaftType};
 use crate::network::{fmt_ok, get_payload, validate_secret, AppStateExt, Error};
 use crate::NodeId;
 use crate::{helpers, Node};
 use axum::body;
+use axum::body::Body;
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::Response;
 use openraft::error::{CheckIsLeaderError, ForwardToLeader, RaftError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LearnerReq {
@@ -35,7 +37,9 @@ pub(crate) async fn add_learner(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    if !helpers::is_raft_initialized(&state, &raft_type).await? {
+    if helpers::is_raft_stopped(&state, &raft_type)
+        || !helpers::is_raft_initialized(&state, &raft_type).await?
+    {
         return Err(Error::Error("Raft is not initialized".into()));
     }
     are_we_leader(&state, &raft_type).await?;
@@ -94,7 +98,9 @@ pub(crate) async fn become_member(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    if !helpers::is_raft_initialized(&state, &raft_type).await? {
+    if helpers::is_raft_stopped(&state, &raft_type)
+        || !helpers::is_raft_initialized(&state, &raft_type).await?
+    {
         return Err(Error::Error("Raft is not initialized".into()));
     }
     are_we_leader(&state, &raft_type).await?;
@@ -104,7 +110,7 @@ pub(crate) async fn become_member(
     info!("{:?} Node membership request: {:?}", raft_type, payload);
 
     let mut metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-    info!("{:?} Members before add:\n\n{:?}", raft_type, metrics);
+    info!("{:?} Members before add: {:?}", raft_type, metrics);
 
     let is_voter = metrics
         .membership_config
@@ -185,7 +191,9 @@ pub(crate) async fn get_membership(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    if !helpers::is_raft_initialized(&state, &raft_type).await? {
+    if helpers::is_raft_stopped(&state, &raft_type)
+        || !helpers::is_raft_initialized(&state, &raft_type).await?
+    {
         return Err(Error::Config("Raft node has not been initialized".into()));
     }
 
@@ -217,11 +225,124 @@ pub(crate) async fn post_membership(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
+    if helpers::is_raft_stopped(&state, &raft_type)
+        || !helpers::is_raft_initialized(&state, &raft_type).await?
+    {
+        return Err(Error::Config("Raft node has not been initialized".into()));
+    }
+
     let payload = get_payload::<BTreeSet<NodeId>>(&headers, body)?;
     helpers::change_membership(&state, &raft_type, payload, false).await?;
 
     // retain false removes current cluster members if they do not appear in the new list
     fmt_ok(headers, ())
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn leave_cluster(
+    state: AppStateExt,
+    headers: HeaderMap,
+    Path(raft_type): Path<RaftType>,
+    body: body::Bytes,
+) -> Result<Response, Error> {
+    validate_secret(&state, &headers)?;
+
+    if helpers::is_raft_stopped(&state, &raft_type)
+        || !helpers::is_raft_initialized(&state, &raft_type).await?
+    {
+        return Err(Error::Config("Raft node has not been initialized".into()));
+    }
+    are_we_leader(&state, &raft_type).await?;
+
+    let payload = get_payload::<ClusterLeaveReq>(&headers, body)?;
+    leave_cluster_exec(&state.0, &raft_type, payload).await?;
+
+    Ok(Response::new(Body::empty()))
+}
+
+pub async fn leave_cluster_exec(
+    state: &Arc<AppState>,
+    raft_type: &RaftType,
+    payload: ClusterLeaveReq,
+) -> Result<(), Error> {
+    info!("{:?} Node {:?}", raft_type, payload);
+
+    let lock = state.raft_lock.lock().await;
+
+    let mut metrics = helpers::get_raft_metrics(state, raft_type).await;
+    let mut is_member = metrics
+        .membership_config
+        .nodes()
+        .any(|(id, _)| *id == payload.node_id);
+
+    if is_member {
+        warn!("Node {} is a cluster member - removing it", payload.node_id);
+        let mut is_voter = metrics
+            .membership_config
+            .voter_ids()
+            .any(|id| id == payload.node_id);
+
+        if is_voter {
+            warn!("Node {} is a Voter", payload.node_id);
+            if let Err(err) =
+                helpers::remove_voter(state, raft_type, payload.node_id, payload.stay_as_learner)
+                    .await
+            {
+                error!(
+                    "Error removing Node {} from Voters: {:?}",
+                    payload.node_id, err
+                );
+                return Err(err);
+            }
+            while is_voter {
+                info!(
+                    "Waiting until Node {} is not a Voter anymore\nVoter IDs: {:?}\nis_voter: {}",
+                    payload.node_id,
+                    metrics.membership_config.voter_ids().collect::<Vec<_>>(),
+                    is_voter
+                );
+                time::sleep(Duration::from_millis(500)).await;
+                metrics = helpers::get_raft_metrics(state, raft_type).await;
+                is_voter = metrics
+                    .membership_config
+                    .voter_ids()
+                    .any(|id| id == payload.node_id);
+            }
+        } else if !payload.stay_as_learner {
+            warn!(
+                "Node {} is a Learner and should not stay one",
+                payload.node_id
+            );
+            if let Err(err) = helpers::remove_learner(state, raft_type, payload.node_id).await {
+                error!(
+                    "Error removing Node {} from Learners: {:?}",
+                    payload.node_id, err
+                );
+                return Err(err);
+            }
+            while is_member {
+                info!(
+                    "Waiting until Node {} is not a Learner anymore",
+                    payload.node_id
+                );
+                time::sleep(Duration::from_millis(500)).await;
+                metrics = helpers::get_raft_metrics(state, raft_type).await;
+                is_member = metrics
+                    .membership_config
+                    .nodes()
+                    .any(|(id, _)| *id == payload.node_id);
+            }
+        }
+    }
+
+    drop(lock);
+    info!(
+        "Node {} has left the cluster: {:?}",
+        payload.node_id,
+        metrics.membership_config.membership()
+    );
+
+    Ok(())
 }
 
 /// Get the latest metrics of the cluster

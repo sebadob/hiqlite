@@ -10,6 +10,8 @@ use tokio::sync::watch;
 use tokio::time;
 use tracing::{debug, info};
 
+#[cfg(feature = "cache")]
+use crate::network::management::{self, ClusterLeaveReq};
 #[cfg(all(feature = "sqlite", feature = "rocksdb"))]
 use crate::store::logs::rocksdb::ActionWrite;
 #[cfg(feature = "sqlite")]
@@ -184,6 +186,10 @@ impl Client {
                 Self::shutdown_execute(
                     state,
                     #[cfg(feature = "cache")]
+                    self.inner.tls_config.is_some(),
+                    #[cfg(feature = "cache")]
+                    self.inner.tls_no_verify,
+                    #[cfg(feature = "cache")]
                     &self.inner.tx_client_cache,
                     #[cfg(feature = "sqlite")]
                     &self.inner.tx_client_db,
@@ -210,6 +216,8 @@ impl Client {
     #[allow(unused_variables)]
     pub(crate) async fn shutdown_execute(
         state: &Arc<AppState>,
+        #[cfg(feature = "cache")] with_tls: bool,
+        #[cfg(feature = "cache")] tls_no_verify: bool,
         #[cfg(feature = "cache")] tx_client_cache: &flume::Sender<ClientStreamReq>,
         #[cfg(feature = "sqlite")] tx_client_db: &flume::Sender<ClientStreamReq>,
         tx_shutdown: &Option<watch::Sender<bool>>,
@@ -219,16 +227,56 @@ impl Client {
 
         #[cfg(feature = "cache")]
         {
+            let metrics = state.raft_cache.raft.metrics().borrow().clone();
+            let node_count = metrics.membership_config.nodes().count();
+            is_single_instance = node_count == 1;
+
+            if !state.raft_cache.cache_storage_disk {
+                // If we run an entirely in-memory cache and therefore lose the Raft state
+                // and membership between restarts, we should always leave the cluster cleanly
+                // before doing a shutdown.
+                let client = reqwest::Client::builder()
+                    .http2_prior_knowledge()
+                    .danger_accept_invalid_certs(tls_no_verify)
+                    .connect_timeout(Duration::from_secs(3))
+                    .timeout(Duration::from_secs(30))
+                    .build()?;
+                let scheme = if with_tls { "https" } else { "http" };
+
+                if metrics.current_leader == Some(state.id) {
+                    if let Err(err) = management::leave_cluster_exec(
+                        state,
+                        &crate::app_state::RaftType::Cache,
+                        ClusterLeaveReq {
+                            node_id: state.id,
+                            stay_as_learner: false,
+                        },
+                    )
+                    .await
+                    {
+                        tracing::error!("Error leaving the Cache cluster: {:?}", err);
+                    }
+                } else if let Err(err) = crate::init::leave_remote_cluster(
+                    state,
+                    &crate::app_state::RaftType::Cache,
+                    &client,
+                    scheme,
+                    state.id,
+                    &state.nodes,
+                    0,
+                    false,
+                )
+                .await
+                {
+                    tracing::error!("Error leaving the Cache cluster: {:?}", err);
+                }
+            }
+
             info!("Shutting down raft cache layer");
             state
                 .raft_cache
                 .is_raft_stopped
                 .store(true, Ordering::Relaxed);
-
-            let metrics = state.raft_cache.raft.metrics().borrow().clone();
-            let node_count = metrics.membership_config.nodes().count();
-            is_single_instance = node_count == 1;
-
             state.raft_cache.raft.shutdown().await?;
             if let Some(handle) = &state.raft_cache.shutdown_handle {
                 handle.shutdown().await?;

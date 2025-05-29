@@ -218,7 +218,20 @@ async fn start_cluster(
 
     let mut config = node_config(test_nodes(), logs_until_snapshot);
     config.data_dir = format!("data/node_{}", 1).into();
-    // config.cache_storage_disk = true;
+
+    // Hiqlite Caches are (by default) disk-backed. This means they provide the consistency of Raft
+    // and can rebuild their in-memory data after a restart and never lose it. With
+    // `config.cache_storage_disk = true`, the Cache WAL files + Snapshots will be persisted to
+    // disk. This is of course quite a bit slower than keeping everything in-memory only, but in
+    // return, you get lower memory usage and higher consistency + you never lose state.
+    //
+    // You can also keep everything in-memory only, which will be a lot faster, but can lead to
+    // instabilities in the whole Raft cluster, if a node cannot do a graceful shutdown (and leave
+    // the cluster cleanly). This is due to the lost Raft state and coming up in an inconsistent
+    // state after restart, because the current Leader expects the node to still have the last known
+    // state applied.
+    //
+    //config.cache_storage_disk = true;
 
     // The only reason we set the WAL size to 8MB here is because of the possibly huge transactional
     // inserts with a high row count and low concurrency. At least for `hiqlite-wal`, the WAL size

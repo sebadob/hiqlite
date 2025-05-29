@@ -175,7 +175,7 @@ run ty="server" node_id="1":
     clear
 
     if [[ {{ ty }} == "server" ]]; then
-      HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server -- serve -c config --node-id {{ node_id }}
+      RUSTFLAGS="--cfg tokio_unstable" HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server -- serve -c config --node-id {{ node_id }}
       #HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server,rocksdb -- serve -c config --node-id {{ node_id }}
     elif [[ {{ ty }} == "ui" ]]; then
       cd dashboard

@@ -16,6 +16,7 @@ use openraft::error::Unreachable;
 use std::collections::HashMap;
 use std::future::Future;
 use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{ReadHalf, WriteHalf};
@@ -63,6 +64,7 @@ pub struct NetworkStreaming {
     pub secret_raft: Vec<u8>,
     pub raft_type: RaftType,
     pub heartbeat_interval: u64,
+    pub is_raft_stopped: Arc<AtomicBool>,
     // pub sender: flume::Sender<RaftRequest>,
 }
 
@@ -84,6 +86,7 @@ impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
             self.secret_raft.clone(),
             rx,
             self.heartbeat_interval,
+            self.is_raft_stopped.clone(),
         ));
 
         NetworkConnectionStreaming {
@@ -112,6 +115,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
             self.secret_raft.clone(),
             rx,
             self.heartbeat_interval,
+            self.is_raft_stopped.clone(),
         ));
 
         NetworkConnectionStreaming {
@@ -181,17 +185,7 @@ enum WritePayload {
 
 #[allow(clippy::type_complexity)]
 impl NetworkStreaming {
-    // pub async fn spawn_ws_handler(
-    //     this_node: NodeId,
-    //     node: Node,
-    //     tls_config: Option<Arc<rustls::ClientConfig>>,
-    //     secret: Vec<u8>,
-    // ) -> flume::Sender<RaftRequest> {
-    //     let (tx, rx) = flume::unbounded();
-    //     task::spawn(Self::ws_handler(this_node, node, tls_config, secret, rx));
-    //     tx
-    // }
-
+    #[allow(clippy::too_many_arguments)]
     async fn ws_handler(
         this_node: NodeId,
         raft_type: RaftType,
@@ -200,6 +194,7 @@ impl NetworkStreaming {
         secret: Vec<u8>,
         rx: flume::Receiver<RaftRequest>,
         heartbeat_interval: u64,
+        is_raft_stopped: Arc<AtomicBool>,
     ) {
         let mut request_id = 0usize;
         // TODO probably, a Vec<_> is faster here since we would never have too many in flight reqs
@@ -212,6 +207,11 @@ impl NetworkStreaming {
         let mut shutdown = false;
 
         loop {
+            if is_raft_stopped.load(Ordering::Relaxed) {
+                warn!("Raft is stopped - exiting NetworkStreaming::ws_handler()");
+                break;
+            }
+
             let socket = {
                 match Self::try_connect(
                     this_node,
@@ -471,17 +471,22 @@ impl NetworkStreaming {
             .body(Empty::<Bytes>::new())
             .map_err(|err| Error::Connect(err.to_string()))?;
 
-        let stream = TcpStream::connect(addr).await?;
+        info!("Opening TcpStream to: {}", addr);
+        let stream = TcpStream::connect(addr)
+            .await
+            .map_err(|err| Error::Connect(err.to_string()))?;
         let (mut ws, _) = if let Some(config) = tls_config {
             let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
             let tls_stream = tls::into_tls_stream(addr, stream, config).await?;
             fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await
         } else {
             fastwebsockets::handshake::client(&SpawnExecutor, req, stream).await
-        }?;
+        }
+        .map_err(|err| Error::Connect(err.to_string()))?;
         ws.set_auto_close(true);
 
         if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
+            error!("Error opening WebSocket stream: {:?}", err);
             let _ = ws
                 .write_frame(Frame::close(1000, b"Invalid Handshake"))
                 .await;
@@ -490,6 +495,7 @@ impl NetworkStreaming {
                 err
             )))
         } else {
+            info!("WebSocket stream connected");
             Ok(ws)
         }
     }

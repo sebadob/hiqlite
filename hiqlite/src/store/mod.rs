@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::fmt::Debug;
+use std::mem;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use strum::IntoEnumIterator;
@@ -39,6 +40,10 @@ pub(crate) async fn start_raft_db(
     node_config: NodeConfig,
     raft_config: Arc<RaftConfig>,
 ) -> Result<StateRaftDB, Error> {
+    // We always want to start stopped and set to `false` as soon as we found out,
+    // that we are not pristine node and need cleanup.
+    let is_raft_stopped = Arc::new(AtomicBool::new(true));
+
     #[cfg(feature = "migrate-rocksdb")]
     logs::migrate::check_migrate_rocksdb(
         logs::logs_dir_db(&node_config.data_dir),
@@ -84,6 +89,7 @@ pub(crate) async fn start_raft_db(
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
         raft_type: RaftType::Sqlite,
         heartbeat_interval: node_config.raft_config.heartbeat_interval,
+        is_raft_stopped: is_raft_stopped.clone(),
     };
 
     let raft = openraft::Raft::new(
@@ -119,7 +125,7 @@ pub(crate) async fn start_raft_db(
         sql_writer,
         read_pool,
         log_statements: node_config.log_statements,
-        is_raft_stopped: AtomicBool::new(false),
+        is_raft_stopped,
     })
 }
 
@@ -131,6 +137,10 @@ pub(crate) async fn start_raft_cache<C>(
 where
     C: Debug + IntoEnumIterator + crate::cache_idx::CacheIndex,
 {
+    // We always want to start stopped and set to `false` as soon as we found out,
+    // that we are not pristine node and need cleanup.
+    let is_raft_stopped = Arc::new(AtomicBool::new(true));
+
     let state_machine_store = Arc::new(
         StateMachineMemory::new::<C>(&node_config.data_dir, !node_config.cache_storage_disk)
             .await?,
@@ -141,6 +151,7 @@ where
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
         raft_type: RaftType::Cache,
         heartbeat_interval: node_config.raft_config.heartbeat_interval,
+        is_raft_stopped: is_raft_stopped.clone(),
     };
 
     let tx_caches = state_machine_store.tx_caches.clone();
@@ -210,7 +221,8 @@ where
         rx_notify,
         #[cfg(feature = "dlock")]
         tx_dlock,
-        is_raft_stopped: AtomicBool::new(false),
+        is_raft_stopped,
         shutdown_handle,
+        cache_storage_disk: node_config.cache_storage_disk,
     })
 }
