@@ -1,9 +1,10 @@
 use crate::app_state::{AppState, RaftType};
 use crate::helpers::{deserialize, serialize};
-use crate::network::management::LearnerReq;
+use crate::network::management::{ClusterLeaveReq, LearnerReq};
 use crate::network::HEADER_NAME_SECRET;
 use crate::{helpers, Error, Node, NodeId};
-use openraft::Membership;
+use openraft::{Membership, RaftMetrics};
+use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
@@ -17,6 +18,7 @@ use crate::store::state_machine::memory::TypeConfigKV;
 
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use tracing::info;
 
@@ -193,18 +195,16 @@ pub async fn become_cluster_member(
     raft_type: &RaftType,
     this_node: u64,
     nodes: &[Node],
-    election_timeout_max: u64,
     tls: bool,
     tls_no_verify: bool,
 ) -> Result<(), Error> {
-    if is_initialized_timeout(&state, raft_type, election_timeout_max).await? {
-        let metrics = helpers::get_raft_metrics(&state, raft_type).await;
+    if helpers::is_raft_initialized(&state, raft_type).await? {
         info!(
-            "Node {}: {} Raft is already initialized - skipping become_cluster_member()\n{:?}",
+            "Node {}: {} Raft is already initialized - skipping become_cluster_member()",
             state.id,
             raft_type.as_str(),
-            metrics
         );
+        set_raft_running(&state, raft_type);
         return Ok(());
     }
 
@@ -215,6 +215,14 @@ pub async fn become_cluster_member(
         .timeout(Duration::from_secs(30))
         .build()?;
     let scheme = if tls { "https" } else { "http" };
+
+    if is_remote_cluster_member(&state, raft_type, &client, scheme, this_node, nodes).await? {
+        leave_remote_cluster(
+            &state, raft_type, &client, scheme, this_node, nodes, 10, false,
+        )
+        .await?
+    }
+    set_raft_running(&state, raft_type);
 
     let this_node = get_this_node(this_node, nodes);
     let payload = serialize(&LearnerReq {
@@ -311,6 +319,7 @@ async fn try_become(
     nodes: &[Node],
     check_init: bool,
 ) -> Result<SkipBecome, Error> {
+    let mut url = String::with_capacity(48);
     loop {
         // maybe we are initialized in the meantime
         if check_init && helpers::is_raft_initialized(state, raft_type).await? {
@@ -327,13 +336,15 @@ async fn try_become(
                 continue;
             }
 
-            let url = format!(
+            url.clear();
+            write!(
+                url,
                 "{}://{}/cluster/{}/{}",
                 scheme,
                 node.addr_api,
                 suffix,
                 raft_type.as_str()
-            );
+            )?;
             debug!("Sending request to {}", url);
 
             let res = client
@@ -415,26 +426,230 @@ async fn try_become(
     }
 }
 
-async fn is_initialized_timeout(
+#[tracing::instrument(skip(state, client, scheme))]
+async fn is_remote_cluster_member(
     state: &Arc<AppState>,
     raft_type: &RaftType,
-    election_timeout_max: u64,
+    client: &reqwest::Client,
+    scheme: &str,
+    this_node: u64,
+    nodes: &[Node],
 ) -> Result<bool, Error> {
-    // Do not try to initialize already initialized nodes
-    if helpers::is_raft_initialized(state, raft_type).await? {
-        return Ok(true);
+    let mut url = String::with_capacity(48);
+
+    // "This" Node is the +1 for quorum
+    let quorum = nodes.len() / 2;
+
+    // check remote metrics for our existence first
+    let mut not_initialized_remotes = 0;
+    for node in nodes {
+        if node.id == this_node {
+            debug!("Skipping 'this' node");
+            continue;
+        }
+        if not_initialized_remotes >= quorum {
+            info!(
+                "Found {} remote Nodes that are not initialized - must be a fresh cluster",
+                not_initialized_remotes
+            );
+        }
+
+        url.clear();
+        write!(
+            url,
+            "{}://{}/cluster/metrics/{}",
+            scheme,
+            node.addr_api,
+            raft_type.as_str()
+        )?;
+
+        let res = client
+            .get(&url)
+            .header(HEADER_NAME_SECRET, &state.secret_api)
+            .send()
+            .await;
+
+        match res {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let bytes = resp.bytes().await?;
+                    let metrics = deserialize::<RaftMetrics<u64, Node>>(bytes.as_ref())?;
+                    let is_member = metrics
+                        .membership_config
+                        .nodes()
+                        .any(|(id, _)| *id == this_node);
+                    if is_member {
+                        // if there already is a remote cluster and we are not part of it,
+                        // everything should be fine
+                        warn!("Found remote metrics and we ({this_node}) are a Raft member");
+                        return Ok(true);
+                    } else {
+                        info!("Found remote metrics, but we ({this_node}) are not a Raft member");
+                        return Ok(false);
+                    }
+                } else {
+                    // We reached the remote node, but it was not possible to get cluster metrics.
+                    // This can only mean, that remote is not initialized as well.
+                    not_initialized_remotes += 1;
+
+                    let body = resp
+                        .bytes()
+                        .await
+                        .expect("API answer to always have a body");
+                    let err: Error =
+                        serde_json::from_slice(&body).expect("To always get back a JSON error");
+                    error!(
+                        "Error retrieving {:?} Raft metrics from remote Node {}: {:?}",
+                        raft_type, node.id, err
+                    );
+
+                    time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+            Err(err) => {
+                error!("Node connection error: {}", err);
+                time::sleep(Duration::from_secs(1)).await;
+            }
+        }
     }
 
-    // If it is not initialized, wait long enough to make sure this
-    // node is not joined again to an already existing cluster after data loss.
-    time::sleep(Duration::from_millis(election_timeout_max * 2)).await;
+    Ok(false)
+}
 
-    // Make sure we are not initialized by now, otherwise go on
-    if helpers::is_raft_initialized(state, raft_type).await? {
-        Ok(true)
-    } else {
-        Ok(false)
+#[tracing::instrument(skip(state, client, scheme))]
+#[allow(clippy::too_many_arguments)]
+pub async fn leave_remote_cluster(
+    state: &Arc<AppState>,
+    raft_type: &RaftType,
+    client: &reqwest::Client,
+    scheme: &str,
+    this_node: u64,
+    nodes: &[Node],
+    retries: usize,
+    stay_as_learner: bool,
+) -> Result<(), Error> {
+    let mut url = String::with_capacity(48);
+
+    let payload = serialize(&ClusterLeaveReq {
+        node_id: this_node,
+        stay_as_learner,
+    })?;
+    let mut left_cluster = false;
+    for _ in 0..retries + 1 {
+        for node in nodes {
+            if node.id == this_node {
+                debug!("Skipping 'this' node");
+                continue;
+            }
+
+            // We will just try to send our request to all nodes in order without looking up
+            // the leader via metrics first, as this can change at any time anyway. The request
+            // will only succeed, if the remote node is a leader anyway.
+            url.clear();
+            write!(
+                url,
+                "{}://{}/cluster/membership/{}",
+                scheme,
+                node.addr_api,
+                raft_type.as_str()
+            )?;
+
+            let res = client
+                .delete(&url)
+                .header(HEADER_NAME_SECRET, &state.secret_api)
+                .body(payload.clone())
+                .send()
+                .await;
+
+            match res {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        info!(
+                            "This Node {this_node} left the remote {:?} cluster via {}",
+                            raft_type, url
+                        );
+                        left_cluster = true;
+                        break;
+                    } else {
+                        let body = resp.bytes().await?;
+                        let err: Error = serde_json::from_slice(&body)?;
+                        error!(
+                            "Error removing this Node {} from remote {:?} Raft cluster: {:?}",
+                            this_node,
+                            raft_type.as_str(),
+                            err
+                        );
+                    }
+                }
+                Err(err) => {
+                    error!("Node {:?} connection error to {}: {}", raft_type, url, err);
+                }
+            }
+        }
     }
+    if !left_cluster {
+        return Err(Error::Connect(
+            "Could not leave the cluster after trying all nodes once".to_string(),
+        ));
+    }
+
+    // After removal, query metrics again until this node is fully removed.
+    // We need to do this on all nodes, because we don't know if any of them leave or join
+    // in the meantime.
+    for _ in 0..retries + 1 {
+        for node in nodes {
+            if node.id == this_node {
+                debug!("Skipping 'this' node");
+                continue;
+            }
+
+            url.clear();
+            write!(
+                url,
+                "{}://{}/cluster/metrics/{}",
+                scheme,
+                node.addr_api,
+                raft_type.as_str()
+            )?;
+
+            let Ok(res) = client
+                .get(&url)
+                .header(HEADER_NAME_SECRET, &state.secret_api)
+                .send()
+                .await
+            else {
+                error!(
+                    "Unable to reach Node {} via {} to confirm cluster leave via metrics",
+                    node.id, url
+                );
+                continue;
+            };
+
+            if res.status().is_success() {
+                let bytes = res.bytes().await?;
+                let metrics = deserialize::<RaftMetrics<u64, Node>>(bytes.as_ref())?;
+                let is_member = metrics
+                    .membership_config
+                    .nodes()
+                    .any(|(id, _)| *id == this_node);
+                if is_member {
+                    info!("This Node ({this_node}) is still a Raft member after removal - waiting ...");
+                    time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                } else {
+                    info!("This Node ({this_node}) has been fully removed from the Raft.");
+                    return Ok(());
+                }
+            }
+        }
+        time::sleep(Duration::from_secs(1)).await;
+    }
+
+    error!(
+        "Node was removed from the cluster, but was unable to confirm this via metrics - retries exceeded"
+    );
+
+    Ok(())
 }
 
 // TODO get rid of the duplication here and make it prettier -> figure out generic types properly
@@ -512,5 +727,27 @@ async fn is_initialized_timeout_cache(
         }
     } else {
         Ok(false)
+    }
+}
+
+fn set_raft_running(state: &Arc<AppState>, raft_type: &RaftType) {
+    match raft_type {
+        #[cfg(feature = "sqlite")]
+        RaftType::Sqlite => {
+            info!("Setting Sqlite Raft to running");
+            state
+                .raft_db
+                .is_raft_stopped
+                .store(false, Ordering::Relaxed)
+        }
+        #[cfg(feature = "cache")]
+        RaftType::Cache => {
+            info!("Setting Cache Raft to running");
+            state
+                .raft_cache
+                .is_raft_stopped
+                .store(false, Ordering::Relaxed)
+        }
+        RaftType::Unknown => unreachable!(),
     }
 }

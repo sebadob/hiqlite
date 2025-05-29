@@ -164,6 +164,12 @@ impl IntoResponse for Error {
     }
 }
 
+impl From<std::fmt::Error> for Error {
+    fn from(value: std::fmt::Error) -> Self {
+        Self::Error(value.to_string().into())
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(value: std::io::Error) -> Self {
         Self::Error(value.to_string().into())
@@ -378,7 +384,6 @@ impl From<argon2::password_hash::Error> for Error {
     }
 }
 
-#[cfg(feature = "sqlite")]
 impl From<hiqlite_wal::error::Error> for Error {
     fn from(value: hiqlite_wal::error::Error) -> Self {
         trace!("hiqlite_wal::error::Error: {}", value);

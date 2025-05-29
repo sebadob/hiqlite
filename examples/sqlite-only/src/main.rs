@@ -3,6 +3,7 @@ use hiqlite_macros::embed::*;
 use hiqlite_macros::params;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
+use tokio::fs;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Embed)]
@@ -31,6 +32,9 @@ impl<'r> From<Row<'r>> for Entity {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    // make sure we always start clean
+    let _ = fs::remove_dir_all("./data").await;
+
     tracing_subscriber::fmt()
         .with_target(true)
         .with_level(true)

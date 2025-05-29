@@ -10,6 +10,10 @@ use tracing::{info, warn};
 pub struct ShutdownHandle {
     state: Arc<AppState>,
     #[cfg(feature = "cache")]
+    with_tls: bool,
+    #[cfg(feature = "cache")]
+    tls_no_verify: bool,
+    #[cfg(feature = "cache")]
     tx_client_cache: flume::Sender<ClientStreamReq>,
     #[cfg(feature = "sqlite")]
     tx_client_db: flume::Sender<ClientStreamReq>,
@@ -26,6 +30,10 @@ impl ShutdownHandle {
             Duration::from_secs(15),
             Client::shutdown_execute(
                 &self.state,
+                #[cfg(feature = "cache")]
+                self.with_tls,
+                #[cfg(feature = "cache")]
+                self.tls_no_verify,
                 #[cfg(feature = "cache")]
                 &self.tx_client_cache,
                 #[cfg(feature = "sqlite")]
@@ -55,6 +63,10 @@ impl Client {
 
             Ok(ShutdownHandle {
                 state,
+                #[cfg(feature = "cache")]
+                with_tls: self.inner.tls_config.is_some(),
+                #[cfg(feature = "cache")]
+                tls_no_verify: self.inner.tls_no_verify,
                 #[cfg(feature = "cache")]
                 tx_client_cache: self.inner.tx_client_cache.clone(),
                 #[cfg(feature = "sqlite")]

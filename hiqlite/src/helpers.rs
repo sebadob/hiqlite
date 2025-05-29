@@ -1,10 +1,11 @@
 use crate::app_state::{AppState, RaftType};
 use crate::{Error, Node};
 use bincode::error::{DecodeError, EncodeError};
-use openraft::RaftMetrics;
+use openraft::{ChangeMembers, RaftMetrics};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::info;
 
@@ -127,6 +128,18 @@ pub async fn is_raft_initialized(
     }
 }
 
+#[inline]
+pub fn is_raft_stopped(state: &Arc<AppState>, raft_type: &RaftType) -> bool {
+    match raft_type {
+        #[cfg(feature = "sqlite")]
+        RaftType::Sqlite => state.raft_db.is_raft_stopped.load(Ordering::Relaxed),
+        #[cfg(feature = "cache")]
+        RaftType::Cache => state.raft_cache.is_raft_stopped.load(Ordering::Relaxed),
+        RaftType::Unknown => true,
+    }
+}
+
+#[inline]
 pub async fn get_raft_leader(state: &Arc<AppState>, raft_type: &RaftType) -> Option<u64> {
     match raft_type {
         #[cfg(feature = "sqlite")]
@@ -205,8 +218,118 @@ pub async fn change_membership(
     }
 }
 
+pub async fn remove_learner(
+    state: &Arc<AppState>,
+    raft_type: &RaftType,
+    node_id: u64,
+) -> Result<(), Error> {
+    info!("Removing Node {} from {:?} Learners", node_id, raft_type);
+    let mut set = BTreeSet::new();
+    set.insert(node_id);
+
+    match raft_type {
+        #[cfg(feature = "sqlite")]
+        RaftType::Sqlite => {
+            state
+                .raft_db
+                .raft
+                .change_membership(ChangeMembers::RemoveNodes(set), false)
+                .await?;
+            Ok(())
+        }
+        #[cfg(feature = "cache")]
+        RaftType::Cache => {
+            state
+                .raft_cache
+                .raft
+                .change_membership(ChangeMembers::RemoveNodes(set), false)
+                .await?;
+            Ok(())
+        }
+        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
+    }
+}
+
+// pub async fn remove_voter(
+//     state: &Arc<AppState>,
+//     raft_type: &RaftType,
+//     new_members: BTreeMap<NodeId, Node>,
+//     // node_id: u64,
+//     retain: bool,
+// ) -> Result<(), Error> {
+//     info!(
+//         "Removing Node from {:?} Voters, new members: {:?}",
+//         raft_type, new_members
+//     );
+//     // info!("Removing Node {} from {:?} Voters", node_id, raft_type);
+//     // let mut set = BTreeSet::new();
+//     // set.insert(node_id);
+//
+//     match raft_type {
+//         #[cfg(feature = "sqlite")]
+//         RaftType::Sqlite => {
+//             state
+//                 .raft_db
+//                 .raft
+//                 .change_membership(ChangeMembers::SetNodes(new_members), retain)
+//                 .await?;
+//             Ok(())
+//         }
+//         #[cfg(feature = "cache")]
+//         RaftType::Cache => {
+//             state
+//                 .raft_cache
+//                 .raft
+//                 // .change_membership(ChangeMembers::RemoveVoters(set), retain)
+//                 .change_membership(ChangeMembers::SetNodes(new_members), retain)
+//                 .await?;
+//             Ok(())
+//         }
+//         RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
+//     }
+// }
+
+pub async fn remove_voter(
+    state: &Arc<AppState>,
+    raft_type: &RaftType,
+    // new_members: BTreeMap<NodeId, Node>,
+    node_id: u64,
+    retain: bool,
+) -> Result<(), Error> {
+    // info!(
+    //     "Removing Node from {:?} Voters, new members: {:?}",
+    //     raft_type, new_members
+    // );
+    info!("Removing Node {} from {:?} Voters", node_id, raft_type);
+    let mut set = BTreeSet::new();
+    set.insert(node_id);
+
+    match raft_type {
+        #[cfg(feature = "sqlite")]
+        RaftType::Sqlite => {
+            state
+                .raft_db
+                .raft
+                .change_membership(ChangeMembers::RemoveVoters(set), retain)
+                // .change_membership(ChangeMembers::SetNodes(new_members), retain)
+                .await?;
+            Ok(())
+        }
+        #[cfg(feature = "cache")]
+        RaftType::Cache => {
+            state
+                .raft_cache
+                .raft
+                .change_membership(ChangeMembers::RemoveVoters(set), retain)
+                // .change_membership(ChangeMembers::SetNodes(new_members), retain)
+                .await?;
+            Ok(())
+        }
+        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
+    }
+}
+
 /// Restricts the access for the given path.
-#[cfg(feature = "sqlite")]
 #[inline]
 pub async fn set_path_access(path: &str, mode: u32) -> Result<(), Error> {
     #[cfg(target_family = "unix")]

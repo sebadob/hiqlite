@@ -206,6 +206,14 @@ HQL_PASSWORD_DASHBOARD=JGFyZ29uMmlkJHY9MTkkbT0zMix0PTIscD0xJE9FbFZURnAwU0V0bFJ6Z
 # default: false
 HQL_INSECURE_COOKIE=true
 
+# Set to `false` to store Cache WAL files + Snapshots in-memory only.
+# Depending on your environment and setup, this can lead to cluster
+# issues if a node crashes and cannot do a graceful shutdown. It is not
+# recommended to keep the Raft state in-memory only, apart from for
+# testing and in special cases.
+# default: true
+#HQL_CACHE_STORAGE_DISK=true
+
 # Can be set to true to start the WAL handler even if the
 # `lock.hql` file exists. This may be necessary after a
 # crash, when the lock file could not be removed during a

@@ -200,8 +200,6 @@ pub(crate) enum ApiStreamResponsePayload {
 
     #[cfg(feature = "cache")]
     KV(Result<CacheResponse, Error>),
-    #[cfg(feature = "cache")]
-    MembershipRemove(Result<(), Error>),
 
     #[cfg(feature = "dlock")]
     Lock(LockState),

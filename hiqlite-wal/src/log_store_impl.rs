@@ -11,7 +11,7 @@ use std::collections::Bound;
 use std::fmt::Debug;
 use std::ops::RangeBounds;
 use tokio::sync::oneshot;
-use tracing::debug;
+use tracing::{debug, info};
 
 #[inline(always)]
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
@@ -49,6 +49,7 @@ where
     }
 }
 
+#[tracing::instrument(skip_all)]
 #[inline(always)]
 async fn try_get_log_entries<
     T: RaftTypeConfig,
@@ -67,6 +68,7 @@ async fn try_get_log_entries<
         Bound::Excluded(i) => *i - 1,
         Bound::Unbounded => unreachable!(),
     };
+    info!("Entering try_get_log_entries() from {from} until {until}");
 
     let mut res: Vec<T::Entry> = Vec::with_capacity((until - from) as usize + 1);
 
@@ -94,7 +96,9 @@ where
 {
     type LogReader = LogStoreReader<T>;
 
+    #[tracing::instrument(skip_all)]
     async fn get_log_state(&mut self) -> Result<openraft::LogState<T>, StorageError<T::NodeId>> {
+        info!("Entering get_log_state()");
         let (ack, rx) = oneshot::channel();
         self.reader
             .send_async(reader::Action::LogState(ack))
@@ -128,13 +132,17 @@ where
         })
     }
 
+    #[tracing::instrument(skip_all)]
     async fn get_log_reader(&mut self) -> Self::LogReader {
+        info!("Entering get_log_reader()");
         self.spawn_reader()
             .expect("Error spawning additional LogStoreReader")
     }
 
+    #[tracing::instrument(skip_all)]
     #[tracing::instrument(level = "trace", skip(self))]
     async fn save_vote(&mut self, vote: &Vote<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
+        info!("Entering save_vote(): {:?}", vote);
         let (ack, rx) = oneshot::channel();
         self.writer
             .send_async(writer::Action::Vote {
@@ -151,7 +159,9 @@ where
         Ok(())
     }
 
+    #[tracing::instrument(skip_all)]
     async fn read_vote(&mut self) -> Result<Option<Vote<T::NodeId>>, StorageError<T::NodeId>> {
+        info!("Entering read_vote()");
         let (ack, rx) = oneshot::channel();
 
         self.reader
@@ -172,6 +182,7 @@ where
         Ok(vote)
     }
 
+    #[tracing::instrument(skip_all)]
     #[tracing::instrument(level = "trace", skip_all)]
     async fn append<I>(
         &mut self,
@@ -182,6 +193,8 @@ where
         I: IntoIterator<Item = T::Entry> + Send,
         I::IntoIter: Send,
     {
+        info!("Entering append()");
+
         let (tx, rx) = flume::bounded(1);
         let (ack, ack_rx) = oneshot::channel();
 
@@ -209,9 +222,9 @@ where
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
+    #[tracing::instrument(skip_all)]
     async fn truncate(&mut self, log_id: LogId<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
-        debug!("delete_log: [{:?}, +oo)", log_id);
+        debug!("truncate(): [{:?}, +oo)", log_id);
 
         let (ack, rx) = oneshot::channel();
         self.writer
@@ -231,9 +244,9 @@ where
         })
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
+    #[tracing::instrument(skip_all)]
     async fn purge(&mut self, log_id: LogId<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
-        debug!("delete_log: [0, {:?}]", log_id);
+        debug!("purge(): [0, {:?}]", log_id);
 
         let last_log = Some(serialize(&log_id).unwrap());
         let (ack, rx) = oneshot::channel();

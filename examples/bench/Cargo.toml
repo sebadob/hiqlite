@@ -4,19 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-#hiqlite = { path = "../../hiqlite", features = ["cache", "dlock", "listen_notify", "shutdown-handle"] }
 hiqlite = { path = "../../hiqlite", features = ["cache", "dlock", "jemalloc", "listen_notify", "shutdown-handle"] }
 hiqlite-macros = { path = "../../hiqlite-macros" }
-
-# currently, we need this to embed migrations, as hiqlite does not re-export the full macro yet
-rust-embed = { version = "8.5.0", features = ["compression"] }
-
-# these 2 are needed for the cache index enum, as hiqlite does not re-export the full macros yet
-strum = { version = "0.27", features = ["derive"] }
 
 chrono = "0.4.38"
 clap = { version = "4.1.11", features = ["derive", "env"] }
 serde = { version = "1.0.203", features = ["derive"] }
+strum = { version = "0.27", features = ["derive"] }
 tokio = { version = "1.43.1", features = ["fs", "rt-multi-thread"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }

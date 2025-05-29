@@ -53,6 +53,8 @@ pub(crate) struct DbClient {
     #[cfg(feature = "sqlite")]
     pub(crate) tx_client_db: flume::Sender<ClientStreamReq>,
     pub(crate) tls_config: Option<Arc<rustls::ClientConfig>>,
+    #[cfg(feature = "cache")]
+    pub(crate) tls_no_verify: bool,
     pub(crate) api_secret: Option<String>,
     pub(crate) request_id: AtomicUsize,
     pub(crate) tx_shutdown: Option<watch::Sender<bool>>,

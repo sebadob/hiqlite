@@ -16,7 +16,7 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub async fn server() -> Result<(), Error> {
     match Args::parse() {
         Args::Serve(args) => {
-            logging::init_logging(&args.log_level);
+            logging::init_logging(&args.log_level, args.node_id);
             info!("Hiqlite Server v{}", APP_VERSION);
 
             let node_config = config::build_node_config(args)?;
@@ -27,7 +27,7 @@ pub async fn server() -> Result<(), Error> {
         }
 
         Args::Proxy(args) => {
-            logging::init_logging(&args.log_level);
+            logging::init_logging(&args.log_level, None);
             info!("Hiqlite Proxy v{}", APP_VERSION);
 
             let config = Config::parse(args.config_file);
@@ -37,7 +37,7 @@ pub async fn server() -> Result<(), Error> {
         }
 
         Args::GenerateConfig(args) => {
-            logging::init_logging(&LogLevel::Info);
+            logging::init_logging(&LogLevel::Info, None);
             config::generate(args).await?;
         }
     }

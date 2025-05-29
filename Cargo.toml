@@ -4,7 +4,7 @@ members = ["hiqlite", "hiqlite-macros", "hiqlite-wal"]
 exclude = ["examples"]
 
 [workspace.package]
-version = "0.7.0-20250528"
+version = "0.7.0-20250529"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Sebastian Dobe <sebastiandobe@mailbox.org"]
@@ -56,7 +56,6 @@ http-body-util = "0.1.2"
 hyper = { version = "1.4.1", features = ["client", "http2"] }
 hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
 memmap2 = "0.9.5"
-mimalloc = "0.1.46"
 mime_guess = "2.0.5"
 openraft = { version = "0.9.18", features = ["serde", "storage-v2"] }
 reqwest = { version = "0.12", default-features = false, features = [

@@ -40,7 +40,9 @@ and self-healing capabilities in case of any errors or problems.
 - persistent storage for Raft logs (with [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb)) and SQLite state
   machine
 - "magic" auto setup, no need to do any manual init or management for the Raft
-- self-healing - each node can automatically recover from un-graceful shutdowns and even full data volume loss
+- self-healing - each node can automatically recover from un-graceful shutdowns ~~and even full data volume loss~~
+  (Note: There is a known bug that sometimes can lead to a Raft lock, if the full volume has been lost. This can be
+  fixed, but needs manual interaction and a cluster restart right now)
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
@@ -60,7 +62,9 @@ and self-healing capabilities in case of any errors or problems.
 - `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
 - `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
   more flexible method with more manual work
-- in addition to SQLite - multiple in-memory K/V caches with optional independent TTL per entry per cache
+- in addition to SQLite, multiple in-memory K/V caches with optional independent TTL per entry per cache - K/V caches
+  are disk-backed and store their WAL file + Snapshots on disk, which means they are easy on your memory, and they can
+  rebuild their in-memory data after a restart
 - listen / notify to send real-time messages through the Raft
 - `dlock` feature provides access to distributed locks
 - standalone binary with the `server` feature which can run as a single node, cluster, or proxy to an existing cluster
@@ -73,10 +77,10 @@ I added a [bench example](https://github.com/sebadob/hiqlite/tree/main/examples/
 hardware and setups. This example is very simple and it mostly cares about `INSERT` performance, which is usually the
 bottleneck when using Raft, because of 2 network round-trips for each write by design.
 
-The performance can vary quite a bit, depending on your setup and hardware, of course. Even though the project is in an
-early state, I already put quite a bit of work in optimizing latency and throughput and I would say, it will be able
-to handle everything you throw at it. When you reach the threshold, you are probably in an area where you usually would
-not rely on a single database instance with something like a Postgres anymore as well.  
+The performance can vary quite a bit, depending on your setup and hardware, of course. Quite a lot of work has been put
+into performance tuning already and I would say, it will be able to handle everything you throw at it. When you reach
+the threshold, you are probably in an area where you usually would not rely on a single database instance with something
+like a Postgres anymore as well.  
 SSDs and fast memory make quite a big difference of course. Regarding the CPU, the whole system is designed to benefit
 more from fewer cores with higher single core speed like Workstation CPU's or AMD Epyc 4004 series. The reason is the
 single writer at a time limitation from SQLite.
@@ -84,14 +88,20 @@ single writer at a time limitation from SQLite.
 Just to give you some raw numbers so you can get an idea how fast it currently is, some numbers below. These values were
 taken using the [bench example](https://github.com/sebadob/hiqlite/tree/main/examples/bench).
 
-Hiqlite can run as a single instance as well, which will have even lower latency and higher throughput of course, but I
-did not include this in the tests, because you usually want a HA Raft cluster. With higher concurrency (`-c`), only
-write / second will change, reads will always be local anyway.
+The benchmarks activate the `jemalloc` feature, which is quite a bit faster than glibc `malloc` but is not supported on
+Windows MSVC target for instance. For cache performance, keep in mind that we use them in the disk-backed version and
+not purely in-memory. Disk-backed provides a lot more consistency and can even rebuild the whole in-memory cache from
+the WAL + Snapshot on disk, which means even a restart does not make you lose cached data. A pure in-memory version will
+be a lot faster though. The disk-backed caches are limited by your disks IOPS and throughput only.
+
+When you take a look at the numbers below, you will see that with higher concurrency, the SQLite implementation can
+reach the physical limits of the disk, when it has roughly the same throughput as the cache does. This is actually
+really impressive, considering that SQLite only allows a single writer at the same time.
 
 Test command (`-c` adjusted each time for different concurrency):
 
 ```
-cargo run --release -- cluster -c 4 -r 10000
+cargo run --release -- cluster -c 4 -r 100000
 ```
 
 ### Beefy Workstation
@@ -102,22 +112,22 @@ AMD Ryzen 9950X, DDR5-5200 with highly optimized timings, M2 SSD Gen4
 
 | Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
 |-------------|----------------------|-----------------------------| 
-| 4           | ~22.000 / s          | ~680.000 / s                |
-| 16          | ~36.000 / s          | ~450.000 / s                |
-| 64          | ~43.000 / s          | ~440.000 / s                |
+| 4           | ~31.000 / s          | ~710.000 / s                |
+| 16          | ~60.000 / s          | ~593.000 / s                |
+| 64          | ~91.000 / s          | ~440.000 / s                |
 
 For a simple `SELECT`, we have 2 different metrics. By default, `hiqlite` caches all prepared statements.
-A simple `SELECT` with a fresh connection, which has not been prepared and cached yet, it took ~150-190 micros.
+A simple `SELECT` with a fresh connection, which has not been prepared and cached yet, it took ~180-210 micros.
 Once the connection has been used once and the statement has been cached, this drops down dramatically to
-7 -25 micros (hard to measure these short ones).
+6 -25 micros (hard to measure these short ones).
 
 **Cache:**
 
 | Concurrency | 100k single PUT | single entry GET |
 |-------------|-----------------|------------------| 
-| 4           | ~49.000 / s     | ~10 micros       |
-| 16          | ~150.000 / s    |                  |
-| 64          | ~320.000 / s    |                  |
+| 4           | ~35.000 / s     | ~6 micros        |
+| 16          | ~78.000 / s     |                  |
+| 64          | ~94.000 / s     |                  |
 
 ### Older Workstation
 

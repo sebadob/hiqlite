@@ -7,10 +7,11 @@ use tracing::{debug, warn};
 
 #[cfg(feature = "backup")]
 use crate::backup;
-pub use openraft::Config as RaftConfig;
 
 #[cfg(feature = "dashboard")]
 use crate::dashboard::DashboardState;
+
+pub use openraft::Config as RaftConfig;
 
 #[cfg(feature = "s3")]
 #[derive(Debug, Clone)]
@@ -85,14 +86,19 @@ pub struct NodeConfig {
     #[cfg(not(feature = "rocksdb"))]
     pub wal_size: u32,
     /// Set to `true` to store the cache WAL + Snapshots on disk instead of keeping them in memory.
-    /// The Caches themselves will always be in-memory only. The default is `false`, but `true` will
+    /// The Caches themselves will always be in-memory only. The default is `true`, which will
     /// effectively reduce the total memory used, because otherwise the WAL + Snapshot in memory
-    /// would be duplicate data. WAL + Snapshots on disk should always be used for bigger caches,
-    /// because it would not require a complete cluster re-join and snapshot + WAL sync after a
-    /// restart and make the Cache persistent, as then in-memory Caches will be rebuilt from disk.
+    /// would be duplicate data. WAL + Snapshots on disk should basically always be used, because
+    /// it does not require a complete cluster re-join and snapshot + WAL sync after a restart, and
+    /// make the Cache persistent, as then in-memory Caches will be rebuilt from disk.
     ///
     /// Keep in mind that the in-memory WAL storage is roughly 4 times faster than the one on disk,
     /// even with memory mapped WAL files (depending on your disk of course).
+    ///
+    /// CAUTION: There is a known bug in the Raft that can lead to a Raft cluster lock up after
+    /// a pure in-memory member (value set to `false`) crashes or is being force-killed, before it
+    /// had a chance to leave the cluster cleanly before shutdown! This bug will be fixed in the
+    /// future.
     #[cfg(feature = "cache")]
     pub cache_storage_disk: bool,
     /// The internal Raft config. This must be the same on each node.
@@ -141,7 +147,7 @@ impl Default for NodeConfig {
             #[cfg(not(feature = "rocksdb"))]
             wal_size: 2 * 1024 * 1024,
             #[cfg(feature = "cache")]
-            cache_storage_disk: false,
+            cache_storage_disk: true,
             raft_config: Self::default_raft_config(10_000),
             tls_raft: None,
             tls_api: None,
@@ -216,7 +222,7 @@ impl NodeConfig {
         #[cfg(feature = "cache")]
         let cache_storage_disk = env::var("HQL_CACHE_STORAGE_DISK")
             .as_deref()
-            .unwrap_or("false")
+            .unwrap_or("true")
             .parse::<bool>()
             .expect("Cannot parse HQL_CACHE_STORAGE_DISK as bool");
 
