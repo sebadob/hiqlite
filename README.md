@@ -114,20 +114,28 @@ AMD Ryzen 9950X, DDR5-5200 with highly optimized timings, M2 SSD Gen4
 |-------------|----------------------|-----------------------------| 
 | 4           | ~31.000 / s          | ~710.000 / s                |
 | 16          | ~60.000 / s          | ~593.000 / s                |
-| 64          | ~91.000 / s          | ~440.000 / s                |
+| 64          | ~91.000 / s          | ~528.000 / s                |
 
 For a simple `SELECT`, we have 2 different metrics. By default, `hiqlite` caches all prepared statements.
 A simple `SELECT` with a fresh connection, which has not been prepared and cached yet, it took ~180-210 micros.
 Once the connection has been used once and the statement has been cached, this drops down dramatically to
 6 -25 micros (hard to measure these short ones).
 
-**Cache:**
+**Cache (disk-backed):**
 
 | Concurrency | 100k single PUT | single entry GET |
 |-------------|-----------------|------------------| 
 | 4           | ~35.000 / s     | ~6 micros        |
 | 16          | ~78.000 / s     |                  |
 | 64          | ~94.000 / s     |                  |
+
+**Cache (full in-memory):**
+
+| Concurrency | 100k single PUT |
+|-------------|-----------------| 
+| 4           | ~89.000 / s     |
+| 16          | ~262.000 / s    |
+| 64          | ~489.000 / s    |
 
 ### Older Workstation
 
@@ -137,17 +145,25 @@ AMD Ryzen 3900X, DDR4-3000, 2x M2 SSD Gen3 as Raid 0
 
 | Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
 |-------------|----------------------|-----------------------------| 
-| 4           | ~6.800 / s           | ~235.000 / s                |
-| 16          | ~13.300 / s          | ~180.000 / s                |
-| 64          | ~20.800 / s          | ~173.000 / s                |
+| 4           | ~9.200 / s           | ~388.000 / s                |
+| 16          | ~17.500 / s          | ~335.000 / s                |
+| 64          | ~27.800 / s          | ~299.000 / s                |
 
-**Cache:**
+**Cache (disk-backed):**
 
 | Concurrency | 100k single PUT | single entry GET |
 |-------------|-----------------|------------------| 
-| 4           | ~17.200 / s     | ~17 micros       |
-| 16          | ~52.000 / s     |                  |
-| 64          | ~112.00 / s     |                  |
+| 4           | ~10.200 / s     | ~14 micros       |
+| 16          | ~22.100 / s     |                  |
+| 64          | ~29.100 / s     |                  |
+
+**Cache (full in-memory):**
+
+| Concurrency | 100k single PUT |
+|-------------|-----------------| 
+| 4           | ~24.700 / s     |
+| 16          | ~78.800 / s     |
+| 64          | ~177.000 / s    |
 
 ## Crate Features
 
@@ -271,6 +287,12 @@ This feature will simply enable everything apart from the `server` feature:
 - sqlite
 - webpki-roots
 
+### `jemalloc`
+
+This feature enables the `jemallocator` instead of using the default glibc `malloc`. It is a lot more performant, solves
+some issues with memory fragmentation and can be tuned for specific use cases. However, it does not work on Windows
+MSVC targets and out of the box, without any tuning, it will use a bit more memory than default `malloc`.
+
 ### `listen_notify`
 
 Sometimes, you need something simple like Postgres' listen / notify to send real time messages between nodes of your
@@ -289,6 +311,25 @@ In this case, you will have the classic Postgres behavior.
 If you enabled this feature and you `notify()` via the `hiqlite::Client`, you must make sure to actually consume the
 messages on each node. Behind the scenes, Hiqlite uses an unbound channel to never block these. This channel could fill
 up if you `notify()` without `listen()`.
+
+### `migrate-rocksdb`
+
+When enabled, it will add `rocksdb` to the dependencies and check at startup, if there are maybe rocksdb files and
+log storage in the logs folder. It will then migrate the existing rocksdb Raft Log Store to `hiqlite-wal` and remove
+the old rocksdb files afterward.
+
+CAUTION: Just to be safe, you should have a backup of an existing instance before using the migrate feature, since it
+tries to perform a manual, programmatic migration from `rocksdb` to `hiqlite-wal`.
+
+### `rocksdb`
+
+Uses `rocksdb` for the Raft Log Storage instead of the default `hiqlite-wal`. If you want to use an already existing
+Hiqlite instance with a newer version, you might want to activate this feature temporarily until you created some
+backups, just to be safe when it comes to `migrate-rocksdb`.
+
+Apart from that, using the default `hiqlite-wal` is the better option in any scenario. It is only limited by your disk,
+it is a lot more light weight, more efficient and can compile to any target, while rocksdb e.g. is almost impossible
+to compile for `musl`. In future versions, `rocksdb` will most probably be removed completely.
 
 ### `s3`
 
