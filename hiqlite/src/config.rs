@@ -244,7 +244,7 @@ impl NodeConfig {
 
         let slf = Self {
             node_id,
-            nodes: Node::all_from_env(),
+            nodes: Node::parse_from_env("HQL_NODES"),
             data_dir: env::var("HQL_DATA_DIR")
                 .unwrap_or_else(|_| "data".to_string())
                 .into(),
@@ -395,17 +395,15 @@ impl From<&str> for Node {
 }
 
 impl Node {
-    pub fn all_from_env() -> Vec<Self> {
-        let mut res = Vec::new();
-
-        let value = env::var("HQL_NODES").expect("HQL_NODES does not exist");
+    pub fn parse_from_env(env_var: &str) -> Vec<Self> {
+        let mut res = Vec::with_capacity(3);
+        let value = env::var(env_var).unwrap_or_else(|_| panic!("{env_var} does not exist"));
 
         for line in value.lines() {
             if !line.is_empty() {
                 res.push(Self::from(line))
             }
         }
-
         res
     }
 }
