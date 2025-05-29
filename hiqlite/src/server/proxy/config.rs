@@ -56,7 +56,7 @@ impl Config {
 
         Self {
             listen_port,
-            nodes: Node::all_from_env()
+            nodes: Node::parse_from_env("HQL_NODES")
                 .into_iter()
                 .map(|n| n.addr_api)
                 .collect::<Vec<_>>(),
