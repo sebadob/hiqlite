@@ -20,7 +20,7 @@ all-features = true
 [features]
 default = ["auto-heal", "backup", "sqlite"]
 
-auto-heal = []
+auto-heal = ["hiqlite-wal/auto-heal"]
 backup = ["dep:cron", "s3", "sqlite"]
 # TODO check why we need the "openraft/loosen-follower-log-revert" here -> conflict in self-healing tests
 cache = ["openraft/loosen-follower-log-revert"]

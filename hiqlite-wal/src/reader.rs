@@ -4,7 +4,7 @@ use crate::wal::WalFileSet;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::sync::oneshot;
-use tracing::warn;
+use tracing::{debug, warn};
 
 #[allow(clippy::type_complexity)]
 pub enum Action {
@@ -52,6 +52,7 @@ fn run(
     while let Ok(action) = rx.recv() {
         match action {
             Action::Logs { from, until, ack } => {
+                debug!("WAL Reader - Action::Logs");
                 {
                     let wal_upd = wal_locked.read().unwrap();
                     wal.active = wal_upd.active;
@@ -92,6 +93,7 @@ fn run(
                 ack.send(None).unwrap();
             }
             Action::LogState(ack) => {
+                debug!("WAL Reader - Action::LogState");
                 {
                     let wal_upd = wal_locked.read().unwrap();
                     wal.active = wal_upd.active;
@@ -140,6 +142,7 @@ fn run(
                 ack.send(Ok(st)).unwrap();
             }
             Action::Vote(ack) => {
+                debug!("WAL Reader - Action::Vote");
                 let vote = meta.read().unwrap().vote.clone();
                 ack.send(Ok(vote)).unwrap();
             }

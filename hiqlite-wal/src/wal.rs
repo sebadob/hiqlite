@@ -1,14 +1,33 @@
 use crate::error::Error;
-use crate::utils::{bin_to_id, bin_to_len, crc, id_to_bin, len_to_bin};
+use crate::utils::{bin_to_u32, bin_to_u64, crc, u32_to_bin, u64_to_bin};
 use memmap2::{Advice, Mmap, MmapMut, MmapOptions};
 use std::collections::VecDeque;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use tracing::{debug, info, warn};
 
 static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
-// static MIN_WAL_SIZE: u32 = 128 * 1024;
 static MIN_WAL_SIZE: u32 = 8 * 1024;
+
+#[derive(Debug)]
+pub struct WalRecord<'a> {
+    log_id: u64,
+    crc: &'a [u8],
+    data: &'a [u8],
+}
+
+impl WalRecord<'_> {
+    #[inline]
+    fn len(&self) -> u32 {
+        debug_assert!(self.data.len() < u32::MAX as usize);
+        // - 8 byte id
+        // - 4 byte crc (u32)
+        // - 4 byte data length
+        // - variable length data
+        8 + 4 + 4 + self.data.len() as u32
+    }
+}
 
 #[derive(Debug)]
 pub struct WalFile {
@@ -35,6 +54,160 @@ impl Drop for WalFile {
 }
 
 impl WalFile {
+    /// Does NOT check the file header's integrity. This is done inside a `WalFileSet`.
+    ///
+    /// Iterates over the complete data and makes sure, that the expected start and end log IDs
+    /// match the existing data set, as well as that any data after the last expected ID is null.
+    /// Basically, it makes sure that the information written inside the header matches the actual
+    /// data.
+    ///
+    /// This check can be quite expensive and only needs to be done for the last existing file in a
+    /// `WalFileSet`. If the last one is fine, the ones before can only be as well because of their
+    /// immutability. CRC checks are done when reading a single log each time anyway.
+    ///
+    /// If unexpected `WalRecord`s are found and they are valid, the header will be "repaired".
+    ///
+    /// Note: `self` must have an active `mmap_mut` to be able to execute this check properly.
+    #[tracing::instrument(skip_all)]
+    fn check_repair_data_integrity(&mut self, buf: &mut Vec<u8>) -> Result<(), Error> {
+        debug_assert!(self.mmap_mut.is_some());
+        debug_assert!(self.id_from <= self.id_until);
+        debug_assert_eq!(self.data_start.is_some(), self.data_end.is_some());
+
+        info!(
+            "Starting detailed WalFile integrity check for {}",
+            self.path
+        );
+
+        // This check is done in 2 phases:
+        // 1. Iterate over all logs and make sure start and end are correct and valid
+        // 2. After reaching the end, make sure everything afterward is null and there are no
+        //    orphaned logs that might be missing in the header information.
+
+        let mut offset = self.offset_logs() as u32 + 1;
+        let mut id_before: Option<u64> = None;
+
+        if let Some(start) = self.data_start {
+            offset = start;
+            let data_end = self.data_end.unwrap();
+
+            loop {
+                let record = self.read_record_unchecked(offset)?;
+
+                if let Some(id_before) = id_before {
+                    if record.log_id != id_before + 1 {
+                        return Err(Error::Integrity(
+                            format!(
+                                "WAL record incorrect ordering, missing Log ID {}",
+                                id_before + 1
+                            )
+                            .into(),
+                        ));
+                    }
+                }
+                if record.crc != crc!(record.data) {
+                    #[cfg(feature = "auto-heal")]
+                    {
+                        let id_healthy = id_before.unwrap_or(self.id_from);
+                        warn!(
+                            "Bad CRC CHKSUM for WAL Log ID {}. Trying automatic healing. \
+                            Reverting latest log ID to {}.",
+                            record.log_id, id_healthy
+                        );
+
+                        // If we get here, we want to update the header in a way that all logs
+                        // beginning with this one are considered lost and should therefore be
+                        // re-synced from another cluster member. This will only work, if
+                        // `auto-heal` is enabled for the main `hiqlite` crate as well.
+                        self.id_until = id_healthy;
+                        // `data_end` must be inclusive
+                        self.data_end = Some(offset - 1);
+
+                        // We don't need to do anything with the already existing data from now on.
+                        // It will be automatically overwritten by `data_end` index with upcoming
+                        // log appends.
+                        return Ok(());
+                    }
+
+                    #[cfg(not(feature = "auto-heal"))]
+                    return Err(Error::Integrity("Invalid CRC for WAL Record".into()));
+                }
+                id_before = Some(record.log_id);
+
+                // add 1 because the `len` is inclusive and points at the last byte of data
+                offset += record.len() + 1;
+                if offset > data_end || record.log_id == self.id_until {
+                    debug!("Reached data_end in data integrity check");
+                    break;
+                }
+            }
+        }
+
+        // At this point, the `offset` should point to only NULL data.
+        // If this is not the case, it means there is a mismatch in the actual data in the file
+        // and the saved `id_until` / `data_end` information in the header. This could only happen
+        // during a force-killed application or similar situation.
+        loop {
+            if offset >= self.len_max + 8 + 4 + 4 {
+                debug!("Reached the end of the WAL file");
+                break;
+            }
+
+            // This will fail if only null data is read and the `data_len` is 0
+            if let Ok(record) = self.read_record_unchecked(offset) {
+                debug_assert_eq!(record.log_id, 0);
+                debug_assert_eq!(record.data.len(), 0);
+
+                if record.log_id > 0 {
+                    // We found unexpected data. In case of any errors, we will ignore this
+                    // unexpected data and let the next append logs action overwrite it.
+
+                    if let Some(id_before) = id_before {
+                        if record.log_id != id_before + 1 {
+                            warn!(
+                                "Mismatch in log IDs in unexpected data section - ignoring entry"
+                            );
+                            break;
+                        }
+                    }
+                    id_before = Some(record.log_id);
+
+                    if record.crc != crc!(record.data) {
+                        warn!("Mismatch in CRC in unexpected data section - ignoring entry");
+                        break;
+                    }
+
+                    warn!(
+                        "Found unexpected, valid WAL record with Log ID {}",
+                        record.log_id
+                    );
+
+                    let log_id = record.log_id;
+                    let record_len = record.len();
+                    // `record_len` is inclusive
+                    offset += record_len + 1;
+
+                    self.id_until = log_id;
+                    if self.data_start.is_none() {
+                        self.data_start = Some(offset);
+                    }
+                    self.data_end = Some(offset + record_len);
+                    self.update_header(buf)?;
+
+                    if offset >= self.len_max {
+                        debug!("Reached end of file in unexpected data section");
+                        break;
+                    }
+                } else {
+                    debug!("No unexpected WAL records found");
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     #[inline]
     pub fn has_space(&self, data_len: u32) -> bool {
         // wal entries will have:
@@ -43,12 +216,13 @@ impl WalFile {
         // - 4 byte crc
         // - 4 byte data length
         // - variable length data
-        self.len_max > self.data_end.unwrap_or(0) + 1 + 8 + 4 + 4 + data_len
+        self.len_max
+            > self.data_end.unwrap_or_else(|| self.offset_logs() as u32) + 1 + 8 + 4 + 4 + data_len
     }
 
     #[inline]
     pub fn space_left(&self) -> u32 {
-        self.len_max - self.data_end.unwrap_or(0)
+        self.len_max - self.data_end.unwrap_or_else(|| self.offset_logs() as u32)
     }
 
     /// Expects to have enough space left -> check MUST be done upfront
@@ -72,7 +246,7 @@ impl WalFile {
         self.id_until = id;
 
         let mmap = self.mmap_mut.as_mut().unwrap();
-        id_to_bin(id, buf)?;
+        u64_to_bin(id, buf)?;
         (&mut mmap[start..]).write_all(buf)?;
 
         let crc = crc!(&data);
@@ -80,7 +254,7 @@ impl WalFile {
 
         let len = data.len() as u32;
         buf.clear();
-        len_to_bin(len, buf)?;
+        u32_to_bin(len, buf)?;
         (&mut mmap[start + 8 + 4..]).write_all(buf)?;
 
         (&mut mmap[start + 8 + 4 + 4..]).write_all(data)?;
@@ -148,37 +322,28 @@ impl WalFile {
         let mut idx = data_start;
         let mut offset = 0;
         loop {
-            // id, crc, length
-            let head = self.read_bytes(idx, idx + 8 + 4 + 4)?;
-            let id = bin_to_id(&head[..8])?;
-            let crc = &head[8..12];
-            let len = bin_to_len(&head[12..16])?;
+            let record = self.read_record_unchecked(idx)?;
 
-            if id == id_from {
+            if record.log_id == id_from {
                 offset = idx;
             }
-            if id >= id_from {
-                if id <= id_until {
-                    let data_from = idx + 8 + 4 + 4;
-                    debug_assert!(data_from + len <= data_end);
-                    let data = self.read_bytes(data_from, data_from + len)?;
-                    if crc != crc!(data) {
+            if record.log_id >= id_from {
+                if record.log_id <= id_until {
+                    debug_assert!(idx + record.len() <= data_end);
+                    if record.crc != crc!(record.data) {
                         return Err(Error::Integrity("Invalid CRC for WAL Record".into()));
                     }
-                    // #[cfg(debug_assertions)]
-                    // log_dbg::assert_data_id(data, id);
-                    buf.push((id, data.to_vec()))
+                    buf.push((record.log_id, record.data.to_vec()))
                 } else {
                     break;
                 }
             }
-
-            if id >= id_until {
+            if record.log_id >= id_until {
                 break;
             }
 
             // add 1 because the `len` is inclusive and points at the last byte of data
-            idx += 8 + 4 + 4 + len + 1;
+            idx += record.len() + 1;
             debug_assert!(idx - 1 <= data_end);
         }
 
@@ -192,10 +357,34 @@ impl WalFile {
         Ok(offset)
     }
 
+    /// Reads a record at the given `offset`. Does NOT do any boundary checking or any other
+    /// validation. Only extracts the data itself.
+    #[inline(always)]
+    fn read_record_unchecked(&self, offset: u32) -> Result<WalRecord, Error> {
+        debug_assert!(offset + 8 + 4 + 4 < self.len_max);
+
+        // id, crc, length
+        let head = self.read_bytes(offset, offset + 8 + 4 + 4)?;
+
+        let log_id = bin_to_u64(&head[..8])?;
+        let crc = &head[8..12];
+
+        let data_len = bin_to_u32(&head[12..16])?;
+        if data_len == 0 {
+            return Err(Error::Integrity(
+                "Attempt to read non-existent data of length 0".into(),
+            ));
+        }
+        let data_from = offset + 8 + 4 + 4;
+        let data = self.read_bytes(data_from, data_from + data_len)?;
+
+        Ok(WalRecord { log_id, crc, data })
+    }
+
     /// Does NOT do any boundary checks for the given range!
     #[inline(always)]
     fn read_bytes(&self, from: u32, until: u32) -> Result<&[u8], Error> {
-        debug_assert!(from < until);
+        debug_assert!(from < until, "from < until -> {from} < {until}");
         if let Some(mmap) = &self.mmap {
             Ok(&mmap[from as usize..until as usize])
         } else if let Some(mmap) = &self.mmap_mut {
@@ -354,11 +543,11 @@ impl WalFile {
         if buf[7..8] != [1u8] {
             return Err(Error::FileCorrupted("Invalid WAL file version"));
         }
-        let id_from = bin_to_id(&buf[8..16])?;
-        let id_until = bin_to_id(&buf[16..24])?;
+        let id_from = bin_to_u64(&buf[8..16])?;
+        let id_until = bin_to_u64(&buf[16..24])?;
 
-        let data_start = bin_to_len(&buf[24..28])?;
-        let data_end = bin_to_len(&buf[28..32])?;
+        let data_start = bin_to_u32(&buf[24..28])?;
+        let data_end = bin_to_u32(&buf[28..32])?;
 
         Ok(Self {
             version: 1,
@@ -386,10 +575,10 @@ impl WalFile {
         match self.version {
             1 => {
                 buf.push(self.version);
-                id_to_bin(self.id_from, buf)?;
-                id_to_bin(self.id_until, buf)?;
-                len_to_bin(self.data_start.unwrap_or(0), buf)?;
-                len_to_bin(self.data_end.unwrap_or(0), buf)?;
+                u64_to_bin(self.id_from, buf)?;
+                u64_to_bin(self.id_until, buf)?;
+                u32_to_bin(self.data_start.unwrap_or(0), buf)?;
+                u32_to_bin(self.data_end.unwrap_or(0), buf)?;
             }
             _ => unreachable!(),
         }
@@ -470,7 +659,11 @@ impl WalFileSet {
     /// Checks the integrity of the Headers and makes sure the order is strictly ascending and
     /// there are no missing log IDs.
     #[tracing::instrument(skip_all)]
-    pub fn check_integrity(&self) -> Result<(), Error> {
+    pub fn check_integrity(
+        &mut self,
+        buf: &mut Vec<u8>,
+        lock_file_exists: bool,
+    ) -> Result<(), Error> {
         if self.files.is_empty() {
             return Ok(());
         }
@@ -533,6 +726,17 @@ impl WalFileSet {
 
             wal_no = wal.wal_no;
             until = wal.id_until;
+        }
+
+        // We only need to do the way more expensive check if the startup is not clean, e.g.
+        // when an existing `LockFile` has been ignored. This check is unnecessary after a
+        // graceful shutdown.
+        if lock_file_exists {
+            let active = self.active();
+            if active.mmap_mut.is_none() {
+                active.mmap_mut()?;
+            }
+            active.check_repair_data_integrity(buf)?;
         }
 
         Ok(())
@@ -838,6 +1042,7 @@ mod tests {
 
     #[test]
     fn integrity_check() -> Result<(), Error> {
+        let mut buf = Vec::new();
         let base_path = format!("{}/integrity_check", PATH);
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
@@ -887,12 +1092,12 @@ mod tests {
             base_path: base_path.clone(),
             files,
         };
-        set.check_integrity().unwrap();
+        set.check_integrity(&mut buf, false).unwrap();
         assert_eq!(set.active().wal_no, 3);
 
         let mut buf = Vec::with_capacity(28);
         set.add_file(MB2, &mut buf)?;
-        set.check_integrity().unwrap();
+        set.check_integrity(&mut buf, false).unwrap();
         assert_eq!(set.active().wal_no, 3);
 
         // missing logs - invalid if_until -> next id_from
@@ -923,12 +1128,12 @@ mod tests {
             mmap: None,
             mmap_mut: None,
         });
-        let set = WalFileSet {
+        let mut set = WalFileSet {
             active: Some(1),
             base_path: base_path.clone(),
             files,
         };
-        assert!(set.check_integrity().is_err());
+        assert!(set.check_integrity(&mut buf, false).is_err());
 
         let mut files = VecDeque::with_capacity(4);
         files.push_back(WalFile {
@@ -970,12 +1175,12 @@ mod tests {
             mmap: None,
             mmap_mut: None,
         });
-        let set = WalFileSet {
+        let mut set = WalFileSet {
             active: Some(2),
             base_path: base_path.clone(),
             files,
         };
-        assert!(set.check_integrity().is_err());
+        assert!(set.check_integrity(&mut buf, false).is_err());
 
         let mut files = VecDeque::with_capacity(4);
         files.push_back(WalFile {
@@ -1017,12 +1222,12 @@ mod tests {
             mmap: None,
             mmap_mut: None,
         });
-        let set = WalFileSet {
+        let mut set = WalFileSet {
             active: Some(2),
             base_path: base_path.clone(),
             files,
         };
-        assert!(set.check_integrity().is_err());
+        assert!(set.check_integrity(&mut buf, false).is_err());
 
         Ok(())
     }

@@ -43,14 +43,19 @@ pub fn spawn(
     wal_size: u32,
     meta: Arc<RwLock<Metadata>>,
 ) -> Result<(flume::Sender<Action>, Arc<RwLock<WalFileSet>>), Error> {
+    let lock_exists = LockFile::exists(&base_path)?;
+    if lock_exists {
+        warn!("LockFile exists already - this is not a clean start!");
+    }
     LockFile::write(&base_path)?;
 
     let mut set = WalFileSet::read(base_path, wal_size)?;
     // TODO emit a warning log in that case and tell the user how to resolve or "force start" in
-    // that case?
-    set.check_integrity()?;
+    // that case, or should be maybe `auto-heal` as much as possible?
+    let mut buf = Vec::with_capacity(32);
+    set.check_integrity(&mut buf, lock_exists)?;
     if set.files.is_empty() {
-        let mut buf = Vec::with_capacity(32);
+        buf.clear();
         set.add_file(wal_size, &mut buf)?;
     }
     let wal_locked = Arc::new(RwLock::new(set.clone_no_map()));
@@ -107,7 +112,7 @@ fn run(
     while let Ok(action) = rx.recv() {
         match action {
             Action::Append { rx, callback, ack } => {
-                // info!("Action::Append");
+                debug!("WAL Writer - Action::Append");
 
                 let mut res = Ok(());
                 {
@@ -183,6 +188,8 @@ fn run(
                 last_log,
                 ack,
             } => {
+                debug!("WAL Writer - Action::Remove");
+
                 // We don't care about the `from` part, since we don't really delete anything yet.
                 // We only want to shift the index inside the WALs and only delete complete WAL
                 // files, if their last log ID is < `until`. Wasting a bit of disk space is far
@@ -214,6 +221,8 @@ fn run(
                 }
             }
             Action::Vote { value, ack } => {
+                debug!("WAL Writer - Action::Vote");
+
                 meta.write()?.vote = Some(value);
                 let res = Metadata::write(meta.clone(), &wal.base_path);
                 ack.send(res).unwrap();

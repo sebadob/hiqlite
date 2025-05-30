@@ -94,8 +94,13 @@ impl Metadata {
 pub struct LockFile;
 
 impl LockFile {
+    #[inline]
+    pub fn exists(base_path: &str) -> Result<bool, Error> {
+        Ok(fs::exists(Self::path(base_path))?)
+    }
+
     pub fn write(base_path: &str) -> Result<(), Error> {
-        let path = format!("{base_path}/lock.hql");
+        let path = Self::path(base_path);
         match File::open(&path) {
             Ok(_) => {
                 let ignore = env::var("HQL_IGNORE_WAL_LOCK")
@@ -123,6 +128,11 @@ impl LockFile {
         let path = format!("{base_path}/lock.hql");
         fs::remove_file(path)?;
         Ok(())
+    }
+
+    #[inline]
+    fn path(base_path: &str) -> String {
+        format!("{base_path}/lock.hql")
     }
 }
 
@@ -152,8 +162,6 @@ mod tests {
         fs::create_dir_all(&base_path)?;
 
         let meta = Arc::new(RwLock::new(Metadata {
-            // log_from: 13,
-            // log_until: 27,
             last_purged_log_id: Some(vec![13, 17, 43]),
             vote: None,
         }));
@@ -161,8 +169,6 @@ mod tests {
 
         let meta_back = Metadata::read_or_create(&base_path)?;
         let lock = meta.read()?;
-        // assert_eq!(lock.log_from, meta_back.log_from);
-        // assert_eq!(lock.log_until, meta_back.log_until);
         assert_eq!(lock.last_purged_log_id, meta_back.last_purged_log_id);
         assert_eq!(lock.vote, meta_back.vote);
 

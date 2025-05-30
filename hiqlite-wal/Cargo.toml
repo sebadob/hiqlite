@@ -11,6 +11,7 @@ description = "WAL file implementation for Hiqlite"
 repository = "https://github.com/sebadob/hiqlite"
 
 [features]
+auto-heal = []
 migration = []
 
 [lib]
