@@ -7,7 +7,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 
 static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
-// static MIN_WAL_SIZE: u32 = 128 * 1024;
 static MIN_WAL_SIZE: u32 = 8 * 1024;
 
 #[derive(Debug)]
@@ -43,12 +42,13 @@ impl WalFile {
         // - 4 byte crc
         // - 4 byte data length
         // - variable length data
-        self.len_max > self.data_end.unwrap_or(0) + 1 + 8 + 4 + 4 + data_len
+        self.len_max
+            > self.data_end.unwrap_or_else(|| self.offset_logs() as u32) + 1 + 8 + 4 + 4 + data_len
     }
 
     #[inline]
     pub fn space_left(&self) -> u32 {
-        self.len_max - self.data_end.unwrap_or(0)
+        self.len_max - self.data_end.unwrap_or_else(|| self.offset_logs() as u32)
     }
 
     /// Expects to have enough space left -> check MUST be done upfront

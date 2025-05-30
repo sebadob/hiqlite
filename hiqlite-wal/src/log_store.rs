@@ -34,7 +34,6 @@ where
             {
                 use std::os::unix::fs::PermissionsExt;
                 let mut perms = fs::metadata(&base_path)?.permissions();
-                // TODO why do we need +x here? for memmap?
                 perms.set_mode(0o700);
                 fs::set_permissions(&base_path, perms)?;
             }
