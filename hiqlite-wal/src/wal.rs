@@ -301,34 +301,28 @@ impl WalFile {
         let mut idx = data_start;
         let mut offset = 0;
         loop {
-            // id, crc, length
-            let head = self.read_bytes(idx, idx + 8 + 4 + 4)?;
-            let id = bin_to_u64(&head[..8])?;
-            let crc = &head[8..12];
-            let len = bin_to_u32(&head[12..16])?;
+            let record = self.read_record_unchecked(idx)?;
 
-            if id == id_from {
+            if record.log_id == id_from {
                 offset = idx;
             }
-            if id >= id_from {
-                if id <= id_until {
-                    let data_from = idx + 8 + 4 + 4;
-                    debug_assert!(data_from + len <= data_end);
-                    let data = self.read_bytes(data_from, data_from + len)?;
-                    if crc != crc!(data) {
+            if record.log_id >= id_from {
+                if record.log_id <= id_until {
+                    debug_assert!(idx + record.len() <= data_end);
+                    if record.crc != crc!(record.data) {
                         return Err(Error::Integrity("Invalid CRC for WAL Record".into()));
                     }
-                    buf.push((id, data.to_vec()))
+                    buf.push((record.log_id, record.data.to_vec()))
                 } else {
                     break;
                 }
             }
-            if id >= id_until {
+            if record.log_id >= id_until {
                 break;
             }
 
             // add 1 because the `len` is inclusive and points at the last byte of data
-            idx += 8 + 4 + 4 + len + 1;
+            idx += record.len() + 1;
             debug_assert!(idx - 1 <= data_end);
         }
 
