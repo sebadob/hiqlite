@@ -105,13 +105,34 @@ impl WalFile {
                         ));
                     }
                 }
-                id_before = Some(record.log_id);
-
                 if record.crc != crc!(record.data) {
-                    // TODO with `auto-heal` enabled, we could remove everything afterward
-                    //  and re-sync from another node in this case
+                    #[cfg(feature = "auto-heal")]
+                    {
+                        let id_healthy = id_before.unwrap_or(self.id_from);
+                        warn!(
+                            "Bad CRC CHKSUM for WAL Log ID {}. Trying automatic healing. \
+                            Reverting latest log ID to {}.",
+                            record.log_id, id_healthy
+                        );
+
+                        // If we get here, we want to update the header in a way that all logs
+                        // beginning with this one are considered lost and should therefore be
+                        // re-synced from another cluster member. This will only work, if
+                        // `auto-heal` is enabled for the main `hiqlite` crate as well.
+                        self.id_until = id_healthy;
+                        // `data_end` must be inclusive
+                        self.data_end = Some(offset - 1);
+
+                        // We don't need to do anything with the already existing data from now on.
+                        // It will be automatically overwritten by `data_end` index with upcoming
+                        // log appends.
+                        return Ok(());
+                    }
+
+                    #[cfg(not(feature = "auto-heal"))]
                     return Err(Error::Integrity("Invalid CRC for WAL Record".into()));
                 }
+                id_before = Some(record.log_id);
 
                 // add 1 because the `len` is inclusive and points at the last byte of data
                 offset += record.len() + 1;
@@ -132,7 +153,7 @@ impl WalFile {
                 break;
             }
 
-            // This should always work, but everything should be null.
+            // This will fail if only null data is read and the `data_len` is 0
             if let Ok(record) = self.read_record_unchecked(offset) {
                 debug_assert_eq!(record.log_id, 0);
                 debug_assert_eq!(record.data.len(), 0);
@@ -349,6 +370,11 @@ impl WalFile {
         let crc = &head[8..12];
 
         let data_len = bin_to_u32(&head[12..16])?;
+        if data_len == 0 {
+            return Err(Error::Integrity(
+                "Attempt to read non-existent data of length 0".into(),
+            ));
+        }
         let data_from = offset + 8 + 4 + 4;
         let data = self.read_bytes(data_from, data_from + data_len)?;
 
@@ -358,7 +384,7 @@ impl WalFile {
     /// Does NOT do any boundary checks for the given range!
     #[inline(always)]
     fn read_bytes(&self, from: u32, until: u32) -> Result<&[u8], Error> {
-        debug_assert!(from < until);
+        debug_assert!(from < until, "from < until -> {from} < {until}");
         if let Some(mmap) = &self.mmap {
             Ok(&mmap[from as usize..until as usize])
         } else if let Some(mmap) = &self.mmap_mut {
@@ -636,7 +662,7 @@ impl WalFileSet {
     pub fn check_integrity(
         &mut self,
         buf: &mut Vec<u8>,
-        is_clean_start: bool,
+        lock_file_exists: bool,
     ) -> Result<(), Error> {
         if self.files.is_empty() {
             return Ok(());
@@ -705,7 +731,7 @@ impl WalFileSet {
         // We only need to do the way more expensive check if the startup is not clean, e.g.
         // when an existing `LockFile` has been ignored. This check is unnecessary after a
         // graceful shutdown.
-        if !is_clean_start {
+        if lock_file_exists {
             let active = self.active();
             if active.mmap_mut.is_none() {
                 active.mmap_mut()?;
@@ -1066,12 +1092,12 @@ mod tests {
             base_path: base_path.clone(),
             files,
         };
-        set.check_integrity(&mut buf, true).unwrap();
+        set.check_integrity(&mut buf, false).unwrap();
         assert_eq!(set.active().wal_no, 3);
 
         let mut buf = Vec::with_capacity(28);
         set.add_file(MB2, &mut buf)?;
-        set.check_integrity(&mut buf, true).unwrap();
+        set.check_integrity(&mut buf, false).unwrap();
         assert_eq!(set.active().wal_no, 3);
 
         // missing logs - invalid if_until -> next id_from
@@ -1107,7 +1133,7 @@ mod tests {
             base_path: base_path.clone(),
             files,
         };
-        assert!(set.check_integrity(&mut buf, true).is_err());
+        assert!(set.check_integrity(&mut buf, false).is_err());
 
         let mut files = VecDeque::with_capacity(4);
         files.push_back(WalFile {
@@ -1154,7 +1180,7 @@ mod tests {
             base_path: base_path.clone(),
             files,
         };
-        assert!(set.check_integrity(&mut buf, true).is_err());
+        assert!(set.check_integrity(&mut buf, false).is_err());
 
         let mut files = VecDeque::with_capacity(4);
         files.push_back(WalFile {
@@ -1201,7 +1227,7 @@ mod tests {
             base_path: base_path.clone(),
             files,
         };
-        assert!(set.check_integrity(&mut buf, true).is_err());
+        assert!(set.check_integrity(&mut buf, false).is_err());
 
         Ok(())
     }

@@ -15,5 +15,7 @@ mod reader;
 mod shutdown;
 mod utils;
 mod wal;
-// TODO make private after the `rocksdb-migrate` feature was removed in `hiqlite`
+#[cfg(feature = "migration")]
 pub mod writer;
+#[cfg(not(feature = "migration"))]
+mod writer;

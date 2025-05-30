@@ -96,10 +96,7 @@ pub struct LockFile;
 impl LockFile {
     #[inline]
     pub fn exists(base_path: &str) -> Result<bool, Error> {
-        match fs::exists(Self::path(base_path)) {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
-        }
+        Ok(fs::exists(Self::path(base_path))?)
     }
 
     pub fn write(base_path: &str) -> Result<(), Error> {
