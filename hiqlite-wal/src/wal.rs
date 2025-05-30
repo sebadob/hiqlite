@@ -92,8 +92,6 @@ impl WalFile {
             let data_end = self.data_end.unwrap();
 
             loop {
-                info!("Step 1 loop in repair");
-
                 let record = self.read_record_unchecked(offset)?;
 
                 if let Some(id_before) = id_before {
@@ -145,14 +143,12 @@ impl WalFile {
             }
         }
 
-        info!("WAL repair step 1 finished");
-
         // At this point, the `offset` should point to only NULL data.
         // If this is not the case, it means there is a mismatch in the actual data in the file
         // and the saved `id_until` / `data_end` information in the header. This could only happen
         // during a force-killed application or similar situation.
+        let mut recovered = 0;
         loop {
-            // info!("Step 2 loop in repair");
             if offset >= self.len_max + 8 + 4 + 4 {
                 debug!("Reached the end of the WAL file");
                 break;
@@ -160,9 +156,6 @@ impl WalFile {
 
             // This will fail if only null data is read and the `data_len` is 0
             if let Ok(record) = self.read_record_unchecked(offset) {
-                debug_assert_eq!(record.log_id, 0);
-                debug_assert_eq!(record.data.len(), 0);
-
                 if record.log_id > 0 {
                     // We found unexpected data. In case of any errors, we will ignore this
                     // unexpected data and let the next append logs action overwrite it.
@@ -170,7 +163,9 @@ impl WalFile {
                     if let Some(id_before) = id_before {
                         if record.log_id != id_before + 1 {
                             warn!(
-                                "Mismatch in log IDs in unexpected data section - ignoring entry"
+                                "Mismatch in unexpected data for Log ID {} after already recovered \
+                                {} logs - ignoring entry\n{:?}",
+                                record.log_id, recovered, record
                             );
                             break;
                         }
@@ -178,7 +173,12 @@ impl WalFile {
                     id_before = Some(record.log_id);
 
                     if record.crc != crc!(record.data) {
-                        warn!("Mismatch in CRC in unexpected data section - ignoring entry");
+                        warn!(
+                            "Mismatch in CRC in unexpected data section after already recovered {} \
+                            logs - ignoring entry with log id: {}, expected crc: {:?}, \
+                            actual crc: {:?}",
+                            recovered, record.log_id, record.crc, crc!(record.data)
+                        );
                         break;
                     }
 
@@ -198,6 +198,7 @@ impl WalFile {
                     }
                     self.data_end = Some(offset + record_len);
                     self.update_header(buf)?;
+                    recovered += 1;
 
                     if offset >= self.len_max {
                         debug!("Reached end of file in unexpected data section");
@@ -211,6 +212,13 @@ impl WalFile {
                 debug!("No unexpected data found in {}", self.path);
                 break;
             }
+        }
+
+        if recovered > 0 {
+            info!(
+                "Successfully recovered {} orphaned WAL File Records",
+                recovered
+            );
         }
 
         Ok(())
@@ -254,18 +262,23 @@ impl WalFile {
         self.id_until = id;
 
         let mmap = self.mmap_mut.as_mut().unwrap();
-        u64_to_bin(id, buf)?;
-        (&mut mmap[start..]).write_all(buf)?;
 
         let crc = crc!(&data);
         (&mut mmap[start + 8..]).write_all(crc.as_slice())?;
 
         let len = data.len() as u32;
-        buf.clear();
         u32_to_bin(len, buf)?;
         (&mut mmap[start + 8 + 4..]).write_all(buf)?;
 
         (&mut mmap[start + 8 + 4 + 4..]).write_all(data)?;
+
+        // Note: We write the id last on purpose and only after the complete data section has been
+        // written. This makes automatic integrity checks / repairs after a crash less likely to
+        // output false positive warning logs, since it uses a non-Null log ID was an indicator
+        // for possibly existing, orphaned data.
+        buf.clear();
+        u64_to_bin(id, buf)?;
+        (&mut mmap[start..start + 8]).write_all(buf)?;
 
         self.data_end = Some((start + 8 + 4 + 4 + data.len()) as u32);
         debug_assert!(self.data_end.unwrap() <= self.len_max);

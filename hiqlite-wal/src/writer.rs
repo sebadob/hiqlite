@@ -45,7 +45,7 @@ pub fn spawn(
 ) -> Result<(flume::Sender<Action>, Arc<RwLock<WalFileSet>>), Error> {
     let lock_exists = LockFile::exists(&base_path)?;
     if lock_exists {
-        warn!("LockFile exists already - this is not a clean start!");
+        warn!("LockFile in {base_path} exists already - this is not a clean start!");
     }
     LockFile::write(&base_path)?;
 
