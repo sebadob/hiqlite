@@ -92,8 +92,8 @@ async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt()
         .with_target(true)
         .with_level(true)
-        // .with_env_filter(EnvFilter::from("debug"))
-        .with_env_filter(EnvFilter::from("info"))
+        .with_env_filter(EnvFilter::from("debug"))
+        // .with_env_filter(EnvFilter::from("info"))
         .init();
 
     match Args::parse() {
