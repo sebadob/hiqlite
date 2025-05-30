@@ -92,6 +92,8 @@ impl WalFile {
             let data_end = self.data_end.unwrap();
 
             loop {
+                info!("Step 1 loop in repair");
+
                 let record = self.read_record_unchecked(offset)?;
 
                 if let Some(id_before) = id_before {
@@ -143,11 +145,14 @@ impl WalFile {
             }
         }
 
+        info!("WAL repair step 1 finished");
+
         // At this point, the `offset` should point to only NULL data.
         // If this is not the case, it means there is a mismatch in the actual data in the file
         // and the saved `id_until` / `data_end` information in the header. This could only happen
         // during a force-killed application or similar situation.
         loop {
+            // info!("Step 2 loop in repair");
             if offset >= self.len_max + 8 + 4 + 4 {
                 debug!("Reached the end of the WAL file");
                 break;
@@ -202,6 +207,9 @@ impl WalFile {
                     debug!("No unexpected WAL records found");
                     break;
                 }
+            } else {
+                debug!("No unexpected data found in {}", self.path);
+                break;
             }
         }
 
