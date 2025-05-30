@@ -43,14 +43,16 @@ pub fn spawn(
     wal_size: u32,
     meta: Arc<RwLock<Metadata>>,
 ) -> Result<(flume::Sender<Action>, Arc<RwLock<WalFileSet>>), Error> {
+    let is_clean_start = !LockFile::exists(&base_path)?;
     LockFile::write(&base_path)?;
 
     let mut set = WalFileSet::read(base_path, wal_size)?;
     // TODO emit a warning log in that case and tell the user how to resolve or "force start" in
     // that case, or should be maybe `auto-heal` as much as possible?
-    set.check_integrity()?;
+    let mut buf = Vec::with_capacity(32);
+    set.check_integrity(&mut buf, is_clean_start)?;
     if set.files.is_empty() {
-        let mut buf = Vec::with_capacity(32);
+        buf.clear();
         set.add_file(wal_size, &mut buf)?;
     }
     let wal_locked = Arc::new(RwLock::new(set.clone_no_map()));

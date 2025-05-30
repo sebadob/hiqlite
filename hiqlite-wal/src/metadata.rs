@@ -94,8 +94,16 @@ impl Metadata {
 pub struct LockFile;
 
 impl LockFile {
+    #[inline]
+    pub fn exists(base_path: &str) -> Result<bool, Error> {
+        match fs::exists(Self::path(base_path)) {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+
     pub fn write(base_path: &str) -> Result<(), Error> {
-        let path = format!("{base_path}/lock.hql");
+        let path = Self::path(base_path);
         match File::open(&path) {
             Ok(_) => {
                 let ignore = env::var("HQL_IGNORE_WAL_LOCK")
@@ -123,6 +131,11 @@ impl LockFile {
         let path = format!("{base_path}/lock.hql");
         fs::remove_file(path)?;
         Ok(())
+    }
+
+    #[inline]
+    fn path(base_path: &str) -> String {
+        format!("{base_path}/lock.hql")
     }
 }
 
