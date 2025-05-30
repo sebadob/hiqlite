@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 hiqlite = { path = "../../hiqlite", default-features = false, features = ["cache", "shutdown-handle"] }
 #hiqlite = { path = "../../hiqlite", features = ["cache", "dlock", "listen_notify", "shutdown-handle"] }
-hiqlite-macros = { path = "../../hiqlite-macros" }
+#hiqlite-macros = { path = "../../hiqlite-macros" }
 
 # these 2 are needed for the cache index enum, as hiqlite does not re-export the full macros yet
 strum = "0.27.1"
