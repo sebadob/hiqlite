@@ -42,20 +42,6 @@ where
         .map(|c| c.danger_tls_no_verify)
         .unwrap_or(false);
 
-    // TODO
-    // - check if we are a pristine node for both sqlite + cache
-    // - if not pristine, go on as usual and skip the other points
-    // - if pristine, start special API with only the metrics endpoints used in try_become
-    //   to tell other nodes that we don't have any data yet
-    // - if this is node 1 and we have reached nodes / 2 un-initialized ones, init fresh cluster
-    // - if not node 1 and nodes / 2 are pristine, keep the API running and query node 1 until
-    //   it is available and initialized a fresh cluster, then shutdown and join
-    // - if we are pristine and there is already another cluster:
-    //     - find the cluster leader
-    //     - query metrics from elader and check if we are a cluster members and maybe lost our volume
-    //     - if we are a member on remote, force-leave the cluster
-    //     - query metrics until we are removed from the cluster, then shutdown and re-join
-
     #[cfg(feature = "s3")]
     s3::init_enc_keys(&node_config.enc_keys_from)?;
 

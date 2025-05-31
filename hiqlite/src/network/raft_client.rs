@@ -516,7 +516,7 @@ pub struct NetworkConnectionStreaming {
 
 impl Drop for NetworkConnectionStreaming {
     fn drop(&mut self) {
-        let _ = self.sender.send(RaftRequest::Shutdown);
+        let _ = self.sender.try_send(RaftRequest::Shutdown);
         if let Some(task) = self.task.take() {
             task.abort();
         }

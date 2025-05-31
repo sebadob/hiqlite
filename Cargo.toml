@@ -64,7 +64,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 rocksdb = { version = "0.23.0", default-features = false, features = ["bindgen-runtime", "snappy"] }
-rusqlite = { version = "0.34", features = [
+rusqlite = { version = "0.36", features = [
     "backup",
     "bundled",
     "chrono",
@@ -75,7 +75,7 @@ rust-embed = { version = "8.5.0", features = [] }
 rustls = { version = "0.23.12", features = ["ring"] }
 serde = { version = "1.0.114", features = ["derive"] }
 serde_json = "1.0.57"
-serde_rusqlite = "0.38"
+serde_rusqlite = "0.39"
 sha2 = { version = "0.10.8", features = [] }
 spow = { version = "0.6", features = ["server"] }
 strum = { version = "0.27", features = ["derive"] }

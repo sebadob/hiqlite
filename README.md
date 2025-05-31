@@ -89,14 +89,15 @@ Just to give you some raw numbers so you can get an idea how fast it currently i
 taken using the [bench example](https://github.com/sebadob/hiqlite/tree/main/examples/bench).
 
 The benchmarks activate the `jemalloc` feature, which is quite a bit faster than glibc `malloc` but is not supported on
-Windows MSVC target for instance. For cache performance, keep in mind that we use them in the disk-backed version and
-not purely in-memory. Disk-backed provides a lot more consistency and can even rebuild the whole in-memory cache from
-the WAL + Snapshot on disk, which means even a restart does not make you lose cached data. A pure in-memory version will
-be a lot faster though. The disk-backed caches are limited by your disks IOPS and throughput only.
+Windows MSVC target for instance. For cache performance, there are 2 different metrics. One uses a disk-backed cache,
+the other one is fully in-memory. Disk-backed provides a lot more consistency and can even rebuild the whole in-memory
+cache from the WAL + Snapshot on disk, which means even a restart does not make you lose cached data. A pure in-memory
+version will need to re-join and sync all data from the other nodes between restarts, but it will be a lot faster. The
+disk-backed caches are limited by your disks IOPS and throughput only.
 
-When you take a look at the numbers below, you will see that with higher concurrency, the SQLite implementation can
-reach the physical limits of the disk, when it has roughly the same throughput as the cache does. This is actually
-really impressive, considering that SQLite only allows a single writer at the same time.
+When you take a look at the numbers below, you will see that the SQLite implementation can almost reach the physical
+limits of the disk, when it has roughly the same throughput as the cache does. This is actually really impressive,
+considering that SQLite only allows a single writer at the same time.
 
 Test command (`-c` adjusted each time for different concurrency):
 
@@ -112,8 +113,8 @@ AMD Ryzen 9950X, DDR5-5200 with highly optimized timings, M2 SSD Gen4
 
 | Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
 |-------------|----------------------|-----------------------------| 
-| 4           | ~31.000 / s          | ~710.000 / s                |
-| 16          | ~60.000 / s          | ~593.000 / s                |
+| 4           | ~29.000 / s          | ~710.000 / s                |
+| 16          | ~58.000 / s          | ~593.000 / s                |
 | 64          | ~91.000 / s          | ~528.000 / s                |
 
 For a simple `SELECT`, we have 2 different metrics. By default, `hiqlite` caches all prepared statements.
@@ -135,7 +136,7 @@ Once the connection has been used once and the statement has been cached, this d
 |-------------|-----------------| 
 | 4           | ~89.000 / s     |
 | 16          | ~262.000 / s    |
-| 64          | ~489.000 / s    |
+| 64          | ~504.000 / s    |
 
 ### Older Workstation
 
@@ -145,9 +146,9 @@ AMD Ryzen 3900X, DDR4-3000, 2x M2 SSD Gen3 as Raid 0
 
 | Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
 |-------------|----------------------|-----------------------------| 
-| 4           | ~9.200 / s           | ~388.000 / s                |
-| 16          | ~17.500 / s          | ~335.000 / s                |
-| 64          | ~27.800 / s          | ~299.000 / s                |
+| 4           | ~9.100 / s           | ~388.000 / s                |
+| 16          | ~17.200 / s          | ~335.000 / s                |
+| 64          | ~27.300 / s          | ~299.000 / s                |
 
 **Cache (disk-backed):**
 
