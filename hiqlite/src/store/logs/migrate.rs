@@ -21,7 +21,7 @@ static KEY_VOTE: &[u8] = b"vote";
 #[tracing::instrument]
 pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<(), Error> {
     if !fs::try_exists(&logs_dir).await? {
-        debug!(
+        info!(
             "`logs_dir` {} does not exist - nothing to migrate",
             logs_dir
         );
@@ -29,7 +29,7 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
     }
 
     if let Some(db) = try_open_db(&logs_dir) {
-        info!("Found existing rocksdb");
+        info!("Found existing rocksdb - starting migration to `hiqlite-wal`");
         // cleanup possibly existing hiqlite-wal files
         let mut files = Vec::with_capacity(4);
         let mut dir = fs::read_dir(&logs_dir).await?;
@@ -86,6 +86,8 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
             info!("Writer is still shutting down - waiting ...");
             time::sleep(Duration::from_millis(500)).await;
         }
+    } else {
+        info!("No existing rocksdb Log Store found - nothing to migrate");
     }
 
     Ok(())
