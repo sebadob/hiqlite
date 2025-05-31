@@ -231,7 +231,7 @@ async fn start_cluster(
     // state after restart, because the current Leader expects the node to still have the last known
     // state applied.
     //
-    //config.cache_storage_disk = true;
+    config.cache_storage_disk = false;
 
     // The only reason we set the WAL size to 8MB here is because of the possibly huge transactional
     // inserts with a high row count and low concurrency. At least for `hiqlite-wal`, the WAL size

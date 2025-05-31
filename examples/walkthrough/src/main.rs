@@ -97,8 +97,8 @@ impl CacheIndex for Cache {
 }
 
 // This impl is needed for `query_map()` which gives you more control
-impl<'r> From<Row<'r>> for Entity {
-    fn from(mut row: Row<'r>) -> Self {
+impl From<Row<'_>> for Entity {
+    fn from(mut row: Row<'_>) -> Self {
         Self {
             id: row.get("id"),
             num: row.get("num"),

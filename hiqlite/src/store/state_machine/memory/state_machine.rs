@@ -119,7 +119,8 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
         let (meta, snapshot_bytes) = {
             let data = self.data.read().await;
 
-            // TODO should we include notifications in snapshots as well? -> unsure if it makes sense or not
+            // TODO should we include notifications in snapshots as well?
+            //  -> unsure if it makes sense or not
 
             let mut ttls = Vec::with_capacity(self.tx_ttls.len());
             for tx in &self.tx_ttls {

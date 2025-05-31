@@ -17,7 +17,7 @@ use rusqlite::backup::Progress;
 use rusqlite::fallible_iterator::FallibleIterator;
 use rusqlite::fallible_streaming_iterator::FallibleStreamingIterator;
 use rusqlite::types::Value;
-use rusqlite::{Batch, DatabaseName, Rows, Transaction};
+use rusqlite::{Batch, Rows, Transaction};
 use std::borrow::Cow;
 use std::default::Default;
 use std::ops::Sub;
@@ -513,7 +513,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                     let start = Instant::now();
                     info!("Starting snapshot restore from {}", path);
                     conn.restore(
-                        DatabaseName::Main,
+                        "main",
                         path,
                         Some(|p: Progress| {
                             println!("Database restore remaining: {}", p.remaining);

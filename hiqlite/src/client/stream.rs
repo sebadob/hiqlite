@@ -504,9 +504,10 @@ async fn client_stream(
         handle_write.abort();
         handle_read.abort();
 
-        info!("make sure reader rx is empty and closed");
+        debug!("make sure reader rx is empty and closed");
         while let Ok(req) = rx_read.recv_async().await {
-            info!("Answer from reader into buffer: {:?}", req);
+            debug!("Answer from reader into buffer: {:?}", req);
+            // we are very explicit here for better debugging
             match req {
                 #[cfg(feature = "sqlite")]
                 ClientStreamReq::Execute(_) => {
@@ -790,8 +791,7 @@ async fn try_connect(
         let _ = ws
             .write_frame(Frame::close(1000, b"Invalid Handshake"))
             .await;
-        // TODO what should be do in this case? This handler should never exit.
-        // panic is the best option in case of misconfiguration?
+        // panic is the best option in case of a misconfiguration
         panic!("Error during API WebSocket handshake: {}", err);
     }
 
