@@ -4,7 +4,7 @@ use crate::wal::WalFileSet;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::sync::oneshot;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 #[allow(clippy::type_complexity)]
 pub enum Action {
@@ -52,7 +52,7 @@ fn run(
     while let Ok(action) = rx.recv() {
         match action {
             Action::Logs { from, until, ack } => {
-                debug!("WAL Reader - Action::Logs");
+                debug!("WAL Reader - Action::Logs - read from {from} until {until}");
                 {
                     let wal_upd = wal_locked.read().unwrap();
                     wal.active = wal_upd.active;
@@ -62,13 +62,19 @@ fn run(
                 let mut from_next = from;
                 for log in wal.files.iter_mut() {
                     if log.id_until < from_next {
+                        debug!(
+                            "log.id_until < from_next -> {} < {}",
+                            log.id_until, from_next
+                        );
                         continue;
                     }
+                    debug!("Reading from Log {:?}", log);
 
                     log.mmap().unwrap();
                     buf.clear();
 
                     if log.id_until < until {
+                        debug!("log.id_until < until -> {} < {}", log.id_until, until);
                         log.read_logs(from_next, log.id_until, &mut buf).unwrap();
                         for (_id, data) in buf.drain(..) {
                             debug_assert!(_id >= from_next && _id <= until);
@@ -82,9 +88,16 @@ fn run(
 
                         from_next = log.id_until + 1;
                     } else {
-                        log.read_logs(from_next, until, &mut buf).unwrap();
-                        for (_, data) in buf.drain(..) {
-                            ack.send(Some(Ok(data))).unwrap()
+                        debug!("log contains end of read request");
+                        match log.read_logs(from_next, until, &mut buf) {
+                            Ok(_) => {
+                                for (_, data) in buf.drain(..) {
+                                    ack.send(Some(Ok(data))).unwrap()
+                                }
+                            }
+                            Err(err) => {
+                                error!("Error reading logs: {:?}", err);
+                            }
                         }
                         break;
                     };
