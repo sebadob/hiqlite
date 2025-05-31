@@ -245,7 +245,10 @@ impl NetworkStreaming {
                                 #[cfg(feature = "cache")]
                                 RaftRequest::SnapshotCache((ack, _)) => Some(ack),
                                 RaftRequest::StreamResponse(_) => None,
-                                RaftRequest::Shutdown => None,
+                                RaftRequest::Shutdown => {
+                                    shutdown = true;
+                                    None
+                                }
                             };
 
                             if let Some(ack) = ack {
@@ -255,6 +258,10 @@ impl NetworkStreaming {
                                 ))));
                             }
                         });
+
+                        if shutdown {
+                            break;
+                        }
 
                         // if there is a network error, don't try too hard to connect
                         // time::sleep(Duration::from_millis(heartbeat_interval * 3)).await;
