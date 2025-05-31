@@ -326,7 +326,13 @@ impl WalFile {
         debug_assert!(self.data_end.is_some());
 
         if self.id_from > id_from {
-            return Err(Error::Generic("`id_from` is below threshold".into()));
+            return Err(Error::Generic(
+                format!(
+                    "`id_from` is below threshold - id_from: {id_from} / self.id_from: {}",
+                    self.id_from
+                )
+                .into(),
+            ));
         }
         if self.id_until < id_until {
             return Err(Error::Generic("`id_until` is above threshold".into()));
