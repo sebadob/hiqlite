@@ -167,7 +167,7 @@ async fn should_node_1_skip_init(
                     }
                 }
                 Err(err) => {
-                    error!("Error sending membership request: {}", err);
+                    warn!("Error sending membership request: {}", err);
                 }
             }
 
@@ -216,11 +216,12 @@ pub async fn become_cluster_member(
         .build()?;
     let scheme = if tls { "https" } else { "http" };
 
-    if is_remote_cluster_member(&state, raft_type, &client, scheme, this_node, nodes).await? {
+    if is_remote_cluster_member(&state, raft_type, &client, scheme, this_node, nodes).await {
         leave_remote_cluster(
             &state, raft_type, &client, scheme, this_node, nodes, 10, false,
         )
-        .await?
+        .await
+        .expect("Cannot leave remote cluster");
     }
     set_raft_running(&state, raft_type);
 
@@ -426,6 +427,8 @@ async fn try_become(
     }
 }
 
+/// Make sure this function does not return a Result, which could get us into a locked situation,
+/// because the Raft is set to stopped while we check this.
 #[tracing::instrument(skip(state, client, scheme))]
 async fn is_remote_cluster_member(
     state: &Arc<AppState>,
@@ -434,7 +437,7 @@ async fn is_remote_cluster_member(
     scheme: &str,
     this_node: u64,
     nodes: &[Node],
-) -> Result<bool, Error> {
+) -> bool {
     let mut url = String::with_capacity(48);
 
     // "This" Node is the +1 for quorum
@@ -461,7 +464,8 @@ async fn is_remote_cluster_member(
             scheme,
             node.addr_api,
             raft_type.as_str()
-        )?;
+        )
+        .expect("Cannot write into String");
 
         let res = client
             .get(&url)
@@ -472,8 +476,13 @@ async fn is_remote_cluster_member(
         match res {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    let bytes = resp.bytes().await?;
-                    let metrics = deserialize::<RaftMetrics<u64, Node>>(bytes.as_ref())?;
+                    let Ok(bytes) = resp.bytes().await else {
+                        error!("Success response from remote without body");
+                        time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    };
+                    let metrics = deserialize::<RaftMetrics<u64, Node>>(bytes.as_ref())
+                        .expect("Cannot deserialize remote metrics response");
                     let is_member = metrics
                         .membership_config
                         .nodes()
@@ -482,10 +491,10 @@ async fn is_remote_cluster_member(
                         // if there already is a remote cluster and we are not part of it,
                         // everything should be fine
                         warn!("Found remote metrics and we ({this_node}) are a Raft member");
-                        return Ok(true);
+                        return true;
                     } else {
                         info!("Found remote metrics, but we ({this_node}) are not a Raft member");
-                        return Ok(false);
+                        return false;
                     }
                 } else {
                     // We reached the remote node, but it was not possible to get cluster metrics.
@@ -513,7 +522,7 @@ async fn is_remote_cluster_member(
         }
     }
 
-    Ok(false)
+    false
 }
 
 #[tracing::instrument(skip(state, client, scheme))]
