@@ -20,9 +20,11 @@ static KEY_VOTE: &[u8] = b"vote";
 /// rocksdb to `hiqlite-wal` in that case.
 #[tracing::instrument]
 pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<(), Error> {
-    if !fs::try_exists(&logs_dir).await? {
+    // the bare minimum of files that must be there for a possibly existing
+    // rocksdb is a `LOG` file
+    if !fs::try_exists(format!("{}/LOG", logs_dir)).await? {
         info!(
-            "`logs_dir` {} does not exist - nothing to migrate",
+            "No rocksdb LOG file found in {} - nothing to migrate",
             logs_dir
         );
         return Ok(());
@@ -123,7 +125,6 @@ async fn migrate(
     } else {
         None
     };
-    let id_from = last_purged_log_id.map(|id| id.index).unwrap_or(0);
 
     let (tx, rx) = flume::bounded(1);
     let (ack, rx_ack) = oneshot::channel();
@@ -135,13 +136,7 @@ async fn migrate(
         })
         .unwrap();
 
-    let mut from = Vec::with_capacity(8);
-    from.write_u64::<BigEndian>(id_from)?;
-    let logs = db.iterator_cf(
-        db.cf_handle("logs").unwrap(),
-        rocksdb::IteratorMode::From(&from, Direction::Forward),
-    );
-
+    let logs = db.iterator_cf(db.cf_handle("logs").unwrap(), rocksdb::IteratorMode::Start);
     for log in logs {
         match log {
             Ok((id, value)) => {
