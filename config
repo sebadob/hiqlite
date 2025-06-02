@@ -238,3 +238,36 @@ HQL_INSECURE_COOKIE=true
 #
 # default: false
 HQL_IGNORE_WAL_LOCK=true
+
+# You can reset the Raft Logs + Metadata when set to
+# `true`. This can be helpful, if you e.g. run a single
+# instance "cluster" and encountered an unrecoverable
+# error at startup, like e.g. a corrupted Raft Logs volume.
+# If you have an HA cluster though, in such a situation,
+# a volume cleanup for the broken node and clean cluster
+# re-join + sync is always preferred and the safer option.
+#
+# Another situation where this option can be used, if you
+# want to trigger a Log ID roll-over and for some reason,
+# you either cannot or do not want to apply a backup to
+# achieve this. This may only be necessary if your Log ID
+# almost reached `18446744073709551615`, which in reality
+# will probably never happen in less than 10 years.
+# Applying a backup at that point is still the safer
+# option, because it is not possible to make a mistake,
+# as long as you wait for it to finish.
+#
+# Be VERY CAREFUL with this option! If used incorrectly,
+# you can destroy a Raft cluster and end up with an
+# inconsistent state, so your only chance last chance
+# is to either re-create the whole cluster, or apply a
+# backup.
+#
+# This option will leave the state machine in place,
+# but delete Raft WAL, Metadata and Snapshots!
+# Local backups will be left in place.
+#
+# This option should be seen as a last resort.
+# USE WITH CARE!
+#
+#HQL_DANGER_RAFT_STATE_RESET=true

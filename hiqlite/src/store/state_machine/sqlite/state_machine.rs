@@ -116,6 +116,7 @@ pub struct StateMachineSqlite {
 }
 
 impl StateMachineSqlite {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn new(
         data_dir: &str,
         filename_db: &str,
@@ -124,6 +125,7 @@ impl StateMachineSqlite {
         prepared_statement_cache_capacity: usize,
         read_pool_size: usize,
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::s3::S3Config>>,
+        do_reset_metadata: bool,
     ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
         // IMPORTANT: Do NOT change the order of the db exists check!
         // DB recovery will fail otherwise!
@@ -150,8 +152,13 @@ impl StateMachineSqlite {
         .map_err(|err| StorageError::IO {
             source: StorageIOError::write(&err),
         })?;
-        let write_tx =
-            writer::spawn_writer(conn, this_node, path_lock_file.clone(), log_statements);
+        let write_tx = writer::spawn_writer(
+            conn,
+            this_node,
+            path_lock_file.clone(),
+            log_statements,
+            do_reset_metadata,
+        );
 
         let read_pool = Self::connect_read_pool(
             path_db.as_ref(),

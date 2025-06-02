@@ -135,6 +135,7 @@ pub fn spawn_writer(
     this_node: NodeId,
     path_lock_file: String,
     log_statements: bool,
+    do_reset_metadata: bool,
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(1);
 
@@ -144,6 +145,12 @@ pub fn spawn_writer(
         let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
 
         // TODO should we maybe save a backup task handle in case of shutdown overlap?
+
+        if do_reset_metadata {
+            if let Err(err) = conn.execute("DROP TABLE IF EXISTS _metadata", ()) {
+                warn!("Error cleaning up _metadata table - ignore this warning, if the DB was empty anyway");
+            }
+        }
 
         // we want to handle our metadata manually to not interfere with migrations in apps later on
         conn.execute(
