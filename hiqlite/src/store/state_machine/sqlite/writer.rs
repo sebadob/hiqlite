@@ -148,7 +148,7 @@ pub fn spawn_writer(
 
         if do_reset_metadata {
             if let Err(err) = conn.execute("DROP TABLE IF EXISTS _metadata", ()) {
-                warn!("Error cleaning up _metadata table - ignore this warning, if the DB was empty anyway");
+                error!("Error cleaning up _metadata table - ignore this warning, if the DB was empty anyway");
             }
         }
 
