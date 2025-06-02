@@ -61,6 +61,14 @@ fn run(
 
                 let mut from_next = from;
                 for log in wal.files.iter_mut() {
+                    if from_next < log.id_from {
+                        error!(
+                            "Mismatch in Log IDs - Should read from {from_next} while this log \
+                        starts later {:?}",
+                            log,
+                        );
+                    }
+
                     if log.id_until < from_next {
                         debug!(
                             "log.id_until < from_next -> {} < {}",

@@ -80,10 +80,8 @@ pub struct NodeConfig {
     #[cfg(feature = "rocksdb")]
     pub sync_immediate: bool,
     /// When Raft logs should by synced to disk.
-    #[cfg(not(feature = "rocksdb"))]
     pub wal_sync: hiqlite_wal::LogSync,
     /// Maximum WAL size in bytes.
-    #[cfg(not(feature = "rocksdb"))]
     pub wal_size: u32,
     /// Set to `true` to store the cache WAL + Snapshots on disk instead of keeping them in memory.
     /// The Caches themselves will always be in-memory only. The default is `true`, which will
@@ -142,9 +140,7 @@ impl Default for NodeConfig {
             read_pool_size: 4,
             #[cfg(feature = "rocksdb")]
             sync_immediate: false,
-            #[cfg(not(feature = "rocksdb"))]
             wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
-            #[cfg(not(feature = "rocksdb"))]
             wal_size: 2 * 1024 * 1024,
             #[cfg(feature = "cache")]
             cache_storage_disk: true,
@@ -268,9 +264,7 @@ impl NodeConfig {
                 .unwrap_or("false")
                 .parse()
                 .expect("Cannot parse HQL_SYNC_IMMEDIATE as bool"),
-            #[cfg(not(feature = "rocksdb"))]
             wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
-            #[cfg(not(feature = "rocksdb"))]
             wal_size: 2 * 1024 * 1024,
             #[cfg(feature = "cache")]
             cache_storage_disk,
