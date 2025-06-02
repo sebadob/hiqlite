@@ -39,6 +39,7 @@ pub type StorageResult<T> = Result<T, StorageError<NodeId>>;
 pub(crate) async fn start_raft_db(
     node_config: NodeConfig,
     raft_config: Arc<RaftConfig>,
+    do_reset_metadata: bool,
 ) -> Result<StateRaftDB, Error> {
     // We always want to start stopped and set to `false` as soon as we found out,
     // that we are not pristine node and need cleanup.
@@ -71,6 +72,7 @@ pub(crate) async fn start_raft_db(
         node_config.read_pool_size,
         #[cfg(feature = "s3")]
         node_config.s3_config,
+        do_reset_metadata,
     )
     .await
     .unwrap();

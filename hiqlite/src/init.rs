@@ -7,7 +7,7 @@ use openraft::{Membership, RaftMetrics};
 use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time;
+use tokio::{fs, time};
 use tracing::{debug, error, warn};
 
 #[cfg(feature = "sqlite")]
@@ -18,9 +18,55 @@ use crate::store::state_machine::memory::TypeConfigKV;
 
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use std::collections::BTreeMap;
+use std::env;
 use std::sync::atomic::Ordering;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use tracing::info;
+
+/// Checks if a Raft Logs / Metadata reset should be performed and deletes all logs if true.
+pub async fn check_execute_reset(base_path: &str) -> Result<bool, Error> {
+    let do_reset = env::var("HQL_DANGER_RAFT_STATE_RESET")
+        .as_deref()
+        .unwrap_or("false")
+        .parse::<bool>()
+        .expect("Cannot parse HQL_DANGER_RAFT_STATE_RESET as u64");
+    if !do_reset {
+        return Ok(false);
+    }
+
+    warn!(
+        r#"
+
+    !!! CAUTION !!!
+
+    Performing a full Raft State reset! If used incorrectly, this option
+    can destroy your cluster and end up with an inconsistent state!
+
+    Base target directory: {base_path}
+
+    Continuing in 10 seconds ...
+
+    "#
+    );
+    time::sleep(Duration::from_secs(10)).await;
+
+    if let Err(err) = fs::remove_dir_all(format!("{}/logs", base_path)).await {
+        error!("Error during Raft Logs cleanup: {:?}", err);
+    }
+    if let Err(err) = fs::remove_dir_all(format!("{}/logs_cache", base_path)).await {
+        error!("Error during Raft Logs cleanup: {:?}", err);
+    }
+    if let Err(err) = fs::remove_dir_all(format!("{}/state_machine/snapshots", base_path)).await {
+        error!("Error during Raft Logs cleanup: {:?}", err);
+    }
+    if let Err(err) =
+        fs::remove_dir_all(format!("{}/state_machine_cache/snapshots", base_path)).await
+    {
+        error!("Error during Raft Logs cleanup: {:?}", err);
+    }
+
+    Ok(true)
+}
 
 /// Initializes a fresh node 1, if it has not been set up yet.
 #[cfg(feature = "sqlite")]
