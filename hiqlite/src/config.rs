@@ -298,15 +298,9 @@ impl NodeConfig {
     pub fn default_raft_config(logs_until_snapshot: u64) -> RaftConfig {
         RaftConfig {
             cluster_name: "hiqlite".to_string(),
-            // election_timeout_min: 150,
-            // election_timeout_max: 300,
-            // heartbeat_interval: 50,
-            // election_timeout_min: 300,
-            // election_timeout_max: 600,
-            // heartbeat_interval: 100,
-            election_timeout_min: 750,
-            election_timeout_max: 1500,
-            heartbeat_interval: 150,
+            election_timeout_min: 1500,
+            election_timeout_max: 3000,
+            heartbeat_interval: 500,
             install_snapshot_timeout: 10_000,
             send_snapshot_timeout: 0,
             max_payload_entries: 128,
