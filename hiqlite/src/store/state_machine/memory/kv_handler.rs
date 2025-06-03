@@ -13,6 +13,7 @@ use tokio::task;
 use tracing::{error, info, warn};
 
 #[derive(Debug)]
+#[allow(clippy::type_complexity)]
 pub enum CacheRequestHandler {
     Get((String, oneshot::Sender<Option<Vec<u8>>>)),
     Put((String, Vec<u8>)),
@@ -33,6 +34,8 @@ pub enum CacheRequestHandler {
     CounterSet((String, i64)),
     #[cfg(feature = "counters")]
     CounterAdd((String, i64, oneshot::Sender<i64>)),
+    #[cfg(feature = "counters")]
+    CounterDel(String),
 }
 
 pub fn spawn<C: Debug>(cache: C) -> flume::Sender<CacheRequestHandler> {
@@ -119,6 +122,10 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
                 if ack.send(v).is_err() {
                     error!("Error sending back CounterAdd value");
                 }
+            }
+            #[cfg(feature = "counters")]
+            CacheRequestHandler::CounterDel(key) => {
+                counters.remove(&key);
             }
         }
     }

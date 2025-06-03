@@ -220,6 +220,7 @@ impl Client {
         Ok(())
     }
 
+    /// Get the current counter value for the Cache + Key
     #[cfg(feature = "counters")]
     pub async fn counter_get<C, K>(&self, cache: C, key: K) -> Result<Option<i64>, Error>
     where
@@ -259,6 +260,7 @@ impl Client {
         }
     }
 
+    /// Sets the counter to a fixed value, no matter what the current one is.
     #[cfg(feature = "counters")]
     pub async fn counter_set<C, K>(&self, cache: C, key: K, value: i64) -> Result<(), Error>
     where
@@ -278,6 +280,7 @@ impl Client {
         Ok(())
     }
 
+    /// Adds the given value to the Cache + Key and returns the new value.
     #[cfg(feature = "counters")]
     pub async fn counter_add<C, K>(&self, cache: C, key: K, value: i64) -> Result<i64, Error>
     where
@@ -300,6 +303,26 @@ impl Client {
             }
             _ => unreachable!(),
         }
+    }
+
+    /// Deletes the counter for the given Cache + Key and frees up the memory, while setting it to
+    /// `0` would keep it in memory.
+    #[cfg(feature = "counters")]
+    pub async fn counter_del<C, K>(&self, cache: C, key: K) -> Result<(), Error>
+    where
+        C: CacheIndex,
+        K: Into<Cow<'static, str>>,
+    {
+        self.cache_req_retry(
+            CacheRequest::CounterDel {
+                cache_idx: cache.to_usize(),
+                key: key.into(),
+            },
+            false,
+        )
+        .await?;
+
+        Ok(())
     }
 
     pub(crate) async fn cache_req_retry(
