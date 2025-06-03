@@ -70,7 +70,7 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
             }
             CacheRequestHandler::SnapshotBuildCacheOnly(ack) => {
                 if ack.send(data.clone()).is_err() {
-                    error!("Error sending back SnapshotBuild response");
+                    error!("Error sending back SnapshotBuildCacheOnly response");
                 }
             }
             CacheRequestHandler::SnapshotBuild(ack) => {
