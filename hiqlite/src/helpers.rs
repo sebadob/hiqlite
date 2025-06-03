@@ -25,45 +25,14 @@ pub async fn is_raft_initialized(
     state: &Arc<AppState>,
     raft_type: &RaftType,
 ) -> Result<bool, Error> {
-    match raft_type {
+    let is_initialized = match raft_type {
         #[cfg(feature = "sqlite")]
-        RaftType::Sqlite => {
-            if !state.raft_db.raft.is_initialized().await? {
-                let members = get_raft_metrics(state, raft_type).await.membership_config;
-                if members.membership().nodes().count() > 0 {
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            } else {
-                let members = get_raft_metrics(state, raft_type).await.membership_config;
-                if members.membership().nodes().count() > 0 {
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
-        }
+        RaftType::Sqlite => state.raft_db.raft.is_initialized().await?,
         #[cfg(feature = "cache")]
-        RaftType::Cache => {
-            if !state.raft_cache.raft.is_initialized().await? {
-                let members = get_raft_metrics(state, raft_type).await.membership_config;
-                if members.membership().nodes().count() > 0 {
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            } else {
-                let members = get_raft_metrics(state, raft_type).await.membership_config;
-                if members.membership().nodes().count() > 0 {
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
-        }
+        RaftType::Cache => state.raft_cache.raft.is_initialized().await?,
         RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
-    }
+    };
+    Ok(is_initialized)
 }
 
 #[inline]

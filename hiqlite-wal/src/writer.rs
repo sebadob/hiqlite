@@ -188,7 +188,7 @@ fn run(
                 last_log,
                 ack,
             } => {
-                warn!(
+                debug!(
                     "WAL Writer - Action::Remove from {from} until {until} / last_log: {:?}\n{:?}",
                     last_log, wal
                 );

@@ -94,21 +94,25 @@ pub async fn wait_for_healthy_cluster(
                 _ => unreachable!(),
             };
 
-            match client.is_healthy_db().await {
-                Ok(_) => {
-                    log(format!("Node {} is healthy", i));
-                    break;
-                }
-                Err(err) => {
-                    log(format!("Waiting for Node {} to become healthy: {}", i, err));
-                }
+            let healthy_db = client.is_healthy_db().await;
+            let healthy_cache = client.is_healthy_cache().await;
+
+            if healthy_db.is_ok() && healthy_cache.is_ok() {
+                log(format!("Node {} is healthy", i));
+                break;
+            } else {
+                log(format!("Waiting for Node {} to become healthy", i));
             }
         }
     }
 
     let metrics = client_1.metrics_db().await?;
     assert!(metrics.running_state.is_ok());
+    let node_count = metrics.membership_config.membership().nodes().count();
+    assert_eq!(node_count, 3);
 
+    let metrics = client_1.metrics_cache().await?;
+    assert!(metrics.running_state.is_ok());
     let node_count = metrics.membership_config.membership().nodes().count();
     assert_eq!(node_count, 3);
 

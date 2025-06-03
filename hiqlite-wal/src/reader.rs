@@ -72,7 +72,7 @@ fn run(
                 //     metrics or raft log lag
                 #[cfg(debug_assertions)]
                 {
-                    let first = wal.files.get(0).unwrap();
+                    let first = wal.files.front().unwrap();
                     if from_next < first.id_from {
                         panic!(
                             "Mismatch in Log IDs - Should read from {from_next} until {until} while the first \
