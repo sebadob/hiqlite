@@ -124,7 +124,7 @@ impl Client {
                 .tx_caches
                 .get(cache.to_usize())
                 .unwrap()
-                .send(CacheRequestHandler::SnapshotBuild(ack))
+                .send(CacheRequestHandler::SnapshotBuildCacheOnly(ack))
                 .expect("kv handler to always be running");
             let snapshot = rx
                 .await
