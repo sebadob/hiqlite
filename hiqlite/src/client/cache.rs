@@ -112,9 +112,10 @@ impl Client {
     /// This function does not for remote caches, only if this node is actually a Raft member.
     ///
     /// CAUTION: Entry expiry does not work on a snapshot. This is frozen in time and not live data!
-    pub async fn get_snapshot<C>(&self, cache: C) -> Result<BTreeMap<String, Vec<u8>>, Error>
+    pub async fn get_snapshot<C, V>(&self, cache: C) -> Result<BTreeMap<String, V>, Error>
     where
         C: CacheIndex,
+        V: for<'a> Deserialize<'a>,
     {
         if let Some(state) = &self.inner.state {
             let (ack, rx) = oneshot::channel();
@@ -128,7 +129,12 @@ impl Client {
             let snapshot = rx
                 .await
                 .expect("to always get an answer from the kv handler");
-            Ok(snapshot)
+
+            let mut res = BTreeMap::new();
+            for (k, v) in snapshot {
+                res.insert(k, deserialize(&v)?);
+            }
+            Ok(res)
         } else {
             Err(Error::Error(
                 "This function does only work for Raft members and not on remote nodes.".into(),
