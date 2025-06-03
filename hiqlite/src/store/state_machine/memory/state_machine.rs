@@ -67,6 +67,10 @@ pub enum CacheRequest {
     Clear {
         cache_idx: usize,
     },
+    #[cfg(feature = "counters")]
+    ClearCounters {
+        cache_idx: usize,
+    },
     ClearAll,
     #[cfg(feature = "listen_notify_local")]
     Notify((i64, Vec<u8>)),
@@ -531,9 +535,23 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         CacheResponse::Ok
                     }
 
+                    #[cfg(feature = "counters")]
+                    CacheRequest::ClearCounters { cache_idx } => {
+                        self.tx_caches
+                            .get(cache_idx)
+                            .unwrap()
+                            .send(CacheRequestHandler::ClearCounters)
+                            .expect("cache ttl handler to always be running");
+
+                        CacheResponse::Ok
+                    }
+
                     CacheRequest::ClearAll => {
                         for tx in &self.tx_caches {
                             tx.send(CacheRequestHandler::Clear)
+                                .expect("cache ttl handler to always be running");
+                            #[cfg(feature = "counters")]
+                            tx.send(CacheRequestHandler::ClearCounters)
                                 .expect("cache ttl handler to always be running");
                         }
 

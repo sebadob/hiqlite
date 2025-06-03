@@ -29,6 +29,23 @@ impl Client {
         Ok(())
     }
 
+    /// Clears all counters for the given Cache
+    #[cfg(feature = "counters")]
+    pub async fn clear_counters<C>(&self, cache: C) -> Result<(), Error>
+    where
+        C: CacheIndex,
+    {
+        self.cache_req_retry(
+            CacheRequest::ClearCounters {
+                cache_idx: cache.to_usize(),
+            },
+            false,
+        )
+        .await?;
+
+        Ok(())
+    }
+
     /// Clears all available caches.
     pub async fn clear_cache_all(&self) -> Result<(), Error> {
         self.cache_req_retry(CacheRequest::ClearAll, false).await?;

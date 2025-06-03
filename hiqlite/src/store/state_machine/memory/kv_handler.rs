@@ -19,6 +19,8 @@ pub enum CacheRequestHandler {
     Put((String, Vec<u8>)),
     Delete(String),
     Clear,
+    #[cfg(feature = "counters")]
+    ClearCounters,
     SnapshotBuildCacheOnly(oneshot::Sender<BTreeMap<String, Vec<u8>>>),
     SnapshotBuild(oneshot::Sender<(BTreeMap<String, Vec<u8>>, BTreeMap<String, i64>)>),
     SnapshotInstall(
@@ -47,6 +49,7 @@ pub fn spawn<C: Debug>(cache: C) -> flume::Sender<CacheRequestHandler> {
     tx
 }
 
+#[tracing::instrument(level = "debug", skip(rx))]
 async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>) {
     info!(
         "Cache {} running on Thread {:?}",
@@ -69,7 +72,12 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
             }
             CacheRequestHandler::Clear => {
                 info!("Clearing all caches for {}", cache_name);
-                data = BTreeMap::new();
+                data.clear();
+            }
+            #[cfg(feature = "counters")]
+            CacheRequestHandler::ClearCounters => {
+                info!("Clearing all counters for {}", cache_name);
+                counters.clear();
             }
             CacheRequestHandler::SnapshotBuildCacheOnly(ack) => {
                 if ack.send(data.clone()).is_err() {
@@ -88,12 +96,10 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
             }
             CacheRequestHandler::SnapshotInstall(((kvs, counts), ack)) => {
                 data = kvs;
-
                 #[cfg(feature = "counters")]
                 {
                     counters = counts;
                 }
-
                 if ack.send(()).is_err() {
                     error!("Error sending back SnapshotInstall response");
                 }
