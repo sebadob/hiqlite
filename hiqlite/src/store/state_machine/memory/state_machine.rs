@@ -93,6 +93,11 @@ pub enum CacheRequest {
         key: Cow<'static, str>,
         value: i64,
     },
+    #[cfg(feature = "counters")]
+    CounterDel {
+        cache_idx: usize,
+        key: Cow<'static, str>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -629,6 +634,17 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
 
                         let v = rx.await.unwrap();
                         CacheResponse::CounterValue(Some(v))
+                    }
+
+                    #[cfg(feature = "counters")]
+                    CacheRequest::CounterDel { cache_idx, key } => {
+                        self.tx_caches
+                            .get(cache_idx)
+                            .unwrap()
+                            .send(CacheRequestHandler::CounterDel(key.to_string()))
+                            .expect("cache ttl handler to always be running");
+
+                        CacheResponse::Ok
                     }
                 },
 
