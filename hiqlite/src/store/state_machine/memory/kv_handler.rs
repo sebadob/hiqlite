@@ -18,8 +18,14 @@ pub enum CacheRequestHandler {
     Put((String, Vec<u8>)),
     Delete(String),
     Clear,
-    SnapshotBuild(oneshot::Sender<BTreeMap<String, Vec<u8>>>),
-    SnapshotInstall((BTreeMap<String, Vec<u8>>, oneshot::Sender<()>)),
+    SnapshotBuildCacheOnly(oneshot::Sender<BTreeMap<String, Vec<u8>>>),
+    SnapshotBuild(oneshot::Sender<(BTreeMap<String, Vec<u8>>, BTreeMap<String, i64>)>),
+    SnapshotInstall(
+        (
+            (BTreeMap<String, Vec<u8>>, BTreeMap<String, i64>),
+            oneshot::Sender<()>,
+        ),
+    ),
 
     #[cfg(feature = "counters")]
     CounterGet((String, oneshot::Sender<Option<i64>>)),
@@ -62,13 +68,29 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
                 info!("Clearing all caches for {}", cache_name);
                 data = BTreeMap::new();
             }
-            CacheRequestHandler::SnapshotBuild(ack) => {
+            CacheRequestHandler::SnapshotBuildCacheOnly(ack) => {
                 if ack.send(data.clone()).is_err() {
+                    error!("Error sending back SnapshotBuildCacheOnly response");
+                }
+            }
+            CacheRequestHandler::SnapshotBuild(ack) => {
+                #[cfg(feature = "counters")]
+                let data_counter = counters.clone();
+                #[cfg(not(feature = "counters"))]
+                let data_counter = BTreeMap::new();
+
+                if ack.send((data.clone(), data_counter)).is_err() {
                     error!("Error sending back SnapshotBuild response");
                 }
             }
-            CacheRequestHandler::SnapshotInstall((kvs, ack)) => {
+            CacheRequestHandler::SnapshotInstall(((kvs, counts), ack)) => {
                 data = kvs;
+
+                #[cfg(feature = "counters")]
+                {
+                    counters = counts;
+                }
+
                 if ack.send(()).is_err() {
                     error!("Error sending back SnapshotInstall response");
                 }

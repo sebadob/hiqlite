@@ -38,7 +38,7 @@ use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
 type Entry = openraft::Entry<TypeConfigKV>;
 type SnapshotData = fs::File;
 
-type SnapshotKVs = Vec<BTreeMap<String, Vec<u8>>>;
+type SnapshotKVs = Vec<(BTreeMap<String, Vec<u8>>, BTreeMap<String, i64>)>;
 type SnapshotTTLs = Vec<BTreeMap<i64, String>>;
 type SnapshotLocks = Vec<u8>;
 type SnapshotDataContent = (
