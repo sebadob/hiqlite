@@ -60,15 +60,28 @@ fn run(
                 }
 
                 let mut from_next = from;
-                for log in wal.files.iter_mut() {
-                    if from_next < log.id_from {
-                        error!(
-                            "Mismatch in Log IDs - Should read from {from_next} while this log \
-                        starts later {:?}",
-                            log,
+                // TODO this checked issue can happen for a real deployment, if a cluster is being
+                //  restarted and resynced after a crash or shutdown of all 3 nodes at once, if the
+                //  very first raft actions comes too quick. This is a race condition.
+                //  -> find a nice way to check for this case before returning the `Client`
+                //     in `start` to never let this be possible, if someone immediately interacts
+                //     with the Raft weil getting into this unlucky situation
+                //  -> not 100% yet where the root cause for this might be, but probably if
+                //     interaction starts before the node had a chance to fully resync. We could
+                //     probably wait for a node to reach a stable point somehow by comparing
+                //     metrics or raft log lag
+                #[cfg(debug_assertions)]
+                {
+                    let first = wal.files.front().unwrap();
+                    if from_next < first.id_from {
+                        panic!(
+                            "Mismatch in Log IDs - Should read from {from_next} until {until} while the first \
+                            log starts later: {}\n{:?}",
+                            first.id_from, wal.files
                         );
                     }
-
+                }
+                for log in wal.files.iter_mut() {
                     if log.id_until < from_next {
                         debug!(
                             "log.id_until < from_next -> {} < {}",

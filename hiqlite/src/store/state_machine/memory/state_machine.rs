@@ -76,6 +76,23 @@ pub enum CacheRequest {
     LockAwait((Cow<'static, str>, u64)),
     #[cfg(feature = "dlock")]
     LockRelease((Cow<'static, str>, u64)),
+    #[cfg(feature = "counters")]
+    CounterGet {
+        cache_idx: usize,
+        key: Cow<'static, str>,
+    },
+    #[cfg(feature = "counters")]
+    CounterSet {
+        cache_idx: usize,
+        key: Cow<'static, str>,
+        value: i64,
+    },
+    #[cfg(feature = "counters")]
+    CounterAdd {
+        cache_idx: usize,
+        key: Cow<'static, str>,
+        value: i64,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -85,6 +102,8 @@ pub enum CacheResponse {
     #[cfg(feature = "dlock")]
     Lock(LockState),
     Value(Option<Vec<u8>>),
+    #[cfg(feature = "counters")]
+    CounterValue(Option<i64>),
 }
 
 #[derive(Debug, Default)]
@@ -461,7 +480,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
 
                 EntryPayload::Normal(req) => match req {
                     CacheRequest::Get { .. } => {
-                        unreachable!("a CacheRequest::Get should never come thorugh the Raft")
+                        unreachable!("a CacheRequest::Get should never come through the Raft")
                     }
 
                     CacheRequest::Put {
@@ -568,6 +587,48 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
 
                         // we can return early without waiting for answer, release should never fail anyway
                         CacheResponse::Lock(LockState::Released)
+                    }
+
+                    #[cfg(feature = "counters")]
+                    CacheRequest::CounterGet { .. } => {
+                        unreachable!("a CacheRequest::Get should never come through the Raft")
+                    }
+
+                    #[cfg(feature = "counters")]
+                    CacheRequest::CounterSet {
+                        cache_idx,
+                        key,
+                        value,
+                    } => {
+                        self.tx_caches
+                            .get(cache_idx)
+                            .unwrap()
+                            .send(CacheRequestHandler::CounterSet((key.to_string(), value)))
+                            .expect("cache ttl handler to always be running");
+
+                        CacheResponse::Ok
+                    }
+
+                    #[cfg(feature = "counters")]
+                    CacheRequest::CounterAdd {
+                        cache_idx,
+                        key,
+                        value,
+                    } => {
+                        let (ack, rx) = oneshot::channel();
+
+                        self.tx_caches
+                            .get(cache_idx)
+                            .unwrap()
+                            .send(CacheRequestHandler::CounterAdd((
+                                key.to_string(),
+                                value,
+                                ack,
+                            )))
+                            .expect("cache ttl handler to always be running");
+
+                        let v = rx.await.unwrap();
+                        CacheResponse::CounterValue(Some(v))
                     }
                 },
 

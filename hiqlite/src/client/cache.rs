@@ -176,9 +176,7 @@ impl Client {
         Ok(())
     }
 
-    /// GET a raw bytes value from the cache.
-    ///
-    /// Works in the same way as `.get()` without any value mapping.
+    /// PUT a raw bytes value into the cache
     pub async fn put_bytes<C, K>(
         &self,
         cache: C,
@@ -220,6 +218,88 @@ impl Client {
         .await?;
 
         Ok(())
+    }
+
+    #[cfg(feature = "counters")]
+    pub async fn counter_get<C, K>(&self, cache: C, key: K) -> Result<Option<i64>, Error>
+    where
+        C: CacheIndex,
+        K: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.inner.state {
+            let (ack, rx) = oneshot::channel();
+            state
+                .raft_cache
+                .tx_caches
+                .get(cache.to_usize())
+                .unwrap()
+                .send(CacheRequestHandler::CounterGet((
+                    key.into().to_string(),
+                    ack,
+                )))
+                .expect("kv handler to always be running");
+            let value = rx
+                .await
+                .expect("to always get an answer from the kv handler");
+            Ok(value)
+        } else {
+            let res = self
+                .cache_req_retry(
+                    CacheRequest::CounterGet {
+                        cache_idx: cache.to_usize(),
+                        key: key.into(),
+                    },
+                    true,
+                )
+                .await?;
+            match res {
+                CacheResponse::CounterValue(opt) => Ok(opt),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[cfg(feature = "counters")]
+    pub async fn counter_set<C, K>(&self, cache: C, key: K, value: i64) -> Result<(), Error>
+    where
+        C: CacheIndex,
+        K: Into<Cow<'static, str>>,
+    {
+        self.cache_req_retry(
+            CacheRequest::CounterSet {
+                cache_idx: cache.to_usize(),
+                key: key.into(),
+                value,
+            },
+            false,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "counters")]
+    pub async fn counter_add<C, K>(&self, cache: C, key: K, value: i64) -> Result<i64, Error>
+    where
+        C: CacheIndex,
+        K: Into<Cow<'static, str>>,
+    {
+        let resp = self
+            .cache_req_retry(
+                CacheRequest::CounterAdd {
+                    cache_idx: cache.to_usize(),
+                    key: key.into(),
+                    value,
+                },
+                false,
+            )
+            .await?;
+        match resp {
+            CacheResponse::CounterValue(v) => {
+                Ok(v.expect("to always get a CounterValue after CounterAdd"))
+            }
+            _ => unreachable!(),
+        }
     }
 
     pub(crate) async fn cache_req_retry(

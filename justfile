@@ -95,6 +95,7 @@ clippy:
     cargo clippy --no-default-features --features sqlite,auto-heal,backup
 
     cargo clippy --no-default-features --features cache
+    cargo clippy --no-default-features --features counters
     cargo clippy --no-default-features --features dlock
     cargo clippy --no-default-features --features listen_notify_local
     cargo clippy --no-default-features --features listen_notify
@@ -126,7 +127,7 @@ test:
     set -euxo pipefail
     clear
     # we need to run the tests with nightly to not get an error for docs auto cfg
-    RUSTFLAGS="--cfg tokio_unstable" cargo +nightly test --features cache,dlock,listen_notify
+    RUSTFLAGS="--cfg tokio_unstable" cargo +nightly test --features cache,counters,dlock,listen_notify
 
 # builds the code
 build ty="server":

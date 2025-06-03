@@ -9,7 +9,6 @@ use axum::response::IntoResponse;
 use chrono::Utc;
 use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::{Deref, Sub};
 use std::time::Duration;
@@ -238,8 +237,6 @@ async fn handle_socket_concurrent(
     let mut read = FragmentCollectorRead::new(rx);
 
     let handle_write = task::spawn(async move {
-        let mut buf = VecDeque::default();
-
         while let Ok(req) = rx_write.recv_async().await {
             match req {
                 WsWriteMsg::Payload(resp) => {
@@ -247,8 +244,6 @@ async fn handle_socket_concurrent(
                     let frame = Frame::binary(Payload::Borrowed(&bytes));
                     if let Err(err) = write.write_frame(frame).await {
                         error!("Error during WebSocket write: {}", err);
-                        // if we have a WebSocket error, save all open requests into the client_buffer
-                        buf.push_back(serialize_network(&resp));
                         break;
                     }
                 }
@@ -258,13 +253,6 @@ async fn handle_socket_concurrent(
                     warn!("server stream break message");
                     break;
                 }
-            }
-        }
-
-        warn!("emptying server stream writer channel into buffer");
-        while let Ok(req) = rx_write.recv_async().await {
-            if let WsWriteMsg::Payload(resp) = req {
-                buf.push_back(serialize_network(&resp));
             }
         }
 

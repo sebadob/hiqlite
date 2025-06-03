@@ -183,12 +183,15 @@ fn run(
                 }
             }
             Action::Remove {
-                from: _,
+                from,
                 until,
                 last_log,
                 ack,
             } => {
-                debug!("WAL Writer - Action::Remove");
+                debug!(
+                    "WAL Writer - Action::Remove from {from} until {until} / last_log: {:?}\n{:?}",
+                    last_log, wal
+                );
 
                 // We don't care about the `from` part, since we don't really delete anything yet.
                 // We only want to shift the index inside the WALs and only delete complete WAL

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::thread;
 use tokio::sync::{oneshot, RwLock};
 use tokio::task;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 #[derive(Debug)]
 pub enum CacheRequestHandler {
@@ -20,6 +20,13 @@ pub enum CacheRequestHandler {
     Clear,
     SnapshotBuild(oneshot::Sender<BTreeMap<String, Vec<u8>>>),
     SnapshotInstall((BTreeMap<String, Vec<u8>>, oneshot::Sender<()>)),
+
+    #[cfg(feature = "counters")]
+    CounterGet((String, oneshot::Sender<Option<i64>>)),
+    #[cfg(feature = "counters")]
+    CounterSet((String, i64)),
+    #[cfg(feature = "counters")]
+    CounterAdd((String, i64, oneshot::Sender<i64>)),
 }
 
 pub fn spawn<C: Debug>(cache: C) -> flume::Sender<CacheRequestHandler> {
@@ -39,6 +46,8 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
     );
 
     let mut data: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    #[cfg(feature = "counters")]
+    let mut counters: BTreeMap<String, i64> = BTreeMap::new();
 
     while let Ok(req) = rx.recv_async().await {
         match req {
@@ -54,11 +63,40 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
                 data = BTreeMap::new();
             }
             CacheRequestHandler::SnapshotBuild(ack) => {
-                ack.send(data.clone()).unwrap();
+                if ack.send(data.clone()).is_err() {
+                    error!("Error sending back SnapshotBuild response");
+                }
             }
             CacheRequestHandler::SnapshotInstall((kvs, ack)) => {
                 data = kvs;
-                ack.send(()).unwrap();
+                if ack.send(()).is_err() {
+                    error!("Error sending back SnapshotInstall response");
+                }
+            }
+
+            #[cfg(feature = "counters")]
+            CacheRequestHandler::CounterGet((k, ack)) => {
+                let v = counters.get(&k).cloned();
+                if ack.send(v).is_err() {
+                    error!("Error sending back CounterGet response");
+                }
+            }
+            #[cfg(feature = "counters")]
+            CacheRequestHandler::CounterSet((k, v)) => {
+                counters.insert(k, v);
+            }
+            #[cfg(feature = "counters")]
+            CacheRequestHandler::CounterAdd((k, v, ack)) => {
+                let v = if let Some(current) = counters.get_mut(&k) {
+                    *current = current.saturating_add(v);
+                    *current
+                } else {
+                    counters.insert(k, v);
+                    v
+                };
+                if ack.send(v).is_err() {
+                    error!("Error sending back CounterAdd value");
+                }
             }
         }
     }
