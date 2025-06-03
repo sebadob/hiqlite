@@ -143,6 +143,24 @@ pub async fn test_cache(
 
     insert_test_value_cache(client_1).await?;
 
+    log("Test Counters");
+    let key = "counter1";
+    client_1.counter_set(Cache::One, key, 13).await?;
+    let v = client_1.counter_get(Cache::One, key).await?;
+    assert_eq!(v.unwrap(), 13);
+    let v = client_1.counter_get(Cache::Two, key).await?;
+    assert!(v.is_none());
+
+    client_1.counter_set(Cache::One, key, -17).await?;
+    let v = client_1.counter_get(Cache::One, key).await?;
+    assert_eq!(v.unwrap(), -17);
+
+    let v = client_1.counter_add(Cache::One, key, 19).await?;
+    assert_eq!(v, 2);
+
+    let v = client_1.counter_add(Cache::One, key, -3).await?;
+    assert_eq!(v, -1);
+
     Ok(())
 }
 

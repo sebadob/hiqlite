@@ -61,39 +61,35 @@ pub async fn test_self_healing(
     check::is_client_db_healthy(&client_3, Some(3)).await?;
     log("Client has self-healed successfully");
 
-    // TODO there is a bug in the current openraft impl and this can lead to a deadlocked Raft.
-    //      Full volume loss can be recovered, but needs manual interaction and a full cluster
-    //      restart at the time of writing. Will be included in automated tests when the bug was
-    //      fixed.
-    // log("Check recovery from full volume loss");
-    // let client_healed = if !is_leader(&client_1, 1).await? {
-    //     client_1 = shutdown_remove_all_restart(client_1, 1).await?;
-    //     &client_1
-    // } else {
-    //     client_2 = shutdown_remove_all_restart(client_2, 2).await?;
-    //     &client_2
-    // };
-    // // full replication will take a few moments, vote takes a bit longer sometimes
-    // client_healed.wait_until_healthy_db().await;
-    // check::is_client_db_healthy(client_healed, None).await?;
-    // check::is_client_db_healthy(&client_1, Some(1)).await?;
-    // check::is_client_db_healthy(&client_2, Some(2)).await?;
-    // check::is_client_db_healthy(&client_3, Some(3)).await?;
-    // log("Client has self-healed successfully");
-    //
-    // // Node 1 is a bit special, as it assumes that it will be responsible for a very first
-    // // start of a pristine cluster. We need to make sure that a lost volume for client 1 does work
-    // // properly in a way, that it would not create its own node but join the existing cluster.
-    // log("Check recovery from full volume loss on Node 1");
-    //
-    // // In most cases, client_1 is the leader at this point,
-    // // so we will give the others enough time to vote a new leader.
-    // client_1 = shutdown_remove_all_restart(client_1, 1).await?;
-    // // full replication will take a few moments, vote takes a bit longer sometimes
-    // log("Waiting for cluster to become healthy again");
-    // client_1.wait_until_healthy_db().await;
-    // check::is_client_db_healthy(&client_1, Some(1)).await?;
-    // log("Client has self-healed and re-joined successfully");
+    log("Check recovery from full volume loss");
+    let client_healed = if !is_leader(&client_1, 1).await? {
+        client_1 = shutdown_remove_all_restart(client_1, 1).await?;
+        &client_1
+    } else {
+        client_2 = shutdown_remove_all_restart(client_2, 2).await?;
+        &client_2
+    };
+    // full replication will take a few moments, vote takes a bit longer sometimes
+    client_healed.wait_until_healthy_db().await;
+    check::is_client_db_healthy(client_healed, None).await?;
+    check::is_client_db_healthy(&client_1, Some(1)).await?;
+    check::is_client_db_healthy(&client_2, Some(2)).await?;
+    check::is_client_db_healthy(&client_3, Some(3)).await?;
+    log("Client has self-healed successfully");
+
+    // Node 1 is a bit special, as it assumes that it will be responsible for a very first
+    // start of a pristine cluster. We need to make sure that a lost volume for client 1 does work
+    // properly in a way, that it would not create its own node but join the existing cluster.
+    log("Check recovery from full volume loss on Node 1");
+
+    // In most cases, client_1 is the leader at this point,
+    // so we will give the others enough time to vote a new leader.
+    client_1 = shutdown_remove_all_restart(client_1, 1).await?;
+    // full replication will take a few moments, vote takes a bit longer sometimes
+    log("Waiting for cluster to become healthy again");
+    client_1.wait_until_healthy_db().await;
+    check::is_client_db_healthy(&client_1, Some(1)).await?;
+    log("Client has self-healed and re-joined successfully");
 
     join_all([
         client_1.shutdown(),

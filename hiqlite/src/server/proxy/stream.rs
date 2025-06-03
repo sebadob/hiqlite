@@ -65,17 +65,6 @@ pub async fn handle_socket(
             }
         }
 
-        // warn!("emptying server stream writer channel into buffer");
-        // while let Ok(req) = rx_write.recv_async().await {
-        //     if let WsWriteMsg::Payload(resp) = req {
-        //         let payload = bincode::serialize(&resp).unwrap();
-        //         buf_tx
-        //             .send_async(payload)
-        //             .await
-        //             .expect("client_buffer to always be working");
-        //     }
-        // }
-
         warn!("server stream exiting");
     });
 

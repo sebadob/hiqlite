@@ -68,6 +68,8 @@ async fn test_cluster() {
     unsafe { env::remove_var("HQL_BACKUP_RESTORE") };
     let _ = fs::remove_dir_all(TEST_DATA_DIR);
 
+    dotenvy::from_filename("../config").ok();
+
     let tracing_layer = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_thread_ids(true)
@@ -156,6 +158,8 @@ async fn exec_tests() -> Result<(), Error> {
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
     log("Cluster is healthy again");
 
+    // give caches some additional time to re-sync
+    time::sleep(Duration::from_millis(250)).await;
     cache::insert_test_value_cache(&client_1).await?;
 
     log("Make sure all data is ok");
