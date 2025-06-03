@@ -9,6 +9,7 @@ use crate::{Client, Error};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use tokio::sync::oneshot;
 
 impl Client {
@@ -103,6 +104,35 @@ impl Client {
                 CacheResponse::Value(opt) => Ok(opt),
                 _ => unreachable!(),
             }
+        }
+    }
+
+    /// GET a full snapshot of the current cache.
+    ///
+    /// This function does not for remote caches, only if this node is actually a Raft member.
+    ///
+    /// CAUTION: Entry expiry does not work on a snapshot. This is frozen in time and not live data!
+    pub async fn get_snapshot<C>(&self, cache: C) -> Result<BTreeMap<String, Vec<u8>>, Error>
+    where
+        C: CacheIndex,
+    {
+        if let Some(state) = &self.inner.state {
+            let (ack, rx) = oneshot::channel();
+            state
+                .raft_cache
+                .tx_caches
+                .get(cache.to_usize())
+                .unwrap()
+                .send(CacheRequestHandler::SnapshotBuild(ack))
+                .expect("kv handler to always be running");
+            let snapshot = rx
+                .await
+                .expect("to always get an answer from the kv handler");
+            Ok(snapshot)
+        } else {
+            Err(Error::Error(
+                "This function does only work for Raft members and not on remote nodes.".into(),
+            ))
         }
     }
 
