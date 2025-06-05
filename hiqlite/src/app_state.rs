@@ -17,6 +17,7 @@ use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 use crate::store::state_machine::sqlite::{
     state_machine::SqlitePool, writer::WriterRequest, TypeConfigSqlite,
 };
+use chrono::Utc;
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "dashboard")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -47,6 +48,7 @@ impl RaftType {
 // Representation of an application state. This struct can be shared around to share
 // instances of raft, store and more.
 pub(crate) struct AppState {
+    pub app_start: chrono::DateTime<Utc>,
     pub id: NodeId,
     #[cfg(feature = "cache")]
     pub nodes: Vec<crate::Node>,
@@ -65,6 +67,7 @@ pub(crate) struct AppState {
     #[cfg(feature = "dashboard")]
     pub tx_client_stream: flume::Sender<ClientStreamReq>,
     pub shutdown_delay_millis: u32,
+    pub health_check_delay_secs: u32,
 }
 
 #[cfg(feature = "dashboard")]

@@ -69,13 +69,14 @@ pub fn spawn(
     base_path: String,
     sync: LogSync,
     wal_size: u32,
+    wal_ignore_lock: bool,
     meta: Arc<RwLock<Metadata>>,
 ) -> Result<(flume::Sender<Action>, Arc<RwLock<WalFileSet>>), Error> {
     let lock_exists = LockFile::exists(&base_path)?;
     if lock_exists {
         warn!("LockFile in {base_path} exists already - this is not a clean start!");
     }
-    LockFile::write(&base_path)?;
+    LockFile::write(&base_path, wal_ignore_lock)?;
 
     let mut set = WalFileSet::read(base_path, wal_size)?;
     // TODO emit a warning log in that case and tell the user how to resolve or "force start" in

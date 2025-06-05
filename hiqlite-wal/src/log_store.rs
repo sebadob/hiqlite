@@ -27,7 +27,12 @@ where
     T: RaftTypeConfig,
 {
     /// Start the LogStore
-    pub async fn start(base_path: String, sync: LogSync, wal_size: u32) -> Result<Self, Error> {
+    pub async fn start(
+        base_path: String,
+        sync: LogSync,
+        wal_size: u32,
+        wal_ignore_lock: bool,
+    ) -> Result<Self, Error> {
         let slf = task::spawn_blocking(move || {
             fs::create_dir_all(&base_path)?;
             #[cfg(target_os = "linux")]
@@ -41,7 +46,8 @@ where
             let meta = Metadata::read_or_create(&base_path)?;
             let meta = Arc::new(RwLock::new(meta));
 
-            let (writer, wal) = writer::spawn(base_path, sync, wal_size, meta.clone())?;
+            let (writer, wal) =
+                writer::spawn(base_path, sync, wal_size, wal_ignore_lock, meta.clone())?;
             let reader = reader::spawn(meta.clone(), wal.clone())?;
 
             Ok::<Self, Error>(Self {
@@ -63,11 +69,18 @@ where
     pub async fn start_writer_migration(
         base_path: String,
         wal_size: u32,
+        wal_ignore_lock: bool,
     ) -> Result<flume::Sender<writer::Action>, Error> {
         task::spawn_blocking(move || {
             let meta = Metadata::read_or_create(&base_path)?;
             let meta = Arc::new(RwLock::new(meta));
-            let (writer, _) = writer::spawn(base_path, LogSync::ImmediateAsync, wal_size, meta)?;
+            let (writer, _) = writer::spawn(
+                base_path,
+                LogSync::ImmediateAsync,
+                wal_size,
+                wal_ignore_lock,
+                meta,
+            )?;
             Ok(writer)
         })
         .await?

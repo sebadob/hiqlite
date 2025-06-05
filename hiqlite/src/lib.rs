@@ -88,18 +88,6 @@ pub mod server;
 
 type NodeId = u64;
 
-#[cfg(any(feature = "cache", feature = "sqlite"))]
-pub(crate) static START_TS: std::sync::LazyLock<chrono::DateTime<chrono::Utc>> =
-    std::sync::LazyLock::new(chrono::Utc::now);
-#[cfg(any(feature = "cache", feature = "sqlite"))]
-pub(crate) static HEALTH_CHECK_DELAY_SECS: std::sync::LazyLock<u16> =
-    std::sync::LazyLock::new(|| {
-        std::env::var("HQL_HEALTH_CHECK_DELAY_SECS")
-            .unwrap_or_else(|_| String::from("30"))
-            .parse::<u16>()
-            .expect("Cannot parse HQL_HEALTH_CHECK_DELAY_SECS as u16")
-    });
-
 /// A Raft / Hiqlite node
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Node {

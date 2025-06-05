@@ -1,7 +1,6 @@
 use crate::error::Error;
 use crate::utils::{crc, deserialize, serialize};
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::fs::{self, File};
 use std::io::Write;
 use std::ops::Deref;
@@ -99,17 +98,11 @@ impl LockFile {
         Ok(fs::exists(Self::path(base_path))?)
     }
 
-    pub fn write(base_path: &str) -> Result<(), Error> {
+    pub fn write(base_path: &str, wal_ignore_lock: bool) -> Result<(), Error> {
         let path = Self::path(base_path);
         match File::open(&path) {
             Ok(_) => {
-                let ignore = env::var("HQL_WAL_IGNORE_LOCK")
-                    .as_deref()
-                    .unwrap_or("false")
-                    .parse::<bool>()
-                    .expect("Cannot parse HQL_WAL_IGNORE_LOCK as bool");
-
-                if ignore {
+                if wal_ignore_lock {
                     Ok(())
                 } else {
                     Err(Error::Locked(
@@ -144,12 +137,13 @@ mod tests {
 
     #[test]
     fn lockfile() -> Result<(), Error> {
-        LockFile::write(&PATH)?;
-        assert!(LockFile::write(&PATH).is_err());
+        LockFile::write(&PATH, false)?;
+        assert!(LockFile::write(&PATH, false).is_err());
         LockFile::remove(&PATH)?;
 
-        LockFile::write(&PATH)?;
-        assert!(LockFile::write(&PATH).is_err());
+        LockFile::write(&PATH, false)?;
+        assert!(LockFile::write(&PATH, false).is_err());
+        assert!(LockFile::write(&PATH, true).is_ok());
         LockFile::remove(&PATH)?;
 
         Ok(())
