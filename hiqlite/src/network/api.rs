@@ -2,7 +2,6 @@ use crate::app_state::RaftType;
 use crate::helpers::deserialize;
 use crate::network::handshake::HandshakeSecret;
 use crate::network::{serialize_network, validate_secret, AppStateExt, Error};
-use crate::{HEALTH_CHECK_DELAY_SECS, START_TS};
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
@@ -58,7 +57,7 @@ pub async fn health(state: AppStateExt) -> Result<(), Error> {
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 async fn check_health(state: &AppStateExt) -> Result<(), Error> {
-    if Utc::now().sub(*START_TS).num_seconds() < *HEALTH_CHECK_DELAY_SECS as i64 {
+    if Utc::now().sub(state.app_start).num_seconds() < state.health_check_delay_secs as i64 {
         info!(
             "Early health check within the HQL_HEALTH_CHECK_DELAY_SECS timeframe - returning true"
         );

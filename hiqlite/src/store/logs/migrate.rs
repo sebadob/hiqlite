@@ -19,7 +19,11 @@ static KEY_VOTE: &[u8] = b"vote";
 /// Checks if `rocksdb` files are in the target folder and tries to perform a migration from
 /// rocksdb to `hiqlite-wal` in that case.
 #[tracing::instrument]
-pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<(), Error> {
+pub async fn check_migrate_rocksdb(
+    logs_dir: String,
+    wal_size: u32,
+    wal_ignore_lock: bool,
+) -> Result<(), Error> {
     // the bare minimum of files that must be there for a possibly existing
     // rocksdb is a `LOG` file
     if !fs::try_exists(format!("{}/LOG", logs_dir)).await? {
@@ -48,9 +52,12 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
         }
 
         info!("starting hiqlite-wal writer for migration");
-        let writer =
-            LogStore::<TypeConfigSqlite>::start_writer_migration(logs_dir.clone(), wal_size)
-                .await?;
+        let writer = LogStore::<TypeConfigSqlite>::start_writer_migration(
+            logs_dir.clone(),
+            wal_size,
+            wal_ignore_lock,
+        )
+        .await?;
         task::spawn_blocking(move || async {
             if let Err(err) = migrate(db, writer).await {
                 panic!("Cannot migrate from rocksdb: {:?}", err);
