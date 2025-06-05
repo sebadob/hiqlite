@@ -36,9 +36,38 @@ impl NodeConfig {
         let mut root = config
             .parse::<toml::Table>()
             .expect("Cannot parse TOML file");
-        let Some(mut map) = t_table(&mut root, t_name) else {
+        let Some(table) = t_table(&mut root, t_name) else {
             panic!("Cannot find table '{}' in {}", t_name, path);
         };
+
+        Self::from_toml_table(
+            table,
+            t_name,
+            #[cfg(any(feature = "s3", feature = "dashboard"))]
+            enc_keys,
+        )
+        .await
+    }
+
+    /// Tries to parse the `NodeConfig` from the already parsed given `toml::Table`. Will use
+    /// default values for all non-existing keys. The `table_name` is only used for potential logs
+    /// if any errors are encountered.
+    ///
+    /// You can overwrite most values from the file with ENV vars. If this is possible, it is
+    /// mentioned in the documentation for each value.
+    ///
+    /// # Panics
+    ///
+    /// If any config values are incorrect, in an invalid format, or required ones are missing.
+    pub async fn from_toml_table(
+        table: toml::Table,
+        table_name: &str,
+        #[cfg(any(feature = "s3", feature = "dashboard"))] enc_keys: Option<cryptr::EncKeys>,
+    ) -> Result<Self, Error> {
+        dotenvy::dotenv().ok();
+
+        let t_name = table_name;
+        let mut map = table;
 
         let node_id = if let Some(v) = t_str(&mut map, t_name, "node_id_from", "HQL_NODE_ID_FROM") {
             if v == "k8s" {
@@ -352,7 +381,6 @@ fn t_str_vec(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> O
         if let Ok(arr) = env::var(env_var) {
             return Some(
                 arr.lines()
-                    .into_iter()
                     .filter_map(|l| {
                         let trimmed = l.trim().to_string();
                         if trimmed.is_empty() {
