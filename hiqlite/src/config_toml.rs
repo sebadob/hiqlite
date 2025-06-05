@@ -1,5 +1,3 @@
-use crate::backup::BackupConfig;
-use crate::s3::S3Config;
 use crate::{Error, Node, NodeConfig, ServerTlsConfig};
 use hiqlite_wal::LogSync;
 use std::borrow::Cow;
@@ -21,7 +19,7 @@ impl NodeConfig {
     pub async fn from_toml(
         path: &str,
         table: Option<&str>,
-        #[cfg(feature = "s3")] enc_keys: Option<cryptr::EncKeys>,
+        #[cfg(any(feature = "s3", feature = "dashboard"))] enc_keys: Option<cryptr::EncKeys>,
     ) -> Result<Self, Error> {
         dotenvy::dotenv().ok();
 
@@ -168,8 +166,9 @@ impl NodeConfig {
             )
             .unwrap_or(30);
 
-            let backup_config = BackupConfig::new(backup_cron.as_ref(), backup_keep_days)
-                .expect("Error building BackupConfig");
+            let backup_config =
+                crate::backup::BackupConfig::new(backup_cron.as_ref(), backup_keep_days)
+                    .expect("Error building BackupConfig");
             (backup_config, backup_keep_days_local)
         };
 
@@ -189,7 +188,9 @@ impl NodeConfig {
             let secret = t_str(&mut map, t_name, "s3_secret", "HQL_S3_SECRET")
                 .expect("Missing config variable `s3_secret`");
 
-            let Ok(config) = S3Config::new(&url, bucket, region, key, secret, path_style) else {
+            let Ok(config) =
+                crate::s3::S3Config::new(&url, bucket, region, key, secret, path_style)
+            else {
                 panic!("Cannot build S3Config from given S3 values in {}.", t_name);
             };
             Some(config)
@@ -208,6 +209,7 @@ impl NodeConfig {
         let insecure_cookie =
             t_bool(&mut map, t_name, "insecure_cookie", "HQL_INSECURE_COOKIE").unwrap_or(false);
 
+        #[cfg(any(feature = "s3", feature = "dashboard"))]
         let enc_keys = if let Some(keys) = enc_keys {
             keys
         } else {
@@ -241,6 +243,7 @@ impl NodeConfig {
             tls_api,
             secret_raft,
             secret_api,
+            #[cfg(any(feature = "s3", feature = "dashboard"))]
             enc_keys,
             #[cfg(feature = "backup")]
             backup_config,

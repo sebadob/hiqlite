@@ -175,6 +175,7 @@ impl Default for NodeConfig {
             enc_keys: Default::default(),
             #[cfg(feature = "backup")]
             backup_config: backup::BackupConfig::default(),
+            #[cfg(feature = "backup")]
             backup_keep_days_local: 30,
             #[cfg(feature = "s3")]
             s3_config: None,
@@ -239,6 +240,7 @@ impl NodeConfig {
             .unwrap_or("10000")
             .parse::<u64>()
             .expect("Cannot parse HQL_LOGS_UNTIL_SNAPSHOT to u64");
+        #[cfg(feature = "backup")]
         let backup_keep_days_local = env::var("HQL_LOGS_UNTIL_SNAPSHOT")
             .as_deref()
             .unwrap_or("30")
@@ -310,6 +312,7 @@ impl NodeConfig {
                 .parse()
                 .expect("Cannot parse HQL_SHUTDOWN_DELAY_MILLS as u32"),
             health_check_delay_secs: 30,
+            #[cfg(feature = "backup")]
             backup_keep_days_local,
         };
 

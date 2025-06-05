@@ -51,10 +51,10 @@ where
 
     let raft_config = Arc::new(node_config.raft_config.clone().validate().unwrap());
 
-    let do_reset_metadata = init::check_execute_reset(&node_config.data_dir).await?;
+    let _do_reset_metadata = init::check_execute_reset(&node_config.data_dir).await?;
     #[cfg(feature = "sqlite")]
     let raft_db =
-        store::start_raft_db(&node_config, raft_config.clone(), do_reset_metadata).await?;
+        store::start_raft_db(&node_config, raft_config.clone(), _do_reset_metadata).await?;
     #[cfg(feature = "cache")]
     let raft_cache = store::start_raft_cache::<C>(&node_config, raft_config.clone()).await?;
 

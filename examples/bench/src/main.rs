@@ -94,7 +94,7 @@ fn test_nodes() -> Vec<Node> {
     ]
 }
 
-fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
+async fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
     // If you are doing very write heavy stuff with many operations, you can do a lot with the
     // `raft_config.snapshot_policy` value. Each so many inserts, the Raft will actually do a
     // snapshot of the state machine and purge logs. The more often this is done, the less space
@@ -119,15 +119,68 @@ fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
     // This value may be interesting when you are able to execute high amounts of batched writes.
     raft_config.max_payload_entries = 128;
 
-    NodeConfig {
-        node_id: 1,
-        nodes,
-        log_statements: false,
-        secret_raft: "SuperSecureRaftSecret".to_string(),
-        secret_api: "SuperSecureApiSecret".to_string(),
-        raft_config,
-        ..Default::default()
-    }
+    let mut config = NodeConfig::from_toml("../../hiqlite.toml", None, None)
+        .await
+        .unwrap();
+
+    config.node_id = 1;
+    config.nodes = nodes;
+    config.raft_config = raft_config;
+    config.data_dir = format!("data/node_{}", 1).into();
+    config.log_statements = false;
+
+    // Hiqlite Caches are (by default) disk-backed. This means they provide the consistency of Raft
+    // and can rebuild their in-memory data after a restart and never lose it. With
+    // `config.cache_storage_disk = true`, the Cache WAL files + Snapshots will be persisted to
+    // disk. This is of course quite a bit slower than keeping everything in-memory only, but in
+    // return, you get lower memory usage and higher consistency + you never lose state.
+    //
+    // You can also keep everything in-memory only, which will be a lot faster, but can lead to
+    // instabilities in the whole Raft cluster, if a node cannot do a graceful shutdown (and leave
+    // the cluster cleanly). This is due to the lost Raft state and coming up in an inconsistent
+    // state after restart, because the current Leader expects the node to still have the last known
+    // state applied.
+    //
+    config.cache_storage_disk = false;
+
+    // The only reason we set the WAL size to 8MB here is because of the possibly huge transactional
+    // inserts with a high row count and low concurrency. At least for `hiqlite-wal`, the WAL size
+    // should not have any negative impact on performance, as long as you don't go crazy low like
+    // only a few kB. This value basically just needs tuning to each application specifically.
+    // The default value here is `2MB`. If you adjust it, you should do it in combination with
+    // `HQL_LOGS_UNTIL_SNAPSHOT` / `logs_until_snapshot`. Try to aim for having max 3-4 WAL files
+    // around at all times. Exact values cannot be given, since it depends on the size of DB
+    // queries your application uses.
+    //
+    // The only very important thing to note is, that the `wal_size` should be at least 3x your
+    // biggest query size. If a query does not fit inside a single WAL, you will get a panic at
+    // runtime. Usually, this should never be any issue at all, as long as you're not writing very
+    // huge batch queries for instance.
+    config.wal_size = 8 * 1024 * 1024;
+
+    // You could set sync immediate, which will make the logs writer `fsync` after each batch it
+    // receives. However, this will degrade your throughput for the Database on disk by a very huge
+    // factor. This might only be necessary if you run Hiqlite as a single instance, and you were
+    // unable to recover some lost logs in case of a bad server crash from other nodes.
+    //
+    // This will also put a very high amount of stress on your disk, which can kill your SSDs pretty
+    // quickly if you have a lot of throughput. By default, `fsync` will be called in fixed
+    // intervals.
+    //
+    // the `sync_immediate` is only available with the `rocksdb` feature
+    //
+    //config.sync_immediate = true;
+    //
+    // `hiqlite::LogSync::Immediate` will sync immediately after a chunk of logs to append has
+    // been written, but with a huge performance penalty. `hiqlite::LogSync::Immediate` will do the
+    // same but not wait for completion, and therefore not block. This will usually have no
+    // impact on performance at all.
+    // However, both `hiqlite::LogSync::Immediate` + `hiqlite::LogSync::ImmediateAsync` will put
+    // a lot of stress on your SSD in case of high traffic. The default is to sync every 200ms.
+    //
+    //config.wal_sync = hiqlite::LogSync::IntervalMillis(200);
+
+    config
 }
 
 #[derive(Debug, strum::EnumIter)]
@@ -216,74 +269,22 @@ async fn start_cluster(
     // make sure to clean up data from older runs
     let _ = fs::remove_dir_all("data").await;
 
-    let mut config = node_config(test_nodes(), logs_until_snapshot);
-    config.data_dir = format!("data/node_{}", 1).into();
-
-    // Hiqlite Caches are (by default) disk-backed. This means they provide the consistency of Raft
-    // and can rebuild their in-memory data after a restart and never lose it. With
-    // `config.cache_storage_disk = true`, the Cache WAL files + Snapshots will be persisted to
-    // disk. This is of course quite a bit slower than keeping everything in-memory only, but in
-    // return, you get lower memory usage and higher consistency + you never lose state.
-    //
-    // You can also keep everything in-memory only, which will be a lot faster, but can lead to
-    // instabilities in the whole Raft cluster, if a node cannot do a graceful shutdown (and leave
-    // the cluster cleanly). This is due to the lost Raft state and coming up in an inconsistent
-    // state after restart, because the current Leader expects the node to still have the last known
-    // state applied.
-    //
-    config.cache_storage_disk = false;
-
-    // The only reason we set the WAL size to 8MB here is because of the possibly huge transactional
-    // inserts with a high row count and low concurrency. At least for `hiqlite-wal`, the WAL size
-    // should not have any negative impact on performance, as long as you don't go crazy low like
-    // only a few kB. This value basically just needs tuning to each application specifically.
-    // The default value here is `2MB`. If you adjust it, you should do it in combination with
-    // `HQL_LOGS_UNTIL_SNAPSHOT` / `logs_until_snapshot`. Try to aim for having max 3-4 WAL files
-    // around at all times. Exact values cannot be given, since it depends on the size of DB
-    // queries your application uses.
-    //
-    // The only very important thing to note is, that the `wal_size` should be at least 3x your
-    // biggest query size. If a query does not fit inside a single WAL, you will get a panic at
-    // runtime. Usually, this should never be any issue at all, as long as you're not writing very
-    // huge batch queries for instance.
-    config.wal_size = 8 * 1024 * 1024;
-
-    // You could set sync immediate, which will make the logs writer `fsync` after each batch it
-    // receives. However, this will degrade your throughput for the Database on disk by a very huge
-    // factor. This might only be necessary if you run Hiqlite as a single instance, and you were
-    // unable to recover some lost logs in case of a bad server crash from other nodes.
-    //
-    // This will also put a very high amount of stress on your disk, which can kill your SSDs pretty
-    // quickly if you have a lot of throughput. By default, `fsync` will be called in fixed
-    // intervals.
-    //
-    // the `sync_immediate` is only available with the `rocksdb` feature
-    //
-    //config.sync_immediate = true;
-    //
-    // `hiqlite::LogSync::Immediate` will sync immediately after a chunk of logs to append has
-    // been written, but with a huge performance penalty. `hiqlite::LogSync::Immediate` will do the
-    // same but not wait for completion, and therefore not block. This will usually have no
-    // impact on performance at all.
-    // However, both `hiqlite::LogSync::Immediate` + `hiqlite::LogSync::ImmediateAsync` will put
-    // a lot of stress on your SSD in case of high traffic. The default is to sync every 200ms.
-    //
-    //config.wal_sync = hiqlite::LogSync::IntervalMillis(200);
-
-    let client_1 = start_node_with_cache::<Cache>(config.clone()).await?;
+    let config = node_config(test_nodes(), logs_until_snapshot).await;
+    let client_1 = start_node_with_cache::<Cache>(config).await?;
     let mut client_2 = None;
     let mut client_3 = None;
 
     let expected_nodes = if full_cluster {
-        let mut cfg = config.clone();
+        let mut config = node_config(test_nodes(), logs_until_snapshot).await;
         client_2 = task::spawn(async move {
-            cfg.node_id = 2;
-            cfg.data_dir = format!("data/node_{}", 2).into();
-            let client = start_node_with_cache::<Cache>(cfg).await.unwrap();
+            config.node_id = 2;
+            config.data_dir = format!("data/node_{}", 2).into();
+            let client = start_node_with_cache::<Cache>(config).await.unwrap();
             Some(client)
         })
         .await?;
 
+        let mut config = node_config(test_nodes(), logs_until_snapshot).await;
         client_3 = task::spawn(async move {
             config.node_id = 3;
             config.data_dir = format!("data/node_{}", 3).into();

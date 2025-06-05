@@ -50,25 +50,24 @@ fn test_nodes() -> Vec<Node> {
     ]
 }
 
-fn node_config(node_id: u64, nodes: Vec<Node>) -> NodeConfig {
-    NodeConfig {
-        node_id,
-        nodes,
-        log_statements: true,
-        tls_raft: Some(ServerTlsConfig {
-            key: "../../tls/key.pem".into(),
-            cert: "../../tls/cert-chain.pem".into(),
-            danger_tls_no_verify: true,
-        }),
-        tls_api: Some(ServerTlsConfig {
-            key: "../../tls/key.pem".into(),
-            cert: "../../tls/cert-chain.pem".into(),
-            danger_tls_no_verify: true,
-        }),
-        secret_raft: "SuperSecureRaftSecret".to_string(),
-        secret_api: "SuperSecureApiSecret".to_string(),
-        ..Default::default()
-    }
+async fn node_config(node_id: u64, nodes: Vec<Node>) -> NodeConfig {
+    let mut config = NodeConfig::from_toml("../../hiqlite.toml", None, None)
+        .await
+        .unwrap();
+    config.node_id = node_id;
+    config.nodes = nodes;
+    config.log_statements = true;
+    config.tls_raft = Some(ServerTlsConfig {
+        key: "../../tls/key.pem".into(),
+        cert: "../../tls/cert-chain.pem".into(),
+        danger_tls_no_verify: true,
+    });
+    config.tls_api = Some(ServerTlsConfig {
+        key: "../../tls/key.pem".into(),
+        cert: "../../tls/cert-chain.pem".into(),
+        danger_tls_no_verify: true,
+    });
+    config
 }
 
 /// Matches our test table for this example.
@@ -130,7 +129,7 @@ async fn main() -> Result<(), Error> {
 async fn server(args: Option<Server>) -> Result<(), Error> {
     let is_cluster = args.is_some();
     let config = if let Some(args) = args {
-        let mut config = node_config(args.node_id, test_nodes());
+        let mut config = node_config(args.node_id, test_nodes()).await;
 
         // to make this example work when starting all nodes on the same host,
         // we need to save into custom folders for each one
@@ -138,7 +137,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
         cleanup(config.data_dir.as_ref()).await;
         config
     } else {
-        let mut config = node_config(1, vec![test_nodes()[0].clone()]);
+        let mut config = node_config(1, vec![test_nodes()[0].clone()]).await;
         config.data_dir = "data/node_1".into();
         cleanup(config.data_dir.as_ref()).await;
         config
