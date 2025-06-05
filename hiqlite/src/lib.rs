@@ -46,6 +46,8 @@ mod app_state;
 mod client;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 mod config;
+#[cfg(all(any(feature = "sqlite", feature = "cache"), feature = "toml"))]
+mod config_toml;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 mod error;
 #[cfg(any(feature = "sqlite", feature = "cache"))]

@@ -127,7 +127,7 @@ test:
     set -euxo pipefail
     clear
     # we need to run the tests with nightly to not get an error for docs auto cfg
-    RUSTFLAGS="--cfg tokio_unstable" cargo +nightly test --features cache,counters,dlock,listen_notify
+    RUSTFLAGS="--cfg tokio_unstable" cargo +nightly test --features cache,counters,dlock,listen_notify,toml
 
 # builds the code
 build ty="server":
@@ -176,8 +176,8 @@ run ty="server" node_id="1":
     clear
 
     if [[ {{ ty }} == "server" ]]; then
-      RUSTFLAGS="--cfg tokio_unstable" HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server -- serve -c config --node-id {{ node_id }}
-      #HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server,rocksdb -- serve -c config --node-id {{ node_id }}
+      #RUSTFLAGS="--cfg tokio_unstable" HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server -- serve -c hiqlite.toml --node-id {{ node_id }}
+      HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server,rocksdb -- serve -c hiqlite.toml --node-id {{ node_id }}
     elif [[ {{ ty }} == "ui" ]]; then
       cd dashboard
       npm run dev -- --host=0.0.0.0
@@ -188,7 +188,7 @@ test-migrate:
     set -euxo pipefail
     clear
     cp -r data/logs_bkp/* data/server_1/logs/
-    HQL_DATA_DIR=data/server_1 cargo run --features server,migrate-rocksdb -- serve -c config --node-id 1
+    HQL_DATA_DIR=data/server_1 cargo run --features server,migrate-rocksdb -- serve -c hiqlite.env --node-id 1
 
 # verifies the MSRV
 msrv-verify:

@@ -36,6 +36,34 @@ pub enum LogSync {
     IntervalMillis(u64),
 }
 
+impl TryFrom<&str> for LogSync {
+    type Error = Error;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "immediate" => Ok(Self::Immediate),
+            "immediate_async" => Ok(Self::ImmediateAsync),
+            v => {
+                if let Some(ms) = v.strip_prefix("interval_") {
+                    let Ok(ms) = ms.parse::<u64>() else {
+                        return Err(Error::Generic(
+                            format!(
+                                "Invalid value for log_sync interval, cannot parse as u64: {}",
+                                v
+                            )
+                            .into(),
+                        ));
+                    };
+                    Ok(Self::IntervalMillis(ms))
+                } else {
+                    Err(Error::Generic(
+                        format!("Cannot parse LogSync - invalid value: {}", v).into(),
+                    ))
+                }
+            }
+        }
+    }
+}
+
 #[allow(clippy::type_complexity)]
 pub fn spawn(
     base_path: String,

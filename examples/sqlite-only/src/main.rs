@@ -41,7 +41,7 @@ async fn main() -> Result<(), Error> {
         .with_env_filter(EnvFilter::from("info"))
         .init();
 
-    let config = NodeConfig::from_env_file("config");
+    let config = NodeConfig::from_toml("../../hiqlite.toml", None, None).await?;
     let client = hiqlite::start_node(config).await?;
 
     // Let's register our shutdown handle to always perform a graceful shutdown and remove lock files.

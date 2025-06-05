@@ -18,7 +18,7 @@ doctest = false
 all-features = true
 
 [features]
-default = ["auto-heal", "backup", "sqlite"]
+default = ["auto-heal", "backup", "sqlite", "toml"]
 
 auto-heal = ["hiqlite-wal/auto-heal"]
 backup = ["dep:cron", "s3", "sqlite"]
@@ -45,6 +45,7 @@ full = [
     "s3",
     "shutdown-handle",
     "sqlite",
+    "toml",
     "webpki-roots",
 ]
 jemalloc = ["dep:tikv-jemallocator"]
@@ -57,6 +58,7 @@ listen_notify_local = [
     "cache"
 ]
 migrate-rocksdb = ["dep:rocksdb", "hiqlite-wal/migration"]
+toml = ["dep:toml"]
 rocksdb = ["dep:rocksdb"]
 s3 = ["backup"]
 server = [
@@ -121,6 +123,7 @@ strum.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
+toml = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 tracing.workspace = true

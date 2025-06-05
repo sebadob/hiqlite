@@ -21,7 +21,7 @@ pub struct ArgsConfig {
     pub node_id: Option<u64>,
 
     /// The optional config file name to parse
-    #[clap(short, long, default_value = "$HOME/.hiqlite/config")]
+    #[clap(short, long, default_value = "$HOME/.hiqlite/hiqlite.toml")]
     pub config_file: String,
 
     /// Enable SQL statement logging
@@ -35,8 +35,8 @@ pub struct ArgsConfig {
 
 #[derive(Debug, Clone, Parser)]
 pub struct ArgsProxy {
-    /// The optional config file name to parse
-    #[clap(short, long, default_value = "$HOME/.hiqlite/config")]
+    /// The optional config file name to parse. The proxy currently only supports ENV VAR config.
+    #[clap(short, long, default_value = "$HOME/.hiqlite/hiqlite.env")]
     pub config_file: String,
 
     /// Server Log Level

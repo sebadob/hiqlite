@@ -37,7 +37,7 @@ pub type StorageResult<T> = Result<T, StorageError<NodeId>>;
 
 #[cfg(feature = "sqlite")]
 pub(crate) async fn start_raft_db(
-    node_config: NodeConfig,
+    node_config: &NodeConfig,
     raft_config: Arc<RaftConfig>,
     do_reset_metadata: bool,
 ) -> Result<StateRaftDB, Error> {
@@ -59,7 +59,7 @@ pub(crate) async fn start_raft_db(
     #[cfg(not(feature = "rocksdb"))]
     let log_store = hiqlite_wal::LogStore::<TypeConfigSqlite>::start(
         logs::logs_dir_db(&node_config.data_dir),
-        node_config.wal_sync,
+        node_config.wal_sync.clone(),
         node_config.wal_size,
     )
     .await?;
@@ -71,7 +71,7 @@ pub(crate) async fn start_raft_db(
         node_config.prepared_statement_cache_capacity,
         node_config.read_pool_size,
         #[cfg(feature = "s3")]
-        node_config.s3_config,
+        node_config.s3_config.clone(),
         do_reset_metadata,
     )
     .await
@@ -133,7 +133,7 @@ pub(crate) async fn start_raft_db(
 
 #[cfg(feature = "cache")]
 pub(crate) async fn start_raft_cache<C>(
-    node_config: NodeConfig,
+    node_config: &NodeConfig,
     raft_config: Arc<RaftConfig>,
 ) -> Result<StateRaftCache, Error>
 where
@@ -168,7 +168,7 @@ where
     let (raft, shutdown_handle) = if node_config.cache_storage_disk {
         let log_store = hiqlite_wal::LogStore::<TypeConfigKV>::start(
             logs::logs_dir_cache(&node_config.data_dir),
-            node_config.wal_sync,
+            node_config.wal_sync.clone(),
             node_config.wal_size,
         )
         .await?;

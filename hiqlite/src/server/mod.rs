@@ -19,7 +19,7 @@ pub async fn server() -> Result<(), Error> {
             logging::init_logging(&args.log_level, args.node_id);
             info!("Hiqlite Server v{}", APP_VERSION);
 
-            let node_config = config::build_node_config(args)?;
+            let node_config = config::build_node_config(args).await?;
             let client = start_node_with_cache::<cache::Cache>(node_config).await?;
 
             let mut shutdown_handle = client.shutdown_handle()?;
