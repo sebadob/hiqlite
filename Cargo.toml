@@ -15,6 +15,9 @@ lto = true
 strip = true
 panic = "abort"
 
+[patch.crates-io]
+#cryptr = { git = "https://github.com/sebadob/cryptr" }
+
 [workspace.dependencies]
 argon2 = "0.5.3"
 axum = { version = "0.8.1", features = ["http2", "tokio"] }
@@ -36,7 +39,7 @@ chrono = { version = "0.4.38", default-features = false, features = [
 clap = { version = "4.1.11", features = ["derive", "env"] }
 crc = "3.3.0"
 cron = { version = "0.15" }
-cryptr = { version = "0.6", features = ["s3"] }
+cryptr = { version = "0.6.1", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"
@@ -83,6 +86,7 @@ thiserror = "2"
 tikv-jemallocator = "0.6.0"
 tokio = { version = "1.43.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.0", features = ["ring"] }
+toml = "0.8.22"
 tower = { version = "0.5", features = [] }
 tower-http = { version = "0.6.0", features = [
     "set-header",

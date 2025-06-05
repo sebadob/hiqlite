@@ -53,29 +53,30 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         _ => unreachable!(),
     };
 
-    NodeConfig {
-        node_id,
-        nodes: nodes(),
-        data_dir,
-        log_statements: true,
-        // very tiny WAL to make sure log roll-overs will happen during tests
-        wal_size: 8 * 1024,
-        raft_config: NodeConfig::default_raft_config(1000),
-        // TODO currently we can't test with TLS, because this depends on `axum_server`.
-        // This does not support graceful shutdown, which we need for testing from
-        // a single process
-        tls_raft: None,
-        tls_api: None,
-        secret_raft: "asdasdasdasdasdasd".to_string(),
-        secret_api: SECRET_API.to_string(),
-        backup_config: Default::default(),
-        enc_keys_from: hiqlite::s3::EncKeysFrom::Env,
-        s3_config: hiqlite::s3::S3Config::try_from_env(),
-        #[cfg(feature = "dashboard")]
-        password_dashboard: Some("DoesNotMatterHere".to_string()),
-        cache_storage_disk: false,
-        ..Default::default()
-    }
+    let mut config = NodeConfig::from_toml("../hiqlite.toml", None, None)
+        .await
+        .unwrap();
+    config.node_id = node_id;
+    config.nodes = nodes();
+    config.data_dir = data_dir;
+    config.log_statements = true;
+    // very tiny WAL to make sure log roll-overs will happen during tests
+    config.wal_size = 8 * 1024;
+    config.raft_config = NodeConfig::default_raft_config(1000);
+
+    // TODO currently we can't test with TLS, because this depends on `axum_server`.
+    // This does not support graceful shutdown, which we need for testing from
+    // a single process
+    config.tls_raft = None;
+    config.tls_api = None;
+
+    config.secret_raft = "asdasdasdasdasdasd".to_string();
+    config.secret_api = SECRET_API.to_string();
+
+    config.backup_config = Default::default();
+    config.cache_storage_disk = false;
+
+    config
 }
 
 pub async fn wait_for_healthy_cluster(

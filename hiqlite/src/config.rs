@@ -13,20 +13,13 @@ use crate::dashboard::DashboardState;
 
 pub use openraft::Config as RaftConfig;
 
-#[cfg(feature = "s3")]
-#[derive(Debug, Clone)]
-pub enum EncKeysFrom {
-    Env,
-    File(String),
-}
-
 /// The main Node config.
 ///
 /// Most default values are good for internal, fast networks. If you have a slow or unstable
 /// network, you might want to tune the `RaftConfig`. However, you should never adjust the
 /// `max_in_snapshot_log_to_keep`, because this will play a crucial role if you need to restore
 /// from a backup in case of disaster recovery.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct NodeConfig {
     /// The `node_id` defines which entry from the `nodes` is "this node"
     pub node_id: NodeId,
@@ -83,6 +76,24 @@ pub struct NodeConfig {
     pub wal_sync: hiqlite_wal::LogSync,
     /// Maximum WAL size in bytes.
     pub wal_size: u32,
+    /// Can be set to true to start the WAL handler even if the `lock.hql` file exists. This may be
+    /// necessary after a crash, when the lock file could not be removed during a graceful shutdown.
+    ///
+    /// IMPORTANT: Even though the Database can "heal" itself by simply rebuilding from the existing
+    /// Raft log files without even needing to think about it, you may want to only set it when
+    /// necessary to have more control. Depending on the type of crash (whole OS, maybe immediate
+    /// power loss, force killed, ...), it may be the case that the WAL files + metadata could not
+    /// be synced to disk properly and that quite a bit of data is lost.
+    ///
+    /// In such a case, it is usually a better idea to delete the whole volume and let the broken
+    /// node rebuild from other healthy cluster members, just to be sure.
+    ///
+    /// However, you can decide to ignore the lock file and start anyway. But **you must be 100% sure,
+    /// that no orphaned process is still running and accessing the WAL files!**
+    ///
+    /// If you may only temporarily need it after a crash, it is advised to work with the env var
+    /// `HQL_WAL_IGNORE_LOCK` in that case.
+    pub wal_ignore_lock: bool,
     /// Set to `true` to store the cache WAL + Snapshots on disk instead of keeping them in memory.
     /// The Caches themselves will always be in-memory only. The default is `true`, which will
     /// effectively reduce the total memory used, because otherwise the WAL + Snapshot in memory
@@ -109,23 +120,33 @@ pub struct NodeConfig {
     pub secret_raft: String,
     /// Secret for Raft management and DB API - at least 16 characters long
     pub secret_api: String,
+    /// The Encryption Keys used for Backups and Dashboard cookies
+    #[cfg(any(feature = "s3", feature = "dashboard"))]
+    pub enc_keys: cryptr::EncKeys,
     /// auto-backup configuration
     #[cfg(feature = "backup")]
     pub backup_config: backup::BackupConfig,
-    /// From where `ENC_KEYS` should be read for S3 backup encryption. feature `s3`
-    #[cfg(feature = "s3")]
-    pub enc_keys_from: EncKeysFrom,
+    #[cfg(feature = "backup")]
+    pub backup_keep_days_local: u16,
     /// If an `S3Config` is given, it will be used to push backups to the S3 bucket. feature `s3`
     #[cfg(feature = "s3")]
     pub s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
     /// Set the password for the integrated dashboard. Must be given as argon2id hash. feature `dashboard`
     #[cfg(feature = "dashboard")]
     pub password_dashboard: Option<String>,
+    /// If `true`, insecure cookies will be created for the Dashboard. NEVER use this in production,
+    /// only for local testing!
+    #[cfg(feature = "dashboard")]
+    pub insecure_cookie: bool,
     /// Artificial shutdown delay for a multi-node deployment. This should be at least:
     /// `raft_config.election_timeout_max + raft_config.heartbeat_interval`
     /// You may want to increase it in case you also use a bigger cache size and need a bit more
     /// headroom for replications during rolling releases.
     pub shutdown_delay_millis: u32,
+    /// The initial delay until which the "true" health will be returned. A delay at the start is
+    /// necessary to solve a chicken-and-egg problem when cold starting cluster which depend on
+    /// health checks.
+    pub health_check_delay_secs: u32,
 }
 
 impl Default for NodeConfig {
@@ -140,8 +161,9 @@ impl Default for NodeConfig {
             read_pool_size: 4,
             #[cfg(feature = "rocksdb")]
             sync_immediate: false,
-            wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
+            wal_sync: hiqlite_wal::LogSync::ImmediateAsync,
             wal_size: 2 * 1024 * 1024,
+            wal_ignore_lock: false,
             #[cfg(feature = "cache")]
             cache_storage_disk: true,
             raft_config: Self::default_raft_config(10_000),
@@ -149,15 +171,19 @@ impl Default for NodeConfig {
             tls_api: None,
             secret_raft: String::default(),
             secret_api: String::default(),
+            #[cfg(any(feature = "s3", feature = "dashboard"))]
+            enc_keys: Default::default(),
             #[cfg(feature = "backup")]
             backup_config: backup::BackupConfig::default(),
-            #[cfg(feature = "s3")]
-            enc_keys_from: EncKeysFrom::Env,
+            backup_keep_days_local: 30,
             #[cfg(feature = "s3")]
             s3_config: None,
             #[cfg(feature = "dashboard")]
             password_dashboard: None,
+            #[cfg(feature = "dashboard")]
+            insecure_cookie: false,
             shutdown_delay_millis: 5000,
+            health_check_delay_secs: 30,
             // #[cfg(feature = "dashboard")]
             // insecure_cookie: false,
         }
@@ -180,8 +206,8 @@ impl NodeConfig {
     /// 2. read from given `filename`
     /// 3. read from env vars
     pub fn from_env_all(filename: &str) -> Self {
-        if dotenvy::from_filename("config").is_err() {
-            debug!("config file './config' not found");
+        if dotenvy::from_filename("hiqlite.env").is_err() {
+            debug!("config file './hiqlite.env' not found");
         }
         if dotenvy::from_filename_override(filename).is_err() {
             debug!("config file '{}' not found", filename);
@@ -193,21 +219,7 @@ impl NodeConfig {
     fn from_env_parse() -> Self {
         let env_from = env::var("HQL_NODE_ID_FROM").unwrap_or_else(|_| String::default());
         let node_id = if env_from == "k8s" {
-            let binding = hostname::get().expect("Cannot read hostname");
-            let hostname = binding.to_str().expect("Invalid hostname format");
-            match hostname.rsplit_once('-') {
-                None => {
-                    panic!(
-                        "Cannot split off the NODE_ID from the hostname {}",
-                        hostname
-                    );
-                }
-                Some((_, id)) => {
-                    let id_hostname = id.parse::<u64>().expect("Cannot parse HQL_NODE_ID to u64");
-                    // the hostnames for k8s sts always start at 0, but we need to start at 1
-                    id_hostname + 1
-                }
-            }
+            Self::node_id_from_hostname()
         } else {
             env::var("HQL_NODE_ID")
                 .expect("Node ID not found")
@@ -223,20 +235,28 @@ impl NodeConfig {
             .expect("Cannot parse HQL_CACHE_STORAGE_DISK as bool");
 
         let logs_keep = env::var("HQL_LOGS_UNTIL_SNAPSHOT")
-            .unwrap_or_else(|_| "10000".to_string())
+            .as_deref()
+            .unwrap_or("10000")
             .parse::<u64>()
             .expect("Cannot parse HQL_LOGS_UNTIL_SNAPSHOT to u64");
+        let backup_keep_days_local = env::var("HQL_LOGS_UNTIL_SNAPSHOT")
+            .as_deref()
+            .unwrap_or("30")
+            .parse::<u16>()
+            .expect("Cannot parse HQL_LOGS_UNTIL_SNAPSHOT as u16");
 
-        #[cfg(feature = "s3")]
-        let enc_keys_from = env::var("HQL_ENC_KEYS_FROM")
-            .map(|v| {
-                if let Some(path) = v.strip_prefix("file:") {
-                    EncKeysFrom::File(path.to_string())
-                } else {
-                    EncKeysFrom::Env
-                }
-            })
-            .unwrap_or(EncKeysFrom::Env);
+        let wal_ignore_lock = env::var("HQL_WAL_IGNORE_LOCK")
+            .as_deref()
+            .unwrap_or("false")
+            .parse::<bool>()
+            .expect("Cannot parse HQL_WAL_IGNORE_LOCK as bool");
+
+        #[cfg(feature = "dashboard")]
+        let insecure_cookie = env::var("HQL_INSECURE_COOKIE")
+            .as_deref()
+            .unwrap_or("false")
+            .parse::<bool>()
+            .expect("Cannot parse HQL_INSECURE_COOKIE as bool");
 
         let slf = Self {
             node_id,
@@ -264,8 +284,9 @@ impl NodeConfig {
                 .unwrap_or("false")
                 .parse()
                 .expect("Cannot parse HQL_SYNC_IMMEDIATE as bool"),
-            wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
+            wal_sync: hiqlite_wal::LogSync::ImmediateAsync,
             wal_size: 2 * 1024 * 1024,
+            wal_ignore_lock,
             #[cfg(feature = "cache")]
             cache_storage_disk,
             raft_config: Self::default_raft_config(logs_keep),
@@ -273,19 +294,23 @@ impl NodeConfig {
             tls_api: ServerTlsConfig::from_env("API"),
             secret_raft: env::var("HQL_SECRET_RAFT").expect("HQL_SECRET_RAFT not found"),
             secret_api: env::var("HQL_SECRET_API").expect("HQL_SECRET_API not found"),
+            #[cfg(any(feature = "s3", feature = "dashboard"))]
+            enc_keys: cryptr::EncKeys::from_env().expect("Cannot parse ENC_KEYS from ENV"),
             #[cfg(feature = "backup")]
             backup_config: backup::BackupConfig::from_env(),
-            #[cfg(feature = "s3")]
-            enc_keys_from,
             #[cfg(feature = "s3")]
             s3_config: crate::s3::S3Config::try_from_env(),
             #[cfg(feature = "dashboard")]
             password_dashboard: DashboardState::from_env().password_dashboard,
+            #[cfg(feature = "dashboard")]
+            insecure_cookie,
             shutdown_delay_millis: env::var("HQL_SHUTDOWN_DELAY_MILLS")
                 .as_deref()
-                .unwrap_or("3000")
+                .unwrap_or("5000")
                 .parse()
                 .expect("Cannot parse HQL_SHUTDOWN_DELAY_MILLS as u32"),
+            health_check_delay_secs: 30,
+            backup_keep_days_local,
         };
 
         slf.is_valid()
@@ -317,6 +342,17 @@ impl NodeConfig {
         }
     }
 
+    #[cfg(any(feature = "s3", feature = "dashboard"))]
+    pub(crate) fn init_enc_keys(&self) {
+        let cloned = cryptr::EncKeys {
+            enc_key_active: self.enc_keys.enc_key_active.clone(),
+            enc_keys: self.enc_keys.enc_keys.clone(),
+        };
+        if cloned.init().is_err() {
+            warn!("Cannot initialize ENC_KEYS - already initialized");
+        }
+    }
+
     /// Validates the config
     pub fn is_valid(&self) -> Result<(), Error> {
         if self.nodes.is_empty() {
@@ -335,6 +371,25 @@ impl NodeConfig {
             return Err(Error::Config(
                 "'secret_raft' and 'secret_api' should be at least 16 characters long".into(),
             ));
+        }
+
+        #[cfg(any(feature = "dashboard", feature = "s3"))]
+        {
+            if self.enc_keys.enc_keys.is_empty() {
+                return Err(Error::Config(
+                    "'enc_keys.enc_keys' must not be empty".into(),
+                ));
+            }
+            let active_valid = self
+                .enc_keys
+                .enc_keys
+                .iter()
+                .any(|(id, _)| id == &self.enc_keys.enc_key_active);
+            if !active_valid {
+                return Err(Error::Config(
+                    "Invalid 'enc_keys.enc_key_active', does not point to an existing key".into(),
+                ));
+            }
         }
 
         #[cfg(feature = "dashboard")]
@@ -359,6 +414,24 @@ clean up logs after debugging!
         }
 
         Ok(())
+    }
+
+    pub(crate) fn node_id_from_hostname() -> NodeId {
+        let binding = hostname::get().expect("Cannot read hostname");
+        let hostname = binding.to_str().expect("Invalid hostname format");
+        match hostname.rsplit_once('-') {
+            None => {
+                panic!(
+                    "Cannot split off the NODE_ID from the hostname {}",
+                    hostname
+                );
+            }
+            Some((_, id)) => {
+                let id_hostname = id.parse::<u64>().expect("Cannot parse HQL_NODE_ID to u64");
+                // the hostnames for k8s sts always start at 0, but we need to start at 1
+                id_hostname + 1
+            }
+        }
     }
 }
 
@@ -402,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_config_from_env() {
-        let c = NodeConfig::from_env_file("config");
+        let c = NodeConfig::from_env_file("hiqlite.env");
         println!("{:?}", c);
 
         assert_eq!(c.node_id, 1);

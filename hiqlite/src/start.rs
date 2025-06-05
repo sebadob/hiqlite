@@ -17,8 +17,6 @@ use tracing::{debug, info};
 use crate::backup;
 #[cfg(feature = "dashboard")]
 use crate::dashboard;
-#[cfg(feature = "s3")]
-use crate::s3;
 
 #[allow(clippy::extra_unused_type_parameters)]
 pub async fn start_node_inner<C>(node_config: NodeConfig) -> Result<Client, Error>
@@ -42,8 +40,8 @@ where
         .map(|c| c.danger_tls_no_verify)
         .unwrap_or(false);
 
-    #[cfg(feature = "s3")]
-    s3::init_enc_keys(&node_config.enc_keys_from)?;
+    #[cfg(any(feature = "s3", feature = "dashboard"))]
+    node_config.init_enc_keys();
 
     #[cfg(feature = "dashboard")]
     dashboard::init()?;
@@ -56,9 +54,9 @@ where
     let do_reset_metadata = init::check_execute_reset(&node_config.data_dir).await?;
     #[cfg(feature = "sqlite")]
     let raft_db =
-        store::start_raft_db(node_config.clone(), raft_config.clone(), do_reset_metadata).await?;
+        store::start_raft_db(&node_config, raft_config.clone(), do_reset_metadata).await?;
     #[cfg(feature = "cache")]
-    let raft_cache = store::start_raft_cache::<C>(node_config.clone(), raft_config.clone()).await?;
+    let raft_cache = store::start_raft_cache::<C>(&node_config, raft_config.clone()).await?;
 
     let (api_addr, rpc_addr) = {
         let node = node_config

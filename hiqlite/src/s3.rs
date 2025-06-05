@@ -2,9 +2,7 @@ use crate::Error;
 use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter};
 use std::env;
 use std::sync::Arc;
-use tracing::debug;
 
-pub use crate::config::EncKeysFrom;
 pub use cryptr::stream::s3::*;
 pub use cryptr::EncKeys;
 
@@ -16,7 +14,7 @@ pub struct S3Config {
 impl S3Config {
     pub fn new<S>(
         endpoint: &str,
-        name: S,
+        bucket_name: S,
         region: S,
         key: S,
         secret: S,
@@ -35,7 +33,7 @@ impl S3Config {
             path_style,
             list_objects_v2: true,
         });
-        let bucket = Bucket::new(endpoint, name.into(), region, credentials, options)
+        let bucket = Bucket::new(endpoint, bucket_name.into(), region, credentials, options)
             .map_err(|err| Error::S3(err.to_string()))?;
 
         Ok(Arc::new(Self { bucket }))
@@ -104,17 +102,4 @@ impl S3Config {
             .await
             .map_err(|err| Error::S3(err.to_string()))
     }
-}
-
-pub(crate) fn init_enc_keys(enc_keys_from: &EncKeysFrom) -> Result<(), Error> {
-    if let Err(err) = match enc_keys_from {
-        EncKeysFrom::Env => EncKeys::from_env(),
-        EncKeysFrom::File(path) => EncKeys::read_from_file(path),
-    }
-    .map_err(|err| Error::Error(err.to_string().into()))?
-    .init()
-    {
-        debug!("{}", err);
-    };
-    Ok(())
 }
