@@ -197,6 +197,7 @@ impl WalFile {
                         self.data_start = Some(offset);
                     }
                     self.data_end = Some(offset + record_len);
+                    buf.clear();
                     self.update_header(buf)?;
                     recovered += 1;
 
