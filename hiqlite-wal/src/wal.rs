@@ -2,9 +2,9 @@ use crate::error::Error;
 use crate::utils::{bin_to_u32, bin_to_u64, crc, u32_to_bin, u64_to_bin};
 use memmap2::{Advice, Mmap, MmapMut, MmapOptions};
 use std::collections::VecDeque;
-use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::{env, fs};
 use tracing::{debug, info, warn};
 
 static MAGIC_NO_WAL: &[u8] = b"HQL_WAL";
@@ -759,7 +759,12 @@ impl WalFileSet {
         // We only need to do the way more expensive check if the startup is not clean, e.g.
         // when an existing `LockFile` has been ignored. This check is unnecessary after a
         // graceful shutdown.
-        if lock_file_exists {
+        let check = env::var("HQL_CHECK_WAL_INTEGRITY")
+            .as_deref()
+            .unwrap_or("false")
+            .parse::<bool>()
+            .expect("Cannot parse HQL_CHECK_WAL_INTEGRITY as bool");
+        if lock_file_exists || check {
             let active = self.active();
             if active.mmap_mut.is_none() {
                 active.mmap_mut()?;
