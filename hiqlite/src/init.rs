@@ -739,7 +739,14 @@ async fn is_initialized_timeout_sqlite(
         if has_any_nodes() {
             Ok(true)
         } else {
-            warn!("Raft is initialized but the membership config is empty");
+            error!(
+                r#"
+
+    Sqlite Raft is initialized but the membership config is empty.
+    Maybe corrupted files on disk, which cannot be repaired?
+    Take a look at `HQL_DANGER_RAFT_STATE_RESET`
+"#
+            );
             Ok(false)
         }
     } else {
@@ -777,7 +784,14 @@ async fn is_initialized_timeout_cache(
         if has_any_nodes() {
             Ok(true)
         } else {
-            warn!("Raft is initialized but the membership config is empty");
+            error!(
+                r#"
+
+    Cache Raft is initialized but the membership config is empty.
+    Maybe corrupted files on disk, which cannot be repaired?
+    Take a look at `HQL_DANGER_RAFT_STATE_RESET`
+"#
+            );
             Ok(false)
         }
     } else {
