@@ -1,9 +1,8 @@
 use crate::error::Error;
 use crate::utils::{bin_to_u32, bin_to_u64, crc, u32_to_bin, u64_to_bin};
-#[cfg(target_os = "windows")]
 use memmap2::{Mmap, MmapMut, MmapOptions};
 #[cfg(unix)]
-use memmap2::{Advice, Mmap, MmapMut, MmapOptions};
+use memmap2::{Advice};
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
