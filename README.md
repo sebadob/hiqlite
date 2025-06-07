@@ -40,9 +40,7 @@ and self-healing capabilities in case of any errors or problems.
 - persistent storage for Raft logs (with [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb)) and SQLite state
   machine
 - "magic" auto setup, no need to do any manual init or management for the Raft
-- self-healing - each node can automatically recover from un-graceful shutdowns ~~and even full data volume loss~~
-  (Note: There is a known bug that sometimes can lead to a Raft lock, if the full volume has been lost. This can be
-  fixed, but needs manual interaction and a cluster restart right now)
+- self-healing - each node can automatically recover from un-graceful shutdowns and even full data volume loss
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy

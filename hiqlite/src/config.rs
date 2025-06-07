@@ -352,7 +352,7 @@ impl NodeConfig {
             enc_keys: self.enc_keys.enc_keys.clone(),
         };
         if cloned.init().is_err() {
-            warn!("Cannot initialize ENC_KEYS - already initialized");
+            debug!("Cannot initialize ENC_KEYS - already initialized");
         }
     }
 
