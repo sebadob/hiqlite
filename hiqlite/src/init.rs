@@ -739,14 +739,7 @@ async fn is_initialized_timeout_sqlite(
         if has_any_nodes() {
             Ok(true)
         } else {
-            error!(
-                r#"
-
-    Sqlite Raft is initialized but the membership config is empty.
-    Maybe corrupted files on disk, which cannot be repaired?
-    Take a look at `HQL_DANGER_RAFT_STATE_RESET`
-"#
-            );
+            log_no_membership_error();
             Ok(false)
         }
     } else {
@@ -784,14 +777,7 @@ async fn is_initialized_timeout_cache(
         if has_any_nodes() {
             Ok(true)
         } else {
-            error!(
-                r#"
-
-    Cache Raft is initialized but the membership config is empty.
-    Maybe corrupted files on disk, which cannot be repaired?
-    Take a look at `HQL_DANGER_RAFT_STATE_RESET`
-"#
-            );
+            log_no_membership_error();
             Ok(false)
         }
     } else {
@@ -819,4 +805,23 @@ fn set_raft_running(state: &Arc<AppState>, raft_type: &RaftType) {
         }
         RaftType::Unknown => unreachable!(),
     }
+}
+
+fn log_no_membership_error() {
+    error!(
+        r#"
+
+    Raft is initialized but the membership config is empty.
+    This can usually only happen during the initialization of a fresh cluster, if your
+    application crashed or is being force-killed in the middle of a cluster join.
+
+    If this is a single instance, this Node cann probably not recover from this state on its own.
+    You can fix this by starting with: `HQL_DANGER_RAFT_STATE_RESET=true`
+
+    If this happens on a cluster Node and the other members are healthy, it may be able to recover
+    when the remote leader tries to re-initialize it. If this failes, the easiest and safest fix
+    is to delete the volume and let the Node re-join and sync the cluster data cleanly to not end
+    up in an inconsistent state.
+"#
+    );
 }
