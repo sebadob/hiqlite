@@ -4,7 +4,7 @@ use crate::wal::WalFileSet;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::sync::oneshot;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 #[allow(clippy::type_complexity)]
 pub enum Action {
@@ -60,27 +60,6 @@ fn run(
                 }
 
                 let mut from_next = from;
-                // TODO this checked issue can happen for a real deployment, if a cluster is being
-                //  restarted and resynced after a crash or shutdown of all 3 nodes at once, if the
-                //  very first raft actions comes too quick. This is a race condition.
-                //  -> find a nice way to check for this case before returning the `Client`
-                //     in `start` to never let this be possible, if someone immediately interacts
-                //     with the Raft weil getting into this unlucky situation
-                //  -> not 100% yet where the root cause for this might be, but probably if
-                //     interaction starts before the node had a chance to fully resync. We could
-                //     probably wait for a node to reach a stable point somehow by comparing
-                //     metrics or raft log lag
-                #[cfg(debug_assertions)]
-                {
-                    let first = wal.files.front().unwrap();
-                    if from_next < first.id_from {
-                        panic!(
-                            "Mismatch in Log IDs - Should read from {from_next} until {until} while the first \
-                            log starts later: {}\n{:?}",
-                            first.id_from, wal.files
-                        );
-                    }
-                }
                 for log in wal.files.iter_mut() {
                     if log.id_until < from_next {
                         debug!(
@@ -97,6 +76,7 @@ fn run(
                     if log.id_until < until {
                         debug!("log.id_until < until -> {} < {}", log.id_until, until);
                         log.read_logs(from_next, log.id_until, &mut buf).unwrap();
+
                         for (_id, data) in buf.drain(..) {
                             debug_assert!(_id >= from_next && _id <= until);
                             ack.send(Some(Ok(data))).unwrap()
@@ -110,6 +90,7 @@ fn run(
                         from_next = log.id_until + 1;
                     } else {
                         debug!("log contains end of read request");
+
                         match log.read_logs(from_next, until, &mut buf) {
                             Ok(_) => {
                                 for (_, data) in buf.drain(..) {
@@ -173,6 +154,10 @@ fn run(
                     last_purged_log_id: meta.read().unwrap().last_purged_log_id.clone(),
                     last_log,
                 };
+                info!(
+                    "WAL Reader - Action::LogState -> latest_log_id: {:?}\n{:?}",
+                    latest_log_id, st
+                );
                 ack.send(Ok(st)).unwrap();
             }
             Action::Vote(ack) => {

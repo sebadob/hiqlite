@@ -1,8 +1,6 @@
 use crate::error::Error;
 use crate::utils::{bin_to_u32, bin_to_u64, crc, u32_to_bin, u64_to_bin};
 use memmap2::{Mmap, MmapMut, MmapOptions};
-#[cfg(unix)]
-use memmap2::{Advice};
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -72,6 +70,7 @@ impl WalFile {
     /// Note: `self` must have an active `mmap_mut` to be able to execute this check properly.
     #[tracing::instrument(skip_all)]
     fn check_repair_data_integrity(&mut self, buf: &mut Vec<u8>) -> Result<(), Error> {
+        debug_assert!(buf.is_empty());
         debug_assert!(self.mmap_mut.is_some());
         debug_assert!(self.id_from <= self.id_until);
         debug_assert_eq!(self.data_start.is_some(), self.data_end.is_some());
@@ -107,27 +106,48 @@ impl WalFile {
                         ));
                     }
                 }
-                if record.crc != crc!(record.data) {
+                if record.crc != crc!(record.data) || record.data.is_empty() {
                     #[cfg(feature = "auto-heal")]
                     {
-                        let id_healthy = id_before.unwrap_or(self.id_from);
-                        warn!(
-                            "Bad CRC CHKSUM for WAL Log ID {}. Trying automatic healing. \
-                            Reverting latest log ID to {}.",
-                            record.log_id, id_healthy
-                        );
-
                         // If we get here, we want to update the header in a way that all logs
                         // beginning with this one are considered lost and should therefore be
                         // re-synced from another cluster member. This will only work, if
                         // `auto-heal` is enabled for the main `hiqlite` crate as well.
-                        self.id_until = id_healthy;
-                        // `data_end` must be inclusive
-                        self.data_end = Some(offset - 1);
+
+                        match id_before {
+                            Some(id) => {
+                                warn!(
+                                    "Bad CRC CHKSUM for WAL ID {}. Trying automatic healing. \
+                                    Rolling back latest log ID to {}.",
+                                    record.log_id, id
+                                );
+                                self.id_until = id;
+                                // `data_end` is inclusive
+                                self.data_end = Some(offset - 1);
+                            }
+                            None => {
+                                warn!(
+                                    "Bad CRC CHKSUM for WAL ID {}. Trying automatic healing. \
+                                    The first ID in this log is bad - resetting data block.",
+                                    record.log_id
+                                );
+                                self.data_start = None;
+                                self.data_end = None;
+                                self.id_until = self.id_from;
+                            }
+                        };
 
                         // We don't need to do anything with the already existing data from now on.
                         // It will be automatically overwritten by `data_end` index with upcoming
                         // log appends.
+                        // The only thing we want to do, just to be safe, is to overwrite the
+                        // 8 byte log id, so this check never needs to be done again, as we would
+                        // get NULL for the whole record in that case.
+                        let mmap = self.mmap_mut.as_mut().unwrap();
+                        u64_to_bin(0, buf)?;
+                        let idx = offset as usize;
+                        (&mut mmap[idx..idx + 8]).write_all(buf)?;
+
                         return Ok(());
                     }
 
@@ -189,12 +209,8 @@ impl WalFile {
                         record.log_id
                     );
 
-                    let log_id = record.log_id;
                     let record_len = record.len();
-                    // `record_len` is inclusive
-                    offset += record_len + 1;
-
-                    self.id_until = log_id;
+                    self.id_until = record.log_id;
                     if self.data_start.is_none() {
                         self.data_start = Some(offset);
                     }
@@ -203,24 +219,26 @@ impl WalFile {
                     self.update_header(buf)?;
                     recovered += 1;
 
+                    // `record_len` is inclusive
+                    offset += record_len + 1;
                     if offset >= self.len_max {
                         debug!("Reached end of file in unexpected data section");
                         break;
                     }
                 } else {
-                    debug!("No unexpected WAL records found");
+                    info!("No unexpected additional WAL records found");
                     break;
                 }
             } else {
-                debug!("No unexpected data found in {}", self.path);
+                info!("No unexpected additional data found in {}", self.path);
                 break;
             }
         }
 
         if recovered > 0 {
             info!(
-                "Successfully recovered {} orphaned WAL File Records",
-                recovered
+                "Successfully recovered {} orphaned WAL file records: {:?}",
+                recovered, self
             );
         }
 
@@ -262,16 +280,15 @@ impl WalFile {
         } else {
             self.data_end.unwrap() as usize + 1
         };
-        self.id_until = id;
 
         let mmap = self.mmap_mut.as_mut().unwrap();
 
         let crc = crc!(&data);
-        (&mut mmap[start + 8..]).write_all(crc.as_slice())?;
+        (&mut mmap[start + 8..start + 8 + 8]).write_all(crc.as_slice())?;
 
         let len = data.len() as u32;
         u32_to_bin(len, buf)?;
-        (&mut mmap[start + 8 + 4..]).write_all(buf)?;
+        (&mut mmap[start + 8 + 4..start + 8 + 4 + 4]).write_all(buf)?;
 
         (&mut mmap[start + 8 + 4 + 4..]).write_all(data)?;
 
@@ -283,6 +300,7 @@ impl WalFile {
         u64_to_bin(id, buf)?;
         (&mut mmap[start..start + 8]).write_all(buf)?;
 
+        self.id_until = id;
         self.data_end = Some((start + 8 + 4 + 4 + data.len()) as u32);
         debug_assert!(self.data_end.unwrap() <= self.len_max);
 
@@ -399,13 +417,13 @@ impl WalFile {
         let log_id = bin_to_u64(&head[..8])?;
         let crc = &head[8..12];
 
+        let data_from = offset + 8 + 4 + 4;
         let data_len = bin_to_u32(&head[12..16])?;
         if data_len == 0 {
             return Err(Error::Integrity(
-                "Attempt to read non-existent data of length 0".into(),
+                format!("Attempt to read non-existent data of length 0\n{:?}", self).into(),
             ));
         }
-        let data_from = offset + 8 + 4 + 4;
         let data = self.read_bytes(data_from, data_from + data_len)?;
 
         Ok(WalRecord { log_id, crc, data })
@@ -466,7 +484,7 @@ impl WalFile {
         let mmap = unsafe { MmapOptions::new().populate().map(&file)? };
 
         #[cfg(unix)]
-        mmap.advise(Advice::Sequential)?;
+        mmap.advise(memmap2::Advice::Sequential)?;
 
         self.mmap = Some(mmap);
 
@@ -488,7 +506,9 @@ impl WalFile {
             .open(&self.path)?;
 
         let mmap = unsafe { MmapOptions::new().populate().map_mut(&file)? };
-        // mmap.advise(Advice::Sequential)?;
+
+        #[cfg(unix)]
+        mmap.advise(memmap2::Advice::Sequential)?;
 
         self.mmap_mut = Some(mmap);
 

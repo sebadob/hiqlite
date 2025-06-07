@@ -24,8 +24,6 @@ use std::sync::Arc;
 use strum::IntoEnumIterator;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-#[cfg(unix)]
-use tokio::net::unix::pipe::OpenOptions;
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::task;
 use tracing::{debug, info, warn};
