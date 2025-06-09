@@ -105,6 +105,11 @@ struct LogStoreWriter {
 
 impl LogStoreWriter {
     fn spawn(db: Arc<DB>, sync_immediate: bool) -> flume::Sender<ActionWrite> {
+        warn!(
+            "`rocksdb` is a deprecated feature and will be removed in future versions. You should \
+        `migrate-rocksdb` if possible."
+        );
+
         let (tx, rx) = flume::bounded::<ActionWrite>(1);
 
         std::thread::spawn(move || {

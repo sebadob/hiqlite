@@ -1,5 +1,84 @@
 # Changelog
 
+## UNRELEASED
+
+### Breaking
+
+#### `rocksdb` deprecated
+
+Rocksdb is a really good and fast KV database, but it comes with quite a few issues. The first big thing is, that it's
+pure overkill to only be used as a Raft Logs Store. Logs come in sequential order, are immutable, and append-only.
+Rocksdb is a huge dependency and it takes a long time to compile. It also adds ~7mb of release binary size and it almost
+impossible to compile to `musl`.
+
+To overcome these issues, `hiqlite-wal` has been created from the ground up. It provides memory-mapped WAL files, that
+are append-only and perfectly serve the purpose of a Raft Log Store. It is very light-weight in terms of code-,
+binary size and compile time, and only provides the functionality we actually need. If also has implementations that try
+to auto-recover lost WAL records in case of an application crash in the middle of writing. This is a situation you could
+not easily get out of with `rocksdb` as well. Even if it fails recovering everything it needs, it will at least make
+everything work on its own in probably 99% of cases, and only if it cannot, you at least have the possibility to easily
+fix it.
+
+The default Log Store is `hiqlite-wal`, but you can keep on using Rocksdb (at least for some time) with the `rocksdb`
+feature. In future versions, Rocksdb will probably be removed completely. If you want to upgrade an existing database,
+you can enable the `migrate-rocksdb` feature, which will trigger a Log Store migration during start up. Hiqlite will
+then check if it can find an existing Rocksdb, migrate all Logs it can find, and then remove the old Rocksdb files.
+**CAUTION:** Even though this migration has been tested on quite a few instances without any issues, you really should
+have a backup before doing it. For a single instance, this is not too important, but for a distributed, already existing
+cluster it definitely is!
+
+When you have a setup that for instance runs inside containers and a volume can never be mounted to multiple pods, you
+probably want to enable `wal_ignore_lock` / `HQL_WAL_IGNORE_LOCK`, which handles a start after a crash automatically.
+But if it may be possible, that a crashed process my still be running somehow, and accessing the database files, you
+need to handle this manually and delete the lock file after you killed that process.
+
+### Changes
+
+#### Config as TOML
+
+In addition to reading your whole config from ENV vars, you can now also `NodeConfig::from_toml()` with the new `toml`
+feature enabled, which is the case by default now. Take a look at
+the [hiqlite.toml](https://github.com/sebadob/hiqlite/blob/main/hiqlite.toml) for an example.
+
+All values read from a TOML file can be overwritten by the matching ENV var. If both values are given, the ENV var will
+have the higher priority. This makes it possible to have defaults in your TOML and temporarily overwrite something for
+whatever reason.
+
+#### Stability Improvements
+
+Many small fixes and additional checks have been added in lots of places to improve the shutdown / restart stability
+with an in-memory only Cache layer. The main issue with this is, that the Raft Logs are ephemeral, which could lead to
+many different issues. However, at least to my knowledge, all the existing issues and edge cases has been taken care
+of and it should be perfectly stable now to use in-memory only Raft Logs.
+
+#### Distributed Counters
+
+With the `counters` feature, which depends on `cache`, you can now have distributed, raft-backed counter for things like
+rate-limiting for instance. The `hiqlite::Client` exposes some new functions to work with them:
+
+- `counter_get()`
+- `counter_set()`
+- `counter_add()`
+- `counter_del()`
+- `clear_counters()`
+
+#### `jemalloc` feature
+
+You can enable the `jemalloc` feature and Hiqlite will pull in `jemalloc` as the global allocator.
+
+#### `hiqlite-wal` config options
+
+The new `hiqlite-wal` provides some new config options. You can set a custom `log_sync` / flush strategy depending on
+your needs, set the `wal_size` for WAL files, and `cache_storage_disk` will define if for the Cache layer, either an
+in-memory Raft Log Store will be used, of if true (default now), WAL + Snapshots for the Cache will be written to disk.
+This brings the possibility to have persistent caches, that can be rebuilt from disk even after a complete shutdown.
+The Cache / KV store itself will still be in-memory only and therefore have very fast read access, even though writes
+will be limited by your disk speed.
+
+More information can be found in the example [hiqlite.toml](https://github.com/sebadob/hiqlite/blob/main/hiqlite.toml).
+
+####                     
+
 ## v0.6.0
 
 ### Breaking
