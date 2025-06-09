@@ -185,9 +185,10 @@ impl WalFile {
                     if let Some(id_before) = id_before {
                         if record.log_id != id_before + 1 {
                             warn!(
-                                "Mismatch in unexpected data for Log ID {} after already recovered \
-                                {} logs - ignoring entry\n{:?}",
-                                record.log_id, recovered, record
+                                "Mismatch in Log ID in unexpected data for Log ID {} after already \
+                                recovered {} logs - ignoring entry\nexpected Log ID: {} / found: {}\
+                                \n{:?}",
+                                record.log_id, recovered, id_before + 1, record.log_id, record
                             );
                             break;
                         }
