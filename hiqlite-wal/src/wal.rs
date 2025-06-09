@@ -187,8 +187,8 @@ impl WalFile {
                             warn!(
                                 "Mismatch in Log ID in unexpected data for Log ID {} after already \
                                 recovered {} logs - ignoring entry\nexpected Log ID: {} / found: {}\
-                                \n{:?}",
-                                record.log_id, recovered, id_before + 1, record.log_id, record
+                                \nread offset: {}\n{:?}",
+                                record.log_id, recovered, id_before + 1, record.log_id, offset, record
                             );
                             break;
                         }
@@ -199,8 +199,8 @@ impl WalFile {
                         warn!(
                             "Mismatch in CRC in unexpected data section after already recovered {} \
                             logs - ignoring entry with log id: {}, expected crc: {:?}, \
-                            actual crc: {:?}",
-                            recovered, record.log_id, record.crc, crc!(record.data)
+                            actual crc: {:?} - \nread offset: {} / {:?}",
+                            recovered, record.log_id, record.crc, crc!(record.data), offset, self
                         );
                         break;
                     }
@@ -273,13 +273,13 @@ impl WalFile {
         debug_assert!(self.has_space(data.len() as u32));
         debug_assert_eq!(self.data_start.is_some(), self.data_end.is_some());
 
-        let start = if self.data_start.is_none() {
+        let (start, update_data_start) = if self.data_start.is_none() {
             self.id_from = id;
             let start = self.offset_logs();
             self.data_start = Some(start as u32);
-            start
+            (start, true)
         } else {
-            self.data_end.unwrap() as usize + 1
+            (self.data_end.unwrap() as usize + 1, false)
         };
 
         let mmap = self.mmap_mut.as_mut().unwrap();
@@ -303,7 +303,28 @@ impl WalFile {
 
         self.id_until = id;
         self.data_end = Some((start + 8 + 4 + 4 + data.len()) as u32);
+
+        debug_assert!(self.data_start.is_some());
+        debug_assert!(self.data_end.is_some());
         debug_assert!(self.data_end.unwrap() <= self.len_max);
+
+        // We only need to update `data_end` on disk if `data_start` was changed to make checks
+        // happy in other places. If we ever lose the current `data_end` from buffers because of
+        // a crash, it can be recovered with the next start inside the integrity check anyway, so
+        // we can skip the overhead of updating it here for each log.
+        if update_data_start {
+            match self.version {
+                1 => {
+                    buf.clear();
+                    u32_to_bin(self.data_start.unwrap(), buf)?;
+                    (&mut mmap[24..28]).write_all(buf)?;
+                    buf.clear();
+                    u32_to_bin(self.data_end.unwrap(), buf)?;
+                    (&mut mmap[28..32]).write_all(buf)?;
+                }
+                _ => unreachable!(),
+            }
+        }
 
         Ok(())
     }
