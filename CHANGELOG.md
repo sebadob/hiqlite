@@ -8,7 +8,7 @@
 
 Rocksdb is a really good and fast KV database, but it comes with quite a few issues. The first big thing is, that it's
 pure overkill to only be used as a Raft Logs Store. Logs come in sequential order, are immutable, and append-only.
-Rocksdb is a huge dependency and it takes a long time to compile. It also adds ~7mb of release binary size and it almost
+Rocksdb is a huge dependency and it takes a long time to compile. It also adds ~7mb of release binary size and is almost
 impossible to compile to `musl`.
 
 To overcome these issues, `hiqlite-wal` has been created from the ground up. It provides memory-mapped WAL files, that
@@ -16,13 +16,13 @@ are append-only and perfectly serve the purpose of a Raft Log Store. It is very 
 binary size and compile time, and only provides the functionality we actually need. If also has implementations that try
 to auto-recover lost WAL records in case of an application crash in the middle of writing. This is a situation you could
 not easily get out of with `rocksdb` as well. Even if it fails recovering everything it needs, it will at least make
-everything work on its own in probably 99% of cases, and only if it cannot, you at least have the possibility to easily
-fix it.
+everything work on its own in probably almost all cases, and only if it cannot, you at least have the possibility to
+easily fix it.
 
 The default Log Store is `hiqlite-wal`, but you can keep on using Rocksdb (at least for some time) with the `rocksdb`
 feature. In future versions, Rocksdb will probably be removed completely. If you want to upgrade an existing database,
 you can enable the `migrate-rocksdb` feature, which will trigger a Log Store migration during start up. Hiqlite will
-then check if it can find an existing Rocksdb, migrate all Logs it can find, and then remove the old Rocksdb files.
+then check if it can find an existing Rocksdb, migrate all Logs it can find, and then remove the old Rocksdb files.  
 **CAUTION:** Even though this migration has been tested on quite a few instances without any issues, you really should
 have a backup before doing it. For a single instance, this is not too important, but for a distributed, already existing
 cluster it definitely is!
@@ -53,8 +53,8 @@ of and it should be perfectly stable now to use in-memory only Raft Logs.
 
 #### Distributed Counters
 
-With the `counters` feature, which depends on `cache`, you can now have distributed, raft-backed counter for things like
-rate-limiting for instance. The `hiqlite::Client` exposes some new functions to work with them:
+With the `counters` feature, which depends on `cache`, you can now have distributed, raft-backed counters for things
+like rate-limiting for instance. The `hiqlite::Client` exposes some new functions to work with them:
 
 - `counter_get()`
 - `counter_set()`
@@ -77,7 +77,7 @@ will be limited by your disk speed.
 
 More information can be found in the example [hiqlite.toml](https://github.com/sebadob/hiqlite/blob/main/hiqlite.toml).
 
-####                     
+####                           
 
 ## v0.6.0
 
