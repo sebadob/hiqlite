@@ -222,6 +222,20 @@ fn run(
                     last_log, wal
                 );
 
+                // Before removing any logs, make sure that all in-memory buffers are flushed. If
+                // at least headers and metadata are not up to date, and a crash happens in the
+                // middle of removing logs, we could end up with a hole between Snapshot and latest
+                // existing Raft Log, which must never happen.
+                let active = wal.active();
+                if is_dirty {
+                    buf.clear();
+                    active.update_header(&mut buf)?;
+                    // async is fine, as long as we trigger it before starting log removal.
+                    // If the flush fails, so would the log removal, and we would not have a hole.
+                    active.flush_async()?;
+                    is_dirty = false;
+                }
+
                 // We don't care about the `from` part, since we don't really delete anything yet.
                 // We only want to shift the index inside the WALs and only delete complete WAL
                 // files, if their last log ID is < `until`. Wasting a bit of disk space is far
@@ -231,7 +245,6 @@ fn run(
                 buf.clear();
                 buf_logs.clear();
 
-                let active = wal.active();
                 let until = if until > active.id_until {
                     active.id_until
                 } else {
@@ -255,8 +268,13 @@ fn run(
             Action::Vote { value, ack } => {
                 debug!("WAL Writer - Action::Vote");
 
+                buf.clear();
+                wal.active().flush_async()?;
+                is_dirty = false;
+
                 meta.write()?.vote = Some(value);
                 let res = Metadata::write(meta.clone(), &wal.base_path);
+
                 ack.send(res).unwrap();
             }
             Action::Sync => {
