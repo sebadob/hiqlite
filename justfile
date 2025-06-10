@@ -235,12 +235,19 @@ release:
     just build-image
 
 # publishe order: wal, core, macros - remember to update version in hiqlite-macros beforehand
-publish-wal-core: verify-is-clean
+publish-wal: verify-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish -p hiqlite-wal
     cargo publish -p hiqlite
-    echo "WAL + Core published - now update the version in hiqlite-macros/Cargo.toml and publish-macros"
+    echo "WAL published - now update the version in hiqlite/Cargo.toml and publish-core"
+
+publish-core: verify-is-clean
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    cargo publish -p hiqlite-wal
+    cargo publish -p hiqlite
+    echo "Core published - now update the version in hiqlite-macros/Cargo.toml and publish-macros"
 
 publish-macros:
     #!/usr/bin/env bash
