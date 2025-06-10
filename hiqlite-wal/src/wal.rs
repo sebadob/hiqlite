@@ -398,7 +398,7 @@ impl WalFile {
                 // we can use the memoized last log as our start position
                 // `data_end` is inclusive
                 idx = memo.data_end + 1;
-                warn!("LogReadMemo match, shifting start idx to: {}", idx);
+                debug!("LogReadMemo match, shifting start idx to: {}", idx);
             }
         }
         loop {
