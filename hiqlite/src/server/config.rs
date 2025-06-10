@@ -45,9 +45,11 @@ pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
         loop {
             println!("Provide a password with at least 16 characters: ");
             let line = read_line_stdin().await?;
-            if line.len() > 16 {
+            if line.len() >= 16 {
                 plain = line;
                 break;
+            } else {
+                eprintln!("Input too short - has only {} characters", line.len());
             }
         }
         plain

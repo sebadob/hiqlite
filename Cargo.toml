@@ -4,7 +4,7 @@ members = ["hiqlite", "hiqlite-macros", "hiqlite-wal"]
 exclude = ["examples"]
 
 [workspace.package]
-version = "0.7.0-20250529"
+version = "0.7.0"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Sebastian Dobe <sebastiandobe@mailbox.org"]
