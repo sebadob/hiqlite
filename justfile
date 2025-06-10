@@ -242,7 +242,7 @@ publish-wal-core: verify-is-clean
     cargo publish -p hiqlite
     echo "WAL + Core published - now update the version in hiqlite-macros/Cargo.toml and publish-macros"
 
-publish-macros: verify-is-clean
+publish-macros:
     #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish -p hiqlite-macros
