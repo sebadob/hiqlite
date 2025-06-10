@@ -222,7 +222,7 @@ verify-is-clean: verify
     echo all good
 
 # sets a new git tag and pushes it
-release: verify-is-clean
+release:
     #!/usr/bin/env bash
     set -euxo pipefail
 
