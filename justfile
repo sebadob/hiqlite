@@ -238,8 +238,7 @@ release:
 publish-wal: verify-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
-    cargo publish -p hiqlite-wal
-    cargo publish -p hiqlite
+    cargo publish -p hiqlite-wal --dry-run
     echo "WAL published - now update the version in hiqlite/Cargo.toml and publish-core"
 
 publish-core:
