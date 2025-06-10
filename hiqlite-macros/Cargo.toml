@@ -11,6 +11,7 @@ description = "Macros for Hiqlite"
 repository = "https://github.com/sebadob/hiqlite"
 
 [dependencies]
-hiqlite = { version = "0.7.0", path = "../hiqlite" }
+#hiqlite = { version = "0.7.0" }
+hiqlite = { path = "../hiqlite" }
 
 rust-embed.workspace = true
