@@ -212,7 +212,7 @@ verify:
     just msrv-verify
 
 # makes sure everything is fine
-verfiy-is-clean: verify
+verify-is-clean: verify
     #!/usr/bin/env bash
     set -euxo pipefail
 
@@ -222,7 +222,7 @@ verfiy-is-clean: verify
     echo all good
 
 # sets a new git tag and pushes it
-release: verfiy-is-clean
+release: verify-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
 
@@ -235,17 +235,14 @@ release: verfiy-is-clean
     just build-image
 
 # publishe order: wal, core, macros - remember to update version in hiqlite-macros beforehand
-publish-core: verfiy-is-clean
+publish-wal-core: verify-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
+    cargo publish -p hiqlite-wal
     cargo publish -p hiqlite
+    echo "WAL + Core published - now update the version in hiqlite-macros/Cargo.toml and publish-macros"
 
-publish-macros: verfiy-is-clean
+publish-macros: verify-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
-    cargo publish -p hiqlite-macros --dry-run
-
-publish-wal: verfiy-is-clean
-    #!/usr/bin/env bash
-    set -euxo pipefail
-    cargo publish -p hiqlite-wal --dry-run
+    cargo publish -p hiqlite-macros
