@@ -215,3 +215,53 @@ core count server CPUs. The reason is the single SQLite writer task limitation. 
 bit higher throughput with 2 SQLite writer tasks, but really not that much, while making the whole thing quite a bit
 more complex and more error-prone. This is not worth it, considering how high the throughput already is, if you use
 a fast enough SSD. In my testing, I was I/O bound by the latency of the physical SSD.
+
+## Consistency
+
+Hiqlite uses statement based replication. The query itself + params are serialized and sent into the Raft. After they
+were commited and accepted by a quorum, the values are then forwarded to the single writer thread, which then creates a
+cached, prepared statement and finally binds the params.
+
+Consistency is guaranteed by the Raft of course. On SQLite level, when you have multiple DB connections, this could get
+you into trouble, because a query might fail when the database is busy and you reach a timeout. The first mitigation is
+using a WAL, which should be the preferred way these days with SQLite most of the time anyway. This makes sure that
+writes never block reads and vice versa. This leaves you with the last potential issue. You could have multiple writers
+to the same DB, and even in WAL mode, they could block each other, if one of them for instance executes an extremely
+long running query, which would trigger a busy error on another writer. To be able to guarantee that all writes on all
+SQLite instances are executed with the same result, there is only a single database connection (no pool or anything
+else) from a single thread. This connection is the only one with write access to the DB. It executes all these
+statements and because there is only one and the DB is in WAL mode, SQLite guarantees that all queries executed at that
+stage will have the same result on all nodes.
+
+But, there is one big thing you must never do, and that is, even though the SQLite could be accessed out of band
+directly, you must never execute anything, that does not travel through the Raft, because then the consistency can of
+course not be guaranteed anymore, since executes could lead to different results.
+
+The reads are (usually) local all the time. They don't even use the Raft and access the DB directly. Read queries use
+connections from a pool and are initialized with read only access, even before they are added to the pool. You don't get
+any of these directly, but you can execute read queries via the Hiqlite client. It exposes all different kinds of
+methods to make it work for you. This guarantees, that non connection from this read pool can modify the DB out of band.
+
+Theoretically, the entire DB is in the Raft, at least each single statement. At some point you will of course have a
+log roll over and a snapshot being created. The snapshots, at least for the DB, are just the result of a `VACCUUM INTO`
+query.
+
+If a node crashes, or the shutdown functionality provided by the Hiqlite client is not used, an existing lock file will
+be found at startup. To be 100% sure that the DB is consistent, it will be deleted and rebuilt from the latest
+Snapshot + Raft Logs. Each snapshot also contains some Raft metadata to always know, which Raft Log ID is the last one
+that was applied to the DB.
+
+This lock file can either be ignored and "repaired" automatically with the `auto-heal` feature, or you can have Hiqlite
+panic on startup if it finds a non-consistent state / clean environment. Without the `auto-heal` enabled, it will leave
+it up to you to take a look and take action. With it enabled, it will automatically rebuild the DB.
+When you run it inside a container for instance and the volume can never be mounted to multiple containers at the same
+time, enabling `auto-heal` is safe to do. Only if it might be possible that some already running process uses the same
+data, you probably want to have it disabled and handle starts after a crash manually. Fixing this is then as easy as
+making 100% sure that nothing is using the data, and there is no orphaned process somewhere in the background, and then
+just delete the lockfile and restart.
+
+So, as long as you don't modify the database out of band without using the Hiqlite client, consistency is guaranteed
+that way. The `hiqlite::Client` exposes many functions for you to do any work on the database you might want to, just
+don't use anything else manually. The good thing is, if you decide to drop Hiqlite at some point for whatever reason,
+you can grab that database file and use it directly. Just never do both things at the same time. But, this is true for
+any database or application in general. If you modify its files without it knowing about it, bad things will happen.
