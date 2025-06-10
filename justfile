@@ -149,11 +149,11 @@ build-image name="ghcr.io/sebadob/hiqlite":
     #!/usr/bin/env bash
     set -euxo pipefail
 
-    #rm -rf hiqlite/static
-    #cd dashboard
-    #npm run build
-    #cd ..
-    #git add hiqlite/static
+    rm -rf hiqlite/static
+    cd dashboard
+    npm run build
+    cd ..
+    git add hiqlite/static
 
     #cargo build --features server --release
     #mkdir -p out
@@ -234,8 +234,18 @@ release: verfiy-is-clean
 
     just build-image
 
-# publishes the current lib version to cargo.io
-publish: verfiy-is-clean
+# publishe order: wal, core, macros - remember to update version in hiqlite-macros beforehand
+publish-core: verfiy-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish -p hiqlite
+
+publish-macros: verfiy-is-clean
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    cargo publish -p hiqlite-macros --dry-run
+
+publish-wal: verfiy-is-clean
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    cargo publish -p hiqlite-wal --dry-run
