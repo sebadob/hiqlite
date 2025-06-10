@@ -24,6 +24,19 @@ pub struct LogState {
     pub last_log: Option<Vec<u8>>,
 }
 
+/// Memorizes the last read log to speed up future lookups and have a saved starting position.
+/// Logs are always read sequential, apart from during app start, when once Logs will be read
+/// backwards to find the latest membership config.
+/// This saves us from maintaining a complete index in memory, which is not necessary at all.
+/// Each reader usually reads each log max once, followed by the next one guaranteed in sequential
+/// order. This means (apart from the very first start), this memoized position will always be used.
+#[derive(Debug)]
+pub(crate) struct LogReadMemo {
+    pub last_wal_no: u64,
+    pub last_log_id: u64,
+    pub data_end: u32,
+}
+
 pub fn spawn(
     meta: Arc<RwLock<Metadata>>,
     wal_locked: Arc<RwLock<WalFileSet>>,
@@ -48,6 +61,8 @@ fn run(
     let mut wal = wal_locked.read().unwrap().clone_no_map();
     // TODO a good value would be max payload chunks
     let mut buf = Vec::with_capacity(16);
+
+    let mut memo: Option<LogReadMemo> = None;
 
     while let Ok(action) = rx.recv() {
         match action {
@@ -75,7 +90,8 @@ fn run(
 
                     if log.id_until < until {
                         debug!("log.id_until < until -> {} < {}", log.id_until, until);
-                        log.read_logs(from_next, log.id_until, &mut buf).unwrap();
+                        log.read_logs(from_next, log.id_until, &mut memo, &mut buf)
+                            .unwrap();
 
                         for (_id, data) in buf.drain(..) {
                             debug_assert!(_id >= from_next && _id <= until);
@@ -91,7 +107,7 @@ fn run(
                     } else {
                         debug!("log contains end of read request");
 
-                        match log.read_logs(from_next, until, &mut buf) {
+                        match log.read_logs(from_next, until, &mut memo, &mut buf) {
                             Ok(_) => {
                                 for (_, data) in buf.drain(..) {
                                     ack.send(Some(Ok(data))).unwrap()
@@ -133,14 +149,14 @@ fn run(
                     if active.data_start.is_some() {
                         active.mmap().unwrap();
                         active
-                            .read_logs(latest_log_id, latest_log_id, &mut buf)
+                            .read_logs(latest_log_id, latest_log_id, &mut memo, &mut buf)
                             .unwrap();
                     } else if wal.files.len() > 1 {
                         // this is an edge case, when we shut down beforehand exactly after rolling
                         // over WAL files but without adding anything to the new file
                         let file = wal.files.get_mut(wal.files.len() - 2).unwrap();
                         file.mmap().unwrap();
-                        file.read_logs(latest_log_id, latest_log_id, &mut buf)
+                        file.read_logs(latest_log_id, latest_log_id, &mut memo, &mut buf)
                             .unwrap();
                         file.mmap_drop();
                     }

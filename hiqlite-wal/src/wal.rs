@@ -1,4 +1,5 @@
 use crate::error::Error;
+use crate::reader::LogReadMemo;
 use crate::utils::{bin_to_u32, bin_to_u64, crc, u32_to_bin, u64_to_bin};
 use memmap2::{Mmap, MmapMut, MmapOptions};
 use std::collections::VecDeque;
@@ -361,6 +362,7 @@ impl WalFile {
         &self,
         id_from: u64,
         id_until: u64,
+        memo: &mut Option<LogReadMemo>,
         buf: &mut Vec<(u64, Vec<u8>)>,
     ) -> Result<u32, Error> {
         debug_assert!(buf.is_empty());
@@ -388,9 +390,17 @@ impl WalFile {
 
         let data_start = self.data_start.unwrap();
         let data_end = self.data_end.unwrap();
-
         let mut idx = data_start;
         let mut offset = 0;
+
+        if let Some(memo) = memo {
+            if memo.last_wal_no == self.wal_no && memo.last_log_id < id_from {
+                // we can use the memoized last log as our start position
+                // `data_end` is inclusive
+                idx = memo.data_end + 1;
+                warn!("LogReadMemo match, shifting start idx to: {}", idx);
+            }
+        }
         loop {
             let record = self.read_record_unchecked(idx)?;
 
@@ -409,6 +419,18 @@ impl WalFile {
                 }
             }
             if record.log_id >= id_until {
+                debug_assert!(record.data.len() < u32::MAX as usize);
+                match self.version {
+                    1 => {
+                        *memo = Some(LogReadMemo {
+                            last_wal_no: self.wal_no,
+                            last_log_id: record.log_id,
+                            // id, crc, length, data
+                            data_end: idx + 8 + 4 + 4 + record.data.len() as u32,
+                        });
+                    }
+                    _ => unreachable!(),
+                }
                 break;
             }
 
@@ -950,7 +972,8 @@ impl WalFileSet {
                 first.mmap_mut()?;
             }
             debug_assert!(buf_logs.is_empty());
-            let offset = first.read_logs(id_until, id_until, buf_logs)?;
+            let mut memo: Option<LogReadMemo> = None;
+            let offset = first.read_logs(id_until, id_until, &mut memo, buf_logs)?;
             first.id_from = id_until;
             first.data_start = Some(offset);
         }
@@ -973,6 +996,7 @@ mod tests {
         let base_path = format!("{}/append_logs", PATH);
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
+        let mut memo: Option<LogReadMemo> = None;
         let mut buf = Vec::with_capacity(32);
 
         let mut wal = WalFile::new(1, &base_path, 0, 0, MB2).unwrap();
@@ -1028,7 +1052,7 @@ mod tests {
 
         let mut logs = Vec::with_capacity(3);
         buf.clear();
-        wal_disk.read_logs(1, 3, &mut logs)?;
+        wal_disk.read_logs(1, 3, &mut memo, &mut logs)?;
         assert_eq!(logs.len(), 3);
 
         let (id, data) = logs.get(0).unwrap();
@@ -1043,7 +1067,7 @@ mod tests {
 
         buf.clear();
         logs.clear();
-        wal_disk.read_logs(2, 3, &mut logs)?;
+        wal_disk.read_logs(2, 3, &mut memo, &mut logs)?;
         assert_eq!(logs.len(), 2);
         let (id, data) = logs.get(0).unwrap();
         assert_eq!(id, &2);
@@ -1054,7 +1078,7 @@ mod tests {
 
         buf.clear();
         logs.clear();
-        wal_disk.read_logs(2, 2, &mut logs)?;
+        wal_disk.read_logs(2, 2, &mut memo, &mut logs)?;
         assert_eq!(logs.len(), 1);
         let (id, data) = logs.get(0).unwrap();
         assert_eq!(id, &2);
@@ -1062,8 +1086,8 @@ mod tests {
 
         buf.clear();
         logs.clear();
-        assert!(wal_disk.read_logs(1, 4, &mut logs).is_err());
-        assert!(wal_disk.read_logs(0, 2, &mut logs).is_err());
+        assert!(wal_disk.read_logs(1, 4, &mut memo, &mut logs).is_err());
+        assert!(wal_disk.read_logs(0, 2, &mut memo, &mut logs).is_err());
 
         Ok(())
     }
