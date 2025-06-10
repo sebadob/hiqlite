@@ -66,12 +66,11 @@ check:
     set -euxo pipefail
     clear
     cargo update
-    # The +nightly currently breaks the openraft! macro
-    #cargo +nightly clippy -- -D warnings
-    cargo clippy -- -D warnings
-    cargo minimal-versions check -p hiqlite --all-features
+    cargo +nightly clippy -- -D warnings
+    cargo minimal-versions check -p hiqlite --features server
+    cargo minimal-versions check -p hiqlite-wal
 
-    # just update at the end again for following clippy and testing
+    # update at the end again for following clippy and testing
     cargo update
 
 # checks all combinations of features with clippy
@@ -149,11 +148,11 @@ build-image name="ghcr.io/sebadob/hiqlite":
     #!/usr/bin/env bash
     set -euxo pipefail
 
-    #rm -rf hiqlite/static
-    #cd dashboard
-    #npm run build
-    #cd ..
-    #git add hiqlite/static
+    rm -rf hiqlite/static
+    cd dashboard
+    npm run build
+    cd ..
+    git add hiqlite/static
 
     #cargo build --features server --release
     #mkdir -p out
@@ -196,6 +195,14 @@ msrv-verify:
     set -euxo pipefail
     cd hiqlite
     cargo msrv verify
+    cd ..
+
+    cd hiqlite-macros
+    cargo msrv verify
+    cd ..
+
+    cd hiqlite-wal
+    cargo msrv verify
 
 # find's the new MSRV, if it needs a bump
 msrv-find:
@@ -212,7 +219,7 @@ verify:
     just msrv-verify
 
 # makes sure everything is fine
-verfiy-is-clean: verify
+verify-is-clean: verify
     #!/usr/bin/env bash
     set -euxo pipefail
 
@@ -222,7 +229,7 @@ verfiy-is-clean: verify
     echo all good
 
 # sets a new git tag and pushes it
-release: verfiy-is-clean
+release:
     #!/usr/bin/env bash
     set -euxo pipefail
 
@@ -234,8 +241,20 @@ release: verfiy-is-clean
 
     just build-image
 
-# publishes the current lib version to cargo.io
-publish: verfiy-is-clean
+# publishe order: wal, core, macros - remember to update version in hiqlite-macros beforehand
+publish-wal: verify-is-clean
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    cargo publish -p hiqlite-wal
+    echo "WAL published - now update the version in hiqlite/Cargo.toml and publish-core"
+
+publish-core:
     #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish -p hiqlite
+    echo "Core published - now update the version in hiqlite-macros/Cargo.toml and publish-macros"
+
+publish-macros:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    cargo publish -p hiqlite-macros

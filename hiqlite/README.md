@@ -37,8 +37,7 @@ and self-healing capabilities in case of any errors or problems.
 
 - full Raft cluster setup
 - everything a Raft is expected to do (thanks to [openraft](https://github.com/datafuselabs/openraft))
-- persistent storage for Raft logs (with [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb)) and SQLite state
-  machine
+- persistent storage for Raft logs and SQLite state machine
 - "magic" auto setup, no need to do any manual init or management for the Raft
 - self-healing - each node can automatically recover from un-graceful shutdowns and even full data volume loss
 - automatic database migrations
@@ -60,9 +59,12 @@ and self-healing capabilities in case of any errors or problems.
 - `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
 - `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
   more flexible method with more manual work
-- in addition to SQLite - multiple in-memory K/V caches with optional independent TTL per entry per cache
+- in addition to SQLite, multiple in-memory K/V caches with optional independent TTL per entry per cache - K/V caches
+  are disk-backed and store their WAL file + Snapshots on disk, which means they are easy on your memory, and they can
+  rebuild their in-memory data after a restart
 - listen / notify to send real-time messages through the Raft
 - `dlock` feature provides access to distributed locks
+- `counters` feature provides distributed counters
 - standalone binary with the `server` feature which can run as a single node, cluster, or proxy to an existing cluster
 - integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
   done
@@ -73,10 +75,10 @@ I added a [bench example](https://github.com/sebadob/hiqlite/tree/main/examples/
 hardware and setups. This example is very simple and it mostly cares about `INSERT` performance, which is usually the
 bottleneck when using Raft, because of 2 network round-trips for each write by design.
 
-The performance can vary quite a bit, depending on your setup and hardware, of course. Even though the project is in an
-early state, I already put quite a bit of work in optimizing latency and throughput and I would say, it will be able
-to handle everything you throw at it. When you reach the threshold, you are probably in an area where you usually would
-not rely on a single database instance with something like a Postgres anymore as well.  
+The performance can vary quite a bit, depending on your setup and hardware, of course. Quite a lot of work has been put
+into performance tuning already and I would say, it will be able to handle everything you throw at it. When you reach
+the threshold, you are probably in an area where you usually would not rely on a single database instance with something
+like a Postgres anymore as well.  
 SSDs and fast memory make quite a big difference of course. Regarding the CPU, the whole system is designed to benefit
 more from fewer cores with higher single core speed like Workstation CPU's or AMD Epyc 4004 series. The reason is the
 single writer at a time limitation from SQLite.
@@ -84,14 +86,21 @@ single writer at a time limitation from SQLite.
 Just to give you some raw numbers so you can get an idea how fast it currently is, some numbers below. These values were
 taken using the [bench example](https://github.com/sebadob/hiqlite/tree/main/examples/bench).
 
-Hiqlite can run as a single instance as well, which will have even lower latency and higher throughput of course, but I
-did not include this in the tests, because you usually want a HA Raft cluster. With higher concurrency (`-c`), only
-write / second will change, reads will always be local anyway.
+The benchmarks activate the `jemalloc` feature, which is quite a bit faster than glibc `malloc` but is not supported on
+Windows MSVC target for instance. For cache performance, there are 2 different metrics. One uses a disk-backed cache,
+the other one is fully in-memory. Disk-backed provides a lot more consistency and can even rebuild the whole in-memory
+cache from the WAL + Snapshot on disk, which means even a restart does not make you lose cached data. A pure in-memory
+version will need to re-join and sync all data from the other nodes between restarts, but it will be a lot faster. The
+disk-backed caches are limited by your disks IOPS and throughput only.
+
+When you take a look at the numbers below, you will see that the SQLite implementation can almost reach the physical
+limits of the disk, when it has roughly the same throughput as the cache does. This is actually really impressive,
+considering that SQLite only allows a single writer at the same time.
 
 Test command (`-c` adjusted each time for different concurrency):
 
 ```
-cargo run --release -- cluster -c 4 -r 10000
+cargo run --release -- cluster -c 4 -r 100000
 ```
 
 ### Beefy Workstation
@@ -100,19 +109,32 @@ AMD Ryzen 9950X, DDR5-5200 with highly optimized timings, M2 SSD Gen4
 
 **SQLite:**
 
-| Concurrency | 100k single `INSERT` | 100k transactional `INSERT` | single row `SELECT` |
-|-------------|----------------------|-----------------------------|---------------------| 
-| 4           | ~22.000 / s          | ~680.000 / s                | ~16 micros          |
-| 16          | ~36.000 / s          | ~450.000 / s                |                     |
-| 64          | ~43.000 / s          | ~440.000 / s                |                     |
+| Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
+|-------------|----------------------|-----------------------------| 
+| 4           | ~29.000 / s          | ~710.000 / s                |
+| 16          | ~58.000 / s          | ~593.000 / s                |
+| 64          | ~91.000 / s          | ~528.000 / s                |
 
-**Cache:**
+For a simple `SELECT`, we have 2 different metrics. By default, `hiqlite` caches all prepared statements.
+A simple `SELECT` with a fresh connection, which has not been prepared and cached yet, it took ~180-210 micros.
+Once the connection has been used once and the statement has been cached, this drops down dramatically to
+6 -25 micros (hard to measure these short ones).
+
+**Cache (disk-backed):**
 
 | Concurrency | 100k single PUT | single entry GET |
 |-------------|-----------------|------------------| 
-| 4           | ~49.000 / s     | ~10 micros       |
-| 16          | ~150.000 / s    |                  |
-| 64          | ~320.000 / s    |                  |
+| 4           | ~35.000 / s     | ~6 micros        |
+| 16          | ~78.000 / s     |                  |
+| 64          | ~94.000 / s     |                  |
+
+**Cache (full in-memory):**
+
+| Concurrency | 100k single PUT |
+|-------------|-----------------| 
+| 4           | ~89.000 / s     |
+| 16          | ~262.000 / s    |
+| 64          | ~504.000 / s    |
 
 ### Older Workstation
 
@@ -120,19 +142,27 @@ AMD Ryzen 3900X, DDR4-3000, 2x M2 SSD Gen3 as Raid 0
 
 **SQLite:**
 
-| Concurrency | 100k single `INSERT` | 100k transactional `INSERT` | single row `SELECT` |
-|-------------|----------------------|-----------------------------|---------------------| 
-| 4           | ~6.800 / s           | ~235.000 / s                | ~28 micros          |
-| 16          | ~13.300 / s          | ~180.000 / s                |                     |
-| 64          | ~20.800 / s          | ~173.000 / s                |                     |
+| Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
+|-------------|----------------------|-----------------------------| 
+| 4           | ~9.100 / s           | ~388.000 / s                |
+| 16          | ~17.200 / s          | ~335.000 / s                |
+| 64          | ~27.300 / s          | ~299.000 / s                |
 
-**Cache:**
+**Cache (disk-backed):**
 
 | Concurrency | 100k single PUT | single entry GET |
 |-------------|-----------------|------------------| 
-| 4           | ~17.200 / s     | ~17 micros       |
-| 16          | ~52.000 / s     |                  |
-| 64          | ~112.00 / s     |                  |
+| 4           | ~10.200 / s     | ~14 micros       |
+| 16          | ~22.100 / s     |                  |
+| 64          | ~29.100 / s     |                  |
+
+**Cache (full in-memory):**
+
+| Concurrency | 100k single PUT |
+|-------------|-----------------| 
+| 4           | ~24.700 / s     |
+| 16          | ~78.800 / s     |
+| 64          | ~177.000 / s    |
 
 ## Crate Features
 
@@ -143,6 +173,7 @@ By default, the following features are enabled:
 - `auto-heal`
 - `backup`
 - `sqlite`
+- `toml`
 
 ### `auto-heal`
 
@@ -254,7 +285,14 @@ This feature will simply enable everything apart from the `server` feature:
 - s3
 - shutdown-handle
 - sqlite
+- toml
 - webpki-roots
+
+### `jemalloc`
+
+This feature enables the `jemallocator` instead of using the default glibc `malloc`. It is a lot more performant, solves
+some issues with memory fragmentation and can be tuned for specific use cases. However, it does not work on Windows
+MSVC targets and out of the box, without any tuning, it will use a bit more memory than default `malloc`.
 
 ### `listen_notify`
 
@@ -274,6 +312,25 @@ In this case, you will have the classic Postgres behavior.
 If you enabled this feature and you `notify()` via the `hiqlite::Client`, you must make sure to actually consume the
 messages on each node. Behind the scenes, Hiqlite uses an unbound channel to never block these. This channel could fill
 up if you `notify()` without `listen()`.
+
+### `migrate-rocksdb`
+
+When enabled, it will add `rocksdb` to the dependencies and check at startup, if there are maybe rocksdb files and
+log storage in the logs folder. It will then migrate the existing rocksdb Raft Log Store to `hiqlite-wal` and remove
+the old rocksdb files afterward.
+
+CAUTION: Just to be safe, you should have a backup of an existing instance before using the migrate feature, since it
+tries to perform a manual, programmatic migration from `rocksdb` to `hiqlite-wal`.
+
+### `rocksdb`
+
+Uses `rocksdb` for the Raft Log Storage instead of the default `hiqlite-wal`. If you want to use an already existing
+Hiqlite instance with a newer version, you might want to activate this feature temporarily until you created some
+backups, just to be safe when it comes to `migrate-rocksdb`.
+
+Apart from that, using the default `hiqlite-wal` is the better option in any scenario. It is only limited by your disk,
+it is a lot more light weight, more efficient and can compile to any target, while rocksdb e.g. is almost impossible
+to compile for `musl`. In future versions, `rocksdb` will most probably be removed completely.
 
 ### `s3`
 
@@ -308,7 +365,7 @@ examples, which you can `.await` just before exiting your `main()`.
 ### `sqlite`
 
 This is the main feature for Hiqlite, the main reason why it has been created. The `sqlite` feature will spin up a
-Raft cluster which uses `rocksdb` for Raft replication logs and a `SQLite` instance as the State Machine.
+Raft cluster which uses a `SQLite` instance as the State Machine.
 
 This SQLite database will always be on disk and never in-memory only. Actually, the in-memory SQLite is slower than
 on-disk with all the applied default optimizations. The reason is that an in-memory SQLite cannot use a WAL file. This
@@ -351,7 +408,7 @@ hiqlite generate-config -h
 ```
 
 If you want to just test it without TLS, add the `--insecure-cookie` option, and you may generate a testing password
-with `-p 123SuperSafe` or something like that. Once you have you config, you can start a node with
+with `-p`. Once you have you config, you can start a node with
 
 ```
 hiqlite serve -h
@@ -364,7 +421,7 @@ you can re-use the same config for multiple nodes.
 
 Take a look at the [examples](https://github.com/sebadob/hiqlite/tree/main/examples) or the example
 [config](https://github.com/sebadob/hiqlite/blob/main/config) to get an idea about the possible config values.
-The `NodeConfig` can be created programmatically or fully created `from_env()` vars.
+The `NodeConfig` can be created programmatically or fully created either `from_toml()` or `from_env()` vars.
 
 ### Cluster inside Kubernetes
 
@@ -380,63 +437,48 @@ kubectl create ns hiqlite
 
 #### Config
 
-Create a `config.yaml` which holds your config:
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: hiqlite-config
-  namespace: hiqlite
-data:
-  config: |
-    HQL_NODE_ID_FROM=k8s
-
-    HQL_NODES="
-    1 hiqlite-0.hiqlite-headless:8100 hiqlite-0.hiqlite-headless:8200
-    2 hiqlite-1.hiqlite-headless:8100 hiqlite-1.hiqlite-headless:8200
-    3 hiqlite-2.hiqlite-headless:8100 hiqlite-2.hiqlite-headless:8200
-    "
-
-    HQL_LOG_STATEMENTS=false
-    HQL_LOGS_UNTIL_SNAPSHOT=10000
-    HQL_BACKUP_KEEP_DAYS=3
-
-    HQL_S3_URL=https://s3.example.com
-    HQL_S3_BUCKET=test
-    HQL_S3_REGION=example
-    HQL_S3_PATH_STYLE=true
-
-    HQL_INSECURE_COOKIE=true
-```
-
-#### Secrets
-
-Create a `secrets.yaml`. To have an easy time with the `ENC_KEYS`, since the CLI does not provide a generator yet, you
-can copy the value from your `generate-config` step above and re-use the value here, or just re-use the below example
-values:
+Create a secret for your config. Adapt the below values to your needs. To have an easy time with the `enc_keys`, since
+the CLI does not provide a generator yet, you can copy the value from your `generate-config` step above and re-use the
+value here, or just re-use the below example values. You could also copy & paste your whole generated config into this
+secret.
 
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: hiqlite-secrets
+  name: hiqlite-config
   namespace: hiqlite
 type: Opaque
 stringData:
-  HQL_SECRET_RAFT: 123SuperMegaSafeRandomValue
-  HQL_SECRET_API: 123SuperMegaSafeRandomValue
+  hiqlite.toml: |
+    [hiqlite]
+    node_id_from = "k8s"
+    nodes = [
+        "1 hiqlite-0.hiqlite-headless:8100 hiqlite-0.hiqlite-headless:8200",
+        "2 hiqlite-1.hiqlite-headless:8100 hiqlite-1.hiqlite-headless:8200",
+        "3 hiqlite-2.hiqlite-headless:8100 hiqlite-2.hiqlite-headless:8200",
+    ]
 
-  HQL_S3_KEY: YourS3KeyId
-  HQL_S3_SECRET: YourS3Secret
+    secret_raft = "SuperSecureSecret1337"
+    secret_api = "SuperSecureSecret1337"
 
-  ENC_KEYS: "
-  bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ=
-  "
-  ENC_KEY_ACTIVE: bVCyTsGaggVy5yqQ
+    enc_keys = [ "bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ=" ]
+    enc_key_active = "bVCyTsGaggVy5yqQ"
 
-  # This is a base64 encoded Argon2ID hash for the password: 123SuperMegaSafe
-  HQL_PASSWORD_DASHBOARD: JGFyZ29uMmlkJHY9MTkkbT0xOTQ1Nix0PTIscD0xJGQ2RlJDYTBtaS9OUnkvL1RubmZNa0EkVzJMeTQrc1dxZ0FGd0RyQjBZKy9iWjBQUlZlOTdUMURwQkk5QUoxeW1wRQ==
+    # This is a base64 encoded Argon2ID hash for the password: 123SuperMegaSafe
+    password_dashboard = "JGFyZ29uMmlkJHY9MTkkbT0zMix0PTIscD0xJE9FbFZURnAwU0V0bFJ6ZFBlSEZDT0EkTklCN0txTy8vanB4WFE5bUdCaVM2SlhraEpwaWVYOFRUNW5qdG9wcXkzQQ=="
+
+    # necessary if you want to access the dashboard via plain HTTP for testing
+    insecure_cookie = true
+
+    s3_url = "https://s3.example.com"
+    s3_bucket = "S3BucketName"
+    s3_region = "S3Region"
+    s3_key = "YourS3KeyId"
+    s3_secret = "YourS3Secret"
+
+    # auto-recover from crashes
+    wal_ignore_lock = true
 ```
 
 #### StatefulSet
@@ -504,62 +546,30 @@ spec:
     spec:
       containers:
         - name: hiqlite
-          image: ghcr.io/sebadob/hiqlite:0.6.0
-          imagePullPolicy: Always
+          image: ghcr.io/sebadob/hiqlite:0.7.0
           securityContext:
             allowPrivilegeEscalation: false
           ports:
             - containerPort: 8100
             - containerPort: 8200
-          env:
-            - name: HQL_SECRET_RAFT
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_SECRET_RAFT
-            - name: HQL_SECRET_API
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_SECRET_API
-            - name: HQL_S3_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_S3_KEY
-            - name: HQL_S3_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_S3_SECRET
-            - name: ENC_KEYS
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: ENC_KEYS
-            - name: ENC_KEY_ACTIVE
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: ENC_KEY_ACTIVE
-            - name: HQL_PASSWORD_DASHBOARD
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_PASSWORD_DASHBOARD
           volumeMounts:
-            - mountPath: /app/config
-              subPath: config
-              name: hiqlite-config
-            - mountPath: /app/data
-              name: hiqlite-data
+            - name: hiqlite-config
+              mountPath: /app/hiqlite.toml
+              subPath: hiqlite.toml
+              readOnly: true
+            - name: hiqlite-data
+              mountPath: /app/data
           livenessProbe:
             httpGet:
+              # You may need to adjust this, if you decide to start in https only
+              # mode or use another port
               scheme: HTTP
               port: 8200
+              #scheme: HTTPS
+              #port: 8443
               path: /health
-            initialDelaySeconds: 10
-            periodSeconds: 30
+              initialDelaySeconds: 30
+              periodSeconds: 30
           resources:
             requests:
               memory: 32Mi
@@ -569,8 +579,8 @@ spec:
       #  - name: harbor
       volumes:
         - name: hiqlite-config
-          configMap:
-            name: hiqlite-config
+          secret:
+            secretName: hiqlite-config
   volumeClaimTemplates:
     - metadata:
         name: hiqlite-data
@@ -588,118 +598,8 @@ spec:
 
 #### Apply Files
 
-The last step is to simply `kubectl apply -f` the `config.yaml` and `secrets.yaml` followed by the `sts.yaml` last.
-This should bring up a 3 node, standalone Hiqlite cluster.
-
-## Cluster Proxy
-
-If you want to connect to a cluster without being able to reach each node via its configured address in `HQL_NODES`,
-like in the Kubernetes example cluster above, you can also start a server binary in proxy mode with
-
-```
-hiqlite proxy -h
-```
-
-Let's do a quick example to start a proxy inside K8s to access the above testing cluster from the outside. This
-example assumes the above ConfigMap and Secrets do exist already. If this is the case, we only need to add a Deployment:
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: hiqlite-proxy
-  namespace: hiqlite
-spec:
-  type: NodePort
-  selector:
-    app: hiqlite-proxy
-  ports:
-    - name: api
-      protocol: TCP
-      port: 8200
-      targetPort: 8200
-      nodePort: 30820
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: hiqlite-proxy
-  namespace: hiqlite
-  labels:
-    app: hiqlite-proxy
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: hiqlite-proxy
-  template:
-    metadata:
-      labels:
-        app: hiqlite-proxy
-    spec:
-      containers:
-        - name: hiqlite-proxy
-          image: ghcr.io/sebadob/hiqlite:0.6.0
-          command: [ "/app/hiqlite", "proxy" ]
-          imagePullPolicy: Always
-          securityContext:
-            allowPrivilegeEscalation: false
-          ports:
-            - containerPort: 8100
-            - containerPort: 8200
-          env:
-            - name: HQL_SECRET_API
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_SECRET_API
-            - name: ENC_KEYS
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: ENC_KEYS
-            - name: ENC_KEY_ACTIVE
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: ENC_KEY_ACTIVE
-            - name: HQL_PASSWORD_DASHBOARD
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_PASSWORD_DASHBOARD
-          volumeMounts:
-            - mountPath: /app/config
-              subPath: config
-              name: hiqlite-config
-          livenessProbe:
-            httpGet:
-              scheme: HTTP
-              port: 8200
-              path: /ping
-            initialDelaySeconds: 10
-            periodSeconds: 30
-          resources:
-            requests:
-              memory: 32Mi
-              cpu: 100m
-      # add your image pull secrets name here in case you use a private container registry
-      #imagePullSecrets:
-      #  - name: harbor
-      volumes:
-        - name: hiqlite-config
-          configMap:
-            name: hiqlite-config
-```
-
-After `kubectl apply -f` this deployment, you can use a remote Client to connect via this proxy with
-
-```rust, notest
-hiqlite::Client::remote()
-```
-
-like shown in the
-[bench example](https://github.com/sebadob/hiqlite/blob/70cc7500316dd138c0e1bd417a915af216fb19b2/examples/bench/src/main.rs#L147).
+The last step is to simply `kubectl apply -f` the `config.yaml` followed by the `sts.yaml` last. This should bring up a
+3 node, standalone Hiqlite cluster.
 
 ## Known Issues
 

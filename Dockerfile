@@ -1,4 +1,4 @@
-FROM rust:1.84.0-bookworm AS builder
+FROM rust:1.87.0-bookworm AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -24,4 +24,4 @@ COPY --from=builder /work/target/release/hiqlite ./hiqlite
 
 ENTRYPOINT ["/app/hiqlite"]
 
-CMD ["serve"]
+CMD ["serve", "-c", "hiqlite.toml"]

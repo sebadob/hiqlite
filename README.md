@@ -37,8 +37,7 @@ and self-healing capabilities in case of any errors or problems.
 
 - full Raft cluster setup
 - everything a Raft is expected to do (thanks to [openraft](https://github.com/datafuselabs/openraft))
-- persistent storage for Raft logs (with [rocksdb](https://github.com/rust-rocksdb/rust-rocksdb)) and SQLite state
-  machine
+- persistent storage for Raft logs and SQLite state machine
 - "magic" auto setup, no need to do any manual init or management for the Raft
 - self-healing - each node can automatically recover from un-graceful shutdowns and even full data volume loss
 - automatic database migrations
@@ -65,6 +64,7 @@ and self-healing capabilities in case of any errors or problems.
   rebuild their in-memory data after a restart
 - listen / notify to send real-time messages through the Raft
 - `dlock` feature provides access to distributed locks
+- `counters` feature provides distributed counters
 - standalone binary with the `server` feature which can run as a single node, cluster, or proxy to an existing cluster
 - integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
   done
@@ -173,6 +173,7 @@ By default, the following features are enabled:
 - `auto-heal`
 - `backup`
 - `sqlite`
+- `toml`
 
 ### `auto-heal`
 
@@ -284,6 +285,7 @@ This feature will simply enable everything apart from the `server` feature:
 - s3
 - shutdown-handle
 - sqlite
+- toml
 - webpki-roots
 
 ### `jemalloc`
@@ -363,7 +365,7 @@ examples, which you can `.await` just before exiting your `main()`.
 ### `sqlite`
 
 This is the main feature for Hiqlite, the main reason why it has been created. The `sqlite` feature will spin up a
-Raft cluster which uses `rocksdb` for Raft replication logs and a `SQLite` instance as the State Machine.
+Raft cluster which uses a `SQLite` instance as the State Machine.
 
 This SQLite database will always be on disk and never in-memory only. Actually, the in-memory SQLite is slower than
 on-disk with all the applied default optimizations. The reason is that an in-memory SQLite cannot use a WAL file. This
@@ -406,7 +408,7 @@ hiqlite generate-config -h
 ```
 
 If you want to just test it without TLS, add the `--insecure-cookie` option, and you may generate a testing password
-with `-p 123SuperSafe` or something like that. Once you have you config, you can start a node with
+with `-p`. Once you have you config, you can start a node with
 
 ```
 hiqlite serve -h
@@ -419,7 +421,7 @@ you can re-use the same config for multiple nodes.
 
 Take a look at the [examples](https://github.com/sebadob/hiqlite/tree/main/examples) or the example
 [config](https://github.com/sebadob/hiqlite/blob/main/config) to get an idea about the possible config values.
-The `NodeConfig` can be created programmatically or fully created `from_env()` vars.
+The `NodeConfig` can be created programmatically or fully created either `from_toml()` or `from_env()` vars.
 
 ### Cluster inside Kubernetes
 
@@ -435,63 +437,48 @@ kubectl create ns hiqlite
 
 #### Config
 
-Create a `config.yaml` which holds your config:
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: hiqlite-config
-  namespace: hiqlite
-data:
-  config: |
-    HQL_NODE_ID_FROM=k8s
-
-    HQL_NODES="
-    1 hiqlite-0.hiqlite-headless:8100 hiqlite-0.hiqlite-headless:8200
-    2 hiqlite-1.hiqlite-headless:8100 hiqlite-1.hiqlite-headless:8200
-    3 hiqlite-2.hiqlite-headless:8100 hiqlite-2.hiqlite-headless:8200
-    "
-
-    HQL_LOG_STATEMENTS=false
-    HQL_LOGS_UNTIL_SNAPSHOT=10000
-    HQL_BACKUP_KEEP_DAYS=3
-
-    HQL_S3_URL=https://s3.example.com
-    HQL_S3_BUCKET=test
-    HQL_S3_REGION=example
-    HQL_S3_PATH_STYLE=true
-
-    HQL_INSECURE_COOKIE=true
-```
-
-#### Secrets
-
-Create a `secrets.yaml`. To have an easy time with the `ENC_KEYS`, since the CLI does not provide a generator yet, you
-can copy the value from your `generate-config` step above and re-use the value here, or just re-use the below example
-values:
+Create a secret for your config. Adapt the below values to your needs. To have an easy time with the `enc_keys`, since
+the CLI does not provide a generator yet, you can copy the value from your `generate-config` step above and re-use the
+value here, or just re-use the below example values. You could also copy & paste your whole generated config into this
+secret.
 
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: hiqlite-secrets
+  name: hiqlite-config
   namespace: hiqlite
 type: Opaque
 stringData:
-  HQL_SECRET_RAFT: 123SuperMegaSafeRandomValue
-  HQL_SECRET_API: 123SuperMegaSafeRandomValue
+  hiqlite.toml: |
+    [hiqlite]
+    node_id_from = "k8s"
+    nodes = [
+        "1 hiqlite-0.hiqlite-headless:8100 hiqlite-0.hiqlite-headless:8200",
+        "2 hiqlite-1.hiqlite-headless:8100 hiqlite-1.hiqlite-headless:8200",
+        "3 hiqlite-2.hiqlite-headless:8100 hiqlite-2.hiqlite-headless:8200",
+    ]
 
-  HQL_S3_KEY: YourS3KeyId
-  HQL_S3_SECRET: YourS3Secret
+    secret_raft = "SuperSecureSecret1337"
+    secret_api = "SuperSecureSecret1337"
 
-  ENC_KEYS: "
-  bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ=
-  "
-  ENC_KEY_ACTIVE: bVCyTsGaggVy5yqQ
+    enc_keys = [ "bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ=" ]
+    enc_key_active = "bVCyTsGaggVy5yqQ"
 
-  # This is a base64 encoded Argon2ID hash for the password: 123SuperMegaSafe
-  HQL_PASSWORD_DASHBOARD: JGFyZ29uMmlkJHY9MTkkbT0xOTQ1Nix0PTIscD0xJGQ2RlJDYTBtaS9OUnkvL1RubmZNa0EkVzJMeTQrc1dxZ0FGd0RyQjBZKy9iWjBQUlZlOTdUMURwQkk5QUoxeW1wRQ==
+    # This is a base64 encoded Argon2ID hash for the password: 123SuperMegaSafe
+    password_dashboard = "JGFyZ29uMmlkJHY9MTkkbT0zMix0PTIscD0xJE9FbFZURnAwU0V0bFJ6ZFBlSEZDT0EkTklCN0txTy8vanB4WFE5bUdCaVM2SlhraEpwaWVYOFRUNW5qdG9wcXkzQQ=="
+
+    # necessary if you want to access the dashboard via plain HTTP for testing
+    insecure_cookie = true
+
+    s3_url = "https://s3.example.com"
+    s3_bucket = "S3BucketName"
+    s3_region = "S3Region"
+    s3_key = "YourS3KeyId"
+    s3_secret = "YourS3Secret"
+
+    # auto-recover from crashes
+    wal_ignore_lock = true
 ```
 
 #### StatefulSet
@@ -559,62 +546,30 @@ spec:
     spec:
       containers:
         - name: hiqlite
-          image: ghcr.io/sebadob/hiqlite:0.6.0
-          imagePullPolicy: Always
+          image: ghcr.io/sebadob/hiqlite:0.7.0
           securityContext:
             allowPrivilegeEscalation: false
           ports:
             - containerPort: 8100
             - containerPort: 8200
-          env:
-            - name: HQL_SECRET_RAFT
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_SECRET_RAFT
-            - name: HQL_SECRET_API
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_SECRET_API
-            - name: HQL_S3_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_S3_KEY
-            - name: HQL_S3_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_S3_SECRET
-            - name: ENC_KEYS
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: ENC_KEYS
-            - name: ENC_KEY_ACTIVE
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: ENC_KEY_ACTIVE
-            - name: HQL_PASSWORD_DASHBOARD
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_PASSWORD_DASHBOARD
           volumeMounts:
-            - mountPath: /app/config
-              subPath: config
-              name: hiqlite-config
-            - mountPath: /app/data
-              name: hiqlite-data
+            - name: hiqlite-config
+              mountPath: /app/hiqlite.toml
+              subPath: hiqlite.toml
+              readOnly: true
+            - name: hiqlite-data
+              mountPath: /app/data
           livenessProbe:
             httpGet:
+              # You may need to adjust this, if you decide to start in https only
+              # mode or use another port
               scheme: HTTP
               port: 8200
+              #scheme: HTTPS
+              #port: 8443
               path: /health
-            initialDelaySeconds: 10
-            periodSeconds: 30
+              initialDelaySeconds: 30
+              periodSeconds: 30
           resources:
             requests:
               memory: 32Mi
@@ -624,8 +579,8 @@ spec:
       #  - name: harbor
       volumes:
         - name: hiqlite-config
-          configMap:
-            name: hiqlite-config
+          secret:
+            secretName: hiqlite-config
   volumeClaimTemplates:
     - metadata:
         name: hiqlite-data
@@ -643,118 +598,8 @@ spec:
 
 #### Apply Files
 
-The last step is to simply `kubectl apply -f` the `config.yaml` and `secrets.yaml` followed by the `sts.yaml` last.
-This should bring up a 3 node, standalone Hiqlite cluster.
-
-## Cluster Proxy
-
-If you want to connect to a cluster without being able to reach each node via its configured address in `HQL_NODES`,
-like in the Kubernetes example cluster above, you can also start a server binary in proxy mode with
-
-```
-hiqlite proxy -h
-```
-
-Let's do a quick example to start a proxy inside K8s to access the above testing cluster from the outside. This
-example assumes the above ConfigMap and Secrets do exist already. If this is the case, we only need to add a Deployment:
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: hiqlite-proxy
-  namespace: hiqlite
-spec:
-  type: NodePort
-  selector:
-    app: hiqlite-proxy
-  ports:
-    - name: api
-      protocol: TCP
-      port: 8200
-      targetPort: 8200
-      nodePort: 30820
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: hiqlite-proxy
-  namespace: hiqlite
-  labels:
-    app: hiqlite-proxy
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: hiqlite-proxy
-  template:
-    metadata:
-      labels:
-        app: hiqlite-proxy
-    spec:
-      containers:
-        - name: hiqlite-proxy
-          image: ghcr.io/sebadob/hiqlite:0.6.0
-          command: [ "/app/hiqlite", "proxy" ]
-          imagePullPolicy: Always
-          securityContext:
-            allowPrivilegeEscalation: false
-          ports:
-            - containerPort: 8100
-            - containerPort: 8200
-          env:
-            - name: HQL_SECRET_API
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_SECRET_API
-            - name: ENC_KEYS
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: ENC_KEYS
-            - name: ENC_KEY_ACTIVE
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: ENC_KEY_ACTIVE
-            - name: HQL_PASSWORD_DASHBOARD
-              valueFrom:
-                secretKeyRef:
-                  name: hiqlite-secrets
-                  key: HQL_PASSWORD_DASHBOARD
-          volumeMounts:
-            - mountPath: /app/config
-              subPath: config
-              name: hiqlite-config
-          livenessProbe:
-            httpGet:
-              scheme: HTTP
-              port: 8200
-              path: /ping
-            initialDelaySeconds: 10
-            periodSeconds: 30
-          resources:
-            requests:
-              memory: 32Mi
-              cpu: 100m
-      # add your image pull secrets name here in case you use a private container registry
-      #imagePullSecrets:
-      #  - name: harbor
-      volumes:
-        - name: hiqlite-config
-          configMap:
-            name: hiqlite-config
-```
-
-After `kubectl apply -f` this deployment, you can use a remote Client to connect via this proxy with
-
-```rust, notest
-hiqlite::Client::remote()
-```
-
-like shown in the
-[bench example](https://github.com/sebadob/hiqlite/blob/70cc7500316dd138c0e1bd417a915af216fb19b2/examples/bench/src/main.rs#L147).
+The last step is to simply `kubectl apply -f` the `config.yaml` followed by the `sts.yaml` last. This should bring up a
+3 node, standalone Hiqlite cluster.
 
 ## Known Issues
 
