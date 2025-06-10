@@ -141,7 +141,6 @@ tower-service.workspace = true
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
 
-console-subscriber = { version = "0.4.1" }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util", "tracing"] }
 tokio-test = "0.4.4"

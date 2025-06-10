@@ -31,7 +31,7 @@ pub struct LogState {
 /// Each reader usually reads each log max once, followed by the next one guaranteed in sequential
 /// order. This means (apart from the very first start), this memoized position will always be used.
 #[derive(Debug)]
-pub(crate) struct LogReadMemo {
+pub struct LogReadMemo {
     pub last_wal_no: u64,
     pub last_log_id: u64,
     pub data_end: u32,

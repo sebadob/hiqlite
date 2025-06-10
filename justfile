@@ -66,12 +66,11 @@ check:
     set -euxo pipefail
     clear
     cargo update
-    # The +nightly currently breaks the openraft! macro
-    #cargo +nightly clippy -- -D warnings
-    cargo clippy -- -D warnings
-    cargo minimal-versions check -p hiqlite --all-features
+    cargo +nightly clippy -- -D warnings
+    cargo minimal-versions check -p hiqlite --features server
+    cargo minimal-versions check -p hiqlite-wal
 
-    # just update at the end again for following clippy and testing
+    # update at the end again for following clippy and testing
     cargo update
 
 # checks all combinations of features with clippy
@@ -195,6 +194,14 @@ msrv-verify:
     #!/usr/bin/env bash
     set -euxo pipefail
     cd hiqlite
+    cargo msrv verify
+    cd ..
+
+    cd hiqlite-macros
+    cargo msrv verify
+    cd ..
+
+    cd hiqlite-wal
     cargo msrv verify
 
 # find's the new MSRV, if it needs a bump

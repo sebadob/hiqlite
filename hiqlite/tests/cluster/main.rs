@@ -60,7 +60,7 @@ impl CacheIndex for Cache {
 #[tokio::test(flavor = "multi_thread")]
 // #[tokio::test(start_paused = true)]
 async fn test_cluster() {
-    let console_layer = console_subscriber::spawn();
+    // let console_layer = console_subscriber::spawn();
 
     set_panic_hook();
 
@@ -77,7 +77,7 @@ async fn test_cluster() {
         .with_filter(EnvFilter::new("info"));
 
     tracing_subscriber::registry()
-        .with(console_layer)
+        // .with(console_layer)
         .with(tracing_layer)
         .init();
 
