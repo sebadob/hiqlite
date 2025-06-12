@@ -275,8 +275,7 @@ impl WalFile {
         debug_assert_eq!(self.data_start.is_some(), self.data_end.is_some());
 
         let (start, update_header) = if self.data_start.is_none() {
-            assert_eq!(self.id_from, id);
-            // self.id_from = id;
+            self.id_from = id;
             let start = self.offset_logs();
             self.data_start = Some(start as u32);
             (start, true)
@@ -622,10 +621,10 @@ impl WalFile {
         file.read_exact(&mut buf)?;
 
         if buf[..7].iter().as_slice() != MAGIC_NO_WAL {
-            return Err(Error::FileCorrupted("Invalid WAL file magic number"));
+            return Err(Error::FileCorrupted("Invalid WAL file magic number".into()));
         }
         if buf[7..8] != [1u8] {
-            return Err(Error::FileCorrupted("Invalid WAL file version"));
+            return Err(Error::FileCorrupted("Invalid WAL file version".into()));
         }
         let id_from = bin_to_u64(&buf[8..16])?;
         let id_until = bin_to_u64(&buf[16..24])?;
@@ -759,7 +758,7 @@ impl WalFileSet {
         let mut until = first.id_until;
         if first.id_from > until {
             return Err(Error::FileCorrupted(
-                "`id_from` cannot be greater than `id_until`",
+                "`id_from` cannot be greater than `id_until`".into(),
             ));
         }
 
@@ -936,35 +935,66 @@ impl WalFileSet {
 
     #[tracing::instrument(skip_all)]
     #[inline]
-    pub fn shift_delete_logs_until(
+    pub fn shift_delete_logs(
         &mut self,
+        id_from: u64,
         id_until: u64,
         wal_size: u32,
         buf: &mut Vec<u8>,
         buf_logs: &mut Vec<(u64, Vec<u8>)>,
     ) -> Result<(), Error> {
-        while !self.files.is_empty() && self.files.front().unwrap().id_until < id_until {
-            let file = self.files.pop_front().unwrap();
-            fs::remove_file(&file.path)?;
-        }
-        if self.files.is_empty() {
-            self.add_file(wal_size, buf)?;
+        debug_assert!(buf.is_empty());
+        debug_assert!(buf_logs.is_empty());
+        debug_assert!(!self.files.is_empty());
+
+        let purge_front = Some(id_from) < self.files.front().map(|f| f.id_from);
+        let truncate_back = Some(id_until) > self.files.back().map(|f| f.id_until);
+        let mut memo: Option<LogReadMemo> = None;
+
+        if purge_front {
+            while !self.files.is_empty() && self.files.front().unwrap().id_until < id_until {
+                let file = self.files.pop_front().unwrap();
+                fs::remove_file(&file.path)?;
+            }
+            if self.files.is_empty() {
+                self.add_file(wal_size, buf)?;
+            }
+
+            let front = self.files.front_mut().unwrap();
+            debug_assert!(front.id_until >= id_until);
+            if front.id_from < id_until {
+                if front.mmap_mut.is_none() {
+                    front.mmap_mut()?;
+                }
+                let offset = front.read_logs(id_until, id_until, &mut memo, buf_logs)?;
+                front.id_from = id_until;
+                front.data_start = Some(offset);
+            }
+        } else if truncate_back {
+            while !self.files.is_empty() && self.files.back().unwrap().id_from > id_from {
+                let file = self.files.pop_back().unwrap();
+                fs::remove_file(&file.path)?;
+            }
+            if self.files.is_empty() {
+                self.add_file(wal_size, buf)?;
+            }
+
+            let back = self.files.back_mut().unwrap();
+            if back.id_from == id_from {
+                back.id_until = id_from;
+                back.data_start = None;
+                back.data_end = None;
+            } else if back.id_until >= id_from {
+                if back.mmap_mut.is_none() {
+                    back.mmap_mut()?;
+                }
+                // offset always goes forward
+                let offset = back.read_logs(id_from, id_from, &mut memo, buf_logs)?;
+                back.id_until = id_from - 1;
+                back.data_end = Some(offset - 1);
+            }
         }
 
-        let first = self.files.get_mut(0).unwrap();
-        debug_assert!(first.id_until >= id_until);
-        if first.id_from < id_until {
-            first.id_from = id_until;
-            // find the offset for `id_until` -> via in-memory index in the future?
-            if first.mmap_mut.is_none() {
-                first.mmap_mut()?;
-            }
-            debug_assert!(buf_logs.is_empty());
-            let mut memo: Option<LogReadMemo> = None;
-            let offset = first.read_logs(id_until, id_until, &mut memo, buf_logs)?;
-            first.id_from = id_until;
-            first.data_start = Some(offset);
-        }
         self.active = Some(self.files.len() - 1);
 
         Ok(())
@@ -1324,8 +1354,8 @@ mod tests {
     }
 
     #[test]
-    fn roll_over_shift_delete() -> Result<(), Error> {
-        let base_path = format!("{}/roll_over_shift_delete", PATH);
+    fn roll_over_purge_front() -> Result<(), Error> {
+        let base_path = format!("{}/roll_over_purge_front", PATH);
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
         let mut buf = Vec::with_capacity(8);
@@ -1369,14 +1399,14 @@ mod tests {
         let mut buf_logs = Vec::with_capacity(1);
         buf.clear();
         // this should be a noop
-        wal.shift_delete_logs_until(1, MB2, &mut buf, &mut buf_logs)?;
+        wal.shift_delete_logs(0, 1, MB2, &mut buf, &mut buf_logs)?;
         let front = wal.files.front().unwrap();
         assert_eq!(front.id_from, 1);
         assert_eq!(front.data_start.unwrap() as usize, front.offset_logs());
 
         buf.clear();
         buf_logs.clear();
-        wal.shift_delete_logs_until(2, MB2, &mut buf, &mut buf_logs)?;
+        wal.shift_delete_logs(0, 2, MB2, &mut buf, &mut buf_logs)?;
         let front = wal.files.front().unwrap();
         assert_eq!(front.id_from, 2);
         let start = 8 + 4 + 4 + d1.len() + front.offset_logs() + 1;
@@ -1384,11 +1414,120 @@ mod tests {
 
         buf.clear();
         buf_logs.clear();
-        wal.shift_delete_logs_until(3, MB2, &mut buf, &mut buf_logs)?;
+        wal.shift_delete_logs(0, 3, MB2, &mut buf, &mut buf_logs)?;
         assert_eq!(wal.files.len(), 1);
         let front = wal.files.front().unwrap();
         assert_eq!(front.id_from, 3);
         assert_eq!(front.data_start.unwrap() as usize, front.offset_logs());
+
+        Ok(())
+    }
+
+    #[test]
+    fn roll_over_truncate_end() -> Result<(), Error> {
+        let base_path = format!("{}/roll_over_truncate_end", PATH);
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+        let mut buf = Vec::with_capacity(8);
+
+        let mut wal = WalFileSet {
+            active: None,
+            base_path,
+            files: Default::default(),
+        };
+        wal.add_file(MB2, &mut buf)?;
+        wal.active().mmap_mut()?;
+
+        let d1 = b"Hello World".as_slice();
+        let d2 = b"I am Batman!".as_slice();
+        let d3 = b"... and not the Joker!".as_slice();
+        let d4 = b"I like Harley Quinn".as_slice();
+        let d5 = b"... a lot".as_slice();
+
+        buf.clear();
+        wal.active().append_log(1, d1, &mut buf)?;
+        buf.clear();
+        wal.active().append_log(2, d2, &mut buf)?;
+        assert_eq!(wal.files.len(), 1);
+        assert_eq!(wal.active().wal_no, 1);
+
+        buf.clear();
+        wal.roll_over(MB2, &mut buf)?;
+        assert_eq!(wal.files.len(), 2);
+        // active file should be shifted, old mmap be removed and new active have an mmap_mut
+        assert_eq!(wal.active().wal_no, 2);
+        assert!(wal.files.front().unwrap().mmap_mut.is_none());
+        assert!(wal.active().mmap_mut.is_some());
+
+        buf.clear();
+        wal.active().append_log(3, d3, &mut buf)?;
+        buf.clear();
+        wal.active().append_log(4, d4, &mut buf)?;
+        buf.clear();
+        wal.active().append_log(5, d5, &mut buf)?;
+
+        let mut buf_logs = Vec::with_capacity(1);
+        buf.clear();
+        // this should be a noop
+        wal.shift_delete_logs(6, u64::MAX, MB2, &mut buf, &mut buf_logs)?;
+        assert_eq!(wal.files.front().unwrap().id_from, 1);
+        let back = wal.files.back().unwrap();
+        assert_eq!(back.id_from, 3);
+        assert_eq!(back.id_until, 5);
+        let data_end = back.offset_logs() + 16 + d3.len() + 1 + 16 + d4.len() + 1 + 16 + d5.len();
+        assert_eq!(back.data_end, Some(data_end as u32));
+
+        buf.clear();
+        buf_logs.clear();
+        wal.shift_delete_logs(5, u64::MAX, MB2, &mut buf, &mut buf_logs)?;
+        assert_eq!(wal.files.front().unwrap().id_from, 1);
+        let back = wal.files.back().unwrap();
+        assert_eq!(back.id_from, 3);
+        assert_eq!(back.id_until, 4);
+        let data_end = back.offset_logs() + 16 + d3.len() + 1 + 16 + d4.len();
+        assert_eq!(back.data_end, Some(data_end as u32));
+
+        buf.clear();
+        buf_logs.clear();
+        wal.shift_delete_logs(4, u64::MAX, MB2, &mut buf, &mut buf_logs)?;
+        assert_eq!(wal.files.front().unwrap().id_from, 1);
+        let back = wal.files.back().unwrap();
+        assert_eq!(back.id_from, 3);
+        assert_eq!(back.id_until, 3);
+        let data_end = back.offset_logs() + 16 + d3.len();
+        assert_eq!(back.data_end, Some(data_end as u32));
+
+        buf.clear();
+        buf_logs.clear();
+        wal.shift_delete_logs(3, u64::MAX, MB2, &mut buf, &mut buf_logs)?;
+        assert_eq!(wal.files.front().unwrap().id_from, 1);
+        let back = wal.files.back().unwrap();
+        assert_eq!(back.id_from, 3);
+        assert_eq!(back.id_until, 3);
+        assert_eq!(back.data_start, None);
+        assert_eq!(back.data_end, None);
+
+        buf.clear();
+        buf_logs.clear();
+        wal.shift_delete_logs(2, u64::MAX, MB2, &mut buf, &mut buf_logs)?;
+        assert_eq!(wal.files.len(), 1);
+        assert_eq!(wal.files.front().unwrap().id_from, 1);
+        let back = wal.files.back().unwrap();
+        assert_eq!(back.id_from, 1);
+        assert_eq!(back.id_until, 1);
+        let data_end = back.offset_logs() + 16 + d1.len();
+        assert_eq!(back.data_end, Some(data_end as u32));
+
+        buf.clear();
+        buf_logs.clear();
+        wal.shift_delete_logs(1, u64::MAX, MB2, &mut buf, &mut buf_logs)?;
+        assert_eq!(wal.files.len(), 1);
+        assert_eq!(wal.files.front().unwrap().id_from, 1);
+        let back = wal.files.back().unwrap();
+        assert_eq!(back.id_from, 1);
+        assert_eq!(back.id_until, 1);
+        assert_eq!(back.data_start, None);
+        assert_eq!(back.data_end, None);
 
         Ok(())
     }

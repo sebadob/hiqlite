@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::metadata::{LockFile, Metadata};
 use crate::wal::WalFileSet;
+use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -27,6 +28,18 @@ pub enum Action {
     },
     Sync,
     Shutdown(oneshot::Sender<()>),
+}
+
+impl Debug for Action {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::Append { .. } => write!(f, "Action::Append"),
+            Action::Remove { .. } => write!(f, "Action::Remove"),
+            Action::Vote { .. } => write!(f, "Action::Vote"),
+            Action::Sync => write!(f, "Action::Sync"),
+            Action::Shutdown(_) => write!(f, "Action::Shutdown"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,7 +161,12 @@ fn run(
                     let mut active = wal.active();
                     while let Ok(Some((id, bytes))) = rx.recv() {
                         if bytes.len() > data_len_limit {
-                            panic!("`data` length must not exceed `wal_size` -> data length is {} vs wal_size (without header) is {}", bytes.len(), data_len_limit);
+                            panic!(
+                                "`data` length must not exceed `wal_size` -> data length is {} \
+                            vs wal_size (without header) is {}",
+                                bytes.len(),
+                                data_len_limit
+                            );
                         }
 
                         if !active.has_space(bytes.len() as u32) {
@@ -236,22 +254,10 @@ fn run(
                     is_dirty = false;
                 }
 
-                // We don't care about the `from` part, since we don't really delete anything yet.
-                // We only want to shift the index inside the WALs and only delete complete WAL
-                // files, if their last log ID is < `until`. Wasting a bit of disk space is far
-                // better than doing real deletions and shift data all the time.
-                // In the worst case, there is the size of 1 WAL "wasted", because maybe only the
-                // very last log from this WAL should be kept.
                 buf.clear();
                 buf_logs.clear();
 
-                let until = if until > active.id_until {
-                    active.id_until
-                } else {
-                    until
-                };
-
-                match wal.shift_delete_logs_until(until, wal_size, &mut buf, &mut buf_logs) {
+                match wal.shift_delete_logs(from, until, wal_size, &mut buf, &mut buf_logs) {
                     Ok(_) => {
                         meta.write()?.last_purged_log_id = last_log;
                         Metadata::write(meta.clone(), &wal.base_path)?;
