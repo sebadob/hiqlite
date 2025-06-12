@@ -4,11 +4,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(doc, feature(doc_auto_cfg))]
 
-#[cfg(all(feature = "rocksdb", feature = "migrate-rocksdb"))]
-compile_error!(
-    "Feature `migrate-rocksdb` only makes sense when `rocksdb` is not used as logs store"
-);
-
 #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
