@@ -24,6 +24,9 @@ pub async fn check_migrate_rocksdb(
     wal_size: u32,
     wal_ignore_lock: bool,
 ) -> Result<(), Error> {
+    #[cfg(feature = "rocksdb")]
+    panic!("Feature `migrate-rocksdb` only makes sense when `rocksdb` is not used as logs store");
+
     // the bare minimum of files that must be there for a possibly existing
     // rocksdb is a `LOG` file
     if !fs::try_exists(format!("{}/LOG", logs_dir)).await? {
