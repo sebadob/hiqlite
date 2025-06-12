@@ -257,7 +257,7 @@ where
         self.writer
             .send_async(writer::Action::Remove {
                 from: 0,
-                until: log_id.index + 1,
+                until: log_id.index,
                 last_log,
                 ack,
             })
