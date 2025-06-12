@@ -590,7 +590,7 @@ pub async fn leave_remote_cluster(
         stay_as_learner,
     })?;
     let mut left_cluster = false;
-    for _ in 0..retries + 1 {
+    'outer: for _ in 0..retries + 1 {
         for node in nodes {
             if node.id == this_node {
                 debug!("Skipping 'this' node");
@@ -624,7 +624,7 @@ pub async fn leave_remote_cluster(
                             raft_type, url
                         );
                         left_cluster = true;
-                        break;
+                        break 'outer;
                     } else {
                         let body = resp.bytes().await?;
                         let err: Error = serde_json::from_slice(&body)?;
@@ -641,6 +641,7 @@ pub async fn leave_remote_cluster(
                 }
             }
         }
+        time::sleep(Duration::from_secs(3)).await;
     }
     if !left_cluster {
         return Err(Error::Connect(

@@ -274,8 +274,9 @@ impl WalFile {
         debug_assert!(self.has_space(data.len() as u32));
         debug_assert_eq!(self.data_start.is_some(), self.data_end.is_some());
 
-        let (start, update_data_start) = if self.data_start.is_none() {
-            self.id_from = id;
+        let (start, update_header) = if self.data_start.is_none() {
+            assert_eq!(self.id_from, id);
+            // self.id_from = id;
             let start = self.offset_logs();
             self.data_start = Some(start as u32);
             (start, true)
@@ -309,7 +310,7 @@ impl WalFile {
         debug_assert!(self.data_end.is_some());
         debug_assert!(self.data_end.unwrap() <= self.len_max);
 
-        if update_data_start {
+        if update_header {
             buf.clear();
             self.update_header(buf)?;
         }
