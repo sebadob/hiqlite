@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.1
+
+The only purpose of this release is to fix a docs build error on `docs.rs`.
+
 ## v0.7.0
 
 ### Breaking
@@ -76,8 +80,6 @@ The Cache / KV store itself will still be in-memory only and therefore have very
 will be limited by your disk speed.
 
 More information can be found in the example [hiqlite.toml](https://github.com/sebadob/hiqlite/blob/main/hiqlite.toml).
-
-####                            
 
 ## v0.6.0
 
