@@ -76,7 +76,7 @@ impl Client {
                     ack,
                 }))
                 .await
-                .expect("Client Stream Manager to always be running");
+                .map_err(|err| Error::Error(err.to_string().into()))?;
             let res = rx
                 .await
                 .expect("To always receive an answer from Client Stream Manager")?;

@@ -61,7 +61,7 @@ pub(crate) async fn dashboard_query_dynamic(
                             node.clone(),
                         )))
                         .await
-                        .expect("Client Stream Manager to always be running");
+                        .map_err(|err| Error::Error(err.to_string().into()))?;
                     execute_dynamic(&state, sql.clone()).await?
                 } else {
                     return Err(err);
@@ -110,7 +110,7 @@ async fn execute_dynamic(state: &AppStateExt, sql: Query) -> Result<usize, Error
                 },
             ))
             .await
-            .expect("Client Stream Manager to always be running");
+            .map_err(|err| Error::Error(err.to_string().into()))?;
         let res = rx
             .await
             .expect("To always receive an answer from Client Stream Manager")?;
