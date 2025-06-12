@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::Interval;
 use tokio::{task, time};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 pub enum Action {
     Append {
@@ -100,7 +100,6 @@ pub fn spawn(
         buf.clear();
         set.add_file(wal_size, &mut buf)?;
     }
-    info!("\n\nStarting with WAL File Set:\n{:?}\n", set);
     let wal_locked = Arc::new(RwLock::new(set.clone_no_map()));
 
     let (tx, rx) = flume::bounded::<Action>(1);
@@ -162,7 +161,12 @@ fn run(
                     let mut active = wal.active();
                     while let Ok(Some((id, bytes))) = rx.recv() {
                         if bytes.len() > data_len_limit {
-                            panic!("`data` length must not exceed `wal_size` -> data length is {} vs wal_size (without header) is {}", bytes.len(), data_len_limit);
+                            panic!(
+                                "`data` length must not exceed `wal_size` -> data length is {} \
+                            vs wal_size (without header) is {}",
+                                bytes.len(),
+                                data_len_limit
+                            );
                         }
 
                         if !active.has_space(bytes.len() as u32) {
@@ -231,7 +235,7 @@ fn run(
                 last_log,
                 ack,
             } => {
-                info!(
+                debug!(
                     "WAL Writer - Action::Remove from {from} until {until} / last_log: {:?}\n{:?}",
                     last_log, wal
                 );
@@ -266,8 +270,6 @@ fn run(
                     }
                     Err(err) => ack.send(Err(err)).unwrap(),
                 }
-
-                info!("\n\nactive WAL after remove:\n{:?}\n", wal.active());
             }
             Action::Vote { value, ack } => {
                 debug!("WAL Writer - Action::Vote");
