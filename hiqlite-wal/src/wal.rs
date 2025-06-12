@@ -309,22 +309,9 @@ impl WalFile {
         debug_assert!(self.data_end.is_some());
         debug_assert!(self.data_end.unwrap() <= self.len_max);
 
-        // We only need to update `data_end` on disk if `data_start` was changed to make checks
-        // happy in other places. If we ever lose the current `data_end` from buffers because of
-        // a crash, it can be recovered with the next start inside the integrity check anyway, so
-        // we can skip the overhead of updating it here for each log.
         if update_data_start {
-            match self.version {
-                1 => {
-                    buf.clear();
-                    u32_to_bin(self.data_start.unwrap(), buf)?;
-                    (&mut mmap[24..28]).write_all(buf)?;
-                    buf.clear();
-                    u32_to_bin(self.data_end.unwrap(), buf)?;
-                    (&mut mmap[28..32]).write_all(buf)?;
-                }
-                _ => unreachable!(),
-            }
+            buf.clear();
+            self.update_header(buf)?;
         }
 
         Ok(())
