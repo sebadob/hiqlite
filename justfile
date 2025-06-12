@@ -175,8 +175,8 @@ run ty="server" node_id="1":
     clear
 
     if [[ {{ ty }} == "server" ]]; then
-      #RUSTFLAGS="--cfg tokio_unstable" HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server -- serve -c hiqlite.toml --node-id {{ node_id }}
-      HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server,rocksdb -- serve -c hiqlite.toml --node-id {{ node_id }}
+      HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server -- serve -c hiqlite.toml --node-id {{ node_id }}
+      #HQL_DATA_DIR=data/server_{{ node_id }} cargo run --features server,rocksdb -- serve -c hiqlite.toml --node-id {{ node_id }}
     elif [[ {{ ty }} == "ui" ]]; then
       cd dashboard
       npm run dev -- --host=0.0.0.0

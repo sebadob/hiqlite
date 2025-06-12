@@ -170,7 +170,7 @@ fn run(
                     last_purged_log_id: meta.read().unwrap().last_purged_log_id.clone(),
                     last_log,
                 };
-                info!(
+                debug!(
                     "WAL Reader - Action::LogState -> latest_log_id: {:?}\n{:?}",
                     latest_log_id, st
                 );
