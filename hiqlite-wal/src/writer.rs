@@ -256,7 +256,6 @@ fn run(
 
                 buf.clear();
                 buf_logs.clear();
-
                 match wal.shift_delete_logs(from, until, wal_size, &mut buf, &mut buf_logs) {
                     Ok(_) => {
                         meta.write()?.last_purged_log_id = last_log;

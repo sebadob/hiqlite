@@ -265,8 +265,8 @@ impl WalFile {
     }
 
     /// Expects to have enough space left -> check MUST be done upfront
+    #[tracing::instrument(level = "debug", skip_all)]
     #[inline]
-    #[tracing::instrument(skip_all)]
     pub fn append_log(&mut self, id: u64, data: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
         debug_assert!(buf.is_empty());
         debug_assert!(self.mmap_mut.is_some());
@@ -343,8 +343,8 @@ impl WalFile {
     }
 
     /// Reads the logs into the given buffer. Returns `Ok(offset)` of the first log.
+    #[tracing::instrument(level = "debug", skip_all)]
     #[inline]
-    #[tracing::instrument(skip_all)]
     pub fn read_logs(
         &self,
         id_from: u64,
@@ -596,8 +596,8 @@ impl WalFile {
         Ok(())
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     #[inline]
-    #[tracing::instrument(skip_all)]
     pub fn read_from_file(path_full: String) -> Result<Self, Error> {
         let Some((_, fname)) = path_full.rsplit_once('/') else {
             return Err(Error::InvalidPath("Invalid file path"));
@@ -724,7 +724,7 @@ impl WalFileSet {
     /// Adds a new `Header` at the end and creates a file for it.
     /// If `self.files` was empty before, `self.active` will be set to `0` and left untouched
     /// otherwise. If files existed already, `self.roll_over()` will handle `active` switching.
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     #[inline]
     pub fn add_file(&mut self, wal_size: u32, buf: &mut Vec<u8>) -> Result<&WalFile, Error> {
         let wal_no = self.files.back().map(|w| w.wal_no + 1).unwrap_or(1);
@@ -867,7 +867,7 @@ impl WalFileSet {
         }
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn read(base_path: String, wal_size: u32) -> Result<WalFileSet, Error> {
         let mut file_names = Vec::with_capacity(2);
         for entry in fs::read_dir(&base_path)? {
@@ -906,7 +906,7 @@ impl WalFileSet {
 
     /// Rolls a new WAL file and "closes" the current one. Removes any memory-mapping and flushes
     /// the current file to disk. Creates a new WAL with `mmap_mut`
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     #[inline]
     pub fn roll_over(&mut self, wal_size: u32, buf: &mut Vec<u8>) -> Result<(), Error> {
         debug_assert!(buf.is_empty());
@@ -933,7 +933,7 @@ impl WalFileSet {
         Ok(())
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     #[inline]
     pub fn shift_delete_logs(
         &mut self,
@@ -988,9 +988,10 @@ impl WalFileSet {
                 if back.mmap_mut.is_none() {
                     back.mmap_mut()?;
                 }
-                // offset always goes forward
+                // offset always goes forwards
                 let offset = back.read_logs(id_from, id_from, &mut memo, buf_logs)?;
                 back.id_until = id_from - 1;
+                // data_end is inclusive
                 back.data_end = Some(offset - 1);
             }
         }
