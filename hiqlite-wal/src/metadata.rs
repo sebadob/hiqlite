@@ -34,13 +34,13 @@ impl Metadata {
             return Err(Error::InvalidPath("cannot open metadata file"));
         };
         if bytes.len() < 14 {
-            return Err(Error::FileCorrupted("invalid metadata file length"));
+            return Err(Error::FileCorrupted("invalid metadata file length".into()));
         }
 
         debug_assert_eq!(MAGIC_NO_META.len(), 7);
         if bytes[..7].iter().as_slice() != MAGIC_NO_META {
             return Err(Error::FileCorrupted(
-                "metadata file is corrupt - magic no does not match",
+                "metadata file is corrupt - magic no does not match".into(),
             ));
         }
         let version = &bytes[7..8];
@@ -48,11 +48,13 @@ impl Metadata {
             [1u8] => {
                 let crc = &bytes[8..12];
                 if crc != crc!(&bytes[12..]) {
-                    return Err(Error::FileCorrupted("metadata CRC checksum does not match"));
+                    return Err(Error::FileCorrupted(
+                        "metadata CRC checksum does not match".into(),
+                    ));
                 }
                 Ok(deserialize::<Self>(&bytes[12..])?)
             }
-            _ => Err(Error::FileCorrupted("unknown metadata file version")),
+            _ => Err(Error::FileCorrupted("unknown metadata file version".into())),
         }
     }
 

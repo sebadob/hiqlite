@@ -17,7 +17,7 @@ pub enum Error {
     #[error("EncodeError: {0}")]
     Encode(String),
     #[error("FileCorrupted: {0}")]
-    FileCorrupted(&'static str),
+    FileCorrupted(Cow<'static, str>),
     #[error("Integrity: {0}")]
     Integrity(Cow<'static, str>),
     #[error("Internal: {0}")]

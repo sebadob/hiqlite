@@ -4,7 +4,7 @@ use crate::wal::WalFileSet;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::sync::oneshot;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 #[allow(clippy::type_complexity)]
 pub enum Action {
