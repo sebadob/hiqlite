@@ -133,7 +133,7 @@ where
         })
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn get_log_reader(&mut self) -> Self::LogReader {
         debug!("Entering get_log_reader()");
 
@@ -141,8 +141,7 @@ where
             .expect("Error spawning additional LogStoreReader")
     }
 
-    #[tracing::instrument(skip_all)]
-    #[tracing::instrument(level = "trace", skip(self))]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn save_vote(&mut self, vote: &Vote<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
         debug!("Entering save_vote(): {:?}", vote);
 
@@ -162,7 +161,7 @@ where
         Ok(())
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn read_vote(&mut self) -> Result<Option<Vote<T::NodeId>>, StorageError<T::NodeId>> {
         debug!("Entering read_vote()");
 
@@ -186,8 +185,7 @@ where
         Ok(vote)
     }
 
-    #[tracing::instrument(skip_all)]
-    #[tracing::instrument(level = "trace", skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn append<I>(
         &mut self,
         entries: I,
@@ -226,7 +224,7 @@ where
         Ok(())
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn truncate(&mut self, log_id: LogId<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
         debug!("truncate(): [{:?}, +oo)", log_id);
 
@@ -248,7 +246,7 @@ where
         })
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn purge(&mut self, log_id: LogId<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
         debug!("purge(): [0, {:?}]", log_id);
 

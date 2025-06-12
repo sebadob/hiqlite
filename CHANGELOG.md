@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.7.1 (hiqlite-wal)
+
+The `hiqlite-wal-v0.7.0` had a bug when truncating WAL logs and shifted the front offset instead of the back.
+This could happen, if a leader goes down with a already added, but not fully commited log entry. In such a case, the old
+leader would need to truncate the Logs until the last fully commited point.
+
 ## v0.7.1
 
 The only purpose of this release is to fix a docs build error on `docs.rs`.
