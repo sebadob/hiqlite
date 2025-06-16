@@ -28,6 +28,18 @@ nodes = [
     "3 localhost:8102 localhost:8202",
 ]
 
+# You can set the listen addresses for both the API and Raft servers.
+# These need to somewaht match the definition for the `nodes` above,
+# with the difference, that a `node` address can be resolved via DNS,
+# while the listen addresses must be IP addresses.
+#
+# The default for both of these is "0.0.0.0" which makes them listen
+# on all interfaces.
+# overwritten by: HQL_LISTEN_ADDR_API
+listen_addr_api = "0.0.0.0"
+# overwritten by: HQL_LISTEN_ADDR_RAFT
+listen_addr_raft = "0.0.0.0"
+
 # The data dir hiqlite will store raft logs and state machine data in.
 #
 # default: data

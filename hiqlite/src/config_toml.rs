@@ -91,6 +91,13 @@ impl NodeConfig {
             }]
         };
 
+        let listen_addr_api = t_str(&mut map, t_name, "listen_addr_api", "HQL_LISTEN_ADDR_API")
+            .map(Cow::from)
+            .unwrap_or_else(|| "0.0.0.0".into());
+        let listen_addr_raft = t_str(&mut map, t_name, "listen_addr_raft", "HQL_LISTEN_ADDR_RAFT")
+            .map(Cow::from)
+            .unwrap_or_else(|| "0.0.0.0".into());
+
         let data_dir = t_str(&mut map, t_name, "data_dir", "HQL_DATA_DIR")
             .map(Cow::from)
             .unwrap_or_else(|| "data".into());
@@ -255,6 +262,8 @@ impl NodeConfig {
         Ok(NodeConfig {
             node_id,
             nodes,
+            listen_addr_api,
+            listen_addr_raft,
             data_dir,
             filename_db,
             log_statements,

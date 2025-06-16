@@ -64,8 +64,12 @@ where
             .get(node_config.node_id as usize - 1)
             .expect("NodeConfig.node_id not found in NodeConfig.nodes");
 
-        let api_addr = build_listen_addr(&node.addr_api, tls_api_client_config.is_some());
-        let addr_raft = build_listen_addr(&node.addr_raft, tls_raft);
+        let api_addr = build_listen_addr(
+            &node_config.listen_addr_api,
+            &node.addr_api,
+            tls_api_client_config.is_some(),
+        );
+        let addr_raft = build_listen_addr(&node_config.listen_addr_raft, &node.addr_raft, tls_raft);
 
         (api_addr, addr_raft)
     };
@@ -294,15 +298,16 @@ where
     Ok(client)
 }
 
-fn build_listen_addr(addr: &str, tls: bool) -> String {
-    let port = if let Some((_, port)) = addr.split_once(':') {
+/// The port will be split off from the `node_addr`
+fn build_listen_addr(listen_addr: &str, node_addr: &str, tls: bool) -> String {
+    let port = if let Some((_, port)) = node_addr.split_once(':') {
         port
     } else if tls {
         "443"
     } else {
         "80"
     };
-    format!("0.0.0.0:{}", port)
+    format!("{}:{}", listen_addr, port)
 }
 
 async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) {
