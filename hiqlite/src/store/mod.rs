@@ -49,7 +49,6 @@ pub(crate) async fn start_raft_db(
     logs::migrate::check_migrate_rocksdb(
         logs::logs_dir_db(&node_config.data_dir),
         node_config.wal_size,
-        node_config.wal_ignore_lock,
     )
     .await?;
 
@@ -62,7 +61,6 @@ pub(crate) async fn start_raft_db(
         logs::logs_dir_db(&node_config.data_dir),
         node_config.wal_sync.clone(),
         node_config.wal_size,
-        node_config.wal_ignore_lock,
     )
     .await?;
     let state_machine_store = StateMachineSqlite::new(
@@ -172,7 +170,6 @@ where
             logs::logs_dir_cache(&node_config.data_dir),
             node_config.wal_sync.clone(),
             node_config.wal_size,
-            node_config.wal_ignore_lock,
         )
         .await?;
         let shutdown_handle = log_store.shutdown_handle();

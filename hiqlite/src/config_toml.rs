@@ -122,8 +122,6 @@ impl NodeConfig {
         };
         let wal_size =
             t_u32(&mut map, t_name, "wal_size", "HQL_WAL_SIZE").unwrap_or(2 * 1024 * 1024);
-        let wal_ignore_lock =
-            t_bool(&mut map, t_name, "wal_ignore_lock", "HQL_WAL_IGNORE_LOCK").unwrap_or(false);
 
         #[cfg(feature = "cache")]
         let cache_storage_disk = t_bool(
@@ -273,7 +271,6 @@ impl NodeConfig {
             sync_immediate: false,
             wal_sync,
             wal_size,
-            wal_ignore_lock,
             #[cfg(feature = "cache")]
             cache_storage_disk,
             raft_config: NodeConfig::default_raft_config(logs_until_snapshot),

@@ -1,5 +1,6 @@
 use crate::error::Error;
-use crate::metadata::{LockFile, Metadata};
+use crate::lockfile::LockFile;
+use crate::metadata::Metadata;
 use crate::wal::WalFileSet;
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
@@ -80,22 +81,17 @@ impl TryFrom<&str> for LogSync {
 #[allow(clippy::type_complexity)]
 pub fn spawn(
     base_path: String,
+    lockfile: LockFile,
     sync: LogSync,
     wal_size: u32,
-    wal_ignore_lock: bool,
+    wal_deep_integrity_check: bool,
     meta: Arc<RwLock<Metadata>>,
 ) -> Result<(flume::Sender<Action>, Arc<RwLock<WalFileSet>>), Error> {
-    let lock_exists = LockFile::exists(&base_path)?;
-    if lock_exists {
-        warn!("LockFile in {base_path} exists already - this is not a clean start!");
-    }
-    LockFile::write(&base_path, wal_ignore_lock)?;
-
     let mut set = WalFileSet::read(base_path, wal_size)?;
     // TODO emit a warning log in that case and tell the user how to resolve or "force start" in
     // that case, or should be maybe `auto-heal` as much as possible?
     let mut buf = Vec::with_capacity(32);
-    set.check_integrity(&mut buf, lock_exists)?;
+    set.check_integrity(&mut buf, wal_deep_integrity_check)?;
     if set.files.is_empty() {
         buf.clear();
         set.add_file(wal_size, &mut buf)?;
@@ -106,7 +102,7 @@ pub fn spawn(
 
     let wal = wal_locked.clone();
     let snc = sync.clone();
-    thread::spawn(move || run(meta, wal, set, rx, snc, wal_size));
+    thread::spawn(move || run(lockfile, meta, wal, set, rx, snc, wal_size));
 
     if let LogSync::IntervalMillis(millis) = &sync {
         let interval = time::interval(Duration::from_millis(*millis));
@@ -135,6 +131,7 @@ fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
 /// Everything related to locking and memory mapping is being `unwrap()`ped. If anything fails in
 /// this regard, it's either a physical storage or OS issue and this code an do nothing about it.
 fn run(
+    lockfile: LockFile,
     meta: Arc<RwLock<Metadata>>,
     wal_locked: Arc<RwLock<WalFileSet>>,
     mut wal: WalFileSet,
@@ -306,6 +303,9 @@ fn run(
     active.update_header(&mut buf)?;
     active.flush()?;
     Metadata::write(meta, &wal.base_path)?;
+
+    // drop the lockfile before trying to remove it to unlock it
+    drop(lockfile);
     LockFile::remove(&wal.base_path).expect("LockFile removal failed");
 
     if let Some(ack) = shutdown_ack {

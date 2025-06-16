@@ -745,7 +745,7 @@ impl WalFileSet {
     pub fn check_integrity(
         &mut self,
         buf: &mut Vec<u8>,
-        lock_file_exists: bool,
+        wal_deep_integrity_check: bool,
     ) -> Result<(), Error> {
         if self.files.is_empty() {
             return Ok(());
@@ -819,7 +819,7 @@ impl WalFileSet {
             .unwrap_or("false")
             .parse::<bool>()
             .expect("Cannot parse HQL_CHECK_WAL_INTEGRITY as bool");
-        if lock_file_exists || check {
+        if wal_deep_integrity_check || check {
             let active = self.active();
             if active.mmap_mut.is_none() {
                 active.mmap_mut()?;
