@@ -79,7 +79,7 @@ webpki-roots = [
 ]
 
 [dependencies]
-#hiqlite-wal = { version = "0.7" }
+#hiqlite-wal = { version = "0.8" }
 hiqlite-wal = { path = "../hiqlite-wal" }
 
 argon2 = { workspace = true, optional = true }
