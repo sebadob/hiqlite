@@ -12,21 +12,40 @@ The network connections between nodes are realised with multiplexing WebSockets.
 running on a separate HTTP server to be able to either run the replication traffic on a fully separated network for
 better load distribution and security, or to just not expose any internal endpoints to the public.
 
-## RocksDB Logs Store
+## Raft Logs Store
 
-Since the `rocksdb` interface is sync and usually all storage operations are faster when you don't use `async`, Hiqlite
-spawns 2 `tokio` sync blocking tasks for the `rocksdb` logs store. One of these tasks is for writing to `rocksdb` and
-the other is for reading data from it. Depending on your Raft config, `openraft` may spawn multiple reader tasks to
-spread any load as good as possible.
+In the early days, `rocksdb` was used the storage engine for Raft Logs. However, by now Hiqlite comes with its own WAL
+Log Storage implementation `hiqlite-wal`. The `rocksdb` feature can be considered deprecated and will be removed in the
+near future.
 
-All communication with these sync blocking tasks is done via `flume` channels, which provide a very nice and stable
-bridge interface between sync and async code. The `rocksdb` tasks only care about writing or reading data, nothing else.
-They don't interpret results but just forward them to code running on other tasks, and they don't care about
-serialization (mostly), which is outsourced as much as possible as well. With this design approach, even though there
-is only a single writing task, we can achieve very high throughput. The only thing these tasks care about is providing
-and sync, as fast as possible interface to the underlying data. Another big benefit of this approach is that we don't
-have an overhead coming from locks or other sync primitives. This means no locking, no waiting, just writing and reading
-data while never being blocked by other concurrent writers.
+`hiqlite-wal` spawns a single WAL writer process which takes care of metadata writing, log file creation, log roll-over,
+WAL locking, CRC CHKSUMs for each WAL record, and so on. This is single threaded on purpose to avoid most of the usual
+overhead from mutexes. You will always have a single WAL writer (2 if you additionally enable the `cache` feature), and
+1 or more WAL readers, depending on the configuration and Raft setup. Writers and readers a dedicated, sync threads and
+they avoid `async` on purpose to reduce the latency.
+
+All communication with these sync threads is done via `flume` channels, which provide a very nice and stable bridge
+interface between sync and async code. The tasks only care about writing or reading data, nothing else. They don't
+interpret results but just forward them to code running on other tasks, and they don't care about serialization (
+mostly), which is outsourced as much as possible as well. With this design approach, even though there is only a single
+writing task, we can achieve very high throughput. The only thing these tasks care about is providing and sync, as fast
+as possible interface to the underlying data. Another big benefit of this approach is that we don't have an overhead
+coming from locks or other sync primitives. This means no locking, no waiting, just writing and reading data while never
+being blocked by other concurrent writers.
+
+### WAL Lock File
+
+`hiqlite-wal` creates a `lock.hql` file. This is used to make sure that only a single process at a time will try to
+write WAL files and that not multiple instances may end up using the same data because of misconfiguration. It serves a
+double purpose though. If the file exists at startup, it will be considered a non-clean start and a deeper integrity
+check of the latest WAL file will be triggered, which checks every single WAL record and makese sure the header data
+matches the content. It can even recover orphaned records, if the application crashed before and was unable to write
+everything from buffers to disk.
+
+While the WAL writer is running, it holds a cross-platform lock on the file. This makes sure no other hiqlite process
+tries to write to the same data directory. If the process exits, either gracefully or because of a crash, this lock is
+released automatically. If it's a crash, the file itself will stay, but unlocked. During a graceful shutdown though, the
+file will also be removed. This makes it possible at the next start to resolve the last state properly and take action.
 
 ## SQLite State Machine
 
