@@ -1,12 +1,36 @@
 # Changelog
 
-## v0.7.1 (hiqlite-wal)
+## v0.8.0
+
+This is a rather small release. Mostly only breaking because of a small API change inside `hiqlite-wal`, which now can
+resolve all `LockFile` situations automatically. This means that for `hiqlite`, the config variable `wal_ignore_lock`
+has been removed. It's not needed anymore.
+
+Apart from that, you get 2 new variables you can use to define the listen address for the API and Raft servers. This
+solves an issue in IPv6-only environments, and makes it possible to bind to a specific IP only instead of the default
+listening on all interfaces from before.
+
+```toml
+# You can set the listen addresses for both the API and Raft servers.
+# These need to somewaht match the definition for the `nodes` above,
+# with the difference, that a `node` address can be resolved via DNS,
+# while the listen addresses must be IP addresses.
+#
+# The default for both of these is "0.0.0.0" which makes them listen
+# on all interfaces.
+# overwritten by: HQL_LISTEN_ADDR_API
+listen_addr_api = "0.0.0.0"
+# overwritten by: HQL_LISTEN_ADDR_RAFT
+listen_addr_raft = "0.0.0.0"
+```
+
+## hiqlite-wal v0.7.1
 
 The `hiqlite-wal-v0.7.0` had a bug when truncating WAL logs and shifted the front offset instead of the back.
 This could happen, if a leader goes down with a already added, but not fully commited log entry. In such a case, the old
 leader would need to truncate the Logs until the last fully commited point.
 
-## v0.7.1
+## hiqlite v0.7.1
 
 The only purpose of this release is to fix a docs build error on `docs.rs`.
 
