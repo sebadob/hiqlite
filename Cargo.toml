@@ -60,7 +60,7 @@ hyper = { version = "1.4.1", features = ["client", "http2"] }
 hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
 memmap2 = "0.9.5"
 mime_guess = "2.0.5"
-openraft = { version = "0.9.18", features = ["serde", "storage-v2"] }
+openraft = { version = "0.9.19", features = ["serde", "storage-v2"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "http2",
     "json",
