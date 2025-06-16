@@ -581,10 +581,7 @@ async fn handle_socket_concurrent(
             };
 
             if let Err(err) = tx_write.send_async(WsWriteMsg::Payload(res)).await {
-                panic!(
-                    "Error sending payload to tx_write - this should never happen: {}",
-                    err
-                );
+                error!("Error sending payload to tx_write - exiting: {}", err);
             }
         });
     }

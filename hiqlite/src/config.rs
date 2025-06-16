@@ -25,6 +25,10 @@ pub struct NodeConfig {
     pub node_id: NodeId,
     /// All Raft member nodes
     pub nodes: Vec<Node>,
+    /// Listen address for the API Server
+    pub listen_addr_api: Cow<'static, str>,
+    /// Listen address for the Raft Server
+    pub listen_addr_raft: Cow<'static, str>,
     /// The directory where the replication log, database and snapshots should be stored
     pub data_dir: Cow<'static, str>,
     /// If the SQLite should be written to disk, provide a filename here.
@@ -154,6 +158,8 @@ impl Default for NodeConfig {
         Self {
             node_id: 0,
             nodes: vec![],
+            listen_addr_api: "0.0.0.0".into(),
+            listen_addr_raft: "0.0.0.0".into(),
             data_dir: "hiqlite".into(),
             filename_db: "hiqlite.db".into(),
             log_statements: false,
@@ -228,6 +234,19 @@ impl NodeConfig {
                 .expect("Cannot parse HQL_NODE_ID to u64")
         };
 
+        let listen_addr_api = Cow::from(
+            env::var("HQL_LISTEN_ADDR_API")
+                .as_deref()
+                .unwrap_or("0.0.0.0")
+                .to_string(),
+        );
+        let listen_addr_raft = Cow::from(
+            env::var("HQL_LISTEN_ADDR_RAFT")
+                .as_deref()
+                .unwrap_or("0.0.0.0")
+                .to_string(),
+        );
+
         #[cfg(feature = "cache")]
         let cache_storage_disk = env::var("HQL_CACHE_STORAGE_DISK")
             .as_deref()
@@ -263,6 +282,8 @@ impl NodeConfig {
         let slf = Self {
             node_id,
             nodes: Node::parse_from_env("HQL_NODES"),
+            listen_addr_api,
+            listen_addr_raft,
             data_dir: env::var("HQL_DATA_DIR")
                 .unwrap_or_else(|_| "data".to_string())
                 .into(),
