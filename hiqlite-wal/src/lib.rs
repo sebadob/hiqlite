@@ -8,6 +8,7 @@ pub use shutdown::ShutdownHandle;
 pub use writer::Action;
 
 pub mod error;
+mod lockfile;
 mod log_store;
 mod log_store_impl;
 mod metadata;

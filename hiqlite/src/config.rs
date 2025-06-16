@@ -80,24 +80,6 @@ pub struct NodeConfig {
     pub wal_sync: hiqlite_wal::LogSync,
     /// Maximum WAL size in bytes.
     pub wal_size: u32,
-    /// Can be set to true to start the WAL handler even if the `lock.hql` file exists. This may be
-    /// necessary after a crash, when the lock file could not be removed during a graceful shutdown.
-    ///
-    /// IMPORTANT: Even though the Database can "heal" itself by simply rebuilding from the existing
-    /// Raft log files without even needing to think about it, you may want to only set it when
-    /// necessary to have more control. Depending on the type of crash (whole OS, maybe immediate
-    /// power loss, force killed, ...), it may be the case that the WAL files + metadata could not
-    /// be synced to disk properly and that quite a bit of data is lost.
-    ///
-    /// In such a case, it is usually a better idea to delete the whole volume and let the broken
-    /// node rebuild from other healthy cluster members, just to be sure.
-    ///
-    /// However, you can decide to ignore the lock file and start anyway. But **you must be 100% sure,
-    /// that no orphaned process is still running and accessing the WAL files!**
-    ///
-    /// If you may only temporarily need it after a crash, it is advised to work with the env var
-    /// `HQL_WAL_IGNORE_LOCK` in that case.
-    pub wal_ignore_lock: bool,
     /// Set to `true` to store the cache WAL + Snapshots on disk instead of keeping them in memory.
     /// The Caches themselves will always be in-memory only. The default is `true`, which will
     /// effectively reduce the total memory used, because otherwise the WAL + Snapshot in memory
@@ -169,7 +151,6 @@ impl Default for NodeConfig {
             sync_immediate: false,
             wal_sync: hiqlite_wal::LogSync::ImmediateAsync,
             wal_size: 2 * 1024 * 1024,
-            wal_ignore_lock: false,
             #[cfg(feature = "cache")]
             cache_storage_disk: true,
             raft_config: Self::default_raft_config(10_000),
@@ -266,12 +247,6 @@ impl NodeConfig {
             .parse::<u16>()
             .expect("Cannot parse HQL_LOGS_UNTIL_SNAPSHOT as u16");
 
-        let wal_ignore_lock = env::var("HQL_WAL_IGNORE_LOCK")
-            .as_deref()
-            .unwrap_or("false")
-            .parse::<bool>()
-            .expect("Cannot parse HQL_WAL_IGNORE_LOCK as bool");
-
         #[cfg(feature = "dashboard")]
         let insecure_cookie = env::var("HQL_INSECURE_COOKIE")
             .as_deref()
@@ -309,7 +284,6 @@ impl NodeConfig {
                 .expect("Cannot parse HQL_SYNC_IMMEDIATE as bool"),
             wal_sync: hiqlite_wal::LogSync::ImmediateAsync,
             wal_size: 2 * 1024 * 1024,
-            wal_ignore_lock,
             #[cfg(feature = "cache")]
             cache_storage_disk,
             raft_config: Self::default_raft_config(logs_keep),

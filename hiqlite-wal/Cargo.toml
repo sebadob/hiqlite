@@ -1,6 +1,6 @@
 [package]
 name = "hiqlite-wal"
-version = "0.7.1"
+version = "0.8.0-20250616"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -25,6 +25,7 @@ bincode.workspace = true
 byteorder.workspace = true
 crc.workspace = true
 flume.workspace = true
+fs4.workspace = true
 memmap2.workspace = true
 openraft.workspace = true
 serde.workspace = true

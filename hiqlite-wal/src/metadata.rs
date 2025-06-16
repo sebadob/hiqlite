@@ -92,64 +92,11 @@ impl Metadata {
     }
 }
 
-pub struct LockFile;
-
-impl LockFile {
-    #[inline]
-    pub fn exists(base_path: &str) -> Result<bool, Error> {
-        Ok(fs::exists(Self::path(base_path))?)
-    }
-
-    pub fn write(base_path: &str, wal_ignore_lock: bool) -> Result<(), Error> {
-        let path = Self::path(base_path);
-        match File::open(&path) {
-            Ok(_) => {
-                if wal_ignore_lock {
-                    Ok(())
-                } else {
-                    Err(Error::Locked(
-                        "WAL is locked, take a look at `HQL_WAL_IGNORE_LOCK`",
-                    ))
-                }
-            }
-            Err(_) => {
-                File::create(path)?;
-                Ok(())
-            }
-        }
-    }
-
-    pub fn remove(base_path: &str) -> Result<(), Error> {
-        let path = format!("{base_path}/lock.hql");
-        fs::remove_file(path)?;
-        Ok(())
-    }
-
-    #[inline]
-    fn path(base_path: &str) -> String {
-        format!("{base_path}/lock.hql")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const PATH: &str = "test_data";
-
-    #[test]
-    fn lockfile() -> Result<(), Error> {
-        LockFile::write(&PATH, false)?;
-        assert!(LockFile::write(&PATH, false).is_err());
-        LockFile::remove(&PATH)?;
-
-        LockFile::write(&PATH, false)?;
-        assert!(LockFile::write(&PATH, false).is_err());
-        assert!(LockFile::write(&PATH, true).is_ok());
-        LockFile::remove(&PATH)?;
-
-        Ok(())
-    }
 
     #[test]
     fn metadata_write_read() -> Result<(), Error> {
