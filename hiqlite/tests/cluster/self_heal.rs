@@ -12,9 +12,6 @@ pub async fn test_self_healing(
     mut client_2: Client,
     client_3: Client,
 ) -> Result<(), Error> {
-    // make sure to ignore WAL file locks for self-healing tests
-    unsafe { env::set_var("HQL_WAL_IGNORE_LOCK", "true") }
-
     check::is_client_db_healthy(&client_1, Some(1)).await?;
     check::is_client_db_healthy(&client_2, Some(2)).await?;
     check::is_client_db_healthy(&client_3, Some(3)).await?;

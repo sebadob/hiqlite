@@ -476,9 +476,6 @@ stringData:
     s3_region = "S3Region"
     s3_key = "YourS3KeyId"
     s3_secret = "YourS3Secret"
-
-    # auto-recover from crashes
-    wal_ignore_lock = true
 ```
 
 #### StatefulSet
