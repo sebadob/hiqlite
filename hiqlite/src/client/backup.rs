@@ -2,8 +2,21 @@ use crate::client::stream::{ClientBackupPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::sqlite::state_machine::QueryWrite;
 use crate::{Client, Error, Response};
+use chrono::{NaiveDateTime, Utc};
+use tokio::fs;
 use tokio::sync::oneshot;
-use tracing::error;
+use tracing::{debug, error, warn};
+
+use cryptr::stream::writer::channel_writer::ChannelReceiver;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
+#[derive(Debug)]
+pub struct BackupListing {
+    pub name: String,
+    pub last_modified: i64,
+    pub size: Option<u64>,
+}
 
 impl Client {
     /// Create an on-demand backup of the SQLite state machine.
@@ -84,6 +97,131 @@ impl Client {
                 ApiStreamResponsePayload::Backup(res) => res,
                 _ => unreachable!(),
             }
+        }
+    }
+
+    /// Get the file handle to a local backup.
+    pub async fn backup_file_local(&self, filename: &str) -> Result<fs::File, Error> {
+        if let Some(state) = self.inner.state.clone() {
+            let path = format!("{}/{filename}", state.backups_dir);
+            let file = fs::File::open(path).await?;
+            Ok(file)
+        } else {
+            Err(Error::Config(
+                "Backups cannot be listed for remote clients".into(),
+            ))
+        }
+    }
+
+    pub fn backup_s3_stream(&self, object: String) -> Result<ChannelReceiver, Error> {
+        if let Some(state) = self.inner.state.clone() {
+            if let Some(s3) = state.s3_config.clone() {
+                s3.pull_channel(object)
+            } else {
+                Err(Error::Config("No S3 bucket configured".into()))
+            }
+        } else {
+            Err(Error::Config(
+                "Backups cannot be listed for remote clients".into(),
+            ))
+        }
+    }
+
+    /// List all existing local backups.
+    pub async fn backup_list_local(&self) -> Result<Vec<BackupListing>, Error> {
+        if let Some(state) = self.inner.state.clone() {
+            let mut res = Vec::with_capacity(4);
+
+            let dir = &state.backups_dir;
+            let mut list = fs::read_dir(dir).await?;
+            while let Some(entry) = list.next_entry().await? {
+                let meta = entry.metadata().await?;
+                if meta.is_dir() {
+                    continue;
+                }
+
+                let fname = entry.file_name();
+                let name = fname.to_str().unwrap_or_default().to_string();
+                if !name.starts_with("backup_node_") {
+                    debug!("Found non-backup file: {name}");
+                    continue;
+                }
+
+                let last_modified: chrono::DateTime<Utc> = meta.modified()?.into();
+
+                #[cfg(unix)]
+                let size = Some(meta.size());
+                #[cfg(not(unix))]
+                let size = None;
+
+                res.push(BackupListing {
+                    name,
+                    last_modified: last_modified.timestamp(),
+                    size,
+                });
+            }
+
+            Ok(res)
+        } else {
+            Err(Error::Config(
+                "Backups cannot be listed for remote clients".into(),
+            ))
+        }
+    }
+
+    /// List all existing S3 backups.
+    pub async fn backup_list_s3(&self) -> Result<Vec<BackupListing>, Error> {
+        if let Some(state) = self.inner.state.clone() {
+            let mut res = Vec::with_capacity(16);
+
+            if let Some(s3) = state.s3_config.as_ref() {
+                let list = s3.bucket.list("", None).await?;
+                for bucket in list {
+                    if bucket.name != s3.bucket.name {
+                        // it's possible that the creds have access to multiple buckets
+                        continue;
+                    }
+
+                    for obj in bucket.contents {
+                        if !obj.key.starts_with("backup_node_") {
+                            debug!("Found non-backup file: {}", obj.key);
+                            continue;
+                        }
+
+                        let s = obj.last_modified.as_str();
+                        let last_modified = if s.len() < 19 {
+                            warn!("last modified timestamp from S3 too short");
+                            0
+                        } else {
+                            NaiveDateTime::parse_from_str(&s[..19], "%Y-%m-%dT%H:%M:%S")
+                                .map_err(|err| {
+                                    error!(
+                                        "Error parsing timestamp from S3: {}",
+                                        obj.last_modified
+                                    );
+                                    Error::S3(format!(
+                                        "Cannot parse last_modified timestamp from S3: {}",
+                                        err
+                                    ))
+                                })?
+                                .and_utc()
+                                .timestamp()
+                        };
+
+                        res.push(BackupListing {
+                            name: obj.key,
+                            last_modified,
+                            size: Some(obj.size),
+                        });
+                    }
+                }
+            }
+
+            Ok(res)
+        } else {
+            Err(Error::Config(
+                "Backups cannot be listed for remote clients".into(),
+            ))
         }
     }
 }
