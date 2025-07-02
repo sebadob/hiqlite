@@ -117,6 +117,7 @@ pub struct MetaMembershipRequest {
 pub struct BackupRequest {
     pub node_id: NodeId,
     pub target_folder: String,
+    pub ts: i64,
     #[cfg(feature = "s3")]
     pub s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
     pub last_applied_log_id: Option<LogId<NodeId>>,
@@ -291,7 +292,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                         let txn = match conn.transaction() {
                             Ok(txn) => txn,
                             Err(err) => {
-                                error!("Opening database transaction: {:?}", err);
+                                error!("Opening database transaction: {err:?}");
                                 req.tx
                                     .send(Err(Error::Transaction(err.to_string().into())))
                                     .expect("oneshot tx to never be dropped");
@@ -307,13 +308,13 @@ CREATE TABLE IF NOT EXISTS _metadata
                             req.queries.into_iter().enumerate()
                         {
                             if log_statements {
-                                info!("Query::Transaction:\n{}\n{:?}", sql, params);
+                                info!("Query::Transaction:\n{sql}\n{params:?}");
                             }
 
                             let mut stmt = match txn.prepare_cached(sql.as_ref()) {
                                 Ok(stmt) => stmt,
                                 Err(err) => {
-                                    let err = format!("Preparing cached query {}: {:?}", sql, err);
+                                    let err = format!("Preparing cached query {sql}: {err:?}");
                                     query_err =
                                         Some(Error::PrepareStatement(err.to_string().into()));
                                     break;
@@ -330,8 +331,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                                     Ok(param) => {
                                         if let Err(err) = stmt.raw_bind_parameter(idx, param) {
                                             let err = format!(
-                                                "Error binding param on position {} to query {}: {:?}",
-                                                idx, sql, err
+                                                "Error binding param on position {idx} to query \
+                                                {sql}: {err:?}"
                                             );
                                             query_err =
                                                 Some(Error::QueryParams(err.to_string().into()));
@@ -611,6 +612,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                     if let Err(err) = create_backup(
                         &conn,
                         req.node_id,
+                        req.ts,
                         req.target_folder.clone(),
                         #[cfg(feature = "s3")]
                         s3_config,
@@ -682,7 +684,7 @@ fn persist_metadata(
 
 #[inline]
 fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), rusqlite::Error> {
-    let q = format!("VACUUM main INTO '{}'", path);
+    let q = format!("VACUUM main INTO '{path}'");
     conn.execute(&q, ())?;
     Ok(())
 }
@@ -690,6 +692,7 @@ fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), rusq
 fn create_backup(
     conn: &rusqlite::Connection,
     node_id: NodeId,
+    ts: i64,
     target_folder: String,
     #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
 ) -> Result<(), Error> {
@@ -698,11 +701,11 @@ fn create_backup(
     // - connect to vacuumed db and reset metadata
     // - if we have an s3 target, encrypt and push it
 
-    let file = format!("backup_node_{}_{}.sqlite", node_id, Utc::now().timestamp());
-    let path_full = format!("{}/{}", target_folder, file);
-    info!("Creating database backup into {}", path_full);
+    let file = format!("backup_node_{node_id}_{ts}.sqlite");
+    let path_full = format!("{target_folder}/{file}");
+    info!("Creating database backup into {path_full}");
 
-    conn.execute(&format!("VACUUM main INTO '{}'", path_full), ())?;
+    conn.execute(&format!("VACUUM main INTO '{path_full}'"), ())?;
 
     // connect to the backup and reset metadata
     // make sure connection is dropped before starting encrypt + push
@@ -804,7 +807,10 @@ fn last_applied_migration(
             Ok(count)
         })?;
         if count < first_id - 1 {
-            panic!("Received optimized migrations starting at id '{}' but found only {} already applied", first_id, count);
+            panic!(
+                "Received optimized migrations starting at id '{first_id}' but found only \
+                {count} already applied"
+            );
         }
     }
 
@@ -836,26 +842,26 @@ fn last_applied_migration(
         last_applied = applied.id;
 
         match migrations.get(last_applied as usize - 1 - applied_offset) {
-            None => panic!("Missing migration with id {}", last_applied),
+            None => panic!("Missing migration with id {last_applied}"),
             Some(migration) => {
                 if applied.id != migration.id {
                     panic!(
-                        "Migration id mismatch: applied {}, given {}\n{:?}",
-                        applied.id, migration.id, migrations
+                        "Migration id mismatch: applied {}, given {}\n{migrations:?}",
+                        applied.id, migration.id
                     );
                 }
 
                 if applied.name != migration.name {
                     panic!(
-                        "Name for migration {} has changed: applied {}, given {}\n{:?}",
-                        migration.id, applied.name, migration.name, migrations
+                        "Name for migration {} has changed: applied {}, given {}\n{migrations:?}",
+                        migration.id, applied.name, migration.name
                     );
                 }
 
                 if applied.hash != migration.hash {
                     panic!(
-                        "Hash for migration {} has changed: applied {}, given {}\n{:?}",
-                        migration.id, applied.hash, migration.hash, migrations
+                        "Hash for migration {} has changed: applied {}, given {}\n{migrations:?}",
+                        migration.id, applied.hash, migration.hash
                     );
                 }
             }

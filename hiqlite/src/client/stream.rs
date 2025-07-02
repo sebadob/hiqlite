@@ -118,6 +118,7 @@ pub struct ClientMigratePayload {
 pub struct ClientBackupPayload {
     pub request_id: usize,
     pub node_id: NodeId,
+    pub ts: i64,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
 }
 
@@ -360,11 +361,12 @@ async fn client_stream(
                 ClientStreamReq::Backup(ClientBackupPayload {
                     request_id,
                     node_id,
+                    ts,
                     ack,
                 }) => {
                     let req = ApiStreamRequest {
                         request_id,
-                        payload: ApiStreamRequestPayload::Backup(node_id),
+                        payload: ApiStreamRequestPayload::Backup((node_id, ts)),
                     };
                     Some((
                         WritePayload::Payload(serialize_network(&req)),
@@ -792,7 +794,7 @@ async fn try_connect(
             .write_frame(Frame::close(1000, b"Invalid Handshake"))
             .await;
         // panic is the best option in case of a misconfiguration
-        panic!("Error during API WebSocket handshake: {}", err);
+        panic!("Error during API WebSocket handshake: {err}");
     }
 
     Ok(ws)

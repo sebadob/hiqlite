@@ -198,7 +198,7 @@ impl NodeConfig {
             debug!("config file './hiqlite.env' not found");
         }
         if dotenvy::from_filename_override(filename).is_err() {
-            debug!("config file '{}' not found", filename);
+            debug!("config file '{filename}' not found");
         }
         dotenvy::dotenv_override().ok();
         Self::from_env_parse()
@@ -419,10 +419,7 @@ clean up logs after debugging!
         let hostname = binding.to_str().expect("Invalid hostname format");
         match hostname.rsplit_once('-') {
             None => {
-                panic!(
-                    "Cannot split off the NODE_ID from the hostname {}",
-                    hostname
-                );
+                panic!("Cannot split off the NODE_ID from the hostname {hostname}");
             }
             Some((_, id)) => {
                 let id_hostname = id.parse::<u64>().expect("Cannot parse HQL_NODE_ID to u64");

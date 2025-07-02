@@ -61,8 +61,7 @@ impl TryFrom<&str> for LogSync {
                     let Ok(ms) = ms.parse::<u64>() else {
                         return Err(Error::Generic(
                             format!(
-                                "Invalid value for log_sync interval, cannot parse as u64: {}",
-                                v
+                                "Invalid value for log_sync interval, cannot parse as u64: {v}"
                             )
                             .into(),
                         ));
@@ -70,7 +69,7 @@ impl TryFrom<&str> for LogSync {
                     Ok(Self::IntervalMillis(ms))
                 } else {
                     Err(Error::Generic(
-                        format!("Cannot parse LogSync - invalid value: {}", v).into(),
+                        format!("Cannot parse LogSync - invalid value: {v}").into(),
                     ))
                 }
             }
@@ -160,9 +159,8 @@ fn run(
                         if bytes.len() > data_len_limit {
                             panic!(
                                 "`data` length must not exceed `wal_size` -> data length is {} \
-                            vs wal_size (without header) is {}",
+                            vs wal_size (without header) is {data_len_limit}",
                                 bytes.len(),
-                                data_len_limit
                             );
                         }
 
@@ -184,8 +182,8 @@ fn run(
                         }
                         debug_assert_eq!(
                             active.id_until, id,
-                            "active.id_until and id don't match: {} != {}",
-                            active.id_until, id
+                            "active.id_until and id don't match: {} != {id}",
+                            active.id_until
                         );
                     }
                 }
@@ -198,7 +196,7 @@ fn run(
 
                 if let Err(err) = ack.send(res) {
                     // this should usually not happen, but it may during an incorrect shutdown
-                    error!("error sending back ack after logs append: {:?}", err);
+                    error!("error sending back ack after logs append: {err:?}");
                 }
 
                 if sync == LogSync::Immediate {
@@ -233,8 +231,8 @@ fn run(
                 ack,
             } => {
                 debug!(
-                    "WAL Writer - Action::Remove from {from} until {until} / last_log: {:?}\n{:?}",
-                    last_log, wal
+                    "WAL Writer - Action::Remove from {from} until {until} / \
+                    last_log: {last_log:?}\n{wal:?}"
                 );
 
                 // Before removing any logs, make sure that all in-memory buffers are flushed. If

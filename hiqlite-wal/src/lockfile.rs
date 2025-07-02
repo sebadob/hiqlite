@@ -23,7 +23,7 @@ impl LockFile {
             .truncate(true)
             .open(&path)
             .map_err(|err| {
-                Error::Internal(format!("Cannot create WAL lock file {}: {}", path, err).into())
+                Error::Internal(format!("Cannot create WAL lock file {path}: {err}").into())
             })?;
 
         Ok(Self { file })
@@ -47,7 +47,7 @@ impl LockFile {
                 "WAL lock file is in use by another process".into(),
             )),
             Err(err) => Err(Error::Internal(
-                format!("Error locking WAL lock file: {}", err).into(),
+                format!("Error locking WAL lock file: {err}").into(),
             )),
         }
     }

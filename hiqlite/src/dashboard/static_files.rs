@@ -40,9 +40,9 @@ pub async fn handler(uri: Uri, req: Request) -> response::Response {
             .map(|h| h.to_str().unwrap_or("none"))
             .unwrap_or("none");
         if accept_encoding.contains("br") {
-            (Cow::from(format!("{}.br", path)), "br")
+            (Cow::from(format!("{path}.br")), "br")
         } else if accept_encoding.contains("gzip") {
-            (Cow::from(format!("{}.gz", path)), "gzip")
+            (Cow::from(format!("{path}.gz")), "gzip")
         } else {
             (Cow::from(path), "none")
         }
@@ -63,7 +63,7 @@ pub async fn handler(uri: Uri, req: Request) -> response::Response {
             .unwrap(),
 
         None => {
-            debug!("Asset {} not found", path);
+            debug!("Asset {path} not found");
             // for a in DashboardHtml::iter() {
             //     warn!("Available asset: {}", a);
             // }

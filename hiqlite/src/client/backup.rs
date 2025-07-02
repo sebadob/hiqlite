@@ -67,12 +67,13 @@ impl Client {
     #[cold]
     async fn backup_execute(&self) -> Result<(), Error> {
         let current_leader = self.inner.leader_db.read().await.0;
+        let ts = Utc::now().timestamp();
 
         if let Some(state) = self.is_leader_db_with_state().await {
             let res = state
                 .raft_db
                 .raft
-                .client_write(QueryWrite::Backup(current_leader))
+                .client_write(QueryWrite::Backup((current_leader, ts)))
                 .await?;
             let resp: Response = res.data;
             match resp {
@@ -86,6 +87,7 @@ impl Client {
                 .send_async(ClientStreamReq::Backup(ClientBackupPayload {
                     request_id: self.new_request_id(),
                     node_id: current_leader,
+                    ts,
                     ack,
                 }))
                 .await
@@ -200,8 +202,7 @@ impl Client {
                                         obj.last_modified
                                     );
                                     Error::S3(format!(
-                                        "Cannot parse last_modified timestamp from S3: {}",
-                                        err
+                                        "Cannot parse last_modified timestamp from S3: {err}"
                                     ))
                                 })?
                                 .and_utc()

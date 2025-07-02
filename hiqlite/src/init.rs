@@ -50,19 +50,18 @@ pub async fn check_execute_reset(base_path: &str) -> Result<bool, Error> {
     );
     time::sleep(Duration::from_secs(10)).await;
 
-    if let Err(err) = fs::remove_dir_all(format!("{}/logs", base_path)).await {
-        error!("Error during Raft Logs cleanup: {:?}", err);
+    if let Err(err) = fs::remove_dir_all(format!("{base_path}/logs")).await {
+        error!("Error during Raft Logs cleanup: {err:?}");
     }
-    if let Err(err) = fs::remove_dir_all(format!("{}/logs_cache", base_path)).await {
-        error!("Error during Raft Logs cleanup: {:?}", err);
+    if let Err(err) = fs::remove_dir_all(format!("{base_path}/logs_cache")).await {
+        error!("Error during Raft Logs cleanup: {err:?}");
     }
-    if let Err(err) = fs::remove_dir_all(format!("{}/state_machine/snapshots", base_path)).await {
-        error!("Error during Raft Logs cleanup: {:?}", err);
+    if let Err(err) = fs::remove_dir_all(format!("{base_path}/state_machine/snapshots")).await {
+        error!("Error during Raft Logs cleanup: {err:?}");
     }
-    if let Err(err) =
-        fs::remove_dir_all(format!("{}/state_machine_cache/snapshots", base_path)).await
+    if let Err(err) = fs::remove_dir_all(format!("{base_path}/state_machine_cache/snapshots")).await
     {
-        error!("Error during Raft Logs cleanup: {:?}", err);
+        error!("Error during Raft Logs cleanup: {err:?}");
     }
 
     Ok(true)

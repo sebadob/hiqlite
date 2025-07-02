@@ -213,7 +213,7 @@ where
         default_routes.with_state(state.clone())
     };
 
-    info!("api external listening on {}", &api_addr);
+    info!("api external listening on {api_addr}");
     let tls_config = if let Some(config) = &node_config.tls_api {
         Some(config.server_config().await)
     } else {
@@ -310,7 +310,7 @@ fn build_listen_addr(listen_addr: &str, node_addr: &str, tls: bool) -> String {
     } else {
         "80"
     };
-    format!("{}:{}", listen_addr, port)
+    format!("{listen_addr}:{port}")
 }
 
 async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) {

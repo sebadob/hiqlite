@@ -208,13 +208,13 @@ pub(crate) async fn backup_local_cleanup(backup_path: String) -> Result<(), Erro
             match ts.parse::<i64>() {
                 Ok(ts) => {
                     if ts > ts_min && ts < ts_threshold {
-                        debug!("Cleaning up backup {}", s);
-                        let p = format!("{}{}", backup_path, s);
+                        debug!("Cleaning up backup {s}");
+                        let p = format!("{backup_path}{s}");
                         let _ = tokio::fs::remove_dir_all(p).await;
                     }
                 }
                 Err(err) => {
-                    error!("Cannot parse ts from file {}: {}", s, err)
+                    error!("Cannot parse ts from file {s}: {err}")
                 }
             }
         }
@@ -312,17 +312,14 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
                 }
                 Some(c) => c,
             };
-            let path_backup = format!("{}/{}", path_backups, BACKUP_DB_NAME);
+            let path_backup = format!("{path_backups}/{BACKUP_DB_NAME}");
             s3_config.pull(&s3_obj, &path_backup).await?;
             (path_backup, true)
         }
         BackupSource::File(path_src) => {
             let (path, filename) = path_src.rsplit_once('/').unwrap_or(("", &path_src));
-            debug!(
-                "Given backup path full: '{}', after parsing: '{}' / '{}'",
-                path_src, path, filename
-            );
-            let path_backup = format!("{}/{}", path_backups, filename);
+            debug!("Given backup path full: '{path_src}', after parsing: '{path}' / '{filename}'");
+            let path_backup = format!("{path_backups}/{filename}");
 
             fs::copy(path_src, &path_backup).await?;
             (path_backup, false)

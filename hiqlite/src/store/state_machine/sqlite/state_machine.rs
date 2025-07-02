@@ -49,7 +49,7 @@ pub enum QueryWrite {
     Batch(Cow<'static, str>),
     Migration(Vec<Migration>),
     #[cfg(feature = "backup")]
-    Backup(NodeId),
+    Backup((NodeId, i64)),
     RTT,
 }
 
@@ -130,7 +130,7 @@ impl StateMachineSqlite {
         // IMPORTANT: Do NOT change the order of the db exists check!
         // DB recovery will fail otherwise!
         let mut db_exists = Self::db_exists(data_dir, filename_db).await;
-        info!("db_exists in state_machine::new(): {}", db_exists);
+        info!("db_exists in state_machine::new(): {db_exists}");
 
         let (
             PathDb(path_db),
@@ -195,12 +195,12 @@ impl StateMachineSqlite {
 
     async fn db_exists(data_dir: &str, filename_db: &str) -> bool {
         let path_db = Self::path_db(data_dir);
-        let path_db_full = format!("{}/{}", path_db, filename_db);
+        let path_db_full = format!("{path_db}/{filename_db}");
         fs::File::open(&path_db_full).await.is_ok()
     }
 
     pub fn path_base(data_dir: &str) -> String {
-        format!("{}/state_machine", data_dir)
+        format!("{data_dir}/state_machine")
     }
 
     fn path_db(data_dir: &str) -> String {
@@ -214,9 +214,9 @@ impl StateMachineSqlite {
         let path_base = Self::path_base(data_dir);
 
         let path_db = Self::path_db(data_dir);
-        let path_backups = format!("{}/backups", path_base);
-        let path_snapshots = format!("{}/snapshots", path_base);
-        let path_lock_file = format!("{}/lock", path_base);
+        let path_backups = format!("{path_base}/backups");
+        let path_snapshots = format!("{path_base}/snapshots");
+        let path_lock_file = format!("{path_base}/lock");
 
         if create {
             // this may error if we did already re-create it in a lock file recovery before
@@ -258,9 +258,8 @@ impl StateMachineSqlite {
             #[cfg(feature = "auto-heal")]
             {
                 warn!(
-                    "Lock file already exists: {}\n\
-                    Node did not shut down gracefully - auto-rebuilding State Machine",
-                    path_lock_file
+                    "Lock file already exists: {path_lock_file}\n\
+                    Node did not shut down gracefully - auto-rebuilding State Machine"
                 );
 
                 // if we can't create the lock file, we will delete the current state machine
@@ -270,7 +269,7 @@ impl StateMachineSqlite {
 
                 // re-create the DB folder
                 if let Err(err) = fs::create_dir_all(path_db).await {
-                    panic!("Cannot re-create DB folder {}: {}", path_db, err);
+                    panic!("Cannot re-create DB folder {path_db}: {err}");
                 }
 
                 *db_exists = false;
@@ -283,7 +282,7 @@ impl StateMachineSqlite {
                 path_lock_file
             );
         } else if let Err(err) = fs::File::create(path_lock_file).await {
-            panic!("Error creating lock file {}: {}", path_lock_file, err);
+            panic!("Error creating lock file {path_lock_file}: {err}");
         }
     }
 
@@ -298,7 +297,7 @@ impl StateMachineSqlite {
         prepared_statement_cache_capacity: usize,
     ) -> Result<rusqlite::Connection, Error> {
         task::spawn_blocking(move || {
-            let path_full = format!("{}/{}", path, filename_db);
+            let path_full = format!("{path}/{filename_db}");
             let conn = rusqlite::Connection::open(path_full)?;
             Self::apply_pragmas(&conn, read_only, prepared_statement_cache_capacity)?;
             Ok(conn)
@@ -312,7 +311,7 @@ impl StateMachineSqlite {
         prepared_statement_cache_capacity: usize,
         pool_size: usize,
     ) -> Result<SqlitePool, Error> {
-        let path_full = format!("{}/{}", path, filename_db);
+        let path_full = format!("{path}/{filename_db}");
 
         let mut conns = Vec::with_capacity(pool_size);
         for _ in 0..pool_size {
@@ -632,11 +631,12 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                 }
 
                 #[cfg(feature = "backup")]
-                EntryPayload::Normal(QueryWrite::Backup(node_id)) => {
+                EntryPayload::Normal(QueryWrite::Backup((node_id, ts))) => {
                     let (ack, rx) = oneshot::channel();
                     let req = WriterRequest::Backup(writer::BackupRequest {
                         node_id,
                         target_folder: self.path_backups.clone(),
+                        ts,
                         #[cfg(feature = "s3")]
                         s3_config: self.s3_config.clone(),
                         last_applied_log_id,
