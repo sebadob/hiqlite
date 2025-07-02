@@ -15,7 +15,8 @@ strip = true
 panic = "abort"
 
 [patch.crates-io]
-#cryptr = { git = "https://github.com/sebadob/cryptr" }
+#cryptr = { path = "../cryptr" }
+cryptr = { git = "https://github.com/sebadob/cryptr" }
 
 [workspace.dependencies]
 argon2 = "0.5.3"
@@ -38,7 +39,7 @@ chrono = { version = "0.4.38", default-features = false, features = [
 clap = { version = "4.1.11", features = ["derive", "env"] }
 crc = "3.3.0"
 cron = { version = "0.15" }
-cryptr = { version = "0.6.1", features = ["s3"] }
+cryptr = { version = "0.7.0-20250702", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"

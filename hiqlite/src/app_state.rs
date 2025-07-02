@@ -9,6 +9,7 @@ use std::sync::Arc;
 use crate::client::stream::ClientStreamReq;
 #[cfg(feature = "dashboard")]
 use crate::dashboard::DashboardState;
+use crate::s3::S3Config;
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::LockRequest;
 #[cfg(feature = "listen_notify")]
@@ -49,6 +50,8 @@ impl RaftType {
 // instances of raft, store and more.
 pub(crate) struct AppState {
     pub app_start: chrono::DateTime<Utc>,
+    #[cfg(feature = "backup")]
+    pub backups_dir: String,
     pub id: NodeId,
     #[cfg(feature = "cache")]
     pub nodes: Vec<crate::Node>,
@@ -58,6 +61,8 @@ pub(crate) struct AppState {
     #[cfg(feature = "cache")]
     pub raft_cache: StateRaftCache,
     pub raft_lock: Arc<Mutex<()>>,
+    #[cfg(feature = "s3")]
+    pub s3_config: Option<Arc<S3Config>>,
     pub secret_raft: String,
     pub secret_api: String,
     #[cfg(feature = "dashboard")]

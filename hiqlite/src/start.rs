@@ -79,6 +79,7 @@ where
 
     let state = Arc::new(AppState {
         app_start: Default::default(),
+        backups_dir: format!("{}/state_machine/backups", node_config.data_dir),
         id: node_config.node_id,
         #[cfg(feature = "cache")]
         nodes: node_config.nodes.clone(),
@@ -100,6 +101,8 @@ where
         tx_client_stream: tx_client_stream.clone(),
         shutdown_delay_millis: node_config.shutdown_delay_millis,
         health_check_delay_secs: node_config.health_check_delay_secs,
+        #[cfg(feature = "s3")]
+        s3_config: node_config.s3_config.clone(),
     });
 
     #[cfg(any(feature = "sqlite", feature = "cache"))]

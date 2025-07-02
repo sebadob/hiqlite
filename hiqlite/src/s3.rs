@@ -1,10 +1,11 @@
 use crate::Error;
+pub use cryptr::stream::s3::*;
+use cryptr::stream::writer::channel_writer::{ChannelReceiver, ChannelWriter};
+pub use cryptr::EncKeys;
 use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter};
 use std::env;
 use std::sync::Arc;
-
-pub use cryptr::stream::s3::*;
-pub use cryptr::EncKeys;
+use tokio::task;
 
 #[derive(Debug, Clone)]
 pub struct S3Config {
@@ -35,6 +36,8 @@ impl S3Config {
         });
         let bucket = Bucket::new(endpoint, bucket_name.into(), region, credentials, options)
             .map_err(|err| Error::S3(err.to_string()))?;
+
+        // TODO try to list bucket and make sure access creds work fine
 
         Ok(Arc::new(Self { bucket }))
     }
@@ -101,5 +104,25 @@ impl S3Config {
         EncValue::decrypt_stream(reader, writer)
             .await
             .map_err(|err| Error::S3(err.to_string()))
+    }
+
+    pub(crate) fn pull_channel(&self, object: String) -> Result<ChannelReceiver, Error> {
+        let (channel_writer, rx) = ChannelWriter::new();
+        let writer = StreamWriter::Channel(channel_writer.clone());
+
+        let bucket = self.bucket.clone();
+        task::spawn(async move {
+            let reader = StreamReader::S3(S3Reader {
+                bucket: &bucket,
+                object: &object,
+                print_progress: false,
+            });
+
+            if let Err(err) = EncValue::decrypt_stream(reader, writer).await {
+                channel_writer.err(Some(err)).await;
+            }
+        });
+
+        Ok(rx)
     }
 }
