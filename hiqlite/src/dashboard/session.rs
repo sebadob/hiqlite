@@ -74,15 +74,9 @@ impl Session {
         let max_age = self.expires - Utc::now().timestamp();
 
         let cookie_header = if *INSECURE_COOKIES {
-            format!(
-                "{}={}; HttpOnly; SameSite=Lax; Max-Age={}",
-                COOKIE_NAME_DEV, b64, max_age
-            )
+            format!("{COOKIE_NAME_DEV}={b64}; HttpOnly; SameSite=Lax; Max-Age={max_age}")
         } else {
-            format!(
-                "{}={}; Secure; HttpOnly; SameSite=Lax; Max-Age={} Path=/",
-                COOKIE_NAME, b64, max_age
-            )
+            format!("{COOKIE_NAME}={b64}; Secure; HttpOnly; SameSite=Lax; Max-Age={max_age} Path=/")
         };
 
         Ok(cookie_header)
@@ -167,7 +161,7 @@ async fn check_csrf(method: &Method, headers: &HeaderMap) -> Result<(), Error> {
                 .map(|h| h.to_str().unwrap_or_default())
                 .unwrap_or_default();
 
-            debug!("sec-fetch-dest: {}, sec-fetch-mode: {}", dest, mode);
+            debug!("sec-fetch-dest: {dest}, sec-fetch-mode: {mode}");
 
             // allow images fetches like favicon
             if dest == "image" && mode == "no-cors" {

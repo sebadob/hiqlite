@@ -357,8 +357,7 @@ impl NetworkStreaming {
 
                     if let Err(err) = tx_write.send_async(WritePayload::Payload(bytes)).await {
                         let _ = ack.send(Err(Error::Connect(format!(
-                            "Error sending Write Request to WebSocket writer: {}",
-                            err
+                            "Error sending Write Request to WebSocket writer: {err}"
                         ))));
                         break;
                     }
@@ -462,7 +461,7 @@ impl NetworkStreaming {
             "http"
         };
         let uri = format!("{}://{}/stream/{}", scheme, addr, raft_type.as_str());
-        info!("Trying to connect to: {}", uri);
+        info!("Trying to connect to: {uri}");
 
         let req = Request::builder()
             .method("GET")
@@ -477,7 +476,7 @@ impl NetworkStreaming {
             .body(Empty::<Bytes>::new())
             .map_err(|err| Error::Connect(err.to_string()))?;
 
-        info!("Opening TcpStream to: {}", addr);
+        info!("Opening TcpStream to: {addr}");
         let stream = TcpStream::connect(addr)
             .await
             .map_err(|err| Error::Connect(err.to_string()))?;
@@ -492,13 +491,12 @@ impl NetworkStreaming {
         ws.set_auto_close(true);
 
         if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
-            error!("Error opening WebSocket stream: {:?}", err);
+            error!("Error opening WebSocket stream: {err:?}");
             let _ = ws
                 .write_frame(Frame::close(1000, b"Invalid Handshake"))
                 .await;
             Err(Error::Connect(format!(
-                "Error during API WebSocket handshake: {}",
-                err
+                "Error during API WebSocket handshake: {err}"
             )))
         } else {
             info!("WebSocket stream connected");

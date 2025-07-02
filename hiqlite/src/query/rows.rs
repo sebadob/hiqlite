@@ -98,7 +98,7 @@ impl RowOwned {
         }
 
         Err(Error::QueryParams(
-            format!("column '{}' not found", idx).into(),
+            format!("column '{idx}' not found").into(),
         ))
     }
 }

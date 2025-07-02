@@ -178,21 +178,21 @@ impl From<std::io::Error> for Error {
 
 impl From<Box<EncodeError>> for Error {
     fn from(value: Box<EncodeError>) -> Self {
-        trace!("bincode::EncodeError: {}", value);
+        trace!("bincode::EncodeError: {value}");
         Self::Bincode(value.to_string())
     }
 }
 
 impl From<Box<DecodeError>> for Error {
     fn from(value: Box<DecodeError>) -> Self {
-        trace!("bincode::DecodeError: {}", value);
+        trace!("bincode::DecodeError: {value}");
         Self::Bincode(value.to_string())
     }
 }
 
 impl From<reqwest::Error> for Error {
     fn from(value: reqwest::Error) -> Self {
-        trace!("reqwest::Error: {}", value);
+        trace!("reqwest::Error: {value}");
         if value.is_connect() {
             Self::Connect(value.to_string())
         } else if value.is_timeout() {
@@ -205,42 +205,42 @@ impl From<reqwest::Error> for Error {
 
 impl From<RaftWriteError> for Error {
     fn from(value: RaftWriteError) -> Self {
-        trace!("ClientWriteError: {}", value);
+        trace!("ClientWriteError: {value}");
         Self::ClientWriteError(Box::new(value))
     }
 }
 
 impl From<RaftInitError> for Error {
     fn from(value: RaftInitError) -> Self {
-        trace!("InitializeError: {}", value);
+        trace!("InitializeError: {value}");
         Self::InitializeError(Box::new(value))
     }
 }
 
 impl From<RaftSnapshotError> for Error {
     fn from(value: RaftSnapshotError) -> Self {
-        trace!("SnapshotError: {}", value);
+        trace!("SnapshotError: {value}");
         Self::SnapshotError(Box::new(value))
     }
 }
 
 impl From<RaftError<u64>> for Error {
     fn from(value: RaftError<u64>) -> Self {
-        trace!("RaftError: {}", value);
+        trace!("RaftError: {value}");
         Self::RaftError(Box::new(value))
     }
 }
 
 impl From<RaftError<u64, CheckIsLeaderError<u64, Node>>> for Error {
     fn from(value: RaftError<u64, CheckIsLeaderError<u64, Node>>) -> Self {
-        trace!("CheckIsLeaderError: {}", value);
+        trace!("CheckIsLeaderError: {value}");
         Self::CheckIsLeaderError(Box::new(value))
     }
 }
 
 impl From<Fatal<u64>> for Error {
     fn from(value: Fatal<u64>) -> Self {
-        trace!("RaftErrorFatal: {}", value);
+        trace!("RaftErrorFatal: {value}");
         Self::RaftErrorFatal(Box::new(value))
     }
 }
@@ -248,7 +248,7 @@ impl From<Fatal<u64>> for Error {
 #[cfg(feature = "sqlite")]
 impl From<rusqlite::Error> for Error {
     fn from(value: rusqlite::Error) -> Self {
-        trace!("rusqlite::Error: {}", value);
+        trace!("rusqlite::Error: {value}");
 
         match value {
             rusqlite::Error::QueryReturnedNoRows => {
@@ -272,7 +272,7 @@ impl From<rusqlite::Error> for Error {
                 // ErrorCode::SchemaChanged => {}
                 // ErrorCode::TooBig => {}
                 rusqlite::ErrorCode::ConstraintViolation => {
-                    Self::ConstraintViolation(format!("{} {:?}", err, ext))
+                    Self::ConstraintViolation(format!("{err} {ext:?}"))
                 }
                 // ErrorCode::TypeMismatch => {}
                 // ErrorCode::ApiMisuse => {}
@@ -281,7 +281,7 @@ impl From<rusqlite::Error> for Error {
                 // ErrorCode::ParameterOutOfRange => {}
                 // ErrorCode::NotADatabase => {}
                 // ErrorCode::Unknown => {}
-                _ => Self::Sqlite(format!("{} {:?}", err, ext).into()),
+                _ => Self::Sqlite(format!("{err} {ext:?}").into()),
             },
             v => Self::Sqlite(v.to_string().into()),
         }
@@ -305,49 +305,49 @@ impl From<rusqlite::Error> for Error {
 #[cfg(feature = "sqlite")]
 impl From<deadpool::unmanaged::PoolError> for Error {
     fn from(value: deadpool::unmanaged::PoolError) -> Self {
-        trace!("Sqlite: {}", value);
+        trace!("Sqlite: {value}");
         Self::Sqlite(value.to_string().into())
     }
 }
 
 impl From<serde_json::Error> for Error {
     fn from(value: serde_json::Error) -> Self {
-        trace!("BadRequest: {}", value);
+        trace!("BadRequest: {value}");
         Self::BadRequest(value.to_string().into())
     }
 }
 
 impl From<DecodeError> for Error {
     fn from(value: DecodeError) -> Self {
-        trace!("DecodeError: {}", value);
+        trace!("DecodeError: {value}");
         Self::Bincode(value.to_string())
     }
 }
 
 impl From<EncodeError> for Error {
     fn from(value: EncodeError) -> Self {
-        trace!("EncodeError: {}", value);
+        trace!("EncodeError: {value}");
         Self::Bincode(value.to_string())
     }
 }
 
 impl From<fastwebsockets::WebSocketError> for Error {
     fn from(value: WebSocketError) -> Self {
-        trace!("WebSocket: {}", value);
+        trace!("WebSocket: {value}");
         Self::WebSocket(value.to_string())
     }
 }
 
 impl From<JoinError> for Error {
     fn from(value: JoinError) -> Self {
-        trace!("JoinError: {}", value);
+        trace!("JoinError: {value}");
         Self::Error(value.to_string().into())
     }
 }
 
 impl From<flume::RecvError> for Error {
     fn from(value: flume::RecvError) -> Self {
-        trace!("flume::RecvError: {}", value);
+        trace!("flume::RecvError: {value}");
         Self::Channel(value.to_string())
     }
 }
@@ -355,7 +355,7 @@ impl From<flume::RecvError> for Error {
 #[cfg(feature = "listen_notify")]
 impl From<flume::SendError<NotifyRequest>> for Error {
     fn from(value: flume::SendError<NotifyRequest>) -> Self {
-        trace!("flume::SendError<NotifyRequest>: {}", value);
+        trace!("flume::SendError<NotifyRequest>: {value}");
         Self::Channel(value.to_string())
     }
 }
@@ -363,7 +363,7 @@ impl From<flume::SendError<NotifyRequest>> for Error {
 #[cfg(any(feature = "backup", feature = "s3"))]
 impl From<cryptr::stream::s3::S3Error> for Error {
     fn from(value: cryptr::stream::s3::S3Error) -> Self {
-        trace!("cryptr::stream::s3::S3Error: {}", value);
+        trace!("cryptr::stream::s3::S3Error: {value}");
         Self::S3(value.to_string())
     }
 }
@@ -371,7 +371,7 @@ impl From<cryptr::stream::s3::S3Error> for Error {
 #[cfg(any(feature = "dashboard", feature = "s3"))]
 impl From<cryptr::CryptrError> for Error {
     fn from(value: cryptr::CryptrError) -> Self {
-        trace!("cryptr::CryptrError: {}", value);
+        trace!("cryptr::CryptrError: {value}");
         Self::Cryptr(value.to_string())
     }
 }
@@ -379,14 +379,14 @@ impl From<cryptr::CryptrError> for Error {
 #[cfg(feature = "dashboard")]
 impl From<argon2::password_hash::Error> for Error {
     fn from(value: argon2::password_hash::Error) -> Self {
-        trace!("argon2::password_hash::Error: {}", value);
+        trace!("argon2::password_hash::Error: {value}");
         Self::Unauthorized("invalid credentials".into())
     }
 }
 
 impl From<hiqlite_wal::error::Error> for Error {
     fn from(value: hiqlite_wal::error::Error) -> Self {
-        trace!("hiqlite_wal::error::Error: {}", value);
+        trace!("hiqlite_wal::error::Error: {value}");
         Self::WAL(value.to_string())
     }
 }

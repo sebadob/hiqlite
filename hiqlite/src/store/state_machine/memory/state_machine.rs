@@ -189,7 +189,7 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             let snapshot_id = if let Some(last) = data.last_applied_log_id {
                 format!("{}-{}-{}", now, last.leader_id, last.index)
             } else {
-                format!("{}--", now)
+                format!("{now}--")
             };
 
             let meta = SnapshotMeta {
@@ -222,7 +222,7 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
                 let fname = entry.file_name();
                 let name = fname.to_str().unwrap_or_default();
                 if !name.is_empty() && name != id {
-                    fs::remove_file(format!("{}/{}", path, name)).await.unwrap();
+                    fs::remove_file(format!("{path}/{name}")).await.unwrap();
                 }
             }
         });
@@ -241,8 +241,8 @@ impl StateMachineMemory {
     where
         C: Debug + IntoEnumIterator + CacheIndex,
     {
-        let path_sm = format!("{}/state_machine_cache", base_path);
-        let path_snapshots = format!("{}/snapshots", path_sm);
+        let path_sm = format!("{base_path}/state_machine_cache");
+        let path_snapshots = format!("{path_sm}/snapshots");
 
         if in_memory_only {
             // in this case we must always start clean,
@@ -262,8 +262,7 @@ impl StateMachineMemory {
                 return Err(Error::Config(
                     format!(
                         "'Cache' enum's `.to_usize()` must return each elements position in the \
-                    iterator. Expected {} for {:?}",
-                        len, value,
+                    iterator. Expected {len} for {value:?}"
                     )
                     .into(),
                 ));

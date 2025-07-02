@@ -97,7 +97,7 @@ async fn snapshots_cleanup(
 
         // we only expect sub-dirs in the snapshot dir
         if meta.is_dir() {
-            warn!("Invalid folder in snapshots dir: {}", name);
+            warn!("Invalid folder in snapshots dir: {name}");
             continue;
         }
 
@@ -114,9 +114,9 @@ async fn snapshots_cleanup(
     }
 
     for file_name in deletes {
-        let path = format!("{}/{}", path_snapshots, file_name);
+        let path = format!("{path_snapshots}/{file_name}");
         if let Err(err) = fs::remove_file(path).await {
-            error!("Error removing old snapshot {}: {}", file_name, err);
+            error!("Error removing old snapshot {file_name}: {err}");
         }
     }
 

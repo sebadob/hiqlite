@@ -17,7 +17,7 @@ pub struct Metadata {
 
 impl Metadata {
     pub fn read_or_create(base_path: &str) -> Result<Self, Error> {
-        let path = format!("{}/meta.hql", base_path);
+        let path = format!("{base_path}/meta.hql");
 
         if !fs::exists(&path)? {
             info!("WAL Metadata does not exist, creating new file: {}", path);
@@ -69,7 +69,7 @@ impl Metadata {
 
     #[inline]
     fn write_unchecked(bytes: &[u8], base_path: &str) -> Result<(), Error> {
-        let path = format!("{}/meta.hql", base_path);
+        let path = format!("{base_path}/meta.hql");
 
         let _ = fs::remove_file(&path);
         let mut file = File::create_new(&path)?;

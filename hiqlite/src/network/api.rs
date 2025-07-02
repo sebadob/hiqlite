@@ -154,7 +154,7 @@ pub(crate) enum ApiStreamRequestPayload {
     Migrate(Vec<Migration>),
 
     #[cfg(feature = "backup")]
-    Backup(crate::NodeId),
+    Backup((crate::NodeId, i64)),
 
     #[cfg(feature = "cache")]
     KV(CacheRequest),
@@ -452,11 +452,11 @@ async fn handle_socket_concurrent(
                 }
 
                 #[cfg(feature = "backup")]
-                ApiStreamRequestPayload::Backup(node_id) => {
+                ApiStreamRequestPayload::Backup((node_id, ts)) => {
                     match state
                         .raft_db
                         .raft
-                        .client_write(QueryWrite::Backup(node_id))
+                        .client_write(QueryWrite::Backup((node_id, ts)))
                         .await
                     {
                         Ok(resp) => {

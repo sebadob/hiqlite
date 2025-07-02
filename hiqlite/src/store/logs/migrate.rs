@@ -25,11 +25,8 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
 
     // the bare minimum of files that must be there for a possibly existing
     // rocksdb is a `LOG` file
-    if !fs::try_exists(format!("{}/LOG", logs_dir)).await? {
-        info!(
-            "No rocksdb LOG file found in {} - nothing to migrate",
-            logs_dir
-        );
+    if !fs::try_exists(format!("{logs_dir}/LOG")).await? {
+        info!("No rocksdb LOG file found in {logs_dir} - nothing to migrate");
         return Ok(());
     }
 
@@ -45,9 +42,9 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
                 files.push(fname.to_string());
             }
         }
-        info!("Cleaning up existing hiqlite-wal files: {:?}", files);
+        info!("Cleaning up existing hiqlite-wal files: {files:?}");
         for file in files.drain(..) {
-            fs::remove_file(format!("{}/{}", logs_dir, file)).await?;
+            fs::remove_file(format!("{logs_dir}/{file}")).await?;
         }
 
         info!("starting hiqlite-wal writer for migration");
@@ -56,7 +53,7 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
                 .await?;
         task::spawn_blocking(move || async {
             if let Err(err) = migrate(db, writer).await {
-                panic!("Cannot migrate from rocksdb: {:?}", err);
+                panic!("Cannot migrate from rocksdb: {err:?}");
             }
         })
         .await?;
@@ -76,17 +73,17 @@ pub async fn check_migrate_rocksdb(logs_dir: String, wal_size: u32) -> Result<()
                 }
             }
         }
-        info!("Cleaning up old rocksdb files: {:?}", files);
+        info!("Cleaning up old rocksdb files: {files:?}");
         for file in files {
-            fs::remove_file(format!("{}/{}", logs_dir, file)).await?;
+            fs::remove_file(format!("{logs_dir}/{file}")).await?;
         }
-        info!("Cleaning up old rocksdb dirs: {:?}", dirs);
+        info!("Cleaning up old rocksdb dirs: {dirs:?}");
         for dir in dirs {
-            fs::remove_dir_all(format!("{}/{}", logs_dir, dir)).await?;
+            fs::remove_dir_all(format!("{logs_dir}/{dir}")).await?;
         }
 
         // wait for writer shutdown
-        let lock_file = format!("{}/lock.hql", logs_dir);
+        let lock_file = format!("{logs_dir}/lock.hql");
         while fs::try_exists(&lock_file).await? {
             info!("Writer is still shutting down - waiting ...");
             time::sleep(Duration::from_millis(500)).await;

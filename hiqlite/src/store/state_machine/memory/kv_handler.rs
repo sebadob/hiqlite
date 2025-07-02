@@ -42,7 +42,7 @@ pub enum CacheRequestHandler {
 
 pub fn spawn<C: Debug>(cache: C) -> flume::Sender<CacheRequestHandler> {
     let (tx, rx) = flume::unbounded();
-    let cache_name = format!("{:?}", cache);
+    let cache_name = format!("{cache:?}");
 
     task::spawn(kv_handler(cache_name, rx));
 
@@ -71,12 +71,12 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
                 data.remove(&key);
             }
             CacheRequestHandler::Clear => {
-                info!("Clearing all caches for {}", cache_name);
+                info!("Clearing all caches for {cache_name}");
                 data.clear();
             }
             #[cfg(feature = "counters")]
             CacheRequestHandler::ClearCounters => {
-                info!("Clearing all counters for {}", cache_name);
+                info!("Clearing all counters for {cache_name}");
                 counters.clear();
             }
             CacheRequestHandler::SnapshotBuildCacheOnly(ack) => {
@@ -136,5 +136,5 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
         }
     }
 
-    warn!("cache::kv_handler for {} exiting", cache_name);
+    warn!("cache::kv_handler for {cache_name} exiting");
 }

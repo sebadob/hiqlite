@@ -27,9 +27,9 @@ impl ServerTlsConfig {
     }
 
     pub fn from_env(variant: &str) -> Option<Self> {
-        let key = env::var(format!("HQL_TLS_{}_KEY", variant)).ok();
-        let cert = env::var(format!("HQL_TLS_{}_CERT", variant)).ok();
-        let no_verify = env::var(format!("HQL_TLS_{}_DANGER_TLS_NO_VERIFY", variant))
+        let key = env::var(format!("HQL_TLS_{variant}_KEY")).ok();
+        let cert = env::var(format!("HQL_TLS_{variant}_CERT")).ok();
+        let no_verify = env::var(format!("HQL_TLS_{variant}_DANGER_TLS_NO_VERIFY"))
             .ok()
             .map(|v| {
                 v.parse::<bool>()

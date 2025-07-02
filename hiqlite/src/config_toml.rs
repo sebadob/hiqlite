@@ -26,7 +26,7 @@ impl NodeConfig {
         let t_name = table.unwrap_or("hiqlite");
 
         let Ok(config) = fs::read_to_string(path).await else {
-            panic!("Cannot read config file from: {}", path);
+            panic!("Cannot read config file from: {path}");
         };
 
         // Note: these inner parsers are very verbose, but they allow the upfront memory allocation
@@ -37,7 +37,7 @@ impl NodeConfig {
             .parse::<toml::Table>()
             .expect("Cannot parse TOML file");
         let Some(table) = t_table(&mut root, t_name) else {
-            panic!("Cannot find table '{}' in {}", t_name, path);
+            panic!("Cannot find table '{t_name}' in {path}");
         };
 
         Self::from_toml_table(
@@ -225,7 +225,7 @@ impl NodeConfig {
             let Ok(config) =
                 crate::s3::S3Config::new(&url, bucket, region, key, secret, path_style)
             else {
-                panic!("Cannot build S3Config from given S3 values in {}.", t_name);
+                panic!("Cannot build S3Config from given S3 values in {t_name}.");
             };
             Some(config)
         } else {
@@ -415,18 +415,18 @@ fn t_str_vec(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> O
 
 fn t_table(map: &mut toml::Table, key: &str) -> Option<toml::Table> {
     let Value::Table(t) = map.remove(key)? else {
-        panic!("Expected type `Table` for {}", key)
+        panic!("Expected type `Table` for {key}")
     };
     Some(t)
 }
 
 #[inline]
 fn err_env(var_name: &str, typ: &str) -> String {
-    format!("Cannot parse {} as `{}`", var_name, typ)
+    format!("Cannot parse {var_name} as `{typ}`")
 }
 
 #[inline]
 fn err_t(key: &str, parent: &str, typ: &str) -> String {
     let sep = if parent.is_empty() { "" } else { "." };
-    format!("Expected type `{}` for {}{}{}", typ, parent, sep, key)
+    format!("Expected type `{typ}` for {parent}{sep}{key}")
 }

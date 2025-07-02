@@ -115,9 +115,8 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
                         .expect("First entry to always exist for LockRequest::Acquire");
                     debug_assert!(
                         first == log_id,
-                        "first ({}) and log_id ({}) to always match when LockRequest::Acquire",
-                        first,
-                        log_id
+                        "first ({first}) and log_id ({log_id}) to always match when \
+                        LockRequest::Acquire"
                     );
 
                     lock.current_ticket = Some(first);
@@ -143,8 +142,7 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
                                         acks.swap_remove(pos).1.send(LockState::Released)
                                     {
                                         panic!(
-                                            "Error sending lock await response for lock {}: {:?}",
-                                            key, err
+                                            "Error sending lock await response for lock {key}: {err:?}"
                                         );
                                     }
                                 }
@@ -154,10 +152,7 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
                         }
                     } else {
                         // TODO can this ever happen?
-                        panic!(
-                            "Lock for {} / {} as been released already: {:?}",
-                            key, id, lock
-                        );
+                        panic!("Lock for {key} / {id} as been released already: {lock:?}");
                     }
                 }
 
@@ -184,7 +179,10 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
                                 queues.insert(key.to_string(), vec![(id, ack)]);
                             }
                         } else {
-                            panic!("for a LockAwait there must always be at least 1 element in the queue when the current_ticket is None");
+                            panic!(
+                                "for a LockAwait there must always be at least 1 element in \
+                                the queue when the current_ticket is None"
+                            );
                         }
                     } else if let Some(queue) = queues.get_mut(key.as_ref()) {
                         queue.push((id, ack));

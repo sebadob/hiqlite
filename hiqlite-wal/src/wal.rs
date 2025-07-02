@@ -452,7 +452,7 @@ impl WalFile {
         let data_len = bin_to_u32(&head[12..16])?;
         if data_len == 0 {
             return Err(Error::Integrity(
-                format!("Attempt to read non-existent data of length 0\n{:?}", self).into(),
+                format!("Attempt to read non-existent data of length 0\n{self:?}").into(),
             ));
         }
         let data = self.read_bytes(data_from, data_from + data_len)?;
@@ -559,7 +559,7 @@ impl WalFile {
         debug_assert!(wal_size >= MIN_WAL_SIZE);
         if wal_size < MIN_WAL_SIZE {
             return Err(Error::Generic(
-                format!("min allowed `wal_size` is {}", MIN_WAL_SIZE).into(),
+                format!("min allowed `wal_size` is {MIN_WAL_SIZE}").into(),
             ));
         }
 
@@ -881,7 +881,7 @@ impl WalFileSet {
 
         let mut files = VecDeque::with_capacity(file_names.len());
         for name in file_names {
-            let path_full = format!("{}/{}", base_path, name);
+            let path_full = format!("{base_path}/{name}");
             if let Ok(wal) = WalFile::read_from_file(path_full) {
                 files.push_back(wal);
             }
