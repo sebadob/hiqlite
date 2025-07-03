@@ -1,5 +1,13 @@
 # Changelog
 
+## UNRELEASED
+
+It is not possible to list backups. For local ones, the `hiqlite::Client` provides the possibility to get a
+`tokio::fs::File` handle, while S3 backups can be streamed via a `ChannelReceiver`.
+
+This version also changes the way that filenames for local backups are built. The timestamp for the filename will be
+the exact same for all local backups in a cluster. This makes downloading via a load balancer a lot easier.
+
 ## v0.8.0
 
 This is a rather small release. Mostly only breaking because of a small API change inside `hiqlite-wal`, which now can
