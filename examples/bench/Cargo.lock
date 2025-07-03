@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "hiqlite-macros"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "hiqlite",
  "rust-embed",
@@ -1283,7 +1283,7 @@ dependencies = [
 
 [[package]]
 name = "hiqlite-wal"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bincode",
  "byteorder",

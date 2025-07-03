@@ -2,7 +2,7 @@ use crate::client::stream::{ClientQueryPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::state_machine::Query;
-use crate::{query, Client, Error, Params, Row};
+use crate::{query, Client, Error, Params};
 use serde::de::DeserializeOwned;
 use std::borrow::Cow;
 use tokio::sync::oneshot;
@@ -22,7 +22,7 @@ impl Client {
         &self,
         stmt: S,
         params: Params,
-    ) -> Result<Vec<crate::Row>, Error>
+    ) -> Result<Vec<crate::Row<'_>>, Error>
     where
         S: Into<Cow<'static, str>>,
     {
@@ -224,7 +224,7 @@ impl Client {
     /// A raw query will return the bare `Row` without doing any deserialization or mapping.
     /// This can be useful if you just need to know if a query succeeds, or if you need to manually
     /// work with the result without being able to convert it into a type.
-    pub async fn query_raw<S>(&self, stmt: S, params: Params) -> Result<Vec<crate::Row>, Error>
+    pub async fn query_raw<S>(&self, stmt: S, params: Params) -> Result<Vec<crate::Row<'_>>, Error>
     where
         S: Into<Cow<'static, str>>,
     {
@@ -236,7 +236,7 @@ impl Client {
                 params,
             )
             .await?;
-            Ok(rows.into_iter().map(Row::Owned).collect())
+            Ok(rows.into_iter().map(crate::Row::Owned).collect())
         } else {
             self.query_remote(stmt, params, false).await
         }
@@ -246,7 +246,7 @@ impl Client {
     ///
     /// This version will return exactly one `Row`.
     /// Throws an error if the returned rows are not exactly one.
-    pub async fn query_raw_one<S>(&self, stmt: S, params: Params) -> Result<crate::Row, Error>
+    pub async fn query_raw_one<S>(&self, stmt: S, params: Params) -> Result<crate::Row<'_>, Error>
     where
         S: Into<Cow<'static, str>>,
     {
@@ -269,7 +269,7 @@ impl Client {
         stmt: S,
         params: Params,
         consistent: bool,
-    ) -> Result<Vec<crate::Row>, Error>
+    ) -> Result<Vec<crate::Row<'_>>, Error>
     where
         S: Into<Cow<'static, str>>,
     {

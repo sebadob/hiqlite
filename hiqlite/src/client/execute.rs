@@ -126,7 +126,7 @@ impl Client {
         &self,
         sql: S,
         params: Params,
-    ) -> Result<Vec<Result<crate::Row, Error>>, Error>
+    ) -> Result<Vec<Result<crate::Row<'_>, Error>>, Error>
     where
         S: Into<Cow<'static, str>>,
     {
@@ -163,7 +163,7 @@ impl Client {
         &self,
         sql: S,
         params: Params,
-    ) -> Result<crate::Row, Error>
+    ) -> Result<crate::Row<'_>, Error>
     where
         S: Into<Cow<'static, str>>,
     {
