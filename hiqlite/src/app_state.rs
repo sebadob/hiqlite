@@ -1,28 +1,29 @@
-#[cfg(feature = "cache")]
-use crate::store::state_machine::memory::{kv_handler::CacheRequestHandler, TypeConfigKV};
 use crate::NodeId;
+use chrono::Utc;
 use serde::Deserialize;
 use std::fmt::Debug;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[cfg(feature = "dashboard")]
 use crate::client::stream::ClientStreamReq;
 #[cfg(feature = "dashboard")]
 use crate::dashboard::DashboardState;
+#[cfg(feature = "s3")]
 use crate::s3::S3Config;
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::LockRequest;
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::{kv_handler::CacheRequestHandler, TypeConfigKV};
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::{
     state_machine::SqlitePool, writer::WriterRequest, TypeConfigSqlite,
 };
-use chrono::Utc;
-use std::sync::atomic::AtomicBool;
 #[cfg(feature = "dashboard")]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]

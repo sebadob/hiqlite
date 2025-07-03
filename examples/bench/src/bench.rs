@@ -38,8 +38,8 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     let elapsed = insert_concurrent(client.clone(), &options, data.clone(), false).await?;
     let per_second = rows * 1000 / max(elapsed as usize, 1);
     log(format!(
-        "{} single INSERTs with concurrency {} took:\n{} ms -> {} inserts / s",
-        rows, concurrency, elapsed, per_second
+        "{rows} single INSERTs with concurrency {concurrency} took:\n{elapsed} ms \
+        -> {per_second} inserts / s"
     ));
 
     // The batch sizes here heavily influence the WebSocket buffers. If we send batches of ~10k
@@ -49,8 +49,8 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     let elapsed = insert_concurrent(client.clone(), &options, data.clone(), true).await?;
     let per_second = rows * 1000 / max(elapsed as usize, 1);
     log(format!(
-        "{} transactional / batched INSERTs with concurrency {} took:\n{} ms -> {} inserts / s",
-        rows, concurrency, elapsed, per_second
+        "{rows} transactional / batched INSERTs with concurrency {concurrency} \
+        took:\n{elapsed} ms -> {per_second} inserts / s"
     ));
 
     select_timings(client.clone(), remote).await?;
@@ -58,8 +58,8 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     let elapsed = put_cache(client.clone(), &options, data).await?;
     let per_second = rows * 1000 / max(elapsed as usize, 1);
     log(format!(
-        "{} single cache PUTs with concurrency {} took:\n{} ms -> {} inserts / s",
-        rows, concurrency, elapsed, per_second
+        "{rows} single cache PUTs with concurrency {concurrency} took:\n{elapsed} ms \
+        -> {per_second} inserts / s"
     ));
 
     get_timings(client.clone()).await?;
@@ -228,7 +228,7 @@ fn prepare_data(options: &Options) -> Vec<Vec<Entity>> {
             data.push(Entity {
                 id: idx,
                 ts: Utc::now().timestamp(),
-                name: format!("Name {}", idx),
+                name: format!("Name {idx}"),
             });
             idx += 1;
         }

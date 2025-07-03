@@ -307,8 +307,7 @@ async fn start_cluster(
         members = metrics.membership_config.nodes().count();
 
         log(format!(
-            "Waiting for other nodes to join the cluster. Nodes joined: {}",
-            members
+            "Waiting for other nodes to join the cluster. Nodes joined: {members}"
         ));
         time::sleep(Duration::from_secs(1)).await;
     }
@@ -329,5 +328,5 @@ async fn start_cluster(
 
 // this way of logging makes our logs easier to see with all the raft logging enabled
 fn log<S: Display>(s: S) {
-    println!("\n\n>>> {}\n", s);
+    println!("\n\n>>> {s}\n");
 }

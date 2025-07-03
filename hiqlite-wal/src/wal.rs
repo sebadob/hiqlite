@@ -439,7 +439,7 @@ impl WalFile {
     /// Reads a record at the given `offset`. Does NOT do any boundary checking or any other
     /// validation. Only extracts the data itself.
     #[inline(always)]
-    fn read_record_unchecked(&self, offset: u32) -> Result<WalRecord, Error> {
+    fn read_record_unchecked(&self, offset: u32) -> Result<WalRecord<'_>, Error> {
         debug_assert!(offset + 8 + 4 + 4 < self.len_max);
 
         // id, crc, length
