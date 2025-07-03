@@ -401,11 +401,10 @@ impl StateMachineSqlite {
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
             |_| -> rusqlite::Result<String> {
-                error!(
+                panic!(
                     "forbidden usage of `date()` - non-deterministic functions must never be \
                     used for writing connections in a Raft cluster"
-                );
-                Err(rusqlite::Error::InvalidQuery)
+                )
             },
         );
         conn.create_scalar_function(
@@ -413,11 +412,10 @@ impl StateMachineSqlite {
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
             |_| -> rusqlite::Result<String> {
-                error!(
+                panic!(
                     "forbidden usage of `datetime()` - non-deterministic functions must never be \
                     used for writing connections in a Raft cluster"
-                );
-                Err(rusqlite::Error::InvalidQuery)
+                )
             },
         );
         conn.create_scalar_function(
