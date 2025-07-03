@@ -1,5 +1,24 @@
 # Changelog
 
+## UNRELEASED
+
+### Changes
+
+#### Non-Deterministic Functions Overwrite
+
+Any form of `hiqlite::Client::execute_*` will `panic!`, if you use non-deterministic functions inside your DB modifying
+queries. These will always lead to inconsistency in a Raft cluster, if they are nor re-written (which is a waste of
+resources imho), so they must never be used. This is not considered a breaking change, since they should not have been
+used anyway. This feature only acts as a safety-net.
+
+#### List / Fetch Backups
+
+It is not possible to list backups. For local ones, the `hiqlite::Client` provides the possibility to get a
+`tokio::fs::File` handle, while S3 backups can be streamed via a `ChannelReceiver`.
+
+This version also changes the way that filenames for local backups are built. The timestamp for the filename will be
+the exact same for all local backups in a cluster. This makes downloading via a load balancer a lot easier.
+
 ## v0.8.0
 
 This is a rather small release. Mostly only breaking because of a small API change inside `hiqlite-wal`, which now can

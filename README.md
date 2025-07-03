@@ -601,11 +601,10 @@ The last step is to simply `kubectl apply -f` the `config.yaml` followed by the 
 ## Limitations
 
 You must not use non-deterministic functions inside your database-modifying statements. These are functions like `now()`
-and `random()` for instance. Apart from the fact, that you should generally avoid this on any database to shift the
+or `random()` for instance. Apart from the fact, that you should generally avoid this on any database to shift the
 resource usage from the DB (which almost always will be the bottleneck when scaling) into your application code, which
-is typically easy to scale, there are no safety-nets in place yet. In future versions, the idea is to overwrite these
-functions on the writer connection and always make them fail. This is much preferred compared to ending up with an
-inconsistent state.
+is typically easy to scale, the writer connection for the database will always `panic!` as a safety-net, if you use any
+of these functions.
 
 If you really want to, you can use them on all non-modifying queries of course.
 
