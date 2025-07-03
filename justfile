@@ -66,7 +66,7 @@ check:
     set -euxo pipefail
     clear
     cargo update
-    cargo +nightly clippy -- -D warnings
+    cargo clippy -- -D warnings
     cargo minimal-versions check -p hiqlite --features server
     cargo minimal-versions check -p hiqlite-wal
 
