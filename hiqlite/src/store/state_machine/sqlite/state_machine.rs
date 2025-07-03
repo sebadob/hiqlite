@@ -17,7 +17,8 @@ use openraft::{
     EntryPayload, LogId, OptionalSend, Snapshot, SnapshotId, SnapshotMeta, StorageError,
     StorageIOError, StoredMembership,
 };
-use rusqlite::{OpenFlags, OptionalExtension};
+use rusqlite::functions::FunctionFlags;
+use rusqlite::{OpenFlags, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::clone::Clone;
@@ -299,7 +300,12 @@ impl StateMachineSqlite {
         task::spawn_blocking(move || {
             let path_full = format!("{path}/{filename_db}");
             let conn = rusqlite::Connection::open(path_full)?;
+
             Self::apply_pragmas(&conn, read_only, prepared_statement_cache_capacity)?;
+            if !read_only {
+                Self::overwrite_non_det_fns(&conn);
+            }
+
             Ok(conn)
         })
         .await?
@@ -387,6 +393,121 @@ impl StateMachineSqlite {
         conn.set_prepared_statement_cache_capacity(prepared_statement_cache_capacity);
 
         Ok(())
+    }
+
+    fn overwrite_non_det_fns(conn: &rusqlite::Connection) {
+        conn.create_scalar_function(
+            "date",
+            -1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |_| -> rusqlite::Result<String> {
+                error!(
+                    "forbidden usage of `date()` - non-deterministic functions must never be \
+                    used for writing connections in a Raft cluster"
+                );
+                Err(rusqlite::Error::InvalidQuery)
+            },
+        );
+        conn.create_scalar_function(
+            "datetime",
+            -1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |_| -> rusqlite::Result<String> {
+                error!(
+                    "forbidden usage of `datetime()` - non-deterministic functions must never be \
+                    used for writing connections in a Raft cluster"
+                );
+                Err(rusqlite::Error::InvalidQuery)
+            },
+        );
+        conn.create_scalar_function(
+            "julianday",
+            -1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |_| -> rusqlite::Result<String> {
+                panic!(
+                    "forbidden usage of `julianday()` - non-deterministic functions must never be \
+                    used for writing connections in a Raft cluster"
+                );
+            },
+        );
+        conn.create_scalar_function(
+            "now",
+            -1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |_| -> rusqlite::Result<String> {
+                panic!(
+                    "forbidden usage of `now()` - non-deterministic functions must never be \
+                    used for writing connections in a Raft cluster"
+                )
+            },
+        );
+        conn.create_scalar_function(
+            "random",
+            -1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |_| -> rusqlite::Result<String> {
+                panic!(
+                    "forbidden usage of `random()` - non-deterministic functions must never be \
+                    used for writing connections in a Raft cluster"
+                )
+            },
+        );
+        conn.create_scalar_function(
+            "randomblob",
+            -1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |_| -> rusqlite::Result<String> {
+                panic!(
+                    "forbidden usage of `randomblob()` - non-deterministic functions must never be \
+                    used for writing connections in a Raft cluster"
+                )
+            },
+        );
+        conn.create_scalar_function(
+            "strftime",
+            -1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |_| -> rusqlite::Result<String> {
+                panic!(
+                    "forbidden usage of `strftime()` - non-deterministic functions must never be \
+                    used for writing connections in a Raft cluster"
+                )
+            },
+        );
+        conn.create_scalar_function(
+            "time",
+            -1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |_| -> rusqlite::Result<String> {
+                panic!(
+                    "forbidden usage of `time()` - non-deterministic functions must never be \
+                    used for writing connections in a Raft cluster"
+                )
+            },
+        );
+        conn.create_scalar_function(
+            "timediff",
+            -1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |_| -> rusqlite::Result<String> {
+                panic!(
+                    "forbidden usage of `timediff()` - non-deterministic functions must never be \
+                    used for writing connections in a Raft cluster"
+                )
+            },
+        );
+        conn.create_scalar_function(
+            "unixepoch",
+            -1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |_| -> rusqlite::Result<String> {
+                panic!(
+                    "forbidden usage of `unixepoch()` - non-deterministic functions must never be \
+                    used for writing connections in a Raft cluster"
+                )
+            },
+        );
     }
 
     async fn update_state_machine_(
