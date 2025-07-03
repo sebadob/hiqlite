@@ -1,6 +1,6 @@
 # Changelog
 
-## UNRELEASED
+## hiqlite v0.9.0
 
 ### Changes
 
