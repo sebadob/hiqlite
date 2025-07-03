@@ -79,6 +79,7 @@ where
 
     let state = Arc::new(AppState {
         app_start: Default::default(),
+        #[cfg(feature = "backup")]
         backups_dir: format!("{}/state_machine/backups", node_config.data_dir),
         id: node_config.node_id,
         #[cfg(feature = "cache")]

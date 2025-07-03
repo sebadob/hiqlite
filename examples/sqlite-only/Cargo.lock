@@ -730,9 +730,9 @@ dependencies = [
 
 [[package]]
 name = "cryptr"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b92bb8b79b95217d0a0c732f00b151f4afca69176a200746f752eacd4c547293"
+checksum = "9841e0d681d07fc1f285260eb5723255e0229783b0bac9336df426a5d5849c7b"
 dependencies = [
  "argon2",
  "async-stream",
@@ -1164,7 +1164,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiqlite"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "axum-server",
@@ -1840,9 +1840,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openraft"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbaeb68eb89f273a47b845f1654ed70be799577a990639136f32decbb1782c26"
+checksum = "a45c037292efa0d71a5a41aa05b74ede16c8fa739ae5fbfb225764116d4d9aa6"
 dependencies = [
  "anyerror",
  "byte-unit",

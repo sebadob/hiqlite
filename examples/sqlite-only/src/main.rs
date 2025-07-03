@@ -213,9 +213,9 @@ async fn main() -> Result<(), Error> {
 
 // this way of logging makes our logs easier to see with all the raft logging enabled
 fn log<S: Display>(s: S) {
-    println!("\n\n>>> {}\n", s);
+    println!("\n\n>>> {s}\n");
 }
 
 fn debug<S: Debug>(s: &S) {
-    println!("\n\n>>> {:?}\n", s);
+    println!("\n\n>>> {s:?}\n",);
 }
