@@ -200,8 +200,8 @@ pub(crate) async fn backup_local_cleanup(backup_path: String, keep_days: u16) ->
             match ts.parse::<i64>() {
                 Ok(ts) => {
                     if ts > ts_min && ts < ts_threshold {
-                        info!("Cleaning up local backup {s}");
-                        let p = format!("{backup_path}{s}");
+                        let p = format!("{backup_path}/{s}");
+                        info!("Cleaning up local backup {s} ({p})");
                         if let Err(err) = tokio::fs::remove_file(p).await {
                             error!(?err, "Error removing local backup");
                         }
