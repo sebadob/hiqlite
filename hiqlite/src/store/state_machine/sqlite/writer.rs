@@ -137,6 +137,7 @@ pub fn spawn_writer(
     path_lock_file: String,
     log_statements: bool,
     do_reset_metadata: bool,
+    #[cfg(feature = "backup")] local_backup_keep_days: u16,
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(1);
 
@@ -624,8 +625,11 @@ CREATE TABLE IF NOT EXISTS _metadata
 
                     #[cfg(feature = "backup")]
                     task::spawn(async move {
-                        if let Err(err) =
-                            crate::backup::backup_local_cleanup(req.target_folder).await
+                        if let Err(err) = crate::backup::backup_local_cleanup(
+                            req.target_folder,
+                            local_backup_keep_days,
+                        )
+                        .await
                         {
                             error!("Error during local backup cleanup: {:?}", err);
                         }
