@@ -241,11 +241,11 @@ impl NodeConfig {
             .parse::<u64>()
             .expect("Cannot parse HQL_LOGS_UNTIL_SNAPSHOT to u64");
         #[cfg(feature = "backup")]
-        let backup_keep_days_local = env::var("HQL_LOGS_UNTIL_SNAPSHOT")
+        let backup_keep_days_local = env::var("HQL_BACKUP_KEEP_DAYS_LOCAL")
             .as_deref()
             .unwrap_or("30")
             .parse::<u16>()
-            .expect("Cannot parse HQL_LOGS_UNTIL_SNAPSHOT as u16");
+            .expect("Cannot parse HQL_BACKUP_KEEP_DAYS_LOCAL as u16");
 
         #[cfg(feature = "dashboard")]
         let insecure_cookie = env::var("HQL_INSECURE_COOKIE")

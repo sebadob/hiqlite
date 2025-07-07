@@ -172,17 +172,10 @@ async fn backup_cron_job(
     Ok(())
 }
 
-pub(crate) async fn backup_local_cleanup(backup_path: String) -> Result<(), Error> {
+pub(crate) async fn backup_local_cleanup(backup_path: String, keep_days: u16) -> Result<(), Error> {
     // 2024/01/01 00:00:00
     let ts_min = 1704063600;
 
-    let keep_days = env::var("HQL_BACKUP_KEEP_DAYS_LOCAL")
-        .unwrap_or_else(|_| "3".to_string())
-        .parse::<u32>()
-        .unwrap_or_else(|_| {
-            error!("Error parsing HQL_BACKUP_KEEP_DAYS_LOCAL to u32, using default of 3 days");
-            3
-        });
     let ts_threshold = Utc::now()
         .sub(chrono::Duration::days(keep_days as i64))
         .timestamp();
@@ -197,7 +190,6 @@ pub(crate) async fn backup_local_cleanup(backup_path: String) -> Result<(), Erro
 
         let name = entry.file_name();
         if let Some(s) = name.to_str() {
-            // format!("backup_node_{}_{}.sqlite", node_id, Utc::now().timestamp());
             if !s.starts_with("backup_node_") && !s.ends_with(".sqlite") {
                 continue;
             }
@@ -208,13 +200,15 @@ pub(crate) async fn backup_local_cleanup(backup_path: String) -> Result<(), Erro
             match ts.parse::<i64>() {
                 Ok(ts) => {
                     if ts > ts_min && ts < ts_threshold {
-                        debug!("Cleaning up backup {s}");
+                        info!("Cleaning up local backup {s}");
                         let p = format!("{backup_path}{s}");
-                        let _ = tokio::fs::remove_dir_all(p).await;
+                        if let Err(err) = tokio::fs::remove_file(p).await {
+                            error!(?err, "Error removing local backup");
+                        }
                     }
                 }
                 Err(err) => {
-                    error!("Cannot parse ts from file {s}: {err}")
+                    error!(?err, "Cannot parse ts from file {s}")
                 }
             }
         }
