@@ -1,5 +1,11 @@
 # Changelog
 
+## hiqlite v0.9.1
+
+Fixed a bug for local backup cleanup. In some situations, the `backup_keep_days_local` config variable was not read
+properly, and in addition, the path for the cleanup could end up wrong as well. This made it possible that the local
+backup cleanup would not work at all in some situations.
+
 ## v0.9.0
 
 ### Changes
