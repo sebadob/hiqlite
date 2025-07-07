@@ -1,6 +1,6 @@
 [package]
 name = "hiqlite"
-version = "0.9.1-20250707"
+version = "0.9.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
