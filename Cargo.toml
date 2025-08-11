@@ -97,7 +97,7 @@ tower-http = { version = "0.6.0", features = [
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }
 uuid = { version = "1.8.0", features = ["v7"] }
-webpki-roots = { version = "0.26.3" }
+webpki-roots = { version = "1" }
 
 # make minimal versions happy
 lazy_static = "1.0.2"
