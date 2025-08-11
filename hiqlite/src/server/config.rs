@@ -210,11 +210,10 @@ data_dir = "{data_dir}"
 # overwritten by: HQL_LOG_SYNC
 #log_sync = "immediate_async"
 
-# Hiqlite WAL files (when not using the `rocksdb` feature) will
-# always have a fixed size, even when they are still "empty", to
-# reduce disk operations while writing. You can set the WAL size
-# in bytes. The default value is 2 MB, while the minimum size is
-# 8 kB.
+# Hiqlite WAL files will always have a fixed size, even when they
+# are still "empty", to reduce disk operations while writing. You
+# can set the WAL size in bytes. The default value is 2 MB, while
+# the minimum size is 8 kB.
 #
 # default: 2097152
 # overwritten by: HQL_WAL_SIZE

@@ -2,11 +2,6 @@
 
 use crate::app_state::{AppState, RaftType};
 use crate::network::NetworkStreaming;
-#[cfg(feature = "cache")]
-use crate::{
-    app_state::StateRaftCache,
-    store::state_machine::memory::{state_machine::StateMachineMemory, TypeConfigKV},
-};
 use crate::{init, Error, NodeConfig, NodeId, RaftConfig};
 use hiqlite_wal::LogSync;
 use openraft::storage::RaftLogStorage;
@@ -20,6 +15,11 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use strum::IntoEnumIterator;
 
+#[cfg(feature = "cache")]
+use crate::{
+    app_state::StateRaftCache,
+    store::state_machine::memory::{state_machine::StateMachineMemory, TypeConfigKV},
+};
 #[cfg(feature = "sqlite")]
 use crate::{
     app_state::StateRaftDB,
@@ -45,18 +45,6 @@ pub(crate) async fn start_raft_db(
     // that we are not pristine node and need cleanup.
     let is_raft_stopped = Arc::new(AtomicBool::new(true));
 
-    #[cfg(feature = "migrate-rocksdb")]
-    logs::migrate::check_migrate_rocksdb(
-        logs::logs_dir_db(&node_config.data_dir),
-        node_config.wal_size,
-    )
-    .await?;
-
-    #[cfg(feature = "rocksdb")]
-    let log_store =
-        logs::rocksdb::LogStoreRocksdb::new(&node_config.data_dir, node_config.sync_immediate)
-            .await;
-    #[cfg(not(feature = "rocksdb"))]
     let log_store = hiqlite_wal::LogStore::<TypeConfigSqlite>::start(
         logs::logs_dir_db(&node_config.data_dir),
         node_config.wal_sync.clone(),
@@ -79,11 +67,6 @@ pub(crate) async fn start_raft_db(
     .await
     .unwrap();
 
-    #[cfg(feature = "rocksdb")]
-    let logs_writer = log_store.tx_writer.clone();
-    #[cfg(not(feature = "rocksdb"))]
-    let shutdown_handle = log_store.shutdown_handle();
-
     let sql_writer = state_machine_store.write_tx.clone();
     let read_pool = state_machine_store.read_pool.clone();
 
@@ -95,6 +78,8 @@ pub(crate) async fn start_raft_db(
         heartbeat_interval: node_config.raft_config.heartbeat_interval,
         is_raft_stopped: is_raft_stopped.clone(),
     };
+
+    let shutdown_handle = log_store.shutdown_handle();
 
     let raft = openraft::Raft::new(
         node_config.node_id,
@@ -122,9 +107,6 @@ pub(crate) async fn start_raft_db(
 
     Ok(StateRaftDB {
         raft,
-        #[cfg(feature = "rocksdb")]
-        logs_writer,
-        #[cfg(not(feature = "rocksdb"))]
         shutdown_handle,
         sql_writer,
         read_pool,

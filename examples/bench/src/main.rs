@@ -158,19 +158,6 @@ async fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
     // huge batch queries for instance.
     config.wal_size = 8 * 1024 * 1024;
 
-    // You could set sync immediate, which will make the logs writer `fsync` after each batch it
-    // receives. However, this will degrade your throughput for the Database on disk by a very huge
-    // factor. This might only be necessary if you run Hiqlite as a single instance, and you were
-    // unable to recover some lost logs in case of a bad server crash from other nodes.
-    //
-    // This will also put a very high amount of stress on your disk, which can kill your SSDs pretty
-    // quickly if you have a lot of throughput. By default, `fsync` will be called in fixed
-    // intervals.
-    //
-    // the `sync_immediate` is only available with the `rocksdb` feature
-    //
-    //config.sync_immediate = true;
-    //
     // `hiqlite::LogSync::Immediate` will sync immediately after a chunk of logs to append has
     // been written, but with a huge performance penalty. `hiqlite::LogSync::Immediate` will do the
     // same but not wait for completion, and therefore not block. This will usually have no

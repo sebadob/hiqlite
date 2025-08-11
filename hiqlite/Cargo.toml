@@ -56,9 +56,7 @@ listen_notify_local = [
     "dep:futures-util",
     "cache"
 ]
-migrate-rocksdb = ["dep:rocksdb", "hiqlite-wal/migration"]
 toml = ["dep:toml"]
-rocksdb = ["dep:rocksdb"]
 s3 = ["backup"]
 server = [
     "dep:clap",
@@ -110,7 +108,6 @@ hyper-util.workspace = true
 mime_guess = { workspace = true, optional = true }
 openraft.workspace = true
 reqwest.workspace = true
-rocksdb = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 rust-embed.workspace = true
 rustls.workspace = true
