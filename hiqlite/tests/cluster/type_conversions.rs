@@ -1,7 +1,6 @@
 use crate::{debug, params};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use hiqlite::{Client, Error, Row};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq)]
 struct Data {
@@ -40,12 +39,6 @@ impl<'r> From<hiqlite::Row<'r>> for Data {
             json: row.get("json"),
         }
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Json {
-    id: i64,
-    text: String,
 }
 
 pub async fn test_type_conversions(client: &Client) -> Result<(), Error> {

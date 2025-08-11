@@ -55,27 +55,6 @@ pub struct NodeConfig {
     ///
     /// default: 4
     pub read_pool_size: usize,
-    /// Enables immediate flush + sync to disk after each Log Store Batch.
-    /// The situations where you would need this are very rare, and you
-    /// should use it with care.
-    ///
-    /// The default is `false`, and a flush + sync will be done in 200ms
-    /// intervals. Even if the application should crash, the OS will take
-    /// care of flushing left-over buffers to disk and no data will get
-    /// lost. If something worse happens, you might lose the last 200ms
-    /// of commits (on that node, not the whole cluster). This is only
-    /// important to know for single instance deployments. HA nodes will
-    /// sync data from other cluster members after a restart anyway.
-    ///
-    /// The only situation where you might want to enable this option is
-    /// when you are on a host that might lose power out of nowhere, and
-    /// it has no backup battery, or when your OS / disk itself is unstable.
-    ///
-    /// `sync_immediate` will greatly reduce the write throughput and put
-    /// a lot more pressure on the disk. If you have lots of writes, it
-    /// can pretty quickly kill your SSD for instance.
-    #[cfg(feature = "rocksdb")]
-    pub sync_immediate: bool,
     /// When Raft logs should by synced to disk.
     pub wal_sync: hiqlite_wal::LogSync,
     /// Maximum WAL size in bytes.
@@ -147,8 +126,6 @@ impl Default for NodeConfig {
             log_statements: false,
             prepared_statement_cache_capacity: 1024,
             read_pool_size: 4,
-            #[cfg(feature = "rocksdb")]
-            sync_immediate: false,
             wal_sync: hiqlite_wal::LogSync::ImmediateAsync,
             wal_size: 2 * 1024 * 1024,
             #[cfg(feature = "cache")]
@@ -276,12 +253,6 @@ impl NodeConfig {
                 .unwrap_or("4")
                 .parse()
                 .expect("Cannot parse HQL_READ_POOL_SIZE as usize"),
-            #[cfg(feature = "rocksdb")]
-            sync_immediate: env::var("HQL_SYNC_IMMEDIATE")
-                .as_deref()
-                .unwrap_or("false")
-                .parse()
-                .expect("Cannot parse HQL_SYNC_IMMEDIATE as bool"),
             wal_sync: hiqlite_wal::LogSync::ImmediateAsync,
             wal_size: 2 * 1024 * 1024,
             #[cfg(feature = "cache")]

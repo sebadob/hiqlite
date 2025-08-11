@@ -12,8 +12,6 @@ use tracing::{debug, info};
 
 #[cfg(feature = "cache")]
 use crate::network::management::{self, ClusterLeaveReq};
-#[cfg(all(feature = "sqlite", feature = "rocksdb"))]
-use crate::store::logs::rocksdb::ActionWrite;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::writer::WriterRequest;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
@@ -295,20 +293,6 @@ impl Client {
             info!("Shutting down raft sqlite layer");
             state.raft_db.raft.shutdown().await?;
             info!("Shutting down sqlite logs writer");
-            #[cfg(feature = "rocksdb")]
-            {
-                let (tx_logs, rx_logs) = tokio::sync::oneshot::channel();
-                state
-                    .raft_db
-                    .logs_writer
-                    .send_async(ActionWrite::Shutdown(tx_logs))
-                    .await
-                    .expect("The logs writer to always be listening");
-                rx_logs
-                    .await
-                    .expect("To always get an answer from Logs writer");
-            }
-            #[cfg(not(feature = "rocksdb"))]
             state.raft_db.shutdown_handle.shutdown().await?;
 
             info!("Shutting down sqlite writer");

@@ -313,25 +313,6 @@ If you enabled this feature and you `notify()` via the `hiqlite::Client`, you mu
 messages on each node. Behind the scenes, Hiqlite uses an unbound channel to never block these. This channel could fill
 up if you `notify()` without `listen()`.
 
-### `migrate-rocksdb`
-
-When enabled, it will add `rocksdb` to the dependencies and check at startup, if there are maybe rocksdb files and
-log storage in the logs folder. It will then migrate the existing rocksdb Raft Log Store to `hiqlite-wal` and remove
-the old rocksdb files afterward.
-
-CAUTION: Just to be safe, you should have a backup of an existing instance before using the migrate feature, since it
-tries to perform a manual, programmatic migration from `rocksdb` to `hiqlite-wal`.
-
-### `rocksdb`
-
-Uses `rocksdb` for the Raft Log Storage instead of the default `hiqlite-wal`. If you want to use an already existing
-Hiqlite instance with a newer version, you might want to activate this feature temporarily until you created some
-backups, just to be safe when it comes to `migrate-rocksdb`.
-
-Apart from that, using the default `hiqlite-wal` is the better option in any scenario. It is only limited by your disk,
-it is a lot more light weight, more efficient and can compile to any target, while rocksdb e.g. is almost impossible
-to compile for `musl`. In future versions, `rocksdb` will most probably be removed completely.
-
 ### `s3`
 
 You would probably never just enable the `s3` feature on its own in the current implementation. It has been outsourced

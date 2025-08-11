@@ -5,8 +5,8 @@ internal parts fit together.
 
 Hiqlite uses [openraft](https://github.com/datafuselabs/openraft) for the Raft internal logic. `openraft` provides the
 building blocks for a Raft application without the implementations for storage and network. Hiqlite comes with `sqlite`
-feature enabled by default, which will provide a Raft Logs Storage based on `rocksdb` and a State Machine based on
-SQLite via `rusqlite` under the hood. If you activate the `cache` feature, the Raft Logs Storage will be an in-memory
+feature enabled by default, which will provide a Raft Logs Storage (`hiqlite-wal`) and a State Machine based on SQLite
+via `rusqlite` under the hood. If you activate the `cache` feature, the Raft Logs Storage will be an in-memory
 `VecDeque` and multiple in-memory KV Stores based on in-memory `BTreeMap`s.
 The network connections between nodes are realised with multiplexing WebSockets. The Raft internal network is also
 running on a separate HTTP server to be able to either run the replication traffic on a fully separated network for
@@ -15,8 +15,7 @@ better load distribution and security, or to just not expose any internal endpoi
 ## Raft Logs Store
 
 In the early days, `rocksdb` was used the storage engine for Raft Logs. However, by now Hiqlite comes with its own WAL
-Log Storage implementation `hiqlite-wal`. The `rocksdb` feature can be considered deprecated and will be removed in the
-near future.
+Log Storage implementation `hiqlite-wal`.
 
 `hiqlite-wal` spawns a single WAL writer process which takes care of metadata writing, log file creation, log roll-over,
 WAL locking, CRC CHKSUMs for each WAL record, and so on. This is single threaded on purpose to avoid most of the usual
@@ -98,10 +97,9 @@ Additionally, the writer task will optimize periodically again when creating sna
 
 ### Write
 
-The SQLite State Machine writer is implemented in the same way as the `rocksdb` writer task. Hiqlite spawns a single
-writer task with its on single, lock-free, raw connection to have the least amount of overhead. SQLite biggest weakness
-is that it only allows a single writer to a database at any time. It does not have fancy table or even row locks like
-many other databases. This is both a good and a bad thing.
+Hiqlite spawns a single writer task with its on single, lock-free, raw connection to have the least amount of overhead.
+SQLite biggest weakness is that it only allows a single writer to a database at any time. It does not have fancy table
+or even row locks like many other databases. This is both a good and a bad thing.
 
 The bad thing about it is obvious - only a single write to the whole database can happen at the same time. At the same
 time, this is also the good thing. Locking the database is a lot simpler and therefore faster than with other databases.
@@ -109,9 +107,9 @@ The DB does not need to find the lock for the table or maybe only row it wants t
 unlocking. On top of that, because we can only do a single write at the same time, the sync writer task works with only
 a single connection, which gets rid of any connection pool or other locking mechanisms.
 
-Write to SQLite are designed in the same way as for `rocksdb` logs store above. All operations like serializing,
-interpreting `Result`s, and so on, are outsourced as much as possible. This makes sure, that the task mostly only needs
-to care about a single thing - writing to the database, then simply forwarding the result and executing the next write.
+All operations like serializing, interpreting `Result`s, and so on, are outsourced as much as possible. This makes sure,
+that the task mostly only needs to care about a single thing - writing to the database, then simply forwarding the
+result and executing the next write.
 
 ### Read
 
@@ -217,7 +215,7 @@ With all features enabled, Hiqlite will spawn :
   internally ([openraft docs](https://docs.rs/openraft/latest/openraft/docs/internal/threading/index.html))
 - 4 x 3 = 12 tasks the networking between nodes
 - 2 tasks for the HTTP servers
-- 1 writer task for `rocksdb` + 1 reader task (depending on setup maybe multiple via `openraft`)
+- 1 writer task for the WAL + 1+ reader tasks (depending on setup maybe multiple via `openraft`)
 - 1 writer task for SQLite + temporary tasks in case of snapshots, backups, uploads, ...
 - 1 temporary task for each SQLite read / `SELECT` query being executed
 - 1 task for the in-memory KV store

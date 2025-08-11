@@ -87,9 +87,6 @@ impl AppState {
 #[cfg(feature = "sqlite")]
 pub struct StateRaftDB {
     pub raft: openraft::Raft<TypeConfigSqlite>,
-    #[cfg(all(feature = "sqlite", feature = "rocksdb"))]
-    pub logs_writer: flume::Sender<crate::store::logs::rocksdb::ActionWrite>,
-    #[cfg(all(feature = "sqlite", not(feature = "rocksdb")))]
     pub shutdown_handle: hiqlite_wal::ShutdownHandle,
     pub sql_writer: flume::Sender<WriterRequest>,
     pub read_pool: SqlitePool,

@@ -267,8 +267,6 @@ impl NodeConfig {
             log_statements,
             prepared_statement_cache_capacity,
             read_pool_size,
-            #[cfg(feature = "rocksdb")]
-            sync_immediate: false,
             wal_sync,
             wal_size,
             #[cfg(feature = "cache")]
