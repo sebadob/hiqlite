@@ -1,14 +1,14 @@
+use crate::Error;
 use crate::app_state::RaftType;
 use crate::helpers::serialize;
 use crate::server::proxy::state::AppStateProxy;
 use crate::server::proxy::stream;
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
-use crate::Error;
+use axum::Json;
 use axum::extract::Path;
 use axum::http::header::ACCEPT;
 use axum::http::{HeaderMap, HeaderValue};
-use axum::response::{sse, IntoResponse, Response};
-use axum::Json;
+use axum::response::{IntoResponse, Response, sse};
 use fastwebsockets::upgrade;
 use futures_util::Stream;
 use serde::Serialize;
@@ -73,10 +73,10 @@ pub(crate) async fn metrics(
 
 #[inline(always)]
 fn fmt_ok<S: Debug + Serialize>(headers: HeaderMap, payload: S) -> Result<Response, Error> {
-    if let Some(accept) = headers.get(ACCEPT) {
-        if accept == HeaderValue::from_static("application/json") {
-            return Ok(Json(payload).into_response());
-        }
+    if let Some(accept) = headers.get(ACCEPT)
+        && accept == HeaderValue::from_static("application/json")
+    {
+        return Ok(Json(payload).into_response());
     }
     Ok(serialize(&payload)?.into_response())
 }

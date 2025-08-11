@@ -137,14 +137,13 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
                         if let Some(first) = lock.queue.front() {
                             if let Some(acks) = queues.get_mut(key.as_ref()) {
                                 let pos_opt = acks.iter().position(|(i, _)| i == first);
-                                if let Some(pos) = pos_opt {
-                                    if let Err(err) =
+                                if let Some(pos) = pos_opt
+                                    && let Err(err) =
                                         acks.swap_remove(pos).1.send(LockState::Released)
-                                    {
-                                        panic!(
-                                            "Error sending lock await response for lock {key}: {err:?}"
-                                        );
-                                    }
+                                {
+                                    panic!(
+                                        "Error sending lock await response for lock {key}: {err:?}"
+                                    );
                                 }
                             }
                         } else {

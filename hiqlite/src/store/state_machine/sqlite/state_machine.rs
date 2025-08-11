@@ -3,14 +3,14 @@
 use crate::helpers::{deserialize, set_path_access};
 use crate::migration::Migration;
 use crate::query::rows::RowOwned;
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::param::Param;
 use crate::store::state_machine::sqlite::snapshot_builder::SQLiteSnapshotBuilder;
 use crate::store::state_machine::sqlite::writer::WriterRequest::MetadataRead;
 use crate::store::state_machine::sqlite::writer::{
     self, MetaPersistRequest, SqlBatch, SqlTransaction, WriterRequest,
 };
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
-use crate::store::{logs, StorageResult};
+use crate::store::{StorageResult, logs};
 use crate::{Error, Node, NodeId};
 use openraft::storage::RaftStateMachine;
 use openraft::{
@@ -24,8 +24,8 @@ use std::borrow::Cow;
 use std::clone::Clone;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
 use tokio::sync::Mutex;
+use tokio::sync::oneshot;
 use tokio::{fs, task, time};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -188,10 +188,8 @@ impl StateMachineSqlite {
             write_tx,
         };
 
-        if !db_exists {
-            if let Some(snapshot) = slf.read_current_snapshot().await? {
-                slf.update_state_machine_(snapshot.path).await?;
-            }
+        if !db_exists && let Some(snapshot) = slf.read_current_snapshot().await? {
+            slf.update_state_machine_(snapshot.path).await?;
         }
 
         Ok(slf)

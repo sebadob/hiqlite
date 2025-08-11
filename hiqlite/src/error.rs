@@ -1,8 +1,8 @@
-use crate::network::{RaftInitError, RaftSnapshotError, RaftWriteError};
 use crate::Node;
+use crate::network::{RaftInitError, RaftSnapshotError, RaftWriteError};
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use bincode::error::{DecodeError, EncodeError};
 use fastwebsockets::WebSocketError;
 use openraft::error::{CheckIsLeaderError, ClientWriteError, Fatal, RaftError};
@@ -97,21 +97,21 @@ impl Error {
 
     /// Checks if the inner wrapped error is a `ForwardToLeader` error
     pub fn is_forward_to_leader(&self) -> Option<(Option<u64>, &Option<Node>)> {
-        if let Self::ClientWriteError(err) = self {
-            if let Some(err) = err.api_error() {
-                match err {
-                    ClientWriteError::ForwardToLeader(err) => {
-                        return Some((err.leader_id, &err.leader_node));
-                    }
-                    ClientWriteError::ChangeMembershipError(_) => {}
+        if let Self::ClientWriteError(err) = self
+            && let Some(err) = err.api_error()
+        {
+            match err {
+                ClientWriteError::ForwardToLeader(err) => {
+                    return Some((err.leader_id, &err.leader_node));
                 }
+                ClientWriteError::ChangeMembershipError(_) => {}
             }
         }
 
-        if let Self::CheckIsLeaderError(err) = self {
-            if let Some(err) = err.forward_to_leader() {
-                return Some((err.leader_id, &err.leader_node));
-            }
+        if let Self::CheckIsLeaderError(err) = self
+            && let Some(err) = err.forward_to_leader()
+        {
+            return Some((err.leader_id, &err.leader_node));
         }
 
         None
