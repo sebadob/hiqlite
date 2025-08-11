@@ -1,8 +1,8 @@
 use crate::backup::BACKUP_PATH_FILE;
 use crate::execute_query::TestData;
 use crate::start::build_config;
-use crate::{backup, log, params, Cache};
-use hiqlite::{start_node_with_cache, Client, Error};
+use crate::{Cache, backup, log, params};
+use hiqlite::{Client, Error, start_node_with_cache};
 use std::env;
 use tokio::task;
 
@@ -10,12 +10,18 @@ pub async fn start_test_cluster_with_backup(
     from_fs: bool,
 ) -> Result<(Client, Client, Client), Error> {
     if from_fs {
-        env::set_var("HQL_BACKUP_SKIP_VALIDATION", "true");
-        env::set_var("HQL_BACKUP_RESTORE", format!("file:{}", BACKUP_PATH_FILE));
+        unsafe {
+            env::set_var("HQL_BACKUP_SKIP_VALIDATION", "true");
+        }
+        unsafe {
+            env::set_var("HQL_BACKUP_RESTORE", format!("file:{}", BACKUP_PATH_FILE));
+        }
     } else {
         let path = backup::find_backup_file(1).await;
         let (_path, backup_name) = path.rsplit_once('/').unwrap();
-        env::set_var("HQL_BACKUP_RESTORE", format!("s3:{}", backup_name));
+        unsafe {
+            env::set_var("HQL_BACKUP_RESTORE", format!("s3:{}", backup_name));
+        }
     }
 
     let handle_client_2 = task::spawn(start_node_with_cache::<Cache>(build_config(2).await));
@@ -26,8 +32,12 @@ pub async fn start_test_cluster_with_backup(
     let client_2 = handle_client_2.await??;
     let client_3 = handle_client_3.await??;
 
-    env::remove_var("HQL_BACKUP_SKIP_VALIDATION");
-    env::remove_var("HQL_BACKUP_RESTORE");
+    unsafe {
+        env::remove_var("HQL_BACKUP_SKIP_VALIDATION");
+    }
+    unsafe {
+        env::remove_var("HQL_BACKUP_RESTORE");
+    }
 
     Ok((client_1, client_2, client_3))
 }
