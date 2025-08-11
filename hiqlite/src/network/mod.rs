@@ -1,9 +1,9 @@
-use crate::app_state::AppState;
 use crate::Error;
+use crate::app_state::AppState;
 use axum::http::header::{ACCEPT, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
-use axum::{body, Json};
+use axum::{Json, body};
 use openraft::error::{ClientWriteError, InitializeError, InstallSnapshotError, RaftError};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -33,20 +33,20 @@ fn get_payload<T>(headers: &HeaderMap, body: body::Bytes) -> Result<T, Error>
 where
     T: for<'a> Deserialize<'a>,
 {
-    if let Some(typ) = headers.get(CONTENT_TYPE) {
-        if typ == HeaderValue::from_static("application/json") {
-            return Ok(serde_json::from_slice(body.as_ref())?);
-        }
+    if let Some(typ) = headers.get(CONTENT_TYPE)
+        && typ == HeaderValue::from_static("application/json")
+    {
+        return Ok(serde_json::from_slice(body.as_ref())?);
     }
     Ok(deserialize(body.as_ref())?)
 }
 
 #[inline(always)]
 fn fmt_ok<S: Debug + Serialize>(headers: HeaderMap, payload: S) -> Result<Response, Error> {
-    if let Some(accept) = headers.get(ACCEPT) {
-        if accept == HeaderValue::from_static("application/json") {
-            return Ok(Json(payload).into_response());
-        }
+    if let Some(accept) = headers.get(ACCEPT)
+        && accept == HeaderValue::from_static("application/json")
+    {
+        return Ok(Json(payload).into_response());
     }
     Ok(serialize_network(&payload).into_response())
 }

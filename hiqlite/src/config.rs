@@ -362,12 +362,12 @@ impl NodeConfig {
         }
 
         #[cfg(feature = "dashboard")]
-        if let Some(pwd) = &self.password_dashboard {
-            if pwd.len() < 16 {
-                return Err(Error::Config(
-                    "password_dashboard should be at least 14 characters long".into(),
-                ));
-            }
+        if let Some(pwd) = &self.password_dashboard
+            && pwd.len() < 16
+        {
+            return Err(Error::Config(
+                "password_dashboard should be at least 14 characters long".into(),
+            ));
         }
 
         if self.log_statements {

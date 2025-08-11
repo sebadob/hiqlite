@@ -148,10 +148,10 @@ pub fn spawn_writer(
 
         // TODO should we maybe save a backup task handle in case of shutdown overlap?
 
-        if do_reset_metadata {
-            if let Err(err) = conn.execute("DROP TABLE IF EXISTS _metadata", ()) {
-                error!("Error cleaning up _metadata table - ignore this warning, if the DB was empty anyway");
-            }
+        if do_reset_metadata && let Err(err) = conn.execute("DROP TABLE IF EXISTS _metadata", ()) {
+            error!(
+                "Error cleaning up _metadata table - ignore this warning, if the DB was empty anyway"
+            );
         }
 
         // we want to handle our metadata manually to not interfere with migrations in apps later on
@@ -585,12 +585,14 @@ CREATE TABLE IF NOT EXISTS _metadata
                     // TODO include a TS in the req to skip backups if they are replayed after
                     // a restart
                     let now = Utc::now();
-                    if let Some(ts) = ts_last_backup {
-                        if ts > now.sub(chrono::Duration::seconds(60)) {
-                            info!("Received duplicate backup request within the last 60 seconds - ignoring it");
-                            req.ack.send(Ok(()));
-                            continue;
-                        }
+                    if let Some(ts) = ts_last_backup
+                        && ts > now.sub(chrono::Duration::seconds(60))
+                    {
+                        info!(
+                            "Received duplicate backup request within the last 60 seconds - ignoring it"
+                        );
+                        req.ack.send(Ok(()));
+                        continue;
                     }
 
                     info!("VACUUMing the database");

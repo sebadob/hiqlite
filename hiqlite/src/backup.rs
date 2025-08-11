@@ -160,11 +160,11 @@ async fn backup_cron_job(
         }
 
         for object in bucket.contents.iter() {
-            if let Some(dt) = dt_from_backup_name(&object.key) {
-                if dt < threshold {
-                    info!("Deleting expired backup: {}", object.key);
-                    s3_config.bucket.delete(object.key.clone()).await?;
-                }
+            if let Some(dt) = dt_from_backup_name(&object.key)
+                && dt < threshold
+            {
+                info!("Deleting expired backup: {}", object.key);
+                s3_config.bucket.delete(object.key.clone()).await?;
             }
         }
     }
@@ -277,12 +277,12 @@ pub(crate) async fn restore_backup_start(node_config: &NodeConfig) -> Result<boo
 pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Result<(), Error> {
     info!("Starting database restore from backup {:?}", src);
 
-    if let BackupSource::S3(_) = &src {
-        if node_config.s3_config.is_none() {
-            return Err(Error::S3(
-                "No `S3Config` given, cannot restore backup".to_string(),
-            ));
-        }
+    if let BackupSource::S3(_) = &src
+        && node_config.s3_config.is_none()
+    {
+        return Err(Error::S3(
+            "No `S3Config` given, cannot restore backup".to_string(),
+        ));
     }
 
     let (
@@ -417,12 +417,12 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
     let last_log;
     loop {
         let metrics = state.raft_db.raft.metrics().borrow().clone();
-        if let Some(last_applied) = metrics.last_applied {
-            if last_applied.index >= reqs {
-                debug!("Found high enough last_applied log id");
-                last_log = last_applied.index;
-                break;
-            }
+        if let Some(last_applied) = metrics.last_applied
+            && last_applied.index >= reqs
+        {
+            debug!("Found high enough last_applied log id");
+            last_log = last_applied.index;
+            break;
         }
         time::sleep(Duration::from_millis(50)).await;
     }

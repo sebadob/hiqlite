@@ -1,6 +1,6 @@
+use crate::Client;
 use crate::store::state_machine::memory::notify_handler;
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
-use crate::Client;
 use tokio::task;
 use tracing::error;
 use tracing::log::debug;
@@ -14,11 +14,11 @@ pub fn spawn_listener(client: Client) -> flume::Sender<NotifyRequest> {
 
 async fn router(client: Client, tx: flume::Sender<NotifyRequest>) {
     loop {
-        if let Ok(msg) = client.listen_bytes().await {
-            if tx.send_async(NotifyRequest::Notify(msg)).await.is_err() {
-                error!("Error sending notification - exiting router");
-                break;
-            }
+        if let Ok(msg) = client.listen_bytes().await
+            && tx.send_async(NotifyRequest::Notify(msg)).await.is_err()
+        {
+            error!("Error sending notification - exiting router");
+            break;
         }
     }
 }

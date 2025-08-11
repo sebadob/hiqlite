@@ -3,8 +3,8 @@ use crate::client::stream::ClientStreamReq;
 use crate::{Client, Error, Node, NodeId};
 use openraft::RaftMetrics;
 use std::clone::Clone;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time;
@@ -164,10 +164,10 @@ impl Client {
     /// Check if this instance is the current Raft cluster leader for the database.
     #[cfg(feature = "sqlite")]
     pub async fn is_leader_db(&self) -> bool {
-        if let Some(state) = &self.inner.state {
-            if state.id == self.inner.leader_db.read().await.0 {
-                return true;
-            }
+        if let Some(state) = &self.inner.state
+            && state.id == self.inner.leader_db.read().await.0
+        {
+            return true;
         }
         false
     }
@@ -175,10 +175,10 @@ impl Client {
     /// Check if this instance is the current Raft cluster leader for the cache.
     #[cfg(feature = "cache")]
     pub async fn is_leader_cache(&self) -> bool {
-        if let Some(state) = &self.inner.state {
-            if state.id == self.inner.leader_cache.read().await.0 {
-                return true;
-            }
+        if let Some(state) = &self.inner.state
+            && state.id == self.inner.leader_cache.read().await.0
+        {
+            return true;
         }
         false
     }
@@ -186,10 +186,10 @@ impl Client {
     #[cfg(feature = "sqlite")]
     #[inline(always)]
     pub(crate) async fn is_leader_db_with_state(&self) -> Option<&Arc<AppState>> {
-        if let Some(state) = &self.inner.state {
-            if state.id == self.inner.leader_db.read().await.0 {
-                return Some(state);
-            }
+        if let Some(state) = &self.inner.state
+            && state.id == self.inner.leader_db.read().await.0
+        {
+            return Some(state);
         }
         None
     }
@@ -197,10 +197,10 @@ impl Client {
     #[cfg(feature = "cache")]
     #[inline(always)]
     pub(crate) async fn is_leader_cache_with_state(&self) -> Option<&Arc<AppState>> {
-        if let Some(state) = &self.inner.state {
-            if state.id == self.inner.leader_cache.read().await.0 {
-                return Some(state);
-            }
+        if let Some(state) = &self.inner.state
+            && state.id == self.inner.leader_cache.read().await.0
+        {
+            return Some(state);
         }
         None
     }
@@ -230,26 +230,26 @@ impl Client {
     ) -> bool {
         let mut was_leader_error = false;
 
-        if let Some((id, node)) = err.is_forward_to_leader() {
-            if id.is_some() && node.is_some() {
-                was_leader_error = true;
+        if let Some((id, node)) = err.is_forward_to_leader()
+            && let Some(leader_id) = id
+            && let Some(node) = node
+        {
+            was_leader_error = true;
 
-                let api_addr = node.as_ref().unwrap().addr_api.clone();
-                let leader_id = id.unwrap();
-                {
-                    let mut lock = lock.write().await;
-                    // we check additionally to prevent race conditions and multiple
-                    // re-connect triggers
-                    if lock.0 != leader_id {
-                        *lock = (leader_id, api_addr.clone());
-                    }
+            let api_addr = node.addr_api.clone();
+            {
+                let mut lock = lock.write().await;
+                // we check additionally to prevent race conditions and multiple
+                // re-connect triggers
+                if lock.0 != leader_id {
+                    *lock = (leader_id, api_addr.clone());
                 }
+            }
 
-                if was_leader_error {
-                    tx.send_async(ClientStreamReq::LeaderChange((id, node.clone())))
-                        .await
-                        .expect("the Client API WebSocket Manager to always be running");
-                }
+            if was_leader_error {
+                tx.send_async(ClientStreamReq::LeaderChange((id, Some(node.clone()))))
+                    .await
+                    .expect("the Client API WebSocket Manager to always be running");
             }
         }
 

@@ -3,9 +3,9 @@ use crate::helpers::deserialize;
 use crate::network::api::{ApiStreamResponse, ApiStreamResponsePayload};
 use crate::network::handshake::HandshakeSecret;
 use crate::network::serialize_network;
-use crate::{tls, Client, Error, Node, NodeId};
-use axum::http::header::{CONNECTION, UPGRADE};
+use crate::{Client, Error, Node, NodeId, tls};
 use axum::http::Request;
+use axum::http::header::{CONNECTION, UPGRADE};
 use bytes::Bytes;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocket, WebSocketWrite};
 use http_body_util::Empty;
@@ -19,7 +19,7 @@ use std::time::Duration;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot::Sender;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{RwLock, oneshot};
 use tokio::task::JoinHandle;
 use tokio::{select, task, time};
 use tracing::{debug, error, info, warn};
@@ -642,9 +642,10 @@ async fn update_leader(
     node_id: Option<u64>,
     node: Option<Node>,
 ) {
-    if node_id.is_some() && node.is_some() {
-        let api_addr = node.as_ref().unwrap().addr_api.clone();
-        let leader_id = node_id.unwrap();
+    if let Some(leader_id) = node_id
+        && let Some(node) = node
+    {
+        let api_addr = node.addr_api.clone();
         info!(
             "API Client received a Leader Change: {} / {}",
             leader_id, api_addr
