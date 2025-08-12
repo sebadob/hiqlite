@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.10.0
+
+This is a rather small release. The main thing about it is that `rocksdb` was removed completely after `hiqlite-wal`
+has been proven to be stable. This makes `hiqlite` a lot more light-weight and makes it possible to compile it to `musl`
+targets.
+
+Apart from that, internal dependencies like SQLite have been bumped and the Rust version was changed to 2024.
+
 ## hiqlite v0.9.1
 
 Fixed a bug for local backup cleanup. In some situations, the `backup_keep_days_local` config variable was not read
