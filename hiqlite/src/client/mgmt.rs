@@ -252,6 +252,7 @@ impl Client {
         // This pre-shutdown delay is not strictly necessary, but it makes rolling releases way
         // smoother and does not require custom configuration in e.g. K8s that you can mess up.
         if !is_single_instance {
+            #[cfg(debug_assertions)]
             time::sleep(Duration::from_secs(7)).await;
         }
 
