@@ -6,6 +6,13 @@ This is a rather small release. The main thing about it is that `rocksdb` was re
 has been proven to be stable. This makes `hiqlite` a lot more light-weight and makes it possible to compile it to `musl`
 targets.
 
+Another noticeable change is that for HA deployments, the shutdown handler adds a 7 second pre-shutdown delay. After
+this delay, the cluster leave (for ephemeral caches) and shutdown procedures will be executed, followed by the already
+existing post-shutdown delay. This new 7 second pre-delay is not strictly necessary, but it makes rolling releases in
+e.g. K8s a lot smoother without the need for specific additional configuration for readiness probes and such, that can
+be messed up pretty easily. 7 additional seconds when doing a shutdown don't hurt and they would be necessary anyway to
+have a smooth restart.
+
 Apart from that, internal dependencies like SQLite have been bumped and the Rust version was changed to 2024.
 
 ## hiqlite v0.9.1
