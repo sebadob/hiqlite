@@ -220,14 +220,45 @@ impl Client {
         #[cfg(feature = "sqlite")] tx_client_db: &flume::Sender<ClientStreamReq>,
         tx_shutdown: &Option<watch::Sender<bool>>,
     ) -> Result<(), Error> {
+        info!("Received shutdown signal");
+
         #[allow(unused_mut)]
         let mut is_single_instance: bool;
+        #[cfg(feature = "cache")]
+        {
+            let node_count = state
+                .raft_cache
+                .raft
+                .metrics()
+                .borrow()
+                .membership_config
+                .nodes()
+                .count();
+            is_single_instance = node_count == 1;
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            let node_count = state
+                .raft_db
+                .raft
+                .metrics()
+                .borrow()
+                .membership_config
+                .nodes()
+                .count();
+            is_single_instance = node_count == 1;
+        }
+
+        // This pre-shutdown delay is not strictly necessary, but it makes rolling releases way
+        // smoother and does not require custom configuration in e.g. K8s that you can mess up.
+        if !is_single_instance {
+            #[cfg(debug_assertions)]
+            time::sleep(Duration::from_secs(7)).await;
+        }
 
         #[cfg(feature = "cache")]
         {
             let metrics = state.raft_cache.raft.metrics().borrow().clone();
-            let node_count = metrics.membership_config.nodes().count();
-            is_single_instance = node_count == 1;
 
             if !state.raft_cache.cache_storage_disk {
                 // If we run an entirely in-memory cache and therefore lose the Raft state
@@ -285,10 +316,6 @@ impl Client {
         #[cfg(feature = "sqlite")]
         {
             state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
-
-            let metrics = state.raft_db.raft.metrics().borrow().clone();
-            let node_count = metrics.membership_config.nodes().count();
-            is_single_instance = node_count == 1;
 
             info!("Shutting down raft sqlite layer");
             state.raft_db.raft.shutdown().await?;

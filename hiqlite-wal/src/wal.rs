@@ -96,16 +96,16 @@ impl WalFile {
             loop {
                 let record = self.read_record_unchecked(offset)?;
 
-                if let Some(id_before) = id_before {
-                    if record.log_id != id_before + 1 {
-                        return Err(Error::Integrity(
-                            format!(
-                                "WAL record incorrect ordering, missing Log ID {}",
-                                id_before + 1
-                            )
-                            .into(),
-                        ));
-                    }
+                if let Some(id_before) = id_before
+                    && record.log_id != id_before + 1
+                {
+                    return Err(Error::Integrity(
+                        format!(
+                            "WAL record incorrect ordering, missing Log ID {}",
+                            id_before + 1
+                        )
+                        .into(),
+                    ));
                 }
                 if record.crc != crc!(record.data) || record.data.is_empty() {
                     #[cfg(feature = "auto-heal")]
@@ -183,16 +183,21 @@ impl WalFile {
                     // We found unexpected data. In case of any errors, we will ignore this
                     // unexpected data and let the next append logs action overwrite it.
 
-                    if let Some(id_before) = id_before {
-                        if record.log_id != id_before + 1 {
-                            warn!(
-                                "Mismatch in Log ID in unexpected data for Log ID {} after already \
+                    if let Some(id_before) = id_before
+                        && record.log_id != id_before + 1
+                    {
+                        warn!(
+                            "Mismatch in Log ID in unexpected data for Log ID {} after already \
                                 recovered {} logs - ignoring entry\nexpected Log ID: {} / found: {}\
                                 \nread offset: {}\n{:?}",
-                                record.log_id, recovered, id_before + 1, record.log_id, offset, record
-                            );
-                            break;
-                        }
+                            record.log_id,
+                            recovered,
+                            id_before + 1,
+                            record.log_id,
+                            offset,
+                            record
+                        );
+                        break;
                     }
                     id_before = Some(record.log_id);
 
@@ -201,7 +206,12 @@ impl WalFile {
                             "Mismatch in CRC in unexpected data section after already recovered {} \
                             logs - ignoring entry with log id: {}, expected crc: {:?}, \
                             actual crc: {:?} - \nread offset: {} / {:?}",
-                            recovered, record.log_id, record.crc, crc!(record.data), offset, self
+                            recovered,
+                            record.log_id,
+                            record.crc,
+                            crc!(record.data),
+                            offset,
+                            self
                         );
                         break;
                     }
@@ -380,13 +390,14 @@ impl WalFile {
         let mut idx = data_start;
         let mut offset = 0;
 
-        if let Some(memo) = memo {
-            if memo.last_wal_no == self.wal_no && memo.last_log_id < id_from {
-                // we can use the memoized last log as our start position
-                // `data_end` is inclusive
-                idx = memo.data_end + 1;
-                debug!("LogReadMemo match, shifting start idx to: {}", idx);
-            }
+        if let Some(memo) = memo
+            && memo.last_wal_no == self.wal_no
+            && memo.last_log_id < id_from
+        {
+            // we can use the memoized last log as our start position
+            // `data_end` is inclusive
+            idx = memo.data_end + 1;
+            debug!("LogReadMemo match, shifting start idx to: {}", idx);
         }
         loop {
             let record = self.read_record_unchecked(idx)?;

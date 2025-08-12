@@ -524,7 +524,7 @@ spec:
     spec:
       containers:
         - name: hiqlite
-          image: ghcr.io/sebadob/hiqlite:0.9.1
+          image: ghcr.io/sebadob/hiqlite:0.10.0
           securityContext:
             allowPrivilegeEscalation: false
           ports:

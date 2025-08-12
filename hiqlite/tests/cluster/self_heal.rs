@@ -1,7 +1,7 @@
 use crate::start::build_config;
-use crate::{cache, check, log, Cache, TEST_DATA_DIR};
+use crate::{Cache, TEST_DATA_DIR, cache, check, log};
 use futures_util::future::join_all;
-use hiqlite::{start_node_with_cache, Client, Error};
+use hiqlite::{Client, Error, start_node_with_cache};
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio::{fs, time};
@@ -106,7 +106,7 @@ async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Resul
     // everything is fine after the restart and replication
     let key = "purge_key";
     let value = "after snap value";
-    let ttl = 10u64;
+    let ttl = 15u64;
     let inserted = Instant::now();
     client
         .put(Cache::One, key, &value, Some(ttl as i64))
