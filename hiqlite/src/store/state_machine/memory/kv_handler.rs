@@ -1,6 +1,6 @@
-use crate::store::state_machine::memory::state_machine::StateMachineData;
-use crate::store::state_machine::memory::TypeConfigKV;
 use crate::NodeId;
+use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::state_machine::StateMachineData;
 use openraft::{Snapshot, StorageError};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::thread;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{RwLock, oneshot};
 use tokio::task;
 use tracing::{error, info, warn};
 
@@ -63,7 +63,11 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
 
     while let Ok(req) = rx.recv_async().await {
         match req {
-            CacheRequestHandler::Get((key, ack)) => ack.send(data.get(&key).cloned()).unwrap(),
+            CacheRequestHandler::Get((key, ack)) => {
+                if ack.send(data.get(&key).cloned()).is_err() {
+                    error!("Error sending back Cache GET request: channel closed");
+                }
+            }
             CacheRequestHandler::Put((key, value)) => {
                 data.insert(key, value);
             }
