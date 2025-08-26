@@ -1,9 +1,14 @@
 # Changelog
 
+## v0.10.1
+
+This version removes an `unwrap()` during KV GET operations, that was reachable under some circumstances, for instance
+when you cancel an async `hiqlite::Client.get()` before awaiting the result.
+
 ## v0.10.0
 
 This is a rather small release. The main thing about it is that `rocksdb` was removed completely after `hiqlite-wal`
-has been proven to be stable. This makes `hiqlite` a lot more light-weight and makes it possible to compile it to `musl`
+has proven to be stable. This makes `hiqlite` a lot more light-weight and makes it possible to compile it to `musl`
 targets.
 
 Another noticeable change is that for HA deployments, the shutdown handler adds a 7 second pre-shutdown delay. After
