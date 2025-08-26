@@ -1,6 +1,6 @@
 set shell := ["bash", "-uc"]
 
-export TAG := "0.9.0"
+export TAG := `cat hiqlite/Cargo.toml | grep '^version =' | cut -d " " -f3 | xargs`
 export MSRV := `cat hiqlite/Cargo.toml | grep '^rust-version =' | cut -d " " -f3 | xargs`
 export USER := `echo "$(id -u):$(id -g)"`
 
