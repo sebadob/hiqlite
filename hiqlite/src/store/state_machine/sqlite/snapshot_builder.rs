@@ -1,6 +1,6 @@
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
 use crate::store::state_machine::sqlite::writer::{SnapshotRequest, WriterRequest};
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::{Node, NodeId};
 use openraft::{
     RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership,
@@ -33,11 +33,12 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
         let snapshot_id = Uuid::now_v7();
 
         let path = format!("{}/{}", self.path_snapshots, snapshot_id);
+        let path_temp = format!("{path}.temp");
         let (ack, rx) = oneshot::channel();
         let req = WriterRequest::Snapshot(SnapshotRequest {
             snapshot_id,
             // last_membership: self.last_membership.clone(),
-            path: path.clone(),
+            path: path_temp.clone(),
             ack,
         });
         self.write_tx
@@ -46,8 +47,13 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
             .expect("Sender to always be listening");
 
         let resp = rx.await.expect("to always receive a snapshot response")?;
+        fs::copy(path_temp, &path)
+            .await
+            .map_err(|err| StorageError::IO {
+                source: StorageIOError::write_state_machine(&err),
+            })?;
         let snapshot = fs::File::open(path).await.map_err(|err| StorageError::IO {
-            source: StorageIOError::read(&err),
+            source: StorageIOError::read_state_machine(&err),
         })?;
 
         let path_snapshots = self.path_snapshots.clone();

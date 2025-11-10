@@ -1,9 +1,9 @@
 use crate::cache_idx::CacheIndex;
 use crate::helpers::{deserialize, serialize, set_path_access};
+use crate::store::StorageResult;
 use crate::store::state_machine::memory::cache_ttl_handler::TtlRequest;
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
-use crate::store::state_machine::memory::{cache_ttl_handler, kv_handler, TypeConfigKV};
-use crate::store::StorageResult;
+use crate::store::state_machine::memory::{TypeConfigKV, cache_ttl_handler, kv_handler};
 use crate::{Error, Node, NodeId};
 use chrono::Utc;
 use cryptr::utils::secure_random_alnum;
@@ -19,12 +19,12 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::io::Cursor;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use strum::IntoEnumIterator;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio::task;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -206,10 +206,23 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
         };
 
         let path = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
-        let mut file = fs::File::create_new(&path)
+        let path_temp = format!("{path}.temp");
+        {
+            let mut file = fs::File::create_new(&path_temp)
+                .await
+                .map_err(|err| StorageIOError::read_state_machine(&err))?;
+            file.write_all(&snapshot_bytes)
+                .await
+                .map_err(|err| StorageIOError::read_state_machine(&err))?;
+        }
+
+        fs::copy(&path_temp, &path)
             .await
-            .map_err(|err| StorageIOError::read_state_machine(&err))?;
-        file.write_all(&snapshot_bytes)
+            .map_err(|err| StorageIOError::write_state_machine(&err))?;
+        fs::remove_file(path_temp)
+            .await
+            .map_err(|err| StorageIOError::write_state_machine(&err))?;
+        let file = fs::File::open(&path)
             .await
             .map_err(|err| StorageIOError::read_state_machine(&err))?;
 
@@ -370,6 +383,10 @@ impl StateMachineMemory {
         while let Ok(Some(entry)) = list.next_entry().await {
             let file_name = entry.file_name();
             let name = file_name.to_str().unwrap_or_default();
+            if name.ends_with(".temp") {
+                // unfinished snapshots during creation will have `.temp` in the end
+                continue;
+            }
 
             let meta = entry.metadata().await.map_err(|err| StorageError::IO {
                 source: StorageIOError::read(&err),
