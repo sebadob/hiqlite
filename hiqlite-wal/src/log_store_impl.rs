@@ -1,12 +1,12 @@
-use crate::{reader, writer, LogStore, LogStoreReader};
+use crate::{LogStore, LogStoreReader, reader, writer};
 use bincode::error::{DecodeError, EncodeError};
 use openraft::storage::{LogFlushed, RaftLogStorage};
 use openraft::{
     AnyError, ErrorSubject, ErrorVerb, LogId, OptionalSend, RaftLogId, RaftLogReader,
     RaftTypeConfig, StorageError, StorageIOError, Vote,
 };
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::Bound;
 use std::fmt::Debug;
 use std::ops::RangeBounds;
@@ -238,11 +238,11 @@ where
             })
             .await
             .map_err(|err| StorageError::IO {
-                source: StorageIOError::read_vote(&err),
+                source: StorageIOError::write_logs(&err),
             })?;
 
         rx.await.unwrap().map_err(|err| StorageError::IO {
-            source: StorageIOError::read_vote(&err),
+            source: StorageIOError::write_logs(&err),
         })
     }
 
@@ -261,11 +261,11 @@ where
             })
             .await
             .map_err(|err| StorageError::IO {
-                source: StorageIOError::read_vote(&err),
+                source: StorageIOError::write_logs(&err),
             })?;
 
         rx.await.unwrap().map_err(|err| StorageError::IO {
-            source: StorageIOError::read_vote(&err),
+            source: StorageIOError::write_logs(&err),
         })
     }
 }

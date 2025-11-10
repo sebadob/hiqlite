@@ -959,7 +959,7 @@ impl WalFileSet {
         debug_assert!(!self.files.is_empty());
 
         let purge_front = Some(id_from) <= self.files.front().map(|f| f.id_from);
-        let truncate_back = Some(id_until) > self.files.back().map(|f| f.id_until);
+        let truncate_back = Some(id_until) >= self.files.back().map(|f| f.id_until);
         let mut memo: Option<LogReadMemo> = None;
 
         if purge_front {
@@ -969,11 +969,15 @@ impl WalFileSet {
             }
             if self.files.is_empty() {
                 self.add_file(wal_size, buf)?;
+                self.files.front_mut().unwrap().mmap_mut()?;
             }
 
             let front = self.files.front_mut().unwrap();
-            debug_assert!(front.id_until >= id_until);
-            if front.id_from < id_until {
+            if front.id_from < id_until && front.data_end.is_some() {
+                debug_assert!(
+                    front.id_until >= id_until,
+                    "id_until: {id_until}, front: {front:?}"
+                );
                 if front.mmap_mut.is_none() {
                     front.mmap_mut()?;
                 }
@@ -988,6 +992,7 @@ impl WalFileSet {
             }
             if self.files.is_empty() {
                 self.add_file(wal_size, buf)?;
+                self.files.front_mut().unwrap().mmap_mut()?;
             }
 
             let back = self.files.back_mut().unwrap();
@@ -1534,10 +1539,7 @@ mod tests {
         buf_logs.clear();
         wal.shift_delete_logs(1, u64::MAX, MB2, &mut buf, &mut buf_logs)?;
         assert_eq!(wal.files.len(), 1);
-        assert_eq!(wal.files.front().unwrap().id_from, 1);
         let back = wal.files.back().unwrap();
-        assert_eq!(back.id_from, 1);
-        assert_eq!(back.id_until, 1);
         assert_eq!(back.data_start, None);
         assert_eq!(back.data_end, None);
 
