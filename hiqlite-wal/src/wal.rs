@@ -958,7 +958,7 @@ impl WalFileSet {
         debug_assert!(buf_logs.is_empty());
         debug_assert!(!self.files.is_empty());
 
-        let purge_front = Some(id_from) < self.files.front().map(|f| f.id_from);
+        let purge_front = Some(id_from) <= self.files.front().map(|f| f.id_from);
         let truncate_back = Some(id_until) > self.files.back().map(|f| f.id_until);
         let mut memo: Option<LogReadMemo> = None;
 
