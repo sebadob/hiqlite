@@ -219,9 +219,6 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
         fs::copy(&path_temp, &path)
             .await
             .map_err(|err| StorageIOError::write_state_machine(&err))?;
-        fs::remove_file(path_temp)
-            .await
-            .map_err(|err| StorageIOError::write_state_machine(&err))?;
         let file = fs::File::open(&path)
             .await
             .map_err(|err| StorageIOError::read_state_machine(&err))?;
