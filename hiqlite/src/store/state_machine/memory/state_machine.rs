@@ -210,10 +210,10 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
         {
             let mut file = fs::File::create_new(&path_temp)
                 .await
-                .map_err(|err| StorageIOError::read_state_machine(&err))?;
+                .map_err(|err| StorageIOError::write_state_machine(&err))?;
             file.write_all(&snapshot_bytes)
                 .await
-                .map_err(|err| StorageIOError::read_state_machine(&err))?;
+                .map_err(|err| StorageIOError::write_state_machine(&err))?;
         }
 
         fs::copy(&path_temp, &path)
