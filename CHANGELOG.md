@@ -1,6 +1,16 @@
 # Changelog
 
-## v0.10.1
+## v0.11.0
+
+This is a rather small release. Some external dependencies have been bumped to the latest versions. The biggest change
+is the pretty important bugfix below.
+
+### Bugfix
+
+- It was possible to get into situations where the automatic WAL file cleanup was not working as expected, even when
+  the log IDs were covered by the latest snapshot. This could lead to the volume filling up endlessly.
+
+## hiqlite v0.10.1
 
 This version removes an `unwrap()` during KV GET operations, that was reachable under some circumstances, for instance
 when you cancel an async `hiqlite::Client.get()` before awaiting the result.
