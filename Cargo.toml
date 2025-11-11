@@ -21,7 +21,7 @@ panic = "abort"
 [workspace.dependencies]
 argon2 = "0.5.3"
 axum = { version = "0.8.1", features = ["http2", "tokio"] }
-axum-extra = { version = "0.10.0", features = ["cookie"] }
+axum-extra = { version = "0.12", features = ["cookie"] }
 axum-server = { version = "0.7.1", features = [
     "tls-rustls",
     "tls-rustls-no-provider",
