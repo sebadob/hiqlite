@@ -1,0 +1,2 @@
+import { e } from "./BDwp15xD.js";
+e();
