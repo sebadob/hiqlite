@@ -242,7 +242,7 @@ impl NodeConfig {
         )
         .map(|b64| {
             String::from_utf8(b64_decode(&b64).expect("password_dashboard must be valid base64"))
-                .expect("password_dashboard must container String characters only")
+                .expect("password_dashboard must contain String characters only")
         });
         #[cfg(feature = "dashboard")]
         let insecure_cookie =
