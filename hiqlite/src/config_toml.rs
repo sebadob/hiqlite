@@ -1,5 +1,4 @@
 use crate::{Error, Node, NodeConfig, ServerTlsConfig};
-use cryptr::utils::b64_decode;
 use hiqlite_wal::LogSync;
 use std::borrow::Cow;
 use std::env;
@@ -241,8 +240,10 @@ impl NodeConfig {
             "HQL_PASSWORD_DASHBOARD",
         )
         .map(|b64| {
-            String::from_utf8(b64_decode(&b64).expect("password_dashboard must be valid base64"))
-                .expect("password_dashboard must contain String characters only")
+            String::from_utf8(
+                cryptr::utils::b64_decode(&b64).expect("password_dashboard must be valid base64"),
+            )
+            .expect("password_dashboard must contain String characters only")
         });
         #[cfg(feature = "dashboard")]
         let insecure_cookie =
