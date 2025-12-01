@@ -1,5 +1,10 @@
 # Changelog
 
+## hiqlite v0.11.1
+
+Bugfix when reading in the `password_dashboard` via TOML. The base64 decoding step was missing, while it was working
+just fine when read via ENV.
+
 ## v0.11.0
 
 This is a rather small release. Some external dependencies have been bumped to the latest versions. The biggest change
