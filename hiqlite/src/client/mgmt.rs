@@ -264,6 +264,8 @@ impl Client {
                 // If we run an entirely in-memory cache and therefore lose the Raft state
                 // and membership between restarts, we should always leave the cluster cleanly
                 // before doing a shutdown.
+                info!("Leaving in-memory-only cache cluster");
+
                 let client = reqwest::Client::builder()
                     .http2_prior_knowledge()
                     .danger_accept_invalid_certs(tls_no_verify)
@@ -299,6 +301,8 @@ impl Client {
                 {
                     tracing::error!("Error leaving the Cache cluster: {:?}", err);
                 }
+
+                info!("Left in-memory-only cache cluster successfully");
             }
 
             info!("Shutting down raft cache layer");

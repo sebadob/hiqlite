@@ -1,15 +1,16 @@
 use crate::app_state::RaftType;
-use crate::helpers::deserialize;
+use crate::helpers::{deserialize, get_raft_metrics};
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{serialize_network, validate_secret, AppStateExt, Error};
+use crate::network::{AppStateExt, Error, serialize_network, validate_secret};
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use chrono::Utc;
-use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
+use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::ops::{Deref, Sub};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::{task, time};
 use tracing::{debug, error, info, warn};
@@ -38,6 +39,7 @@ use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 use axum::response::sse;
 #[cfg(feature = "listen_notify")]
 use futures_util::stream::Stream;
+use openraft::ServerState;
 
 pub async fn health(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
@@ -82,6 +84,52 @@ async fn check_health(state: &AppStateExt) -> Result<(), Error> {
             return Err(Error::LeaderChange(
                 "The leader voting process has not finished yet Raft Cache".into(),
             ));
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn ready(state: AppStateExt) -> Result<(), Error> {
+    #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
+    panic!("neither `sqlite` nor `cache` feature enabled");
+
+    #[cfg(feature = "sqlite")]
+    {
+        // to avoid a chicken-and-egg problem, a pristine node 1 should always return ready
+        let is_pristine_node_1 = state.id == 1 && !state.raft_db.raft.is_initialized().await?;
+
+        if !is_pristine_node_1 {
+            if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
+                return Err(Error::Error("sqlite raft is not running".into()));
+            }
+
+            // make sure we are a voting cluster member
+            let metrics = get_raft_metrics(&state, &RaftType::Sqlite).await;
+            if metrics.state == ServerState::Learner || metrics.state == ServerState::Shutdown {
+                return Err(Error::Error(
+                    "not yet a voting member of the sqlite raft".into(),
+                ));
+            }
+        }
+    }
+
+    #[cfg(feature = "cache")]
+    {
+        let is_pristine_node_1 = state.id == 1 && !state.raft_cache.raft.is_initialized().await?;
+
+        if !is_pristine_node_1 {
+            if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
+                return Err(Error::Error("cache raft is not running".into()));
+            }
+
+            // make sure we are a voting cluster member
+            let metrics = get_raft_metrics(&state, &RaftType::Cache).await;
+            if metrics.state == ServerState::Learner || metrics.state == ServerState::Shutdown {
+                return Err(Error::Error(
+                    "not yet a voting member of the cache raft".into(),
+                ));
+            }
         }
     }
 

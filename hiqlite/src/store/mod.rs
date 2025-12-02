@@ -2,7 +2,7 @@
 
 use crate::app_state::{AppState, RaftType};
 use crate::network::NetworkStreaming;
-use crate::{init, Error, NodeConfig, NodeId, RaftConfig};
+use crate::{Error, NodeConfig, NodeId, RaftConfig, init};
 use hiqlite_wal::LogSync;
 use openraft::storage::RaftLogStorage;
 use openraft::{Raft, StorageError};
@@ -11,22 +11,25 @@ use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::fmt::Debug;
 use std::mem;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 use strum::IntoEnumIterator;
+use tokio::time;
+use tracing::info;
 
 #[cfg(feature = "cache")]
 use crate::{
     app_state::StateRaftCache,
-    store::state_machine::memory::{state_machine::StateMachineMemory, TypeConfigKV},
+    store::state_machine::memory::{TypeConfigKV, state_machine::StateMachineMemory},
 };
 #[cfg(feature = "sqlite")]
 use crate::{
     app_state::StateRaftDB,
     store::state_machine::sqlite::{
+        TypeConfigSqlite,
         state_machine::{SqlitePool, StateMachineSqlite},
         writer::WriterRequest,
-        TypeConfigSqlite,
     },
 };
 

@@ -1,9 +1,9 @@
 use crate::app_state::AppState;
 use crate::network::raft_server;
 use crate::network::{api, management};
-use crate::{init, split_brain_check, store, Client, Error, NodeConfig};
-use axum::routing::{get, post};
+use crate::{Client, Error, NodeConfig, init, split_brain_check, store};
 use axum::Router;
+use axum::routing::{get, post};
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -141,7 +141,7 @@ where
         if let Some(config) = tls_config {
             let addr = SocketAddr::from_str(&rpc_addr).expect("valid RPC socket address");
             // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
-            // properly with axum directly
+            //  properly with axum directly
             axum_server::bind_rustls(addr, config)
                 .serve(router_internal.into_make_service())
                 .await
@@ -177,6 +177,7 @@ where
         .route("/listen", get(api::listen))
         .route("/stream/{raft_type}", get(api::stream))
         .route("/health", get(api::health))
+        .route("/ready", get(api::ready))
         .route("/ping", get(api::ping));
 
     #[cfg(not(feature = "dashboard"))]
@@ -224,7 +225,7 @@ where
         if let Some(config) = tls_config {
             let addr = SocketAddr::from_str(&api_addr).expect("valid RPC socket address");
             // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
-            // properly with axum directly
+            //  properly with axum directly
             axum_server::bind_rustls(addr, config)
                 .serve(router_api.into_make_service())
                 .await

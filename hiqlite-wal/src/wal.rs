@@ -306,7 +306,7 @@ impl WalFile {
 
         // Note: We write the id last on purpose and only after the complete data section has been
         // written. This makes automatic integrity checks / repairs after a crash less likely to
-        // output false positive warning logs, since it uses a non-Null log ID was an indicator
+        // output false positive warning logs, since it uses a non-Null log ID as an indicator
         // for possibly existing, orphaned data.
         buf.clear();
         u64_to_bin(id, buf)?;
@@ -540,6 +540,10 @@ impl WalFile {
 
     #[inline]
     pub fn mmap_mut(&mut self) -> Result<(), Error> {
+        if self.mmap_mut.is_some() {
+            return Ok(());
+        }
+
         let file = OpenOptions::new()
             .read(true)
             .write(true)
