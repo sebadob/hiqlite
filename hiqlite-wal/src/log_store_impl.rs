@@ -75,7 +75,7 @@ async fn try_get_log_entries<
 
     let mut res: Vec<T::Entry> = Vec::with_capacity((until - from) as usize + 1);
 
-    let (ack, rx) = flume::bounded(8);
+    let (ack, rx) = flume::bounded(1);
     tx.send_async(reader::Action::Logs { from, until, ack })
         .await
         .expect("LogsReader to always be listening");

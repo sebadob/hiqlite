@@ -109,7 +109,6 @@ pub fn spawn(
         && front.id_from > 2
     {
         warn!("Trying to fix bad LogState for `last_purged_logid`");
-        // TODO this fix currently fixes the main issue but causes an mmap problem afterward
         let mut buf = Vec::with_capacity(16);
         let mut memo: Option<LogReadMemo> = None;
         front.mmap()?;
