@@ -1,4 +1,5 @@
 use crate::{LogStore, LogStoreReader, reader, writer};
+use bincode::config::{Configuration, Fixint, LittleEndian};
 use bincode::error::{DecodeError, EncodeError};
 use openraft::storage::{LogFlushed, RaftLogStorage};
 use openraft::{
@@ -13,16 +14,18 @@ use std::ops::RangeBounds;
 use tokio::sync::oneshot;
 use tracing::debug;
 
+const BINCODE_CONFIG: Configuration<LittleEndian, Fixint> = bincode::config::legacy();
+
 #[inline(always)]
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
     // We are using the legacy config on purpose here. It uses fixed-width integer fields, which
     // uses a bit more space, but is faster.
-    bincode::serde::encode_to_vec(value, bincode::config::legacy())
+    bincode::serde::encode_to_vec(value, BINCODE_CONFIG)
 }
 
 #[inline(always)]
 pub fn deserialize<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
-    bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::legacy()).map(|(res, _)| res)
+    bincode::serde::decode_from_slice::<T, _>(bytes, BINCODE_CONFIG).map(|(res, _)| res)
 }
 
 impl<T> RaftLogReader<T> for LogStore<T>
@@ -72,7 +75,7 @@ async fn try_get_log_entries<
 
     let mut res: Vec<T::Entry> = Vec::with_capacity((until - from) as usize + 1);
 
-    let (ack, rx) = flume::bounded(1);
+    let (ack, rx) = flume::bounded(8);
     tx.send_async(reader::Action::Logs { from, until, ack })
         .await
         .expect("LogsReader to always be listening");

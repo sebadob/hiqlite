@@ -1,7 +1,10 @@
 use crate::error::Error;
 use crate::lockfile::LockFile;
+use crate::log_store_impl::{deserialize, serialize};
 use crate::metadata::Metadata;
+use crate::reader::LogReadMemo;
 use crate::wal::WalFileSet;
+use openraft::{LeaderId, LogId};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -97,8 +100,36 @@ pub fn spawn(
     }
     let wal_locked = Arc::new(RwLock::new(set.clone_no_map()));
 
-    let (tx, rx) = flume::bounded::<Action>(1);
+    // TODO remove with version <= 0.13
+    // This is a fix for a bug from previous versions. Can be removed in later ones,
+    // it would be safe to do probably around version >= 0.13.
+    if meta.read()?.last_purged_log_id.is_none()
+        && let Some(front) = set.files.front_mut()
+        && front.wal_no > 1
+        && front.id_from > 2
+    {
+        warn!("Trying to fix bad LogState for `last_purged_logid`");
+        // TODO this fix currently fixes the main issue but causes an mmap problem afterward
+        let mut buf = Vec::with_capacity(16);
+        let mut memo: Option<LogReadMemo> = None;
+        front.mmap()?;
+        front.read_logs(front.id_from, front.id_until, &mut memo, &mut buf)?;
+        let (_, bytes) = buf.first().unwrap();
+        let log: openraft::log_id::LogId<u64> = deserialize(bytes)?;
+        let log_id: openraft::log_id::LogId<u64> = LogId {
+            leader_id: LeaderId {
+                term: log.leader_id.term,
+                node_id: log.leader_id.node_id,
+            },
+            index: log.index - 1,
+        };
+        front.mmap_drop();
 
+        meta.write()?.last_purged_log_id = Some(serialize(&log_id)?);
+        Metadata::write(meta.clone(), &set.base_path)?;
+    }
+
+    let (tx, rx) = flume::bounded::<Action>(1);
     let wal = wal_locked.clone();
     let snc = sync.clone();
     thread::spawn(move || run(lockfile, meta, wal, set, rx, snc, wal_size));
@@ -142,7 +173,8 @@ fn run(
     let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
     let data_len_limit = wal_size as usize - wal.active().offset_logs() - 2;
 
-    let mut buf: Vec<u8> = Vec::with_capacity(8);
+    // openraft will read chunks of 64 logs for bigger tasks
+    let mut buf: Vec<u8> = Vec::with_capacity(64);
     let mut buf_logs: Vec<(u64, Vec<u8>)> = Vec::with_capacity(1);
 
     wal.active().mmap_mut()?;
@@ -253,8 +285,11 @@ fn run(
                 buf_logs.clear();
                 match wal.shift_delete_logs(from, until, wal_size, &mut buf, &mut buf_logs) {
                     Ok(_) => {
-                        meta.write()?.last_purged_log_id = last_log;
-                        Metadata::write(meta.clone(), &wal.base_path)?;
+                        // the last_log may be none if logs are truncated
+                        if last_log.is_some() {
+                            meta.write()?.last_purged_log_id = last_log;
+                            Metadata::write(meta.clone(), &wal.base_path)?;
+                        }
                         {
                             let mut lock = wal_locked.write().unwrap();
                             lock.active = wal.active;

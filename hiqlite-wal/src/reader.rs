@@ -59,9 +59,8 @@ fn run(
 ) {
     // we keep the local set for faster access inside the loop and lazily update if necessary
     let mut wal = wal_locked.read().unwrap().clone_no_map();
-    // TODO a good value would be max payload chunks
-    let mut buf = Vec::with_capacity(16);
-
+    // openraft will read chunks of 64 logs for bigger tasks
+    let mut buf = Vec::with_capacity(64);
     let mut memo: Option<LogReadMemo> = None;
 
     while let Ok(action) = rx.recv() {
@@ -83,7 +82,6 @@ fn run(
                         );
                         continue;
                     }
-                    debug!("Reading from Log {:?}", log);
 
                     log.mmap().unwrap();
                     buf.clear();
@@ -110,7 +108,7 @@ fn run(
                         match log.read_logs(from_next, until, &mut memo, &mut buf) {
                             Ok(_) => {
                                 for (_, data) in buf.drain(..) {
-                                    ack.send(Some(Ok(data))).unwrap()
+                                    ack.send(Some(Ok(data))).unwrap();
                                 }
                             }
                             Err(err) => {
