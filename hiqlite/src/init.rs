@@ -1,9 +1,9 @@
 use crate::app_state::{AppState, RaftType};
 use crate::helpers::{deserialize, serialize};
-use crate::network::management::{ClusterLeaveReq, LearnerReq};
 use crate::network::HEADER_NAME_SECRET;
-use crate::{helpers, Error, Node, NodeId};
-use openraft::{Membership, RaftMetrics};
+use crate::network::management::{ClusterLeaveReq, LearnerReq};
+use crate::{Error, Node, NodeId, helpers};
+use openraft::{Membership, RaftMetrics, ServerState};
 use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
@@ -261,6 +261,11 @@ pub async fn become_cluster_member(
         .build()?;
     let scheme = if tls { "https" } else { "http" };
 
+    // It is possible that this node is un-initialized while still being a member on a remote
+    // cluster. This can happen, if e.g. the volume got lost and the node was a member before
+    // already.
+    // We will only get here, if a Raft membership state does not exist! Therefore, we want to
+    // make sure we start clean again and that the remote cluster is clean as well.
     if is_remote_cluster_member(&state, raft_type, &client, scheme, this_node, nodes).await {
         leave_remote_cluster(
             &state, raft_type, &client, scheme, this_node, nodes, 10, false,
@@ -294,6 +299,7 @@ pub async fn become_cluster_member(
         true,
     )
     .await?;
+    // TODO check if this is still possible with the addition of "leave before proceed"
     if skip == SkipBecome::Yes {
         info!(
             "Node {}: Became a {:?} Raft member in the meantime - skipping further init",
@@ -307,24 +313,27 @@ pub async fn become_cluster_member(
         raft_type.as_str()
     );
 
-    // If we try to become a member too fast and the request arrives on remote directly in between
+    // If we try to become a member too fast and the request arrives at remote directly in between
     // closing and re-opening the socket to us again, and it then also badly overlaps with the raft
     // membership modification, we can get into a deadlock situation on the leader.
     // We want to wait until we are a commited Raft learner.
     {
         let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
-        let mut are_we_learner = metrics
-            .membership_config
-            .nodes()
-            .any(|(id, _)| *id == state.id);
+
+        let mut are_we_learner = metrics.state == ServerState::Learner
+            && metrics
+                .membership_config
+                .nodes()
+                .any(|(id, _)| *id == state.id);
         while !are_we_learner {
             info!("Waiting until we are a commited Raft Learner ...");
             time::sleep(Duration::from_secs(1)).await;
             metrics = helpers::get_raft_metrics(&state, raft_type).await;
-            are_we_learner = metrics
-                .membership_config
-                .nodes()
-                .any(|(id, _)| *id == state.id);
+            are_we_learner = metrics.state == ServerState::Learner
+                && metrics
+                    .membership_config
+                    .nodes()
+                    .any(|(id, _)| *id == state.id);
         }
     }
 
@@ -404,12 +413,13 @@ async fn try_become(
             match res {
                 Ok(resp) => {
                     if resp.status().is_success() {
-                        debug!("becoming a member has been successful");
+                        debug!("becoming a member via /{suffix} was successful");
                         return Ok(SkipBecome::No);
                     } else {
                         let body = resp.bytes().await?;
                         let err: Error = serde_json::from_slice(&body)?;
 
+                        // TODO can this still happen after we added the "leave before proceed"?
                         // We can get into this situation when using the cache layer, because it has
                         // no persistence. This race condition can happen for a rolling release
                         // on K8s for instance. While this node may try to become a remote member,
@@ -445,7 +455,9 @@ async fn try_become(
                                     );
                                 }
 
-                                info!("This node became the raft leader in the meantime - skipping init");
+                                info!(
+                                    "This node became the raft leader in the meantime - skipping init"
+                                );
 
                                 return Ok(SkipBecome::Yes);
                             }
@@ -490,79 +502,86 @@ async fn is_remote_cluster_member(
 
     // check remote metrics for our existence first
     let mut not_initialized_remotes = 0;
-    for node in nodes {
-        if node.id == this_node {
-            debug!("Skipping 'this' node");
-            continue;
-        }
-        if not_initialized_remotes >= quorum {
-            info!(
-                "Found {} remote Nodes that are not initialized - must be a fresh cluster",
-                not_initialized_remotes
-            );
-        }
 
-        url.clear();
-        write!(
-            url,
-            "{}://{}/cluster/metrics/{}",
-            scheme,
-            node.addr_api,
-            raft_type.as_str()
-        )
-        .expect("Cannot write into String");
-
-        let res = client
-            .get(&url)
-            .header(HEADER_NAME_SECRET, &state.secret_api)
-            .send()
-            .await;
-
-        match res {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    let Ok(bytes) = resp.bytes().await else {
-                        error!("Success response from remote without body");
-                        time::sleep(Duration::from_secs(1)).await;
-                        continue;
-                    };
-                    let metrics = deserialize::<RaftMetrics<u64, Node>>(bytes.as_ref())
-                        .expect("Cannot deserialize remote metrics response");
-                    let is_member = metrics
-                        .membership_config
-                        .nodes()
-                        .any(|(id, _)| *id == this_node);
-                    if is_member {
-                        // if there already is a remote cluster and we are not part of it,
-                        // everything should be fine
-                        warn!("Found remote metrics and we ({this_node}) are a Raft member");
-                        return true;
-                    } else {
-                        info!("Found remote metrics, but we ({this_node}) are not a Raft member");
-                        return false;
-                    }
-                } else {
-                    // We reached the remote node, but it was not possible to get cluster metrics.
-                    // This can only mean, that remote is not initialized as well.
-                    not_initialized_remotes += 1;
-
-                    let body = resp
-                        .bytes()
-                        .await
-                        .expect("API answer to always have a body");
-                    let err: Error =
-                        serde_json::from_slice(&body).expect("To always get back a JSON error");
-                    error!(
-                        "Error retrieving {:?} Raft metrics from remote Node {}: {:?}",
-                        raft_type, node.id, err
-                    );
-
-                    time::sleep(Duration::from_secs(1)).await;
-                }
+    // we want to re-try twice to really make sure there was no network hiccup
+    for _ in 0..2 {
+        for node in nodes {
+            if node.id == this_node {
+                debug!("Skipping 'this' node");
+                continue;
             }
-            Err(err) => {
-                error!("Node connection error: {}", err);
-                time::sleep(Duration::from_secs(1)).await;
+            if not_initialized_remotes >= quorum {
+                info!(
+                    "Found {} remote Nodes that are not initialized - must be a fresh cluster",
+                    not_initialized_remotes
+                );
+            }
+
+            url.clear();
+            write!(
+                url,
+                "{}://{}/cluster/metrics/{}",
+                scheme,
+                node.addr_api,
+                raft_type.as_str()
+            )
+            .expect("Cannot write into String");
+
+            let res = client
+                .get(&url)
+                .header(HEADER_NAME_SECRET, &state.secret_api)
+                .send()
+                .await;
+
+            match res {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        let Ok(bytes) = resp.bytes().await else {
+                            error!("Success response from remote without body");
+                            time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        };
+                        let metrics = deserialize::<RaftMetrics<u64, Node>>(bytes.as_ref())
+                            .expect("Cannot deserialize remote metrics response");
+
+                        let is_member = metrics
+                            .membership_config
+                            .nodes()
+                            .any(|(id, _)| *id == this_node);
+                        if is_member {
+                            // if there already is a remote cluster, and we are not part of it,
+                            // everything should be fine
+                            warn!("Found remote metrics and we ({this_node}) are a Raft member");
+                            return true;
+                        } else {
+                            info!(
+                                "Found remote metrics, but we ({this_node}) are not a Raft member"
+                            );
+                            return false;
+                        }
+                    } else {
+                        // We reached the remote node, but it was not possible to get cluster
+                        // metrics. This can only mean, that remote is not initialized as well.
+                        not_initialized_remotes += 1;
+
+                        let body = resp
+                            .bytes()
+                            .await
+                            .expect("API answer to always have a body");
+                        let err: Error =
+                            serde_json::from_slice(&body).expect("To always get back a JSON error");
+                        error!(
+                            "Error retrieving {:?} Raft metrics from remote Node {}: {:?}",
+                            raft_type, node.id, err
+                        );
+
+                        time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+                Err(err) => {
+                    error!("Node connection error: {}", err);
+                    time::sleep(Duration::from_millis(500)).await;
+                }
             }
         }
     }
@@ -688,7 +707,9 @@ pub async fn leave_remote_cluster(
                     .nodes()
                     .any(|(id, _)| *id == this_node);
                 if is_member {
-                    info!("This Node ({this_node}) is still a Raft member after removal - waiting ...");
+                    info!(
+                        "This Node ({this_node}) is still a Raft member after removal - waiting ..."
+                    );
                     time::sleep(Duration::from_secs(1)).await;
                     continue;
                 } else {
