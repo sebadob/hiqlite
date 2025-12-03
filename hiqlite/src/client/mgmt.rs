@@ -249,18 +249,27 @@ impl Client {
             is_single_instance = node_count == 1;
         }
 
-        // This pre-shutdown delay is not strictly necessary, but it makes rolling releases way
-        // smoother and does not require custom configuration in e.g. K8s that you can mess up.
+        // This pre-shutdown delay is not strictly necessary,
+        // but it makes rolling releases smoother, especially
+        // with ephemeral storage.
         if !is_single_instance {
-            #[cfg(debug_assertions)]
-            time::sleep(Duration::from_secs(7)).await;
+            time::sleep(Duration::from_secs(5)).await;
         }
 
         #[cfg(feature = "cache")]
         {
-            let metrics = state.raft_cache.raft.metrics().borrow().clone();
+            let mut metrics = state.raft_cache.raft.metrics().borrow().clone();
 
             if !state.raft_cache.cache_storage_disk {
+                for _ in 0..5 {
+                    if metrics.current_leader.is_some() {
+                        break;
+                    }
+                    info!("Delaying cache cluster leave because of no existing leader");
+                    time::sleep(Duration::from_secs(1)).await;
+                    metrics = state.raft_cache.raft.metrics().borrow().clone();
+                }
+
                 // If we run an entirely in-memory cache and therefore lose the Raft state
                 // and membership between restarts, we should always leave the cluster cleanly
                 // before doing a shutdown.
@@ -306,6 +315,22 @@ impl Client {
             }
 
             info!("Shutting down raft cache layer");
+
+            for _ in 0..5 {
+                if state
+                    .raft_cache
+                    .raft
+                    .metrics()
+                    .borrow()
+                    .current_leader
+                    .is_some()
+                {
+                    break;
+                }
+                info!("Delaying cache raft shutdown because of no existing leader");
+                time::sleep(Duration::from_secs(1)).await;
+            }
+
             state
                 .raft_cache
                 .is_raft_stopped
@@ -319,9 +344,25 @@ impl Client {
 
         #[cfg(feature = "sqlite")]
         {
+            info!("Shutting down raft sqlite layer");
+
+            for _ in 0..5 {
+                if state
+                    .raft_db
+                    .raft
+                    .metrics()
+                    .borrow()
+                    .current_leader
+                    .is_some()
+                {
+                    break;
+                }
+                info!("Delaying sqlite raft shutdown because of no existing leader");
+                time::sleep(Duration::from_secs(1)).await;
+            }
+
             state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
 
-            info!("Shutting down raft sqlite layer");
             state.raft_db.raft.shutdown().await?;
             info!("Shutting down sqlite logs writer");
             state.raft_db.shutdown_handle.shutdown().await?;
