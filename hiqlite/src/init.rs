@@ -326,7 +326,7 @@ pub async fn become_cluster_member(
             .any(|(id, _)| *id == state.id);
         while !are_we_learner {
             info!(
-                "Waiting until we are a commited Raft Learner ...\nMembership Config: {:?}",
+                "Waiting until we are a replicated Raft Learner ...\nMembership Config: {:?}",
                 metrics.membership_config
             );
             time::sleep(Duration::from_secs(1)).await;
@@ -336,6 +336,12 @@ pub async fn become_cluster_member(
                 .nodes()
                 .any(|(id, _)| *id == state.id);
         }
+        info!(
+            "Node {}: Successfully became replicated {} raft learner\n{:?}",
+            state.id,
+            raft_type.as_str(),
+            metrics.membership_config
+        );
     }
 
     info!(
@@ -371,7 +377,7 @@ pub async fn become_cluster_member(
             .any(|id| id == state.id);
         while !are_we_voter {
             info!(
-                "Waiting until we are a commited Raft Voter ...\nMembership Config: {:?}",
+                "Waiting until we are a replicated Raft Voter ...\nMembership Config: {:?}",
                 metrics.membership_config
             );
             time::sleep(Duration::from_secs(1)).await;
@@ -381,6 +387,12 @@ pub async fn become_cluster_member(
                 .voter_ids()
                 .any(|id| id == state.id);
         }
+        info!(
+            "Node {}: Successfully became a replicated {} raft member\n{:?}",
+            state.id,
+            raft_type.as_str(),
+            metrics.membership_config
+        );
     }
 
     Ok(())
