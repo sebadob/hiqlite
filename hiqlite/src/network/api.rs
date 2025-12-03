@@ -106,7 +106,13 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
 
             // make sure we are a voting cluster member
             let metrics = get_raft_metrics(&state, &RaftType::Sqlite).await;
-            if metrics.state == ServerState::Learner || metrics.state == ServerState::Shutdown {
+            if metrics.state == ServerState::Learner
+                || metrics.state == ServerState::Shutdown
+                || !metrics
+                    .membership_config
+                    .voter_ids()
+                    .any(|id| id == state.id)
+            {
                 return Err(Error::Error(
                     "not yet a voting member of the sqlite raft".into(),
                 ));
@@ -125,7 +131,13 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
 
             // make sure we are a voting cluster member
             let metrics = get_raft_metrics(&state, &RaftType::Cache).await;
-            if metrics.state == ServerState::Learner || metrics.state == ServerState::Shutdown {
+            if metrics.state == ServerState::Learner
+                || metrics.state == ServerState::Shutdown
+                || !metrics
+                    .membership_config
+                    .voter_ids()
+                    .any(|id| id == state.id)
+            {
                 return Err(Error::Error(
                     "not yet a voting member of the cache raft".into(),
                 ));

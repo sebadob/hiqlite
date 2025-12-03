@@ -319,24 +319,39 @@ pub async fn become_cluster_member(
     // We want to wait until we are a commited Raft learner.
     {
         let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
-
-        let mut are_we_learner = metrics.state == ServerState::Learner
-            && metrics
+        loop {
+            let are_we_learner = metrics
                 .membership_config
                 .nodes()
                 .any(|(id, _)| *id == state.id);
+
+            if are_we_learner {
+                info!(
+                    "We are a commited and fully replicated {:?} Learner",
+                    raft_type
+                );
+                break;
+            } else {
+            }
+        }
+
+        // If this node shows up in its own `membership_config`, it means that all logs until
+        // the commitment have been replicated and we can go on.
+        let mut are_we_learner = metrics
+            .membership_config
+            .nodes()
+            .any(|(id, _)| *id == state.id);
         while !are_we_learner {
             info!(
-                "Waiting until we are a commited Raft Learner ...\nCurrent State: {:?}\nMembership Config: {:?}",
-                metrics.state, metrics.membership_config
+                "Waiting until we are a commited Raft Learner ...\nMembership Config: {:?}",
+                metrics.membership_config
             );
             time::sleep(Duration::from_secs(1)).await;
             metrics = helpers::get_raft_metrics(&state, raft_type).await;
-            are_we_learner = metrics.state == ServerState::Learner
-                && metrics
-                    .membership_config
-                    .nodes()
-                    .any(|(id, _)| *id == state.id);
+            are_we_learner = metrics
+                .membership_config
+                .nodes()
+                .any(|(id, _)| *id == state.id);
         }
     }
 
@@ -361,6 +376,29 @@ pub async fn become_cluster_member(
         state.id,
         raft_type.as_str()
     );
+
+    {
+        let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
+
+        // To smooth out startups, wait until this node has replicated its
+        // own voter state logs.
+        let mut are_we_voter = metrics
+            .membership_config
+            .voter_ids()
+            .any(|id| id == state.id);
+        while !are_we_voter {
+            info!(
+                "Waiting until we are a commited Raft Voter ...\nMembership Config: {:?}",
+                metrics.membership_config
+            );
+            time::sleep(Duration::from_secs(1)).await;
+            metrics = helpers::get_raft_metrics(&state, raft_type).await;
+            are_we_voter = metrics
+                .membership_config
+                .voter_ids()
+                .any(|id| id == state.id);
+        }
+    }
 
     Ok(())
 }
