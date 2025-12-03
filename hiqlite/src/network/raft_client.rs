@@ -224,7 +224,7 @@ impl NetworkStreaming {
                 {
                     Ok(socket) => socket,
                     Err(err) => {
-                        error!("Socket connect error: {:?}", err);
+                        error!("Socket connect error to node {}: {:?}", node.id, err);
 
                         // TODO not sure which is better, sleep before drain or after -> more testing
                         time::sleep(Duration::from_millis(heartbeat_interval * 3)).await;
@@ -537,10 +537,10 @@ impl NetworkConnectionStreaming {
             self.node.addr_raft
         );
 
-        self.sender
-            .send_async(req)
-            .await
-            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?;
+        self.sender.send_async(req).await.map_err(|err| {
+            error!("NetworkConnectionStreaming.send(): {:?}", err);
+            RPCError::Unreachable(Unreachable::new(&err))
+        })?;
 
         rx.await
             .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
