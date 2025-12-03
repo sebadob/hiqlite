@@ -9,7 +9,7 @@ use chrono::Utc;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::ops::{Deref, Sub};
+use std::ops::{Add, Deref, Sub};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::{task, time};
@@ -97,7 +97,9 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     #[cfg(feature = "sqlite")]
     {
         // to avoid a chicken-and-egg problem, a pristine node 1 should always return ready
-        let is_pristine_node_1 = state.id == 1 && !state.raft_db.raft.is_initialized().await?;
+        let is_pristine_node_1 = state.id == 1
+            && !state.raft_db.raft.is_initialized().await?
+            && state.app_start.add(chrono::Duration::seconds(10)) < Utc::now();
 
         if !is_pristine_node_1 {
             if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
@@ -126,7 +128,9 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
 
     #[cfg(feature = "cache")]
     {
-        let is_pristine_node_1 = state.id == 1 && !state.raft_cache.raft.is_initialized().await?;
+        let is_pristine_node_1 = state.id == 1
+            && !state.raft_cache.raft.is_initialized().await?
+            && state.app_start.add(chrono::Duration::seconds(10)) < Utc::now();
 
         if !is_pristine_node_1 {
             if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
