@@ -3,7 +3,7 @@ use crate::helpers::{deserialize, serialize};
 use crate::network::HEADER_NAME_SECRET;
 use crate::network::management::{ClusterLeaveReq, LearnerReq};
 use crate::{Error, Node, NodeId, helpers};
-use openraft::{Membership, RaftMetrics, ServerState};
+use openraft::{Membership, RaftMetrics};
 use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;

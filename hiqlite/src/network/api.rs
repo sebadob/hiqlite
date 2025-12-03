@@ -117,6 +117,10 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                     "not yet a voting member of the sqlite raft".into(),
                 ));
             }
+
+            if metrics.current_leader.is_none() {
+                return Err(Error::Error("sqlite raft leader vote in progress".into()));
+            }
         }
     }
 
@@ -141,6 +145,10 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                 return Err(Error::Error(
                     "not yet a voting member of the cache raft".into(),
                 ));
+            }
+
+            if metrics.current_leader.is_none() {
+                return Err(Error::Error("cache raft leader vote in progress".into()));
             }
         }
     }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 use std::sync::atomic::Ordering;
 use tokio::task;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 #[cfg(feature = "cache")]
 use crate::app_state::RaftType;
@@ -268,7 +268,7 @@ async fn handle_socket(
 
             #[cfg(feature = "cache")]
             RaftStreamRequest::RemoveMembershipCache(node_id) => {
-                info!("Node drop membership request for Node: {}\n", node_id);
+                tracing::info!("Node drop membership request for Node: {}\n", node_id);
 
                 // we want to hold the lock until we finished to not end up with race conditions
                 let _lock = state.raft_lock.lock().await;
