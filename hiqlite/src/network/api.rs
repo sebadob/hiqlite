@@ -168,8 +168,6 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
         }
     }
 
-    info!("Node is ready");
-
     Ok(())
 }
 
