@@ -260,16 +260,16 @@ impl Client {
         {
             let mut metrics = state.raft_cache.raft.metrics().borrow().clone();
 
-            if !state.raft_cache.cache_storage_disk {
-                for _ in 0..5 {
-                    if metrics.current_leader.is_some() {
-                        break;
-                    }
-                    info!("Delaying cache cluster leave because of no existing leader");
-                    time::sleep(Duration::from_secs(1)).await;
-                    metrics = state.raft_cache.raft.metrics().borrow().clone();
+            for _ in 0..5 {
+                if metrics.current_leader.is_some() {
+                    break;
                 }
+                info!("Delaying cache cluster leave because of no existing leader");
+                time::sleep(Duration::from_secs(1)).await;
+                metrics = state.raft_cache.raft.metrics().borrow().clone();
+            }
 
+            if !state.raft_cache.cache_storage_disk {
                 // If we run an entirely in-memory cache and therefore lose the Raft state
                 // and membership between restarts, we should always leave the cluster cleanly
                 // before doing a shutdown.
@@ -315,21 +315,6 @@ impl Client {
             }
 
             info!("Shutting down raft cache layer");
-
-            for _ in 0..5 {
-                if state
-                    .raft_cache
-                    .raft
-                    .metrics()
-                    .borrow()
-                    .current_leader
-                    .is_some()
-                {
-                    break;
-                }
-                info!("Delaying cache raft shutdown because of no existing leader");
-                time::sleep(Duration::from_secs(1)).await;
-            }
 
             state
                 .raft_cache
