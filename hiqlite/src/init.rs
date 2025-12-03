@@ -326,7 +326,10 @@ pub async fn become_cluster_member(
                 .nodes()
                 .any(|(id, _)| *id == state.id);
         while !are_we_learner {
-            info!("Waiting until we are a commited Raft Learner ...");
+            info!(
+                "Waiting until we are a commited Raft Learner ...\nCurrent State: {:?}\nMembership Config: {:?}",
+                metrics.state, metrics.membership_config
+            );
             time::sleep(Duration::from_secs(1)).await;
             metrics = helpers::get_raft_metrics(&state, raft_type).await;
             are_we_learner = metrics.state == ServerState::Learner

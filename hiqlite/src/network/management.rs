@@ -1,7 +1,7 @@
-use crate::app_state::{AppState, RaftType};
-use crate::network::{fmt_ok, get_payload, validate_secret, AppStateExt, Error};
 use crate::NodeId;
-use crate::{helpers, Node};
+use crate::app_state::{AppState, RaftType};
+use crate::network::{AppStateExt, Error, fmt_ok, get_payload, validate_secret};
+use crate::{Node, helpers};
 use axum::body;
 use axum::body::Body;
 use axum::extract::Path;
@@ -77,6 +77,8 @@ pub(crate) async fn add_learner(
                     .is_some();
             }
 
+            // give it a second to sync before dropping the lock
+            time::sleep(Duration::from_millis(1000)).await;
             drop(lock);
             info!("Added node {nid} as commited {:?} learner", raft_type);
             fmt_ok(headers, ())
@@ -150,6 +152,8 @@ pub(crate) async fn become_member(
                     .any(|id| id == payload.node_id);
             }
 
+            // give it a second to sync before dropping the lock
+            time::sleep(Duration::from_millis(1000)).await;
             drop(lock);
             info!("Added node {} as {:?} member", payload.node_id, raft_type);
             fmt_ok(headers, ())
@@ -276,28 +280,32 @@ pub async fn leave_cluster_exec(
         .any(|(id, _)| *id == payload.node_id);
 
     if is_member {
-        warn!("Node {} is a cluster member - removing it", payload.node_id);
+        warn!(
+            "Node {} ({:?}) is a cluster member - removing it",
+            payload.node_id, raft_type
+        );
         let mut is_voter = metrics
             .membership_config
             .voter_ids()
             .any(|id| id == payload.node_id);
 
         if is_voter {
-            warn!("Node {} is a Voter", payload.node_id);
+            warn!("Node {} ({:?}) is a Voter", payload.node_id, raft_type);
             if let Err(err) =
                 helpers::remove_voter(state, raft_type, payload.node_id, payload.stay_as_learner)
                     .await
             {
                 error!(
-                    "Error removing Node {} from Voters: {:?}",
-                    payload.node_id, err
+                    "Error removing Node {} ({:?}) from Voters: {:?}",
+                    payload.node_id, raft_type, err
                 );
                 return Err(err);
             }
             while is_voter {
                 info!(
-                    "Waiting until Node {} is not a Voter anymore\nVoter IDs: {:?}\nis_voter: {}",
+                    "Waiting until Node {} is not a ({:?}) Voter anymore\nVoter IDs: {:?}\nis_voter: {}",
                     payload.node_id,
+                    raft_type,
                     metrics.membership_config.voter_ids().collect::<Vec<_>>(),
                     is_voter
                 );
@@ -310,20 +318,20 @@ pub async fn leave_cluster_exec(
             }
         } else if !payload.stay_as_learner {
             warn!(
-                "Node {} is a Learner and should not stay one",
-                payload.node_id
+                "Node {} ({:?}) is a Learner and should not stay one",
+                payload.node_id, raft_type
             );
             if let Err(err) = helpers::remove_learner(state, raft_type, payload.node_id).await {
                 error!(
-                    "Error removing Node {} from Learners: {:?}",
-                    payload.node_id, err
+                    "Error removing Node {} ({:?}) from Learners: {:?}",
+                    payload.node_id, raft_type, err
                 );
                 return Err(err);
             }
             while is_member {
                 info!(
-                    "Waiting until Node {} is not a Learner anymore",
-                    payload.node_id
+                    "Waiting until Node {} ({:?}) is not a Learner anymore",
+                    payload.node_id, raft_type,
                 );
                 time::sleep(Duration::from_millis(500)).await;
                 metrics = helpers::get_raft_metrics(state, raft_type).await;
@@ -337,8 +345,9 @@ pub async fn leave_cluster_exec(
 
     drop(lock);
     info!(
-        "Node {} has left the cluster: {:?}",
+        "Node {} ({:?}) has left the cluster: {:?}",
         payload.node_id,
+        raft_type,
         metrics.membership_config.membership()
     );
 

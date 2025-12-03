@@ -1,7 +1,7 @@
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{serialize_network, AppStateExt, Error};
+use crate::network::{AppStateExt, Error, serialize_network};
 use axum::response::IntoResponse;
-use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
+use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use openraft::error::{Fatal, InstallSnapshotError, RaftError};
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
@@ -107,7 +107,7 @@ pub async fn stream_cache(
 
     #[cfg(feature = "cache")]
     if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
-        info!("Cache Raft has been stopped - rejecting streaming connection");
+        warn!("Cache Raft has been stopped - rejecting streaming connection");
         return Err(Error::BadRequest("Raft has been stopped".into()));
     }
 
@@ -129,7 +129,7 @@ pub async fn stream_sqlite(
 
     #[cfg(feature = "sqlite")]
     if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
-        info!("Sqlite Raft has been stopped - rejecting streaming connection");
+        warn!("Sqlite Raft has been stopped - rejecting streaming connection");
         return Err(Error::BadRequest("Raft has been stopped".into()));
     }
 
