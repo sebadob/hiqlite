@@ -226,9 +226,6 @@ impl NetworkStreaming {
                     Err(err) => {
                         error!("Socket connect error to node {}: {:?}", node.id, err);
 
-                        // TODO not sure which is better, sleep before drain or after -> more testing
-                        time::sleep(Duration::from_millis(heartbeat_interval * 3)).await;
-
                         // make sure messages don't pile up
                         rx.drain().for_each(|req| {
                             let ack = match req {
@@ -261,6 +258,9 @@ impl NetworkStreaming {
                         if shutdown {
                             break;
                         }
+
+                        // TODO not sure which is better, sleep before drain or after -> more testing
+                        time::sleep(Duration::from_millis(heartbeat_interval)).await;
 
                         // if there is a network error, don't try too hard to connect
                         // time::sleep(Duration::from_millis(heartbeat_interval * 3)).await;
