@@ -212,7 +212,7 @@ impl NetworkStreaming {
 
         loop {
             if is_raft_stopped.load(Ordering::Relaxed) {
-                if is_startup_finished.load(Ordering::Relaxed) {
+                if !is_startup_finished.load(Ordering::Relaxed) {
                     info!("Raft is still starting up - skipping initial connection");
                     time::sleep(Duration::from_secs(1)).await;
                     continue;
