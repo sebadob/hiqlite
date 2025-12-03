@@ -9,7 +9,7 @@ use chrono::Utc;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::ops::{Add, Deref, Sub};
+use std::ops::{Deref, Sub};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::{task, time};
@@ -94,13 +94,13 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
     panic!("neither `sqlite` nor `cache` feature enabled");
 
+    let secs_since_start = Utc::now().sub(state.app_start).num_seconds();
+
     #[cfg(feature = "sqlite")]
     {
         // to avoid a chicken-and-egg problem, a pristine node 1 should always return ready
-        let is_pristine_node_1 = state.id == 1
-            && !state.raft_db.raft.is_initialized().await?
-            && state.app_start.add(chrono::Duration::seconds(10)) < Utc::now();
-        info!("read is_pristine_node_1 sqlite: {is_pristine_node_1}");
+        let is_pristine_node_1 =
+            state.id == 1 && !state.raft_db.raft.is_initialized().await? && secs_since_start > 10;
 
         if !is_pristine_node_1 {
             if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
@@ -121,7 +121,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                 ));
             }
 
-            if metrics.current_leader.is_none() {
+            if metrics.current_leader.is_none() && (state.id != 1 || secs_since_start < 10) {
                 return Err(Error::Error("sqlite raft leader vote in progress".into()));
             }
         }
@@ -131,8 +131,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     {
         let is_pristine_node_1 = state.id == 1
             && !state.raft_cache.raft.is_initialized().await?
-            && state.app_start.add(chrono::Duration::seconds(10)) < Utc::now();
-        info!("read is_pristine_node_1 cache: {is_pristine_node_1}");
+            && secs_since_start > 10;
 
         if !is_pristine_node_1 {
             if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
@@ -153,7 +152,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                 ));
             }
 
-            if metrics.current_leader.is_none() {
+            if metrics.current_leader.is_none() && (state.id != 1 || secs_since_start < 10) {
                 return Err(Error::Error("cache raft leader vote in progress".into()));
             }
         }
