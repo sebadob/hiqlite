@@ -319,24 +319,7 @@ pub async fn become_cluster_member(
     // We want to wait until we are a commited Raft learner.
     {
         let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
-        loop {
-            let are_we_learner = metrics
-                .membership_config
-                .nodes()
-                .any(|(id, _)| *id == state.id);
 
-            if are_we_learner {
-                info!(
-                    "We are a commited and fully replicated {:?} Learner",
-                    raft_type
-                );
-                break;
-            } else {
-            }
-        }
-
-        // If this node shows up in its own `membership_config`, it means that all logs until
-        // the commitment have been replicated and we can go on.
         let mut are_we_learner = metrics
             .membership_config
             .nodes()
