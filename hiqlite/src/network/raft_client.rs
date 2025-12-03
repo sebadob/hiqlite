@@ -65,6 +65,7 @@ pub struct NetworkStreaming {
     pub raft_type: RaftType,
     pub heartbeat_interval: u64,
     pub is_raft_stopped: Arc<AtomicBool>,
+    pub is_startup_finished: Arc<AtomicBool>,
     // pub sender: flume::Sender<RaftRequest>,
 }
 
@@ -87,6 +88,7 @@ impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
             rx,
             self.heartbeat_interval,
             self.is_raft_stopped.clone(),
+            self.is_startup_finished.clone(),
         ));
 
         NetworkConnectionStreaming {
@@ -116,6 +118,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
             rx,
             self.heartbeat_interval,
             self.is_raft_stopped.clone(),
+            self.is_startup_finished.clone(),
         ));
 
         NetworkConnectionStreaming {
@@ -195,6 +198,7 @@ impl NetworkStreaming {
         rx: flume::Receiver<RaftRequest>,
         heartbeat_interval: u64,
         is_raft_stopped: Arc<AtomicBool>,
+        is_startup_finished: Arc<AtomicBool>,
     ) {
         let mut request_id = 0usize;
         // TODO probably, a Vec<_> is faster here since we would never have too many in flight reqs
@@ -208,6 +212,12 @@ impl NetworkStreaming {
 
         loop {
             if is_raft_stopped.load(Ordering::Relaxed) {
+                if is_startup_finished.load(Ordering::Relaxed) {
+                    info!("Raft is still starting up - skipping initial connection");
+                    time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+
                 warn!("Raft is stopped - exiting NetworkStreaming::ws_handler()");
                 break;
             }
@@ -538,7 +548,11 @@ impl NetworkConnectionStreaming {
         );
 
         self.sender.send_async(req).await.map_err(|err| {
-            error!("NetworkConnectionStreaming.send(): {:?}", err);
+            error!(
+                "NetworkConnectionStreaming::send to node {}: {}",
+                self.node.id,
+                err.to_string()
+            );
             RPCError::Unreachable(Unreachable::new(&err))
         })?;
 

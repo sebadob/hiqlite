@@ -2,8 +2,8 @@ use crate::NodeId;
 use chrono::Utc;
 use serde::Deserialize;
 use std::fmt::Debug;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex;
 
 #[cfg(feature = "dashboard")]
@@ -17,10 +17,10 @@ use crate::store::state_machine::memory::dlock_handler::LockRequest;
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::{kv_handler::CacheRequestHandler, TypeConfigKV};
+use crate::store::state_machine::memory::{TypeConfigKV, kv_handler::CacheRequestHandler};
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::{
-    state_machine::SqlitePool, writer::WriterRequest, TypeConfigSqlite,
+    TypeConfigSqlite, state_machine::SqlitePool, writer::WriterRequest,
 };
 #[cfg(feature = "dashboard")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -92,6 +92,7 @@ pub struct StateRaftDB {
     pub read_pool: SqlitePool,
     pub log_statements: bool,
     pub is_raft_stopped: Arc<AtomicBool>,
+    pub is_startup_finished: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "cache")]
@@ -105,6 +106,7 @@ pub struct StateRaftCache {
     #[cfg(feature = "dlock")]
     pub tx_dlock: flume::Sender<LockRequest>,
     pub is_raft_stopped: Arc<AtomicBool>,
+    pub is_startup_finished: Arc<AtomicBool>,
     pub shutdown_handle: Option<hiqlite_wal::ShutdownHandle>,
     #[cfg(feature = "cache")]
     pub cache_storage_disk: bool,
