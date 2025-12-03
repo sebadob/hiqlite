@@ -4,6 +4,7 @@ use crate::network::{api, management};
 use crate::{Client, Error, NodeConfig, init, split_brain_check, store};
 use axum::Router;
 use axum::routing::{get, post};
+use chrono::Utc;
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -78,7 +79,7 @@ where
     let (tx_client_stream, rx_client_stream) = flume::bounded(1);
 
     let state = Arc::new(AppState {
-        app_start: Default::default(),
+        app_start: Utc::now(),
         #[cfg(feature = "backup")]
         backups_dir: format!("{}/state_machine/backups", node_config.data_dir),
         id: node_config.node_id,
