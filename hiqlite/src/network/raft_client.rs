@@ -1,23 +1,23 @@
+use crate::Node;
 use crate::network::handshake::HandshakeSecret;
 use crate::network::raft_server::{
     RaftStreamRequest, RaftStreamResponse, RaftStreamResponsePayload,
 };
-use crate::Node;
-use crate::{tls, NodeId};
+use crate::{NodeId, tls};
 use bytes::Bytes;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocket, WebSocketWrite};
 use http_body_util::Empty;
+use hyper::Request;
 use hyper::header::{CONNECTION, UPGRADE};
 use hyper::upgrade::Upgraded;
-use hyper::Request;
 use hyper_util::rt::TokioIo;
 use openraft::error::RPCError;
 use openraft::error::Unreachable;
 use std::collections::HashMap;
 use std::future::Future;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
@@ -31,10 +31,10 @@ use crate::store::state_machine::memory::TypeConfigKV;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
-use crate::app_state::RaftType;
-use crate::helpers::{deserialize, serialize};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use crate::Error;
+use crate::app_state::RaftType;
+use crate::helpers::{deserialize, serialize};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::{
     error::{InstallSnapshotError, RaftError},
@@ -491,15 +491,15 @@ impl NetworkStreaming {
         ws.set_auto_close(true);
 
         if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
-            error!("Error opening WebSocket stream: {err:?}");
+            error!("Error opening WebSocket stream to {addr}: {err:?}");
             let _ = ws
                 .write_frame(Frame::close(1000, b"Invalid Handshake"))
                 .await;
             Err(Error::Connect(format!(
-                "Error during API WebSocket handshake: {err}"
+                "Error during API WebSocket handshake to {addr}: {err}"
             )))
         } else {
-            info!("WebSocket stream connected");
+            info!("WebSocket stream connected to: {addr}");
             Ok(ws)
         }
     }
