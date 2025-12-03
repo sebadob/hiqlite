@@ -100,6 +100,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
         let is_pristine_node_1 = state.id == 1
             && !state.raft_db.raft.is_initialized().await?
             && state.app_start.add(chrono::Duration::seconds(10)) < Utc::now();
+        info!("read is_pristine_node_1 sqlite: {is_pristine_node_1}");
 
         if !is_pristine_node_1 {
             if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
@@ -131,6 +132,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
         let is_pristine_node_1 = state.id == 1
             && !state.raft_cache.raft.is_initialized().await?
             && state.app_start.add(chrono::Duration::seconds(10)) < Utc::now();
+        info!("read is_pristine_node_1 cache: {is_pristine_node_1}");
 
         if !is_pristine_node_1 {
             if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
