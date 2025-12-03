@@ -90,6 +90,7 @@ async fn check_health(state: &AppStateExt) -> Result<(), Error> {
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
     panic!("neither `sqlite` nor `cache` feature enabled");
@@ -104,6 +105,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
 
         if !is_pristine_node_1 {
             if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
+                warn!("sqlite raft is not running");
                 return Err(Error::Error("sqlite raft is not running".into()));
             }
 
@@ -116,12 +118,14 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                     .voter_ids()
                     .any(|id| id == state.id)
             {
+                warn!("not yet a voting member of the sqlite raft");
                 return Err(Error::Error(
                     "not yet a voting member of the sqlite raft".into(),
                 ));
             }
 
             if metrics.current_leader.is_none() && (state.id != 1 || secs_since_start < 10) {
+                warn!("sqlite raft leader vote in progress - secs_since_start: {secs_since_start}");
                 return Err(Error::Error("sqlite raft leader vote in progress".into()));
             }
         }
@@ -135,6 +139,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
 
         if !is_pristine_node_1 {
             if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
+                warn!("cache raft is not running");
                 return Err(Error::Error("cache raft is not running".into()));
             }
 
@@ -147,16 +152,23 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                     .voter_ids()
                     .any(|id| id == state.id)
             {
+                warn!("not yet a voting member of the cache raft");
                 return Err(Error::Error(
                     "not yet a voting member of the cache raft".into(),
                 ));
             }
 
             if metrics.current_leader.is_none() && (state.id != 1 || secs_since_start < 10) {
-                return Err(Error::Error("cache raft leader vote in progress".into()));
+                warn!("cache raft leader vote in progress");
+                return Err(Error::Error(
+                    "cache raft leader vote in progress - secs_since_start: {secs_since_start}"
+                        .into(),
+                ));
             }
         }
     }
+
+    info!("Node is ready");
 
     Ok(())
 }
