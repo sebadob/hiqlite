@@ -107,7 +107,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
         info!("Building new Raft DB client with target {}", node);
 
-        let (sender, rx) = flume::bounded(128);
+        let (sender, rx) = flume::bounded(1);
 
         let task = tokio::task::spawn(Self::ws_handler(
             self.node_id,
@@ -242,6 +242,8 @@ impl NetworkStreaming {
                         // TODO not sure which is better, sleep before drain or after -> more testing
                         time::sleep(Duration::from_millis(heartbeat_interval)).await;
 
+                        info!(">>> Draining {} piled up events now", rx.len());
+
                         // make sure messages don't pile up
                         rx.drain().for_each(|req| {
                             let ack = match req {
@@ -274,6 +276,8 @@ impl NetworkStreaming {
                         if shutdown {
                             break;
                         }
+
+                        info!(">>> Events drained - trying to reconnect");
 
                         // // TODO not sure which is better, sleep before drain or after -> more testing
                         // time::sleep(Duration::from_millis(heartbeat_interval)).await;
