@@ -107,7 +107,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
         info!("Building new Raft DB client with target {}", node);
 
-        let (sender, rx) = flume::bounded(1);
+        let (sender, rx) = flume::bounded(128);
 
         let task = tokio::task::spawn(Self::ws_handler(
             self.node_id,
