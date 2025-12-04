@@ -551,6 +551,7 @@ impl NetworkStreaming {
             Error::Connect(err.to_string())
         })?;
         ws.set_auto_close(true);
+        info!("WebSocket connection established");
 
         if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
             error!("Error opening WebSocket stream to {addr}: {err:?}");
