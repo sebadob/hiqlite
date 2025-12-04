@@ -9,7 +9,7 @@ use chrono::Utc;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::ops::{Add, Deref, Sub};
+use std::ops::{Deref, Sub};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::{task, time};
@@ -90,19 +90,26 @@ async fn check_health(state: &AppStateExt) -> Result<(), Error> {
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
     panic!("neither `sqlite` nor `cache` feature enabled");
 
+    if state.is_shutting_down.load(Ordering::Relaxed) {
+        return Err(Error::Error("Node is shutting down".into()));
+    }
+
+    let secs_since_start = Utc::now().sub(state.app_start).num_seconds();
+
     #[cfg(feature = "sqlite")]
     {
         // to avoid a chicken-and-egg problem, a pristine node 1 should always return ready
-        let is_pristine_node_1 = state.id == 1
-            && !state.raft_db.raft.is_initialized().await?
-            && state.app_start.add(chrono::Duration::seconds(10)) < Utc::now();
+        let is_pristine_node_1 =
+            state.id == 1 && !state.raft_db.raft.is_initialized().await? && secs_since_start > 10;
 
         if !is_pristine_node_1 {
             if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
+                warn!("sqlite raft is not running");
                 return Err(Error::Error("sqlite raft is not running".into()));
             }
 
@@ -115,12 +122,14 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                     .voter_ids()
                     .any(|id| id == state.id)
             {
+                warn!("not yet a voting member of the sqlite raft");
                 return Err(Error::Error(
                     "not yet a voting member of the sqlite raft".into(),
                 ));
             }
 
-            if metrics.current_leader.is_none() {
+            if metrics.current_leader.is_none() && (state.id != 1 || secs_since_start < 10) {
+                warn!("sqlite raft leader vote in progress - secs_since_start: {secs_since_start}");
                 return Err(Error::Error("sqlite raft leader vote in progress".into()));
             }
         }
@@ -130,10 +139,11 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     {
         let is_pristine_node_1 = state.id == 1
             && !state.raft_cache.raft.is_initialized().await?
-            && state.app_start.add(chrono::Duration::seconds(10)) < Utc::now();
+            && secs_since_start > 10;
 
         if !is_pristine_node_1 {
             if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
+                warn!("cache raft is not running");
                 return Err(Error::Error("cache raft is not running".into()));
             }
 
@@ -146,13 +156,18 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                     .voter_ids()
                     .any(|id| id == state.id)
             {
+                warn!("not yet a voting member of the cache raft");
                 return Err(Error::Error(
                     "not yet a voting member of the cache raft".into(),
                 ));
             }
 
-            if metrics.current_leader.is_none() {
-                return Err(Error::Error("cache raft leader vote in progress".into()));
+            if metrics.current_leader.is_none() && (state.id != 1 || secs_since_start < 10) {
+                warn!("cache raft leader vote in progress");
+                return Err(Error::Error(
+                    "cache raft leader vote in progress - secs_since_start: {secs_since_start}"
+                        .into(),
+                ));
             }
         }
     }
@@ -193,7 +208,7 @@ pub async fn stream(
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
     let (response, socket) = ws.upgrade()?;
-    info!("New Raft Stream for {:?}", raft_type);
+    debug!("New Raft Stream for {:?}", raft_type);
 
     tokio::task::spawn(async move {
         if let Err(err) = handle_socket_concurrent(state, socket).await {
@@ -321,7 +336,7 @@ async fn handle_socket_concurrent(
                 WsWriteMsg::Break => {
                     // we ignore any errors here since it may be possible that the reader
                     // has closed already - we just try a graceful connection close
-                    warn!("server stream break message");
+                    debug!("handle_socket_concurrent -> server stream break message");
                     break;
                 }
             }
@@ -331,7 +346,7 @@ async fn handle_socket_concurrent(
             .write_frame(Frame::close(1000, b"Invalid Request"))
             .await;
 
-        warn!("server stream exiting");
+        debug!("handle_socket_concurrent -> server stream exiting");
     });
 
     while let Ok(frame) = read
@@ -348,7 +363,7 @@ async fn handle_socket_concurrent(
     {
         let req = match frame.opcode {
             OpCode::Close => {
-                warn!("received Close frame in server stream");
+                debug!("received Close frame in server stream");
                 break;
             }
             OpCode::Binary => {
@@ -664,6 +679,8 @@ async fn handle_socket_concurrent(
     drop(tx_write);
 
     handle_write.await.unwrap();
+
+    debug!("handle_socket_concurrent exiting");
 
     Ok(())
 }

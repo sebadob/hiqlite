@@ -492,6 +492,8 @@ metadata:
   namespace: hiqlite
 spec:
   clusterIP: None
+  # only do that on the headless service
+  publishNotReadyAddresses: true
   selector:
     app: hiqlite
   ports:
@@ -537,6 +539,16 @@ spec:
               readOnly: true
             - name: hiqlite-data
               mountPath: /app/data
+          readinessProbe:
+            httpGet:
+              scheme: HTTP
+              port: 8200
+              path: /ready
+            initialDelaySeconds: 5
+            # Do not increase, otherwise a shutdown might start before k8s catches it.
+            periodSeconds: 5
+            # Require 2 failures because you may get one during a leader switch.
+            failureThreshold: 2
           livenessProbe:
             httpGet:
               # You may need to adjust this, if you decide to start in https only

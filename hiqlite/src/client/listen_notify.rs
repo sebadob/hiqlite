@@ -11,8 +11,8 @@ use tokio::sync::oneshot;
 /// The "listen_notify" feature currently enables _remote_.
 #[cfg(feature = "listen_notify")]
 pub(crate) mod remote {
-    use crate::network::HEADER_NAME_SECRET;
     use crate::NodeId;
+    use crate::network::HEADER_NAME_SECRET;
     use cryptr::utils::b64_decode;
     use eventsource_client::{Client as ClientES, SSE};
     use futures_util::StreamExt;
@@ -20,7 +20,7 @@ pub(crate) mod remote {
     use std::time::Duration;
     use tokio::sync::RwLock;
     use tokio::{task, time};
-    use tracing::{error, info, warn};
+    use tracing::{debug, error, info};
 
     pub(crate) struct RemoteListener;
 
@@ -93,7 +93,7 @@ pub(crate) mod remote {
                 time::sleep(Duration::from_secs(1)).await;
             }
 
-            warn!("RemoteListener exiting");
+            debug!("RemoteListener exiting");
         }
     }
 }

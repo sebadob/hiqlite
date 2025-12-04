@@ -107,14 +107,14 @@ pub async fn stream_cache(
 
     #[cfg(feature = "cache")]
     if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
-        warn!("Cache Raft has been stopped - rejecting streaming connection");
+        debug!("Cache Raft has been stopped - rejecting streaming connection");
         return Err(Error::BadRequest("Raft has been stopped".into()));
     }
 
     let (response, socket) = ws.upgrade()?;
     tokio::task::spawn(async move {
         if let Err(err) = handle_socket(state, socket).await {
-            warn!("Cache WebSocket stream closed: {}", err);
+            debug!("Cache WebSocket stream closed: {}", err);
         }
     });
 
@@ -129,14 +129,14 @@ pub async fn stream_sqlite(
 
     #[cfg(feature = "sqlite")]
     if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
-        warn!("Sqlite Raft has been stopped - rejecting streaming connection");
+        debug!("Sqlite Raft has been stopped - rejecting streaming connection");
         return Err(Error::BadRequest("Raft has been stopped".into()));
     }
 
     let (response, socket) = ws.upgrade()?;
     tokio::task::spawn(async move {
         if let Err(err) = handle_socket(state, socket).await {
-            warn!("SQLite WebSocket stream closed: {}", err);
+            debug!("SQLite WebSocket stream closed: {}", err);
         }
     });
 
@@ -173,19 +173,19 @@ async fn handle_socket(
                     }
                 }
                 WsWriteMsg::Break => {
-                    warn!("server stream break message");
+                    debug!("handle_socket -> server stream break message");
                     break;
                 }
             }
         }
 
-        warn!("Raft server WebSocket writer exiting");
+        debug!("handle_socket -> Raft server WebSocket writer exiting");
         let _ = write.write_frame(Frame::close(1000, b"go away")).await;
     });
 
     while let Ok(frame) = read
         .read_frame(&mut |frame| async move {
-            // // TODO obligated sends should be auto ping / pong / close ? -> verify!
+            // TODO obligated sends should be auto ping / pong / close ? -> verify!
             debug!(
                 "Received obligated send in stream client: OpCode: {:?}: {:?}",
                 frame.opcode.clone(),
@@ -197,7 +197,7 @@ async fn handle_socket(
     {
         let req = match frame.opcode {
             OpCode::Close => {
-                warn!("received Close frame in server stream");
+                debug!("received Close frame in server stream");
                 break;
             }
             OpCode::Binary => {
@@ -225,7 +225,7 @@ async fn handle_socket(
             RaftStreamRequest::AppendDB((request_id, req)) => {
                 let res = state.raft_db.raft.append_entries(req).await;
                 if let Err(RaftError::Fatal(Fatal::Stopped)) = &res {
-                    warn!("Raft DB stopped - exiting");
+                    debug!("Raft DB stopped - exiting");
                     state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
                     break;
                 }
@@ -246,7 +246,7 @@ async fn handle_socket(
             RaftStreamRequest::AppendCache((request_id, req)) => {
                 let res = state.raft_cache.raft.append_entries(req).await;
                 if let Err(RaftError::Fatal(Fatal::Stopped)) = &res {
-                    warn!("Raft Cache stopped - exiting");
+                    debug!("Raft Cache stopped - exiting");
                     state
                         .raft_cache
                         .is_raft_stopped
@@ -268,7 +268,7 @@ async fn handle_socket(
 
             #[cfg(feature = "cache")]
             RaftStreamRequest::RemoveMembershipCache(node_id) => {
-                tracing::info!("Node drop membership request for Node: {}\n", node_id);
+                debug!("Node drop membership request for Node: {}\n", node_id);
 
                 // we want to hold the lock until we finished to not end up with race conditions
                 let _lock = state.raft_lock.lock().await;
@@ -310,6 +310,8 @@ async fn handle_socket(
 
     // try to close the writer if it should still be running
     let _ = tx_write.send_async(WsWriteMsg::Break).await;
+
+    debug!("handle_socket exiting");
 
     Ok(())
 }

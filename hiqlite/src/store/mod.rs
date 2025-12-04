@@ -70,6 +70,7 @@ pub(crate) async fn start_raft_db(
     .await
     .unwrap();
 
+    let is_startup_finished = Arc::new(AtomicBool::new(false));
     let sql_writer = state_machine_store.write_tx.clone();
     let read_pool = state_machine_store.read_pool.clone();
 
@@ -80,6 +81,7 @@ pub(crate) async fn start_raft_db(
         raft_type: RaftType::Sqlite,
         heartbeat_interval: node_config.raft_config.heartbeat_interval,
         is_raft_stopped: is_raft_stopped.clone(),
+        is_startup_finished: is_startup_finished.clone(),
     };
 
     let shutdown_handle = log_store.shutdown_handle();
@@ -115,6 +117,7 @@ pub(crate) async fn start_raft_db(
         read_pool,
         log_statements: node_config.log_statements,
         is_raft_stopped,
+        is_startup_finished,
     })
 }
 
@@ -129,6 +132,7 @@ where
     // We always want to start stopped and set to `false` as soon as we found out,
     // that we are not pristine node and need cleanup.
     let is_raft_stopped = Arc::new(AtomicBool::new(true));
+    let is_startup_finished = Arc::new(AtomicBool::new(false));
 
     let state_machine_store = Arc::new(
         StateMachineMemory::new::<C>(&node_config.data_dir, !node_config.cache_storage_disk)
@@ -140,6 +144,7 @@ where
         secret_raft: node_config.secret_raft.as_bytes().to_vec(),
         raft_type: RaftType::Cache,
         heartbeat_interval: node_config.raft_config.heartbeat_interval,
+        is_startup_finished: is_startup_finished.clone(),
         is_raft_stopped: is_raft_stopped.clone(),
     };
 
@@ -211,6 +216,7 @@ where
         #[cfg(feature = "dlock")]
         tx_dlock,
         is_raft_stopped,
+        is_startup_finished,
         shutdown_handle,
         cache_storage_disk: node_config.cache_storage_disk,
     })

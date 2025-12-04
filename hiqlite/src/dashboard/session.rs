@@ -1,20 +1,20 @@
+use crate::Error;
 use crate::dashboard::password;
 use crate::helpers::deserialize;
-use crate::network::{serialize_network, AppStateExt};
-use crate::Error;
+use crate::network::{AppStateExt, serialize_network};
+use axum::Json;
 use axum::extract::FromRequestParts;
 use axum::http::header::SET_COOKIE;
-use axum::http::{request, HeaderMap, Method};
+use axum::http::{HeaderMap, Method, request};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use axum_extra::extract::CookieJar;
 use chrono::Utc;
-use cryptr::utils::{b64_decode, b64_encode};
 use cryptr::EncValue;
+use cryptr::utils::{b64_decode, b64_encode};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::LazyLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 const COOKIE_NAME: &str = "__Host-Hiqlite-Session";
 const COOKIE_NAME_DEV: &str = "Hiqlite-Session";
@@ -178,7 +178,7 @@ async fn check_csrf(method: &Method, headers: &HeaderMap) -> Result<(), Error> {
             "cross-origin request forbidden for this resource".into(),
         ))
     } else {
-        warn!("sec-fetch-site is missing");
+        debug!("sec-fetch-site is missing");
         if *INSECURE_COOKIES {
             // Sec-* headers will not be added in an insecure context
             Ok(())

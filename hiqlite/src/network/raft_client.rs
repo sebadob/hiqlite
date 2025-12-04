@@ -1,4 +1,6 @@
 use crate::Node;
+use crate::app_state::RaftType;
+use crate::helpers::{deserialize, serialize};
 use crate::network::handshake::HandshakeSecret;
 use crate::network::raft_server::{
     RaftStreamRequest, RaftStreamResponse, RaftStreamResponsePayload,
@@ -22,8 +24,9 @@ use std::time::Duration;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tokio::{select, task, time};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
@@ -33,8 +36,6 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use crate::Error;
-use crate::app_state::RaftType;
-use crate::helpers::{deserialize, serialize};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::{
     error::{InstallSnapshotError, RaftError},
@@ -44,7 +45,6 @@ use openraft::{
         InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
 };
-use tokio::task::JoinHandle;
 
 struct SpawnExecutor;
 
@@ -65,6 +65,7 @@ pub struct NetworkStreaming {
     pub raft_type: RaftType,
     pub heartbeat_interval: u64,
     pub is_raft_stopped: Arc<AtomicBool>,
+    pub is_startup_finished: Arc<AtomicBool>,
     // pub sender: flume::Sender<RaftRequest>,
 }
 
@@ -87,6 +88,7 @@ impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
             rx,
             self.heartbeat_interval,
             self.is_raft_stopped.clone(),
+            self.is_startup_finished.clone(),
         ));
 
         NetworkConnectionStreaming {
@@ -103,7 +105,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
-        info!("Building new Raft DB client with target {}", node);
+        debug!("Building new Raft DB client with target {}", node);
 
         let (sender, rx) = flume::bounded(1);
 
@@ -116,6 +118,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
             rx,
             self.heartbeat_interval,
             self.is_raft_stopped.clone(),
+            self.is_startup_finished.clone(),
         ));
 
         NetworkConnectionStreaming {
@@ -195,6 +198,7 @@ impl NetworkStreaming {
         rx: flume::Receiver<RaftRequest>,
         heartbeat_interval: u64,
         is_raft_stopped: Arc<AtomicBool>,
+        is_startup_finished: Arc<AtomicBool>,
     ) {
         let mut request_id = 0usize;
         // TODO probably, a Vec<_> is faster here since we would never have too many in flight reqs
@@ -206,12 +210,19 @@ impl NetworkStreaming {
         > = HashMap::with_capacity(8);
         let mut shutdown = false;
 
-        loop {
+        'outer: loop {
             if is_raft_stopped.load(Ordering::Relaxed) {
-                warn!("Raft is stopped - exiting NetworkStreaming::ws_handler()");
+                if !is_startup_finished.load(Ordering::Relaxed) {
+                    debug!("Raft is still starting up - skipping initial connection");
+                    time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+
+                debug!("Raft is stopped - exiting NetworkStreaming::ws_handler()");
                 break;
             }
 
+            debug!("Trying to open WebSocket stream");
             let socket = {
                 match Self::try_connect(
                     this_node,
@@ -222,48 +233,44 @@ impl NetworkStreaming {
                 )
                 .await
                 {
-                    Ok(socket) => socket,
+                    Ok(socket) => {
+                        debug!("WebSocket connected successfully");
+                        socket
+                    }
                     Err(err) => {
-                        error!("Socket connect error: {:?}", err);
+                        error!("Socket connect error to node {}: {:?}", node.id, err);
 
-                        // TODO not sure which is better, sleep before drain or after -> more testing
-                        time::sleep(Duration::from_millis(heartbeat_interval * 3)).await;
+                        for _ in 0..3 {
+                            // if there is a network error, no reason to try too hard to connect
+                            time::sleep(Duration::from_millis(heartbeat_interval)).await;
 
-                        // make sure messages don't pile up
-                        rx.drain().for_each(|req| {
-                            let ack = match req {
-                                #[cfg(feature = "sqlite")]
-                                RaftRequest::AppendDB((ack, _)) => Some(ack),
-                                #[cfg(feature = "sqlite")]
-                                RaftRequest::VoteDB((ack, _)) => Some(ack),
-                                #[cfg(feature = "sqlite")]
-                                RaftRequest::SnapshotDB((ack, _)) => Some(ack),
-                                #[cfg(feature = "cache")]
-                                RaftRequest::AppendCache((ack, _)) => Some(ack),
-                                #[cfg(feature = "cache")]
-                                RaftRequest::VoteCache((ack, _)) => Some(ack),
-                                #[cfg(feature = "cache")]
-                                RaftRequest::SnapshotCache((ack, _)) => Some(ack),
-                                RaftRequest::StreamResponse(_) => None,
-                                RaftRequest::Shutdown => {
-                                    shutdown = true;
-                                    None
+                            // make sure channel is always free
+                            if let Ok(req) = rx.try_recv() {
+                                let ack = match req {
+                                    #[cfg(feature = "sqlite")]
+                                    RaftRequest::AppendDB((ack, _)) => Some(ack),
+                                    #[cfg(feature = "sqlite")]
+                                    RaftRequest::VoteDB((ack, _)) => Some(ack),
+                                    #[cfg(feature = "sqlite")]
+                                    RaftRequest::SnapshotDB((ack, _)) => Some(ack),
+                                    #[cfg(feature = "cache")]
+                                    RaftRequest::AppendCache((ack, _)) => Some(ack),
+                                    #[cfg(feature = "cache")]
+                                    RaftRequest::VoteCache((ack, _)) => Some(ack),
+                                    #[cfg(feature = "cache")]
+                                    RaftRequest::SnapshotCache((ack, _)) => Some(ack),
+                                    RaftRequest::StreamResponse(_) => None,
+                                    RaftRequest::Shutdown => {
+                                        break 'outer;
+                                    }
+                                };
+
+                                if let Some(ack) = ack {
+                                    let _ = ack.send(Err(Error::Connect(err.to_string())));
                                 }
-                            };
-
-                            if let Some(ack) = ack {
-                                let _ = ack.send(Err(Error::Connect(format!(
-                                    "Cannot connect to {}",
-                                    node.addr_raft
-                                ))));
                             }
-                        });
-                        if shutdown {
-                            break;
                         }
 
-                        // if there is a network error, don't try too hard to connect
-                        // time::sleep(Duration::from_millis(heartbeat_interval * 3)).await;
                         continue;
                     }
                 }
@@ -383,7 +390,7 @@ impl NetworkStreaming {
             }
         }
 
-        warn!("Raft Client shut down, tx closed, exiting WsHandler");
+        debug!("Raft Client shut down, tx closed, exiting WsHandler");
     }
 
     async fn stream_reader(
@@ -421,7 +428,7 @@ impl NetworkStreaming {
             }
         }
 
-        warn!("Exiting Client Stream Reader");
+        debug!("Exiting Client Stream Reader");
     }
 
     async fn stream_writer(
@@ -438,14 +445,14 @@ impl NetworkStreaming {
                     }
                 }
                 WritePayload::Close => {
-                    warn!("Received Close request in Client Stream Writer");
+                    debug!("Received Close request in Client Stream Writer");
                     let _ = write.write_frame(Frame::close(1000, b"go away")).await;
                     break;
                 }
             }
         }
 
-        warn!("Exiting Client Stream Writer");
+        debug!("Exiting Client Stream Writer");
     }
 
     async fn try_connect(
@@ -465,7 +472,7 @@ impl NetworkStreaming {
 
         let req = Request::builder()
             .method("GET")
-            .uri(uri)
+            .uri(&uri)
             .header(UPGRADE, "websocket")
             .header(CONNECTION, "upgrade")
             .header(
@@ -474,12 +481,20 @@ impl NetworkStreaming {
             )
             .header("Sec-WebSocket-Version", "13")
             .body(Empty::<Bytes>::new())
+            .map_err(|err| {
+                error!("Error connecting to {uri}: {err:?}");
+                // TODO should this be an unreachable to reduce retry timings?
+                Error::Connect(err.to_string())
+            })?;
+
+        debug!("Opening TcpStream to: {addr}");
+        let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+            .await
+            .map_err(|_| {
+                Error::Connect("Could not open TCP stream after timeout of 5 seconds".to_string())
+            })?
             .map_err(|err| Error::Connect(err.to_string()))?;
 
-        info!("Opening TcpStream to: {addr}");
-        let stream = TcpStream::connect(addr)
-            .await
-            .map_err(|err| Error::Connect(err.to_string()))?;
         let (mut ws, _) = if let Some(config) = tls_config {
             let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
             let tls_stream = tls::into_tls_stream(addr, stream, config).await?;
@@ -487,8 +502,12 @@ impl NetworkStreaming {
         } else {
             fastwebsockets::handshake::client(&SpawnExecutor, req, stream).await
         }
-        .map_err(|err| Error::Connect(err.to_string()))?;
+        .map_err(|err| {
+            error!("Error opening WebSocket stream: {err:?}");
+            Error::Connect(err.to_string())
+        })?;
         ws.set_auto_close(true);
+        debug!("WebSocket connection established");
 
         if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
             error!("Error opening WebSocket stream to {addr}: {err:?}");
@@ -537,10 +556,14 @@ impl NetworkConnectionStreaming {
             self.node.addr_raft
         );
 
-        self.sender
-            .send_async(req)
-            .await
-            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?;
+        self.sender.send_async(req).await.map_err(|err| {
+            error!(
+                "NetworkConnectionStreaming::send to node {}: {}",
+                self.node.id,
+                err.to_string()
+            );
+            RPCError::Unreachable(Unreachable::new(&err))
+        })?;
 
         rx.await
             .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?

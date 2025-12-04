@@ -321,14 +321,14 @@ fn run(
                 }
             }
             Action::Shutdown(ack) => {
-                warn!("Raft logs store writer is being shut down");
+                debug!("Raft logs store writer is being shut down");
                 shutdown_ack = Some(ack);
                 break;
             }
         }
     }
 
-    warn!("Logs Writer exiting");
+    debug!("Logs Writer exiting");
 
     let active = wal.active();
     buf.clear();

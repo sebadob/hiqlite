@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
-use tracing::{info, warn};
+use tracing::{debug, info};
 
 pub struct ShutdownHandle {
     state: Arc<AppState>,
@@ -44,7 +44,7 @@ impl ShutdownHandle {
         .await
         .is_err()
         {
-            warn!("Timeout reached while waiting for Client::shutdown_execute");
+            debug!("Timeout reached while waiting for Client::shutdown_execute");
         }
         Ok(())
     }

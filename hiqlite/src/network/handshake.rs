@@ -5,6 +5,7 @@ use crate::{Error, NodeId};
 use fastwebsockets::{Frame, OpCode, Payload, WebSocket};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
+use tracing::debug;
 
 pub struct HandshakeSecret;
 
@@ -14,6 +15,7 @@ impl HandshakeSecret {
         secret: &[u8],
         node_id: NodeId,
     ) -> Result<(), Error> {
+        debug!("Executing HandshakeSecret::client");
         let frame = ws.read_frame().await?;
         let challenge_response = match frame.opcode {
             OpCode::Binary => {
@@ -43,6 +45,7 @@ impl HandshakeSecret {
             }
         };
 
+        debug!("HandshakeSecret::client finished");
         Ok(())
     }
 
@@ -50,6 +53,7 @@ impl HandshakeSecret {
         ws: &mut WebSocket<TokioIo<Upgraded>>,
         secret: &[u8],
     ) -> Result<NodeId, Error> {
+        debug!("Executing HandshakeSecret::server");
         let challenge = Challenge::new()?;
 
         let frame = Frame::binary(Payload::from(serialize_network(&challenge)));
@@ -75,6 +79,7 @@ impl HandshakeSecret {
         let frame = Frame::binary(Payload::from(serialize_network(&response)));
         ws.write_frame(frame).await?;
 
+        debug!("HandshakeSecret::server finished");
         Ok(node_id)
     }
 }

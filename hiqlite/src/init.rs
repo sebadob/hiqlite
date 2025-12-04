@@ -212,7 +212,7 @@ async fn should_node_1_skip_init(
                     }
                 }
                 Err(err) => {
-                    warn!("Error sending membership request: {}", err);
+                    debug!("Error sending membership request: {}", err);
                 }
             }
 
@@ -842,7 +842,11 @@ fn set_raft_running(state: &Arc<AppState>, raft_type: &RaftType) {
             state
                 .raft_db
                 .is_raft_stopped
-                .store(false, Ordering::Relaxed)
+                .store(false, Ordering::Relaxed);
+            state
+                .raft_db
+                .is_startup_finished
+                .store(true, Ordering::Relaxed);
         }
         #[cfg(feature = "cache")]
         RaftType::Cache => {
@@ -850,7 +854,11 @@ fn set_raft_running(state: &Arc<AppState>, raft_type: &RaftType) {
             state
                 .raft_cache
                 .is_raft_stopped
-                .store(false, Ordering::Relaxed)
+                .store(false, Ordering::Relaxed);
+            state
+                .raft_cache
+                .is_startup_finished
+                .store(true, Ordering::Relaxed);
         }
         RaftType::Unknown => unreachable!(),
     }
