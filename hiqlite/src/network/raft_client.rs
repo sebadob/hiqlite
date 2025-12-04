@@ -478,7 +478,7 @@ impl NetworkStreaming {
 
         let req = Request::builder()
             .method("GET")
-            .uri(uri)
+            .uri(&uri)
             .header(UPGRADE, "websocket")
             .header(CONNECTION, "upgrade")
             .header(
