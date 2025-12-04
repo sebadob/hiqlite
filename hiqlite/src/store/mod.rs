@@ -86,29 +86,15 @@ pub(crate) async fn start_raft_db(
 
     let shutdown_handle = log_store.shutdown_handle();
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(8)
-        .build()?;
-    let raft = rt
-        .spawn(openraft::Raft::new(
-            node_config.node_id,
-            raft_config.clone(),
-            network,
-            log_store,
-            state_machine_store,
-        ))
-        .await??;
-    mem::forget(rt);
-    // let raft = openraft::Raft::new(
-    //     node_config.node_id,
-    //     raft_config.clone(),
-    //     network,
-    //     log_store,
-    //     state_machine_store,
-    // )
-    // .await
-    // .expect("Raft create failed");
+    let raft = openraft::Raft::new(
+        node_config.node_id,
+        raft_config.clone(),
+        network,
+        log_store,
+        state_machine_store,
+    )
+    .await
+    .expect("Raft create failed");
 
     init::init_pristine_node_1_db(
         &raft,
@@ -171,11 +157,6 @@ where
     #[cfg(feature = "dlock")]
     let tx_dlock = state_machine_store.tx_dlock.clone();
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(8)
-        .build()?;
-
     let (raft, shutdown_handle) = if node_config.cache_storage_disk {
         let log_store = hiqlite_wal::LogStore::<TypeConfigKV>::start(
             logs::logs_dir_cache(&node_config.data_dir),
@@ -185,52 +166,30 @@ where
         .await?;
         let shutdown_handle = log_store.shutdown_handle();
 
-        let raft = rt
-            .spawn(openraft::Raft::new(
-                node_config.node_id,
-                raft_config.clone(),
-                network,
-                log_store,
-                state_machine_store,
-            ))
-            .await??;
-
-        // let raft = openraft::Raft::new(
-        //     node_config.node_id,
-        //     raft_config.clone(),
-        //     network,
-        //     log_store,
-        //     state_machine_store,
-        // )
-        // .await
-        // .expect("Raft create failed");
+        let raft = openraft::Raft::new(
+            node_config.node_id,
+            raft_config.clone(),
+            network,
+            log_store,
+            state_machine_store,
+        )
+        .await
+        .expect("Raft create failed");
 
         (raft, Some(shutdown_handle))
     } else {
-        let raft = rt
-            .spawn(openraft::Raft::new(
-                node_config.node_id,
-                raft_config.clone(),
-                network,
-                logs::memory::LogStoreMemory::new(),
-                state_machine_store,
-            ))
-            .await??;
-
-        // let raft = openraft::Raft::new(
-        //     node_config.node_id,
-        //     raft_config.clone(),
-        //     network,
-        //     logs::memory::LogStoreMemory::new(),
-        //     state_machine_store,
-        // )
-        // .await
-        // .expect("Raft create failed");
+        let raft = openraft::Raft::new(
+            node_config.node_id,
+            raft_config.clone(),
+            network,
+            logs::memory::LogStoreMemory::new(),
+            state_machine_store,
+        )
+        .await
+        .expect("Raft create failed");
 
         (raft, None)
     };
-
-    mem::forget(rt);
 
     init::init_pristine_node_1_cache(
         &raft,
