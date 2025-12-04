@@ -14,7 +14,7 @@ use cryptr::utils::{b64_decode, b64_encode};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::LazyLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 const COOKIE_NAME: &str = "__Host-Hiqlite-Session";
 const COOKIE_NAME_DEV: &str = "Hiqlite-Session";

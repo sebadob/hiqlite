@@ -10,7 +10,7 @@ use crate::{Client, Error};
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use std::ops::Deref;
 use tokio::task;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 pub async fn handle_socket(
     state: AppStateExt,

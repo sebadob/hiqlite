@@ -220,7 +220,7 @@ impl Client {
         #[cfg(feature = "sqlite")] tx_client_db: &flume::Sender<ClientStreamReq>,
         tx_shutdown: &Option<watch::Sender<bool>>,
     ) -> Result<(), Error> {
-        info!("Received shutdown signal");
+        info!("Starting Node shutdown");
 
         #[allow(unused_mut)]
         let mut is_single_instance: bool;
@@ -249,11 +249,14 @@ impl Client {
             is_single_instance = node_count == 1;
         }
 
-        // This pre-shutdown delay is not strictly necessary,
-        // but it makes rolling releases smoother, especially
-        // with ephemeral storage.
+        state.is_shutting_down.store(true, Ordering::Relaxed);
+
+        // This pre-shutdown delay is not strictly necessary, but it makes rolling releases
+        // smoother, especially with ephemeral storage. It also allows to set a ready check
+        // interval of 5 seconds while it will still catch it before it actually starts the
+        // shutdown, so services can stop sending requests to this node.
         if !is_single_instance {
-            time::sleep(Duration::from_secs(5)).await;
+            time::sleep(Duration::from_millis(5100)).await;
         }
 
         #[cfg(feature = "cache")]

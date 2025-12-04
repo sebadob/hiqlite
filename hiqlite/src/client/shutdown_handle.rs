@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
-use tracing::{info, warn};
+use tracing::{debug, info};
 
 pub struct ShutdownHandle {
     state: Arc<AppState>,

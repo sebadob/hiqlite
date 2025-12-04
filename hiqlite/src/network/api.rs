@@ -95,6 +95,10 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
     panic!("neither `sqlite` nor `cache` feature enabled");
 
+    if state.is_shutting_down.load(Ordering::Relaxed) {
+        return Err(Error::Error("Node is shutting down".into()));
+    }
+
     let secs_since_start = Utc::now().sub(state.app_start).num_seconds();
 
     #[cfg(feature = "sqlite")]

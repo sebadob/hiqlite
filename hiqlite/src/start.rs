@@ -9,6 +9,7 @@ use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -80,6 +81,7 @@ where
 
     let state = Arc::new(AppState {
         app_start: Utc::now(),
+        is_shutting_down: AtomicBool::new(false),
         #[cfg(feature = "backup")]
         backups_dir: format!("{}/state_machine/backups", node_config.data_dir),
         id: node_config.node_id,

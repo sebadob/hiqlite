@@ -5,7 +5,7 @@ use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
 use crate::{Error, Params};
 use tokio::sync::oneshot;
 use tokio::task;
-use tracing::info;
+use tracing::debug;
 
 pub(crate) async fn dashboard_query_dynamic(
     state: AppStateExt,

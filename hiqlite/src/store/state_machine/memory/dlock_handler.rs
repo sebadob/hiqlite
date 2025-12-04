@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicU64;
 use std::thread;
 use tokio::sync::oneshot;
 use tokio::task;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 const LOCK_VALID_SECONDS: i64 = 10;
 

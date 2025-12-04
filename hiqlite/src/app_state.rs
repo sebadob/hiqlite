@@ -51,6 +51,7 @@ impl RaftType {
 // instances of raft, store and more.
 pub(crate) struct AppState {
     pub app_start: chrono::DateTime<Utc>,
+    pub is_shutting_down: AtomicBool,
     #[cfg(feature = "backup")]
     pub backups_dir: String,
     pub id: NodeId,
