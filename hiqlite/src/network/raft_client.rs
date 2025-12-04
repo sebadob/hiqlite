@@ -232,7 +232,10 @@ impl NetworkStreaming {
                 )
                 .await
                 {
-                    Ok(socket) => socket,
+                    Ok(socket) => {
+                        info!("WebSocket connected successfully");
+                        socket
+                    }
                     Err(err) => {
                         error!("Socket connect error to node {}: {:?}", node.id, err);
 
@@ -484,12 +487,18 @@ impl NetworkStreaming {
             )
             .header("Sec-WebSocket-Version", "13")
             .body(Empty::<Bytes>::new())
-            .map_err(|err| Error::Connect(err.to_string()))?;
+            .map_err(|err| {
+                error!("Error connecting to {uri}: {err:?}");
+                // TODO should this be an unreachable to reduce retry timings?
+                Error::Connect(err.to_string())
+            })?;
 
         info!("Opening TcpStream to: {addr}");
-        let stream = TcpStream::connect(addr)
-            .await
-            .map_err(|err| Error::Connect(err.to_string()))?;
+        let stream = TcpStream::connect(addr).await.map_err(|err| {
+            error!("Error opening TcpStream to {addr}: {err:?}");
+            // TODO should this be an unreachable to reduce retry timings?
+            Error::Connect(err.to_string())
+        })?;
         let (mut ws, _) = if let Some(config) = tls_config {
             let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
             let tls_stream = tls::into_tls_stream(addr, stream, config).await?;
@@ -497,7 +506,10 @@ impl NetworkStreaming {
         } else {
             fastwebsockets::handshake::client(&SpawnExecutor, req, stream).await
         }
-        .map_err(|err| Error::Connect(err.to_string()))?;
+        .map_err(|err| {
+            error!("Error opening WebSocket stream: {err:?}");
+            Error::Connect(err.to_string())
+        })?;
         ws.set_auto_close(true);
 
         if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
