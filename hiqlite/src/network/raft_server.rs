@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 use std::sync::atomic::Ordering;
 use tokio::task;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "cache")]
 use crate::app_state::RaftType;
@@ -103,7 +103,7 @@ pub async fn stream_cache(
     state: AppStateExt,
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("Incoming WebSocket stream for Cache");
+    info!("Incoming WebSocket stream for Cache");
 
     #[cfg(feature = "cache")]
     if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
@@ -125,7 +125,7 @@ pub async fn stream_sqlite(
     state: AppStateExt,
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("Incoming WebSocket stream for SQLite");
+    info!("Incoming WebSocket stream for SQLite");
 
     #[cfg(feature = "sqlite")]
     if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
