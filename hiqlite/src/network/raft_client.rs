@@ -210,7 +210,7 @@ impl NetworkStreaming {
         > = HashMap::with_capacity(8);
         let mut shutdown = false;
 
-        loop {
+        'outer: loop {
             if is_raft_stopped.load(Ordering::Relaxed) {
                 if !is_startup_finished.load(Ordering::Relaxed) {
                     info!("Raft is still starting up - skipping initial connection");
@@ -222,6 +222,7 @@ impl NetworkStreaming {
                 break;
             }
 
+            info!("Trying to open WebSocket stream");
             let socket = {
                 match Self::try_connect(
                     this_node,
@@ -239,48 +240,80 @@ impl NetworkStreaming {
                     Err(err) => {
                         error!("Socket connect error to node {}: {:?}", node.id, err);
 
-                        // TODO not sure which is better, sleep before drain or after -> more testing
-                        time::sleep(Duration::from_millis(heartbeat_interval)).await;
+                        for _ in 0..3 {
+                            // if there is a network error, no reason to try too hard to connect
+                            time::sleep(Duration::from_millis(heartbeat_interval)).await;
+                            info!("WebSocket conn downtime loop");
 
-                        info!(">>> Draining {} piled up events now", rx.len());
+                            // make sure channel is always free
+                            if let Ok(req) = rx.try_recv() {
+                                let ack = match req {
+                                    #[cfg(feature = "sqlite")]
+                                    RaftRequest::AppendDB((ack, _)) => Some(ack),
+                                    #[cfg(feature = "sqlite")]
+                                    RaftRequest::VoteDB((ack, _)) => Some(ack),
+                                    #[cfg(feature = "sqlite")]
+                                    RaftRequest::SnapshotDB((ack, _)) => Some(ack),
+                                    #[cfg(feature = "cache")]
+                                    RaftRequest::AppendCache((ack, _)) => Some(ack),
+                                    #[cfg(feature = "cache")]
+                                    RaftRequest::VoteCache((ack, _)) => Some(ack),
+                                    #[cfg(feature = "cache")]
+                                    RaftRequest::SnapshotCache((ack, _)) => Some(ack),
+                                    RaftRequest::StreamResponse(_) => None,
+                                    RaftRequest::Shutdown => {
+                                        break 'outer;
+                                    }
+                                };
 
-                        // make sure messages don't pile up
-                        rx.drain().for_each(|req| {
-                            let ack = match req {
-                                #[cfg(feature = "sqlite")]
-                                RaftRequest::AppendDB((ack, _)) => Some(ack),
-                                #[cfg(feature = "sqlite")]
-                                RaftRequest::VoteDB((ack, _)) => Some(ack),
-                                #[cfg(feature = "sqlite")]
-                                RaftRequest::SnapshotDB((ack, _)) => Some(ack),
-                                #[cfg(feature = "cache")]
-                                RaftRequest::AppendCache((ack, _)) => Some(ack),
-                                #[cfg(feature = "cache")]
-                                RaftRequest::VoteCache((ack, _)) => Some(ack),
-                                #[cfg(feature = "cache")]
-                                RaftRequest::SnapshotCache((ack, _)) => Some(ack),
-                                RaftRequest::StreamResponse(_) => None,
-                                RaftRequest::Shutdown => {
-                                    shutdown = true;
-                                    None
+                                if let Some(ack) = ack {
+                                    let _ = ack.send(Err(Error::Connect(format!(
+                                        "Cannot connect to {}",
+                                        node.addr_raft
+                                    ))));
                                 }
-                            };
-
-                            if let Some(ack) = ack {
-                                let _ = ack.send(Err(Error::Connect(format!(
-                                    "Cannot connect to {}",
-                                    node.addr_raft
-                                ))));
                             }
-                        });
-                        if shutdown {
-                            break;
                         }
 
-                        info!(">>> Events drained - trying to reconnect");
+                        // TODO not sure which is better, sleep before drain or after -> more testing
+                        // if there is a network error, don't try too hard to connect
+                        // time::sleep(Duration::from_millis(heartbeat_interval * 3)).await;
 
-                        // // TODO not sure which is better, sleep before drain or after -> more testing
-                        // time::sleep(Duration::from_millis(heartbeat_interval)).await;
+                        // // make sure messages don't pile up
+                        // rx.drain().for_each(|req| {
+                        //     let ack = match req {
+                        //         #[cfg(feature = "sqlite")]
+                        //         RaftRequest::AppendDB((ack, _)) => Some(ack),
+                        //         #[cfg(feature = "sqlite")]
+                        //         RaftRequest::VoteDB((ack, _)) => Some(ack),
+                        //         #[cfg(feature = "sqlite")]
+                        //         RaftRequest::SnapshotDB((ack, _)) => Some(ack),
+                        //         #[cfg(feature = "cache")]
+                        //         RaftRequest::AppendCache((ack, _)) => Some(ack),
+                        //         #[cfg(feature = "cache")]
+                        //         RaftRequest::VoteCache((ack, _)) => Some(ack),
+                        //         #[cfg(feature = "cache")]
+                        //         RaftRequest::SnapshotCache((ack, _)) => Some(ack),
+                        //         RaftRequest::StreamResponse(_) => None,
+                        //         RaftRequest::Shutdown => {
+                        //             shutdown = true;
+                        //             None
+                        //         }
+                        //     };
+                        //
+                        //     if let Some(ack) = ack {
+                        //         let _ = ack.send(Err(Error::Connect(format!(
+                        //             "Cannot connect to {}",
+                        //             node.addr_raft
+                        //         ))));
+                        //     }
+                        // });
+                        // if shutdown {
+                        //     warn!("Found shutdown signal - shutting down WebSocket handler");
+                        //     break;
+                        // }
+
+                        info!(">>> Events drained - trying to reconnect");
 
                         // if there is a network error, don't try too hard to connect
                         // time::sleep(Duration::from_millis(heartbeat_interval * 3)).await;
