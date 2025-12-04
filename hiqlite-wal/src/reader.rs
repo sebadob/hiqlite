@@ -4,7 +4,7 @@ use crate::wal::WalFileSet;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::sync::oneshot;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 #[allow(clippy::type_complexity)]
 pub enum Action {
@@ -180,11 +180,11 @@ fn run(
                 ack.send(Ok(vote)).unwrap();
             }
             Action::Shutdown => {
-                warn!("Raft logs store reader is being shut down");
+                debug!("Raft logs store reader is being shut down");
                 break;
             }
         }
     }
 
-    warn!("Logs Reader exiting");
+    debug!("Logs Reader exiting");
 }

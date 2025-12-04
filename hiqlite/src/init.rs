@@ -212,7 +212,7 @@ async fn should_node_1_skip_init(
                     }
                 }
                 Err(err) => {
-                    warn!("Error sending membership request: {}", err);
+                    debug!("Error sending membership request: {}", err);
                 }
             }
 

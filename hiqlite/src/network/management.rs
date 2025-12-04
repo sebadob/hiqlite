@@ -112,7 +112,7 @@ pub(crate) async fn become_member(
     info!("{:?} Node membership request: {:?}", raft_type, payload);
 
     let mut metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-    info!("{:?} Members before add: {:?}", raft_type, metrics);
+    debug!("{:?} Members before add: {:?}", raft_type, metrics);
 
     let is_voter = metrics
         .membership_config

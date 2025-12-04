@@ -204,7 +204,7 @@ pub async fn stream(
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
     let (response, socket) = ws.upgrade()?;
-    info!("New Raft Stream for {:?}", raft_type);
+    debug!("New Raft Stream for {:?}", raft_type);
 
     tokio::task::spawn(async move {
         if let Err(err) = handle_socket_concurrent(state, socket).await {
@@ -332,7 +332,7 @@ async fn handle_socket_concurrent(
                 WsWriteMsg::Break => {
                     // we ignore any errors here since it may be possible that the reader
                     // has closed already - we just try a graceful connection close
-                    warn!("handle_socket_concurrent -> server stream break message");
+                    debug!("handle_socket_concurrent -> server stream break message");
                     break;
                 }
             }
@@ -342,7 +342,7 @@ async fn handle_socket_concurrent(
             .write_frame(Frame::close(1000, b"Invalid Request"))
             .await;
 
-        warn!("handle_socket_concurrent -> server stream exiting");
+        debug!("handle_socket_concurrent -> server stream exiting");
     });
 
     while let Ok(frame) = read
@@ -359,7 +359,7 @@ async fn handle_socket_concurrent(
     {
         let req = match frame.opcode {
             OpCode::Close => {
-                warn!("received Close frame in server stream");
+                debug!("received Close frame in server stream");
                 break;
             }
             OpCode::Binary => {
@@ -676,7 +676,7 @@ async fn handle_socket_concurrent(
 
     handle_write.await.unwrap();
 
-    warn!("handle_socket_concurrent exiting");
+    debug!("handle_socket_concurrent exiting");
 
     Ok(())
 }

@@ -7,7 +7,7 @@ use crate::network::handshake::HandshakeSecret;
 use crate::server::proxy::handlers::AppStateExt;
 use crate::store::state_machine::sqlite::state_machine::Query;
 use crate::{Client, Error};
-use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
+use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use std::ops::Deref;
 use tokio::task;
 use tracing::{debug, error, warn};
@@ -59,13 +59,13 @@ pub async fn handle_socket(
                     let _ = write
                         .write_frame(Frame::close(1000, b"Invalid Request"))
                         .await;
-                    warn!("server stream break message");
+                    debug!("server stream break message");
                     break;
                 }
             }
         }
 
-        warn!("server stream exiting");
+        debug!("server stream exiting");
     });
 
     while let Ok(frame) = read
@@ -82,7 +82,7 @@ pub async fn handle_socket(
     {
         let req = match frame.opcode {
             OpCode::Close => {
-                warn!("received Close frame in server stream");
+                debug!("received Close frame in server stream");
                 break;
             }
             OpCode::Binary => {
@@ -245,7 +245,9 @@ pub async fn handle_socket(
                             result: ApiStreamResponsePayload::Lock(res),
                         },
                         Err(_) => {
-                            todo!("how should be handle await errors? wrap state inside inner result just for the proxy or retry endlessly?")
+                            todo!(
+                                "how should be handle await errors? wrap state inside inner result just for the proxy or retry endlessly?"
+                            )
                         } // Err(err) => ApiStreamResponse {
                           //     request_id,
                           //     result: ApiStreamResponsePayload::Lock(Err(err)),

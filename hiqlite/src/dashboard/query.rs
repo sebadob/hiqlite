@@ -1,5 +1,5 @@
-use crate::network::api::ApiStreamResponsePayload;
 use crate::network::AppStateExt;
+use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
 use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
 use crate::{Error, Params};
@@ -16,7 +16,7 @@ pub(crate) async fn dashboard_query_dynamic(
     }
 
     if state.raft_db.log_statements {
-        info!("dashboard query:\n{}", sql)
+        debug!("dashboard query:\n{}", sql)
     }
 
     // we need to check if we can do a local select query or if it is
@@ -86,7 +86,7 @@ pub(crate) async fn dashboard_query_dynamic(
 #[inline]
 async fn execute_dynamic(state: &AppStateExt, sql: Query) -> Result<usize, Error> {
     if is_this_local_leader(state).await? {
-        info!("Executing dynamic dashboard query as local leader");
+        debug!("Executing dynamic dashboard query as local leader");
         let res = state
             .raft_db
             .raft
@@ -98,7 +98,7 @@ async fn execute_dynamic(state: &AppStateExt, sql: Query) -> Result<usize, Error
             _ => unreachable!(),
         }
     } else {
-        info!("Executing dynamic dashboard query on remote leader");
+        debug!("Executing dynamic dashboard query on remote leader");
         let (ack, rx) = oneshot::channel();
         state
             .tx_client_stream

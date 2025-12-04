@@ -59,5 +59,5 @@ async fn handler(rx_req: flume::Receiver<NotifyRequest>, tx_local: flume::Sender
         }
     }
 
-    warn!("Listen / Notify handler exiting");
+    debug!("Listen / Notify handler exiting");
 }

@@ -22,7 +22,7 @@ use tokio::sync::oneshot::Sender;
 use tokio::sync::{RwLock, oneshot};
 use tokio::task::JoinHandle;
 use tokio::{select, task, time};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use crate::network::api::{ApiStreamRequest, ApiStreamRequestPayload};
@@ -585,7 +585,7 @@ async fn client_stream(
         }
 
         if shutdown {
-            warn!("Shutting down Client stream receiver");
+            debug!("Shutting down Client stream receiver");
             break;
         }
 
@@ -594,7 +594,7 @@ async fn client_stream(
         }
         assert!(in_flight.is_empty());
 
-        info!("client stream tasks killed - re-connecting now");
+        debug!("client stream tasks killed - re-connecting now");
     }
 }
 
@@ -699,7 +699,7 @@ async fn stream_reader(
         }
     }
 
-    warn!("Exiting Client Stream Reader");
+    debug!("Exiting Client Stream Reader");
 }
 
 async fn stream_writer(
@@ -716,14 +716,14 @@ async fn stream_writer(
                 }
             }
             WritePayload::Close => {
-                warn!("Received Close request in Client Stream Writer");
+                debug!("Received Close request in Client Stream Writer");
                 let _ = write.write_frame(Frame::close(1000, b"go away")).await;
                 break;
             }
         }
     }
 
-    warn!("Exiting Client Stream Writer");
+    debug!("Exiting Client Stream Writer");
 }
 
 struct SpawnExecutor;

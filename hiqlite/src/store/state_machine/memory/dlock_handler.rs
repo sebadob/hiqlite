@@ -202,5 +202,5 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
         }
     }
 
-    warn!("DLock handler exiting");
+    debug!("DLock handler exiting");
 }

@@ -132,7 +132,7 @@ impl StateMachineSqlite {
         // IMPORTANT: Do NOT change the order of the db exists check!
         // DB recovery will fail otherwise!
         let mut db_exists = Self::db_exists(data_dir, filename_db).await;
-        info!("db_exists in state_machine::new(): {db_exists}");
+        debug!("db_exists in state_machine::new(): {db_exists}");
 
         let (
             PathDb(path_db),
@@ -650,7 +650,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
             })?;
         let data = rx.await.expect("To always get Metadata from DB");
 
-        info!("applied_state: {:?}", data);
+        debug!("applied_state: {:?}", data);
 
         Ok((data.last_applied_log_id, data.last_membership))
     }

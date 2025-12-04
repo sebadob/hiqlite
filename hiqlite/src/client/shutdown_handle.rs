@@ -44,7 +44,7 @@ impl ShutdownHandle {
         .await
         .is_err()
         {
-            warn!("Timeout reached while waiting for Client::shutdown_execute");
+            debug!("Timeout reached while waiting for Client::shutdown_execute");
         }
         Ok(())
     }

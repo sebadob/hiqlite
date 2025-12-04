@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::thread;
 use tokio::sync::{RwLock, oneshot};
 use tokio::task;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug)]
 #[allow(clippy::type_complexity)]
@@ -75,12 +75,12 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
                 data.remove(&key);
             }
             CacheRequestHandler::Clear => {
-                info!("Clearing all caches for {cache_name}");
+                debug!("Clearing all caches for {cache_name}");
                 data.clear();
             }
             #[cfg(feature = "counters")]
             CacheRequestHandler::ClearCounters => {
-                info!("Clearing all counters for {cache_name}");
+                debug!("Clearing all counters for {cache_name}");
                 counters.clear();
             }
             CacheRequestHandler::SnapshotBuildCacheOnly(ack) => {
@@ -140,5 +140,5 @@ async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>
         }
     }
 
-    warn!("cache::kv_handler for {cache_name} exiting");
+    debug!("cache::kv_handler for {cache_name} exiting");
 }

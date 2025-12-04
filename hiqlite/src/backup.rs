@@ -122,7 +122,7 @@ pub fn start_cron(client: Client, s3_config: Arc<S3Config>, backup_config: Backu
                     }
                     Err(err) => {
                         if err.is_forward_to_leader().is_some() {
-                            warn!(
+                            debug!(
                                 "Raft currently has no leader - retrying in 10 seconds\n{:?}",
                                 err
                             );

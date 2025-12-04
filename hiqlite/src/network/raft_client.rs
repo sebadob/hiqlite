@@ -26,7 +26,7 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::{select, task, time};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
@@ -105,7 +105,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
-        info!("Building new Raft DB client with target {}", node);
+        debug!("Building new Raft DB client with target {}", node);
 
         let (sender, rx) = flume::bounded(1);
 
@@ -211,19 +211,18 @@ impl NetworkStreaming {
         let mut shutdown = false;
 
         'outer: loop {
-            info!("Checking if Raft is stopped");
             if is_raft_stopped.load(Ordering::Relaxed) {
                 if !is_startup_finished.load(Ordering::Relaxed) {
-                    info!("Raft is still starting up - skipping initial connection");
+                    debug!("Raft is still starting up - skipping initial connection");
                     time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
 
-                warn!("Raft is stopped - exiting NetworkStreaming::ws_handler()");
+                debug!("Raft is stopped - exiting NetworkStreaming::ws_handler()");
                 break;
             }
 
-            info!("Trying to open WebSocket stream");
+            debug!("Trying to open WebSocket stream");
             let socket = {
                 match Self::try_connect(
                     this_node,
@@ -235,7 +234,7 @@ impl NetworkStreaming {
                 .await
                 {
                     Ok(socket) => {
-                        info!("WebSocket connected successfully");
+                        debug!("WebSocket connected successfully");
                         socket
                     }
                     Err(err) => {
@@ -244,7 +243,6 @@ impl NetworkStreaming {
                         for _ in 0..3 {
                             // if there is a network error, no reason to try too hard to connect
                             time::sleep(Duration::from_millis(heartbeat_interval)).await;
-                            info!("WebSocket conn downtime loop");
 
                             // make sure channel is always free
                             if let Ok(req) = rx.try_recv() {
@@ -273,10 +271,6 @@ impl NetworkStreaming {
                             }
                         }
 
-                        info!(">>> Events drained - trying to reconnect");
-
-                        // if there is a network error, don't try too hard to connect
-                        // time::sleep(Duration::from_millis(heartbeat_interval * 3)).await;
                         continue;
                     }
                 }
@@ -396,7 +390,7 @@ impl NetworkStreaming {
             }
         }
 
-        warn!("Raft Client shut down, tx closed, exiting WsHandler");
+        debug!("Raft Client shut down, tx closed, exiting WsHandler");
     }
 
     async fn stream_reader(
@@ -434,7 +428,7 @@ impl NetworkStreaming {
             }
         }
 
-        warn!("Exiting Client Stream Reader");
+        debug!("Exiting Client Stream Reader");
     }
 
     async fn stream_writer(
@@ -451,14 +445,14 @@ impl NetworkStreaming {
                     }
                 }
                 WritePayload::Close => {
-                    warn!("Received Close request in Client Stream Writer");
+                    debug!("Received Close request in Client Stream Writer");
                     let _ = write.write_frame(Frame::close(1000, b"go away")).await;
                     break;
                 }
             }
         }
 
-        warn!("Exiting Client Stream Writer");
+        debug!("Exiting Client Stream Writer");
     }
 
     async fn try_connect(
@@ -493,18 +487,14 @@ impl NetworkStreaming {
                 Error::Connect(err.to_string())
             })?;
 
-        info!("Opening TcpStream to: {addr}");
+        debug!("Opening TcpStream to: {addr}");
         let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
             .await
             .map_err(|_| {
                 Error::Connect("Could not open TCP stream after timeout of 5 seconds".to_string())
             })?
             .map_err(|err| Error::Connect(err.to_string()))?;
-        // let stream = TcpStream::connect(addr).await.map_err(|err| {
-        //     error!("Error opening TcpStream to {addr}: {err:?}");
-        //     // TODO should this be an unreachable to reduce retry timings?
-        //     Error::Connect(err.to_string())
-        // })?;
+
         let (mut ws, _) = if let Some(config) = tls_config {
             let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
             let tls_stream = tls::into_tls_stream(addr, stream, config).await?;
@@ -517,7 +507,7 @@ impl NetworkStreaming {
             Error::Connect(err.to_string())
         })?;
         ws.set_auto_close(true);
-        info!("WebSocket connection established");
+        debug!("WebSocket connection established");
 
         if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
             error!("Error opening WebSocket stream to {addr}: {err:?}");

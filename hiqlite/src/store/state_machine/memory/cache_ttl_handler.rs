@@ -4,7 +4,7 @@ use chrono::Utc;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{RwLock, oneshot};
 use tokio::{task, time};
 use tracing::{debug, warn};
 
@@ -83,5 +83,5 @@ async fn ttl_handler(tx_kv: flume::Sender<CacheRequestHandler>, rx: flume::Recei
         }
     }
 
-    warn!("cache::ttl_handler exiting");
+    debug!("cache::ttl_handler exiting");
 }
