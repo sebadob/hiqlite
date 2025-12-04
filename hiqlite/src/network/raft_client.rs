@@ -1,4 +1,6 @@
 use crate::Node;
+use crate::app_state::RaftType;
+use crate::helpers::{deserialize, serialize};
 use crate::network::handshake::HandshakeSecret;
 use crate::network::raft_server::{
     RaftStreamRequest, RaftStreamResponse, RaftStreamResponsePayload,
@@ -11,8 +13,8 @@ use hyper::Request;
 use hyper::header::{CONNECTION, UPGRADE};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use openraft::error::RPCError;
 use openraft::error::Unreachable;
+use openraft::error::{NetworkError, RPCError};
 use std::collections::HashMap;
 use std::future::Future;
 use std::ops::Deref;
@@ -22,6 +24,7 @@ use std::time::Duration;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tokio::{select, task, time};
 use tracing::{debug, error, info, warn};
 
@@ -33,8 +36,6 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use crate::Error;
-use crate::app_state::RaftType;
-use crate::helpers::{deserialize, serialize};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::{
     error::{InstallSnapshotError, RaftError},
@@ -44,7 +45,6 @@ use openraft::{
         InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
 };
-use tokio::task::JoinHandle;
 
 struct SpawnExecutor;
 
@@ -565,12 +565,15 @@ impl NetworkConnectionStreaming {
                 self.node.id,
                 err.to_string()
             );
-            RPCError::Unreachable(Unreachable::new(&err))
+            RPCError::Network(NetworkError::new(&err))
+            // RPCError::Unreachable(Unreachable::new(&err))
         })?;
 
         rx.await
-            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
-            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
+            .map_err(|err| RPCError::Network(NetworkError::new(&err)))?
+            // .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
+            .map_err(|err| RPCError::Network(NetworkError::new(&err)))
+        // .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
     }
 }
 
