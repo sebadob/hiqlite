@@ -13,8 +13,8 @@ use hyper::Request;
 use hyper::header::{CONNECTION, UPGRADE};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
+use openraft::error::RPCError;
 use openraft::error::Unreachable;
-use openraft::error::{NetworkError, RPCError};
 use std::collections::HashMap;
 use std::future::Future;
 use std::ops::Deref;
@@ -239,6 +239,9 @@ impl NetworkStreaming {
                     Err(err) => {
                         error!("Socket connect error to node {}: {:?}", node.id, err);
 
+                        // TODO not sure which is better, sleep before drain or after -> more testing
+                        time::sleep(Duration::from_millis(heartbeat_interval)).await;
+
                         // make sure messages don't pile up
                         rx.drain().for_each(|req| {
                             let ack = match req {
@@ -272,8 +275,8 @@ impl NetworkStreaming {
                             break;
                         }
 
-                        // TODO not sure which is better, sleep before drain or after -> more testing
-                        time::sleep(Duration::from_millis(heartbeat_interval)).await;
+                        // // TODO not sure which is better, sleep before drain or after -> more testing
+                        // time::sleep(Duration::from_millis(heartbeat_interval)).await;
 
                         // if there is a network error, don't try too hard to connect
                         // time::sleep(Duration::from_millis(heartbeat_interval * 3)).await;
@@ -565,15 +568,12 @@ impl NetworkConnectionStreaming {
                 self.node.id,
                 err.to_string()
             );
-            RPCError::Network(NetworkError::new(&err))
-            // RPCError::Unreachable(Unreachable::new(&err))
+            RPCError::Unreachable(Unreachable::new(&err))
         })?;
 
         rx.await
-            .map_err(|err| RPCError::Network(NetworkError::new(&err)))?
-            // .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
-            .map_err(|err| RPCError::Network(NetworkError::new(&err)))
-        // .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
+            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
+            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
     }
 }
 
