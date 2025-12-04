@@ -173,19 +173,19 @@ async fn handle_socket(
                     }
                 }
                 WsWriteMsg::Break => {
-                    warn!("server stream break message");
+                    warn!("handle_socket -> server stream break message");
                     break;
                 }
             }
         }
 
-        warn!("Raft server WebSocket writer exiting");
+        warn!("handle_socket -> Raft server WebSocket writer exiting");
         let _ = write.write_frame(Frame::close(1000, b"go away")).await;
     });
 
     while let Ok(frame) = read
         .read_frame(&mut |frame| async move {
-            // // TODO obligated sends should be auto ping / pong / close ? -> verify!
+            // TODO obligated sends should be auto ping / pong / close ? -> verify!
             debug!(
                 "Received obligated send in stream client: OpCode: {:?}: {:?}",
                 frame.opcode.clone(),
@@ -310,6 +310,8 @@ async fn handle_socket(
 
     // try to close the writer if it should still be running
     let _ = tx_write.send_async(WsWriteMsg::Break).await;
+
+    warn!("handle_socket exiting");
 
     Ok(())
 }

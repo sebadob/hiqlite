@@ -332,7 +332,7 @@ async fn handle_socket_concurrent(
                 WsWriteMsg::Break => {
                     // we ignore any errors here since it may be possible that the reader
                     // has closed already - we just try a graceful connection close
-                    warn!("server stream break message");
+                    warn!("handle_socket_concurrent -> server stream break message");
                     break;
                 }
             }
@@ -342,7 +342,7 @@ async fn handle_socket_concurrent(
             .write_frame(Frame::close(1000, b"Invalid Request"))
             .await;
 
-        warn!("server stream exiting");
+        warn!("handle_socket_concurrent -> server stream exiting");
     });
 
     while let Ok(frame) = read
@@ -675,6 +675,8 @@ async fn handle_socket_concurrent(
     drop(tx_write);
 
     handle_write.await.unwrap();
+
+    warn!("handle_socket_concurrent exiting");
 
     Ok(())
 }
