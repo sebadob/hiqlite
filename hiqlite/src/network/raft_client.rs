@@ -268,7 +268,7 @@ impl NetworkStreaming {
                                 };
 
                                 if let Some(ack) = ack {
-                                    let _ = ack.send(Err(Error::Connect(err.into())));
+                                    let _ = ack.send(Err(Error::Connect(err.to_string())));
                                 }
                             }
                         }
