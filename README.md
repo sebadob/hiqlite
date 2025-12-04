@@ -492,6 +492,8 @@ metadata:
   namespace: hiqlite
 spec:
   clusterIP: None
+  # only do that on the headless service
+  publishNotReadyAddresses: true
   selector:
     app: hiqlite
   ports:
@@ -537,6 +539,13 @@ spec:
               readOnly: true
             - name: hiqlite-data
               mountPath: /app/data
+          readinessProbe:
+            httpGet:
+              scheme: HTTP
+              port: 8200
+              path: /ready
+            initialDelaySeconds: 5
+            periodSeconds: 1
           livenessProbe:
             httpGet:
               # You may need to adjust this, if you decide to start in https only
