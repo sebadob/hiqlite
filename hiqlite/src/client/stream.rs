@@ -1,23 +1,16 @@
 use crate::app_state::RaftType;
 use crate::helpers::deserialize;
 use crate::network::api::{ApiStreamResponse, ApiStreamResponsePayload};
-use crate::network::handshake::HandshakeSecret;
-use crate::network::serialize_network;
-use crate::{Client, Error, Node, NodeId, tls};
-use axum::http::Request;
-use axum::http::header::{CONNECTION, UPGRADE};
-use bytes::Bytes;
+use crate::network::{serialize_network, web_socket_connect};
+use crate::{Client, Error, Node, NodeId};
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocket, WebSocketWrite};
-use http_body_util::Empty;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
-use std::future::Future;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{ReadHalf, WriteHalf};
-use tokio::net::TcpStream;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{RwLock, oneshot};
 use tokio::task::JoinHandle;
@@ -726,18 +719,6 @@ async fn stream_writer(
     debug!("Exiting Client Stream Writer");
 }
 
-struct SpawnExecutor;
-
-impl<Fut> hyper::rt::Executor<Fut> for SpawnExecutor
-where
-    Fut: Future + Send + 'static,
-    Fut::Output: Send + 'static,
-{
-    fn execute(&self, fut: Fut) {
-        tokio::task::spawn(fut);
-    }
-}
-
 async fn try_connect(
     leader: &Arc<RwLock<(NodeId, String)>>,
     raft_type: &RaftType,
@@ -748,55 +729,5 @@ async fn try_connect(
         let lock = leader.read().await;
         (lock.0, lock.1.clone())
     };
-
-    let scheme = if tls_config.is_some() {
-        "https"
-    } else {
-        "http"
-    };
-    let uri = format!("{}://{}/stream/{}", scheme, addr, raft_type.as_str());
-    info!("Client API WebSocket trying to connect to: {}", uri);
-
-    let req = Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header(UPGRADE, "websocket")
-        .header(CONNECTION, "upgrade")
-        .header(
-            "Sec-WebSocket-Key",
-            fastwebsockets::handshake::generate_key(),
-        )
-        .header("Sec-WebSocket-Version", "13")
-        .body(Empty::<Bytes>::new())
-        .map_err(|err| Error::Error(err.to_string().into()))?;
-
-    let stream = match TcpStream::connect(&addr).await {
-        Ok(s) => s,
-        Err(err) => {
-            return Err(Error::Connect(err.to_string()));
-        }
-    };
-
-    let (mut ws, _) = match if let Some(config) = tls_config {
-        let (addr, _) = addr.split_once(':').unwrap_or((&addr, ""));
-        let tls_stream = tls::into_tls_stream(addr, stream, config).await?;
-        fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await
-    } else {
-        fastwebsockets::handshake::client(&SpawnExecutor, req, stream).await
-    } {
-        Ok(conn) => conn,
-        Err(err) => {
-            return Err(Error::Connect(err.to_string()));
-        }
-    };
-
-    if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
-        let _ = ws
-            .write_frame(Frame::close(1000, b"Invalid Handshake"))
-            .await;
-        // panic is the best option in case of a misconfiguration
-        panic!("Error during API WebSocket handshake: {err}");
-    }
-
-    Ok(ws)
+    web_socket_connect::try_connect_stream(node_id, &addr, raft_type, tls_config, secret).await
 }

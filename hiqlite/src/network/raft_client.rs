@@ -1,32 +1,26 @@
 use crate::Node;
+use crate::NodeId;
 use crate::app_state::RaftType;
 use crate::helpers::{deserialize, serialize};
-use crate::network::handshake::HandshakeSecret;
 use crate::network::raft_server::{
     RaftStreamRequest, RaftStreamResponse, RaftStreamResponsePayload,
 };
-use crate::{NodeId, tls};
-use bytes::Bytes;
-use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocket, WebSocketWrite};
-use http_body_util::Empty;
-use hyper::Request;
-use hyper::header::{CONNECTION, UPGRADE};
+use crate::network::web_socket_connect;
+use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocketWrite};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use openraft::error::RPCError;
 use openraft::error::Unreachable;
 use std::collections::HashMap;
-use std::future::Future;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{ReadHalf, WriteHalf};
-use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::{select, task, time};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
@@ -46,18 +40,6 @@ use openraft::{
     },
 };
 
-struct SpawnExecutor;
-
-impl<Fut> hyper::rt::Executor<Fut> for SpawnExecutor
-where
-    Fut: Future + Send + 'static,
-    Fut::Output: Send + 'static,
-{
-    fn execute(&self, fut: Fut) {
-        tokio::task::spawn(fut);
-    }
-}
-
 pub struct NetworkStreaming {
     pub node_id: NodeId,
     pub tls_config: Option<Arc<rustls::ClientConfig>>,
@@ -75,7 +57,7 @@ impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
-        info!("Building new Raft Cache client with target {}", node);
+        debug!("Building new Raft Cache client with target {}", node);
 
         let (sender, rx) = flume::bounded(1);
 
@@ -224,7 +206,7 @@ impl NetworkStreaming {
 
             debug!("Trying to open WebSocket stream");
             let socket = {
-                match Self::try_connect(
+                match web_socket_connect::try_connect_stream(
                     this_node,
                     &node.addr_raft,
                     &raft_type,
@@ -453,74 +435,6 @@ impl NetworkStreaming {
         }
 
         debug!("Exiting Client Stream Writer");
-    }
-
-    async fn try_connect(
-        node_id: NodeId,
-        addr: &str,
-        raft_type: &RaftType,
-        tls_config: Option<Arc<rustls::ClientConfig>>,
-        secret: &[u8],
-    ) -> Result<WebSocket<TokioIo<Upgraded>>, Error> {
-        let scheme = if tls_config.is_some() {
-            "https"
-        } else {
-            "http"
-        };
-        let uri = format!("{}://{}/stream/{}", scheme, addr, raft_type.as_str());
-        info!("Trying to connect to: {uri}");
-
-        let req = Request::builder()
-            .method("GET")
-            .uri(&uri)
-            .header(UPGRADE, "websocket")
-            .header(CONNECTION, "upgrade")
-            .header(
-                "Sec-WebSocket-Key",
-                fastwebsockets::handshake::generate_key(),
-            )
-            .header("Sec-WebSocket-Version", "13")
-            .body(Empty::<Bytes>::new())
-            .map_err(|err| {
-                error!("Error connecting to {uri}: {err:?}");
-                // TODO should this be an unreachable to reduce retry timings?
-                Error::Connect(err.to_string())
-            })?;
-
-        debug!("Opening TcpStream to: {addr}");
-        let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
-            .await
-            .map_err(|_| {
-                Error::Connect("Could not open TCP stream after timeout of 5 seconds".to_string())
-            })?
-            .map_err(|err| Error::Connect(err.to_string()))?;
-
-        let (mut ws, _) = if let Some(config) = tls_config {
-            let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
-            let tls_stream = tls::into_tls_stream(addr, stream, config).await?;
-            fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await
-        } else {
-            fastwebsockets::handshake::client(&SpawnExecutor, req, stream).await
-        }
-        .map_err(|err| {
-            error!("Error opening WebSocket stream: {err:?}");
-            Error::Connect(err.to_string())
-        })?;
-        ws.set_auto_close(true);
-        debug!("WebSocket connection established");
-
-        if let Err(err) = HandshakeSecret::client(&mut ws, secret, node_id).await {
-            error!("Error opening WebSocket stream to {addr}: {err:?}");
-            let _ = ws
-                .write_frame(Frame::close(1000, b"Invalid Handshake"))
-                .await;
-            Err(Error::Connect(format!(
-                "Error during API WebSocket handshake to {addr}: {err}"
-            )))
-        } else {
-            info!("WebSocket stream connected to: {addr}");
-            Ok(ws)
-        }
     }
 }
 
