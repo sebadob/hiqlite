@@ -253,10 +253,10 @@ impl Client {
 
         // This pre-shutdown delay is not strictly necessary, but it makes rolling releases
         // smoother, especially with ephemeral storage. It also allows to set a ready check
-        // interval of 5 seconds while it will still catch it before it actually starts the
+        // interval of 3 seconds while it will still catch it before it actually starts the
         // shutdown, so services can stop sending requests to this node.
         if !is_single_instance {
-            time::sleep(Duration::from_millis(6500)).await;
+            time::sleep(Duration::from_millis(9500)).await;
         }
 
         #[cfg(feature = "cache")]
