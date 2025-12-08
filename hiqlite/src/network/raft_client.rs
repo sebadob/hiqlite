@@ -196,12 +196,12 @@ impl NetworkStreaming {
         'outer: loop {
             if is_raft_stopped.load(Ordering::Relaxed) {
                 if !is_startup_finished.load(Ordering::Relaxed) {
-                    info!("Raft is still starting up - skipping initial connection");
+                    debug!("Raft is still starting up - skipping initial connection");
                     time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
 
-                info!("Raft is stopped - exiting NetworkStreaming::ws_handler()");
+                debug!("Raft is stopped - exiting NetworkStreaming::ws_handler()");
                 break;
             }
 
@@ -226,8 +226,6 @@ impl NetworkStreaming {
                         for _ in 0..3 {
                             // if there is a network error, no reason to try too hard to connect
                             time::sleep(Duration::from_millis(heartbeat_interval)).await;
-
-                            info!("Draining piled up logs: {}", rx.len());
 
                             // make sure channel is always free
                             if let Ok(req) = rx.try_recv() {
@@ -259,8 +257,6 @@ impl NetworkStreaming {
                             }
                         }
 
-                        info!("Initiating re-connect");
-
                         continue;
                     }
                 }
@@ -282,7 +278,6 @@ impl NetworkStreaming {
             let handle_write = task::spawn(Self::stream_writer(write, rx_write));
 
             loop {
-                // TODO include a timeout of heartbeat interval to re-connect?
                 let res = select! {
                     res = rx_read.recv_async() => res,
                     res = rx.recv_async() => res,
@@ -294,12 +289,12 @@ impl NetworkStreaming {
                         error!("Client stream reader error: {}", err,);
 
                         if rx.is_disconnected() {
-                            warn!("Raft tx dropped - exiting Stream Reader");
+                            debug!("Raft tx dropped - exiting Stream Reader");
                             let _ = tx_write.send_async(WritePayload::Close).await;
                             shutdown = true;
                         }
                         if rx_read.is_disconnected() {
-                            warn!(
+                            debug!(
                                 "ReaderExit - Client Stream reader exited - initiating shutdown + reconnect"
                             );
                         }
@@ -350,7 +345,7 @@ impl NetworkStreaming {
                     }
 
                     RaftRequest::ReaderExit => {
-                        warn!(
+                        debug!(
                             "ReaderExit - Client Stream reader exited - initiating shutdown + reconnect"
                         );
                         break;
@@ -371,7 +366,6 @@ impl NetworkStreaming {
                         break;
                     }
 
-                    // in_flight.push((request_id, ack));
                     in_flight.insert(request_id, ack);
                     request_id += 1;
                 }
@@ -379,14 +373,14 @@ impl NetworkStreaming {
 
             let _ = tx_write.send_async(WritePayload::Close).await;
 
-            // for (_, ack) in in_flight.drain(..) {
             for (_, ack) in in_flight.drain() {
                 let _ = ack.send(Err(Error::Connect("Raft WebSocket stream ended".into())));
             }
             // reset to a reasonable size for the next start to keep memory usage under control
             in_flight = HashMap::with_capacity(4);
 
-            // give the writer enough time to possibly send out the close request
+            // Give the writer enough time to possibly send out the close request.
+            // Since we need to re-connect, there is no need to rush anyway.
             time::sleep(Duration::from_millis(250)).await;
 
             handle_write.abort();
@@ -404,13 +398,10 @@ impl NetworkStreaming {
         mut read: FragmentCollectorRead<ReadHalf<TokioIo<Upgraded>>>,
         tx: flume::Sender<RaftRequest>,
     ) {
-        // TODO we could maybe wrap this into a timeout to re-connect if no messages
-        //  came in after heartbeat interval * 3 or something like that
-
         while let Ok(frame) = read
             .read_frame(&mut |frame| async move {
                 // TODO obligated sends should be auto ping / pong / close ? -> verify!
-                warn!(
+                debug!(
                     "Received obligated send in stream client: OpCode: {:?}: {:?}",
                     frame.opcode.clone(),
                     frame.payload
@@ -439,8 +430,7 @@ impl NetworkStreaming {
         }
 
         let _ = tx.send_async(RaftRequest::ReaderExit).await;
-
-        warn!("Exiting Client Stream Reader");
+        debug!("Exiting Client Stream Reader");
     }
 
     async fn stream_writer(
@@ -500,7 +490,6 @@ impl NetworkConnectionStreaming {
             self.node.addr_raft
         );
 
-        // TODO does it make sense to wrap in a timeout as well?
         self.sender.send_async(req).await.map_err(|err| {
             error!(
                 "NetworkConnectionStreaming::send to node {}: {}",
