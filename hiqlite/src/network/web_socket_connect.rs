@@ -25,7 +25,24 @@ where
     }
 }
 
-pub async fn try_connect_stream(
+pub async fn try_connect(
+    node_id: NodeId,
+    addr: &str,
+    raft_type: &RaftType,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
+    secret: &[u8],
+) -> Result<WebSocket<TokioIo<Upgraded>>, Error> {
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        try_connect_stream(node_id, addr, raft_type, tls_config, secret),
+    )
+    .await
+    .map_err(|_| {
+        Error::Connect("Could not open WebSocket stream after timeout of 5 seconds".to_string())
+    })?
+}
+
+async fn try_connect_stream(
     node_id: NodeId,
     addr: &str,
     raft_type: &RaftType,
@@ -57,45 +74,17 @@ pub async fn try_connect_stream(
         })?;
 
     debug!("Opening TcpStream to: {addr}");
-    let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+    let stream = TcpStream::connect(addr)
         .await
-        .map_err(|_| {
-            Error::Connect("Could not open TCP stream after timeout of 5 seconds".to_string())
-        })?
         .map_err(|err| Error::Connect(err.to_string()))?;
 
     let (mut ws, _) = if let Some(config) = tls_config {
         let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
-        let tls_stream = tokio::time::timeout(
-            Duration::from_secs(5),
-            tls::into_tls_stream(addr, stream, config),
-        )
-        .await
-        .map_err(|_| {
-            Error::Connect("Could open TLS stream after timeout of 5 seconds".to_string())
-        })??;
+        let tls_stream = tls::into_tls_stream(addr, stream, config).await?;
 
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream),
-        )
-        .await
-        .map_err(|_| {
-            Error::Connect(
-                "Could finish WebSocket handshake after timeout of 5 seconds".to_string(),
-            )
-        })?
+        fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await
     } else {
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            fastwebsockets::handshake::client(&SpawnExecutor, req, stream),
-        )
-        .await
-        .map_err(|_| {
-            Error::Connect(
-                "Could finish WebSocket handshake after timeout of 5 seconds".to_string(),
-            )
-        })?
+        fastwebsockets::handshake::client(&SpawnExecutor, req, stream).await
     }
     .map_err(|err| {
         error!("Error opening WebSocket stream: {err:?}");

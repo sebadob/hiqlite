@@ -206,7 +206,7 @@ impl NetworkStreaming {
 
             debug!("Trying to open WebSocket stream");
             let socket = {
-                match web_socket_connect::try_connect_stream(
+                match web_socket_connect::try_connect(
                     this_node,
                     &node.addr_raft,
                     &raft_type,

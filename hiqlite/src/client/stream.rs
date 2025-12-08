@@ -729,5 +729,5 @@ async fn try_connect(
         let lock = leader.read().await;
         (lock.0, lock.1.clone())
     };
-    web_socket_connect::try_connect_stream(node_id, &addr, raft_type, tls_config, secret).await
+    web_socket_connect::try_connect(node_id, &addr, raft_type, tls_config, secret).await
 }
