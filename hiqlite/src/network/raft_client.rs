@@ -290,13 +290,10 @@ impl NetworkStreaming {
 
                         if rx.is_disconnected() {
                             debug!("Raft tx dropped - exiting Stream Reader");
-                            let _ = tx_write.send_async(WritePayload::Close).await;
                             shutdown = true;
                         }
                         if rx_read.is_disconnected() {
-                            debug!(
-                                "ReaderExit - Client Stream reader exited - initiating shutdown + reconnect"
-                            );
+                            debug!("Client Stream reader exited - initiating shutdown + reconnect");
                         }
 
                         break;
@@ -351,6 +348,7 @@ impl NetworkStreaming {
                         break;
                     }
                     RaftRequest::Shutdown => {
+                        debug!("RaftRequest::Shutdown");
                         shutdown = true;
                         break;
                     }
