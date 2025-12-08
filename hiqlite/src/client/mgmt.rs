@@ -256,7 +256,7 @@ impl Client {
         // interval of 5 seconds while it will still catch it before it actually starts the
         // shutdown, so services can stop sending requests to this node.
         if !is_single_instance {
-            time::sleep(Duration::from_millis(5100)).await;
+            time::sleep(Duration::from_millis(6500)).await;
         }
 
         #[cfg(feature = "cache")]
@@ -319,6 +319,9 @@ impl Client {
 
             info!("Shutting down raft cache layer");
 
+            // TODO as soon openraft-0.10 is out, we will be able to trigger a pre-emptive
+            //  leader switch, if this node is the leader. This will smoth out things even more.
+
             state
                 .raft_cache
                 .is_raft_stopped
@@ -349,6 +352,9 @@ impl Client {
                 time::sleep(Duration::from_secs(1)).await;
             }
 
+            // TODO as soon openraft-0.10 is out, we will be able to trigger a pre-emptive
+            //  leader switch, if this node is the leader. This will smoth out things even more.
+
             state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
 
             state.raft_db.raft.shutdown().await?;
@@ -375,14 +381,14 @@ impl Client {
                 .expect("The global Hiqlite shutdown handler to always listen");
         }
 
-        // no need to apply the shutdown delay for a single instance (mostly used during dev)
-        if !is_single_instance {
-            // We need to do a short sleep only to avoid race conditions during rolling releases.
-            // This also helps to make re-joins after a restart smoother in case you need to
-            // replicate a bigger snapshot for an in-memory cache.
-            info!("Shutting down in {} ms ...", state.shutdown_delay_millis);
-            time::sleep(Duration::from_millis(state.shutdown_delay_millis as u64)).await;
-        }
+        // // no need to apply the shutdown delay for a single instance (mostly used during dev)
+        // if !is_single_instance {
+        //     // We need to do a short sleep only to avoid race conditions during rolling releases.
+        //     // This also helps to make re-joins after a restart smoother in case you need to
+        //     // replicate a bigger snapshot for an in-memory cache.
+        //     info!("Shutting down in {} ms ...", state.shutdown_delay_millis);
+        //     time::sleep(Duration::from_millis(state.shutdown_delay_millis as u64)).await;
+        // }
 
         info!("Shutdown complete");
         Ok(())
