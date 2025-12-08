@@ -1,5 +1,62 @@
 # Changelog
 
+## UNRELEASED
+
+The `shutdown_delay_millis` config option was removed. It is not necessary to set it manually anymore. Instead, more
+automatic detection is being applied and a necessary delay to smooth out rolling releases or make sure the readiness
+of a container is being caught is added without the need for additional config.
+
+Apart from that, lots of improvements have been made to rolling releases and how WebSocket re-connects and node startups
+are being handled in general. There is a new `/ready` endpoint on the public API as well. It can be used in e.g.
+Kubernetes to smooth out rolling releases and detect a pod shutdown before it becomes unable to handle Raft requests.
+To do so, it is important however to not have too high `periodSeconds`, and the `headless` service needs to
+`publishNotReadyAddresses` ports before ready, like so:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: hiqlite-headless
+  namespace: hiqlite
+spec:
+  clusterIP: None
+  # only do that on the headless service
+  publishNotReadyAddresses: true
+  selector:
+    app: hiqlite
+  ports:
+    - name: raft
+      protocol: TCP
+      port: 8100
+      targetPort: 8100
+    - name: api
+      protocol: TCP
+      port: 8200
+      targetPort: 8200
+```
+
+Then you can make use of the new readiness check in the `StatefulSet`:
+
+```yaml
+readinessProbe:
+  httpGet:
+    scheme: HTTP
+    port: 8200
+    path: /ready
+  initialDelaySeconds: 5
+  # Do not increase, otherwise a shutdown might start before k8s catches it.
+  periodSeconds: 3
+  # Require 2 failures because you may get one during a leader switch.
+  failureThreshold: 2
+livenessProbe:
+  httpGet:
+    scheme: HTTP
+    port: 8200
+    path: /health
+    initialDelaySeconds: 30
+    periodSeconds: 30
+```
+
 ## hiqlite v0.11.1
 
 Bugfix when reading in the `password_dashboard` via TOML. The base64 decoding step was missing, while it was working
