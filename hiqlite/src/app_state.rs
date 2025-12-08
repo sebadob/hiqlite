@@ -73,7 +73,6 @@ pub(crate) struct AppState {
     pub client_request_id: AtomicUsize,
     #[cfg(feature = "dashboard")]
     pub tx_client_stream: flume::Sender<ClientStreamReq>,
-    pub shutdown_delay_millis: u32,
     pub health_check_delay_secs: u32,
 }
 

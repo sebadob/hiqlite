@@ -546,7 +546,7 @@ spec:
               path: /ready
             initialDelaySeconds: 5
             # Do not increase, otherwise a shutdown might start before k8s catches it.
-            periodSeconds: 5
+            periodSeconds: 3
             # Require 2 failures because you may get one during a leader switch.
             failureThreshold: 2
           livenessProbe:
@@ -560,6 +560,8 @@ spec:
               path: /health
               initialDelaySeconds: 30
               periodSeconds: 30
+              # Require 2 failures because you may get one during a leader switch.
+              failureThreshold: 2
           resources:
             requests:
               memory: 32Mi

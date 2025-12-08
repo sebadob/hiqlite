@@ -177,8 +177,6 @@ impl NodeConfig {
             panic!("{t_name}.secret_api is a mandatory value");
         };
 
-        let shutdown_delay_millis =
-            t_u32(&mut map, t_name, "shutdown_delay_millis", "").unwrap_or(5000);
         let health_check_delay_secs =
             t_u32(&mut map, t_name, "health_check_delay_secs", "").unwrap_or(30);
 
@@ -294,7 +292,6 @@ impl NodeConfig {
             password_dashboard,
             #[cfg(feature = "dashboard")]
             insecure_cookie,
-            shutdown_delay_millis,
             health_check_delay_secs,
         })
     }

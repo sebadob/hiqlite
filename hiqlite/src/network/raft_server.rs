@@ -103,13 +103,21 @@ pub async fn stream_cache(
     state: AppStateExt,
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("Incoming WebSocket stream for Cache");
+    tracing::info!("Incoming WebSocket stream for Cache");
 
     #[cfg(feature = "cache")]
-    if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
-        debug!("Cache Raft has been stopped - rejecting streaming connection");
-        return Err(Error::BadRequest("Raft has been stopped".into()));
+    {
+        if !state.raft_cache.is_startup_finished.load(Ordering::Relaxed) {
+            warn!("Cache Raft still starting up - rejecting streaming connection");
+            return Err(Error::BadRequest("Raft is still starting up".into()));
+        }
+        if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
+            warn!("Cache Raft has been stopped - rejecting streaming connection");
+            return Err(Error::BadRequest("Raft has been stopped".into()));
+        }
     }
+
+    tracing::info!("WebSocket cache stream request accepted");
 
     let (response, socket) = ws.upgrade()?;
     tokio::task::spawn(async move {
@@ -125,13 +133,21 @@ pub async fn stream_sqlite(
     state: AppStateExt,
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("Incoming WebSocket stream for SQLite");
+    tracing::info!("Incoming WebSocket stream for SQLite");
 
     #[cfg(feature = "sqlite")]
-    if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
-        debug!("Sqlite Raft has been stopped - rejecting streaming connection");
-        return Err(Error::BadRequest("Raft has been stopped".into()));
+    {
+        if !state.raft_db.is_startup_finished.load(Ordering::Relaxed) {
+            warn!("Sqlite Raft still starting up - rejecting streaming connection");
+            return Err(Error::BadRequest("Raft is still starting up".into()));
+        }
+        if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
+            warn!("Sqlite Raft has been stopped - rejecting streaming connection");
+            return Err(Error::BadRequest("Raft has been stopped".into()));
+        }
     }
+
+    tracing::info!("WebSocket sqlite stream request accepted");
 
     let (response, socket) = ws.upgrade()?;
     tokio::task::spawn(async move {
