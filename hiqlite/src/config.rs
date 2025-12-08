@@ -103,11 +103,6 @@ pub struct NodeConfig {
     /// only for local testing!
     #[cfg(feature = "dashboard")]
     pub insecure_cookie: bool,
-    /// Artificial shutdown delay for a multi-node deployment. This should be at least:
-    /// `raft_config.election_timeout_max + raft_config.heartbeat_interval`
-    /// You may want to increase it in case you also use a bigger cache size and need a bit more
-    /// headroom for replications during rolling releases.
-    pub shutdown_delay_millis: u32,
     /// The initial delay until which the "true" health will be returned. A delay at the start is
     /// necessary to solve a chicken-and-egg problem when cold starting cluster which depend on
     /// health checks.
@@ -147,7 +142,6 @@ impl Default for NodeConfig {
             password_dashboard: None,
             #[cfg(feature = "dashboard")]
             insecure_cookie: false,
-            shutdown_delay_millis: 5000,
             health_check_delay_secs: 30,
             // #[cfg(feature = "dashboard")]
             // insecure_cookie: false,
@@ -272,11 +266,6 @@ impl NodeConfig {
             password_dashboard: DashboardState::from_env().password_dashboard,
             #[cfg(feature = "dashboard")]
             insecure_cookie,
-            shutdown_delay_millis: env::var("HQL_SHUTDOWN_DELAY_MILLS")
-                .as_deref()
-                .unwrap_or("5000")
-                .parse()
-                .expect("Cannot parse HQL_SHUTDOWN_DELAY_MILLS as u32"),
             health_check_delay_secs: 30,
             #[cfg(feature = "backup")]
             backup_keep_days_local,

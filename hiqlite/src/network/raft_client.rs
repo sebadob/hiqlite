@@ -20,7 +20,7 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::{select, task, time};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;

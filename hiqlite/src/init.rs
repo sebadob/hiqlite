@@ -251,10 +251,10 @@ pub async fn become_cluster_member(
         );
         set_raft_running(&state, raft_type);
 
-        // TODO maybe do a "wait for leader" here?
+        // wait until we have a leader before returning to the main application
         time::sleep(Duration::from_secs(1)).await;
         let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
-        info!("Waiting for Raft Leader with metrics {metrics:?}");
+        info!("Waiting for Raft Leader");
         for _ in 0..5 {
             if let Some(id) = metrics.current_leader {
                 info!("Current Raft Leader: {id}");

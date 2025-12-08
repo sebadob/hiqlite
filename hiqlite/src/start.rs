@@ -103,7 +103,6 @@ where
         client_request_id: std::sync::atomic::AtomicUsize::new(0),
         #[cfg(feature = "dashboard")]
         tx_client_stream: tx_client_stream.clone(),
-        shutdown_delay_millis: node_config.shutdown_delay_millis,
         health_check_delay_secs: node_config.health_check_delay_secs,
         #[cfg(feature = "s3")]
         s3_config: node_config.s3_config.clone(),

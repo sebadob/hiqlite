@@ -381,15 +381,6 @@ impl Client {
                 .expect("The global Hiqlite shutdown handler to always listen");
         }
 
-        // // no need to apply the shutdown delay for a single instance (mostly used during dev)
-        // if !is_single_instance {
-        //     // We need to do a short sleep only to avoid race conditions during rolling releases.
-        //     // This also helps to make re-joins after a restart smoother in case you need to
-        //     // replicate a bigger snapshot for an in-memory cache.
-        //     info!("Shutting down in {} ms ...", state.shutdown_delay_millis);
-        //     time::sleep(Duration::from_millis(state.shutdown_delay_millis as u64)).await;
-        // }
-
         info!("Shutdown complete");
         Ok(())
     }
