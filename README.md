@@ -560,6 +560,8 @@ spec:
               path: /health
               initialDelaySeconds: 30
               periodSeconds: 30
+              # Require 2 failures because you may get one during a leader switch.
+              failureThreshold: 2
           resources:
             requests:
               memory: 32Mi
