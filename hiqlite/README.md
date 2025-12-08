@@ -558,7 +558,7 @@ spec:
               #scheme: HTTPS
               #port: 8443
               path: /health
-              initialDelaySeconds: 30
+              initialDelaySeconds: 60
               periodSeconds: 30
               # Require 2 failures because you may get one during a leader switch.
               failureThreshold: 2
