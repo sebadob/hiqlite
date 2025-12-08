@@ -159,6 +159,7 @@ enum RaftRequest {
 
     StreamResponse(RaftStreamResponse),
 
+    ReaderExit,
     Shutdown,
 }
 
@@ -189,7 +190,7 @@ impl NetworkStreaming {
         let mut in_flight: HashMap<
             usize,
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-        > = HashMap::with_capacity(8);
+        > = HashMap::with_capacity(4);
         let mut shutdown = false;
 
         'outer: loop {
@@ -244,6 +245,9 @@ impl NetworkStreaming {
                                     #[cfg(feature = "cache")]
                                     RaftRequest::SnapshotCache((ack, _)) => Some(ack),
                                     RaftRequest::StreamResponse(_) => None,
+                                    RaftRequest::ReaderExit => {
+                                        continue;
+                                    }
                                     RaftRequest::Shutdown => {
                                         break 'outer;
                                     }
@@ -290,9 +294,14 @@ impl NetworkStreaming {
                         error!("Client stream reader error: {}", err,);
 
                         if rx.is_disconnected() {
+                            warn!("Raft tx dropped - exiting Stream Reader");
                             let _ = tx_write.send_async(WritePayload::Close).await;
                             shutdown = true;
-                            break;
+                        }
+                        if rx_read.is_disconnected() {
+                            warn!(
+                                "ReaderExit - Client Stream reader exited - initiating shutdown + reconnect"
+                            );
                         }
 
                         break;
@@ -340,6 +349,12 @@ impl NetworkStreaming {
                         None
                     }
 
+                    RaftRequest::ReaderExit => {
+                        warn!(
+                            "ReaderExit - Client Stream reader exited - initiating shutdown + reconnect"
+                        );
+                        break;
+                    }
                     RaftRequest::Shutdown => {
                         shutdown = true;
                         break;
@@ -362,15 +377,20 @@ impl NetworkStreaming {
                 }
             }
 
-            handle_write.abort();
-            handle_read.abort();
+            let _ = tx_write.send_async(WritePayload::Close).await;
 
             // for (_, ack) in in_flight.drain(..) {
             for (_, ack) in in_flight.drain() {
                 let _ = ack.send(Err(Error::Connect("Raft WebSocket stream ended".into())));
             }
             // reset to a reasonable size for the next start to keep memory usage under control
-            in_flight = HashMap::with_capacity(8);
+            in_flight = HashMap::with_capacity(4);
+
+            // give the writer enough time to possibly send out the close request
+            time::sleep(Duration::from_millis(250)).await;
+
+            handle_write.abort();
+            handle_read.abort();
 
             if shutdown {
                 break;
@@ -417,6 +437,8 @@ impl NetworkStreaming {
                 OpCode::Pong => {}
             }
         }
+
+        let _ = tx.send_async(RaftRequest::ReaderExit).await;
 
         warn!("Exiting Client Stream Reader");
     }
