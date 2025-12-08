@@ -103,6 +103,11 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
 
     #[cfg(feature = "sqlite")]
     {
+        if !state.raft_db.is_startup_finished.load(Ordering::Relaxed) {
+            warn!("Node is still starting up (sqlite)");
+            return Err(Error::Error("Node is still starting up (sqlite)".into()));
+        }
+
         // to avoid a chicken-and-egg problem, a pristine node 1 should always return ready
         let is_pristine_node_1 =
             state.id == 1 && !state.raft_db.raft.is_initialized().await? && secs_since_start > 10;
@@ -137,6 +142,11 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
 
     #[cfg(feature = "cache")]
     {
+        if !state.raft_cache.is_startup_finished.load(Ordering::Relaxed) {
+            warn!("Node is still starting up (cache)");
+            return Err(Error::Error("Node is still starting up (cache)".into()));
+        }
+
         let is_pristine_node_1 = state.id == 1
             && !state.raft_cache.raft.is_initialized().await?
             && secs_since_start > 10;
@@ -202,6 +212,7 @@ pub async fn listen(state: AppStateExt, headers: HeaderMap) -> Result<(), Error>
     ))
 }
 
+/// This is the WebSocket stream a Raft client (Followers) connects to.
 pub async fn stream(
     state: AppStateExt,
     Path(raft_type): Path<RaftType>,
@@ -209,6 +220,29 @@ pub async fn stream(
 ) -> Result<impl IntoResponse, Error> {
     let (response, socket) = ws.upgrade()?;
     debug!("New Raft Stream for {:?}", raft_type);
+
+    #[cfg(feature = "cache")]
+    {
+        if !state.raft_cache.is_startup_finished.load(Ordering::Relaxed) {
+            warn!("Cache Raft still starting up - rejecting client streaming connection");
+            return Err(Error::BadRequest("Raft is still starting up".into()));
+        }
+        if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
+            warn!("Cache Raft has been stopped - rejecting client streaming connection");
+            return Err(Error::BadRequest("Raft has been stopped".into()));
+        }
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        if !state.raft_db.is_startup_finished.load(Ordering::Relaxed) {
+            warn!("Sqlite Raft still starting up - rejecting client streaming connection");
+            return Err(Error::BadRequest("Raft is still starting up".into()));
+        }
+        if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
+            warn!("Sqlite Raft has been stopped - rejecting client streaming connection");
+            return Err(Error::BadRequest("Raft has been stopped".into()));
+        }
+    }
 
     tokio::task::spawn(async move {
         if let Err(err) = handle_socket_concurrent(state, socket).await {
