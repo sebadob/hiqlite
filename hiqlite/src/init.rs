@@ -256,7 +256,11 @@ pub async fn become_cluster_member(
         let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
         info!("Waiting for Raft Leader");
         for _ in 0..5 {
-            if let Some(id) = metrics.current_leader {
+            // Make sure that this node is not the current leader,
+            // which can happen after too quick restarts.
+            if let Some(id) = metrics.current_leader
+                && id != this_node
+            {
                 info!("Current Raft Leader: {id}");
                 break;
             }
