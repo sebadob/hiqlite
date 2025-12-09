@@ -5,7 +5,7 @@ var __accessCheck = (obj, member, msg) => member.has(obj) || __typeError("Cannot
 var __privateGet = (obj, member, getter) => (__accessCheck(obj, member, "read from private field"), getter ? getter.call(obj) : member.get(obj));
 var __privateAdd = (obj, member, value) => member.has(obj) ? __typeError("Cannot add the same private member more than once") : member instanceof WeakSet ? member.add(obj) : member.set(obj, value);
 var _a, _b, _e2, _t2, _n, _a2, _r, _o, _s, _i, _c, _e3, _d, _e4, _e5;
-import { b9 as be, a7 as Ne, a8 as U, g as T, T as I, a9 as Z, bf as qe, bg as pt } from "./TbIIo73h.js";
+import { b9 as be, a7 as Ne, a8 as U, g as T, T as I, a9 as Z, bf as De, bg as pt } from "./TbIIo73h.js";
 class ke {
   constructor(t, n) {
     this.status = t, typeof n == "string" ? this.body = { message: n } : n ? this.body = n : this.body = { message: `Error: ${t}` };
@@ -38,7 +38,7 @@ function mt(e) {
 function de({ href: e }) {
   return e.split("#")[0];
 }
-function vt(...e) {
+function wt(...e) {
   let t = 5381;
   for (const n of e) if (typeof n == "string") {
     let a = n.length;
@@ -52,7 +52,7 @@ function vt(...e) {
 }
 new TextEncoder();
 new TextDecoder();
-function wt(e) {
+function vt(e) {
   const t = atob(e), n = new Uint8Array(t.length);
   for (let a = 0; a < t.length; a++) n[a] = t.charCodeAt(a);
   return n;
@@ -66,7 +66,7 @@ function bt(e, t) {
     a.remove();
     let { body: r, ...s } = JSON.parse(a.textContent);
     const o = a.getAttribute("data-ttl");
-    return o && F.set(n, { body: r, init: s, ttl: 1e3 * Number(o) }), a.getAttribute("data-b64") !== null && (r = wt(r)), Promise.resolve(new Response(r, s));
+    return o && F.set(n, { body: r, init: s, ttl: 1e3 * Number(o) }), a.getAttribute("data-b64") !== null && (r = vt(r)), Promise.resolve(new Response(r, s));
   }
   return window.fetch(e, t);
 }
@@ -84,7 +84,7 @@ function Re(e, t) {
   let a = `script[data-sveltekit-fetched][data-url=${JSON.stringify(e instanceof Request ? e.url : e)}]`;
   if ((t == null ? void 0 : t.headers) || (t == null ? void 0 : t.body)) {
     const r = [];
-    t.headers && r.push([...new Headers(t.headers)].join(",")), t.body && (typeof t.body == "string" || ArrayBuffer.isView(t.body)) && r.push(t.body), a += `[data-hash="${vt(...r)}"]`;
+    t.headers && r.push([...new Headers(t.headers)].join(",")), t.body && (typeof t.body == "string" || ArrayBuffer.isView(t.body)) && r.push(t.body), a += `[data-hash="${wt(...r)}"]`;
   }
   return a;
 }
@@ -102,8 +102,8 @@ function Et(e) {
       if (l % 2) {
         if (c.startsWith("x+")) return he(String.fromCharCode(parseInt(c.slice(2), 16)));
         if (c.startsWith("u+")) return he(String.fromCharCode(...c.slice(2).split("-").map((m) => parseInt(m, 16))));
-        const f = St.exec(c), [, h, v, u, g] = f;
-        return t.push({ name: u, matcher: g, optional: !!h, rest: !!v, chained: v ? l === 1 && o[0] === "" : false }), v ? "([^]*?)" : h ? "([^/]*)?" : "([^/]+?)";
+        const f = St.exec(c), [, h, w, u, g] = f;
+        return t.push({ name: u, matcher: g, optional: !!h, rest: !!w, chained: w ? l === 1 && o[0] === "" : false }), w ? "([^]*?)" : h ? "([^/]*)?" : "([^/]+?)";
       }
       return he(c);
     }).join("");
@@ -145,9 +145,9 @@ function he(e) {
 function Lt({ nodes: e, server_loads: t, dictionary: n, matchers: a }) {
   const r = new Set(t);
   return Object.entries(n).map(([i, [c, l, f]]) => {
-    const { pattern: h, params: v } = Et(i), u = { id: i, exec: (g) => {
+    const { pattern: h, params: w } = Et(i), u = { id: i, exec: (g) => {
       const m = h.exec(g);
-      if (m) return At(m, v, a);
+      if (m) return At(m, w, a);
     }, errors: [1, ...f || []].map((g) => e[g]), layouts: [0, ...l || []].map(o), leaf: s(c) };
     return u.errors.length = u.layouts.length = Math.max(u.errors.length, u.layouts.length), u;
   });
@@ -165,14 +165,14 @@ function We(e, t = JSON.parse) {
   } catch {
   }
 }
-function De(e, t, n = JSON.stringify) {
+function qe(e, t, n = JSON.stringify) {
   const a = n(t);
   try {
     sessionStorage[e] = a;
   } catch {
   }
 }
-const A = ((_a = globalThis.__sveltekit_q4xy7v) == null ? void 0 : _a.base) ?? "/dashboard", Ut = ((_b = globalThis.__sveltekit_q4xy7v) == null ? void 0 : _b.assets) ?? A ?? "", Tt = "1765286080618", Ye = "sveltekit:snapshot", ze = "sveltekit:scroll", He = "sveltekit:states", It = "sveltekit:pageurl", B = "sveltekit:history", W = "sveltekit:navigation", j = { tap: 1, hover: 2, viewport: 3, eager: 4, off: -1, false: -1 }, xe = location.origin;
+const A = ((_a = globalThis.__sveltekit_ce9ygu) == null ? void 0 : _a.base) ?? "/dashboard", Ut = ((_b = globalThis.__sveltekit_ce9ygu) == null ? void 0 : _b.assets) ?? A ?? "", Tt = "1765301707972", Ye = "sveltekit:snapshot", ze = "sveltekit:scroll", He = "sveltekit:states", It = "sveltekit:pageurl", B = "sveltekit:history", W = "sveltekit:navigation", j = { tap: 1, hover: 2, viewport: 3, eager: 4, off: -1, false: -1 }, xe = location.origin;
 function Je(e) {
   if (e instanceof URL) return e;
   let t = document.baseURI;
@@ -366,13 +366,13 @@ jt ? (k = { data: {}, form: null, error: null, params: {}, route: { id: null }, 
 function tt(e) {
   Object.assign(k, e);
 }
-const Nt = /* @__PURE__ */ new Set(["icon", "shortcut icon", "apple-touch-icon"]), q = We(ze) ?? {}, z = We(Ye) ?? {}, C = { url: Be({}), page: Be({}), navigating: be(null), updated: Ot() };
+const Nt = /* @__PURE__ */ new Set(["icon", "shortcut icon", "apple-touch-icon"]), D = We(ze) ?? {}, z = We(Ye) ?? {}, C = { url: Be({}), page: Be({}), navigating: be(null), updated: Ot() };
 function Le(e) {
-  q[e] = ce();
+  D[e] = ce();
 }
-function qt(e, t) {
+function Dt(e, t) {
   let n = e + 1;
-  for (; q[n]; ) delete q[n], n += 1;
+  for (; D[n]; ) delete D[n], n += 1;
   for (n = t + 1; z[n]; ) delete z[n], n += 1;
 }
 function H(e, t = false) {
@@ -387,24 +387,24 @@ async function nt() {
 }
 function Ke() {
 }
-let Ue, me, te, O, ve, w;
+let Ue, me, te, O, we, v;
 const ne = [], ae = [];
 let R = null;
-function we() {
+function ve() {
   var _a3;
   (_a3 = R == null ? void 0 : R.fork) == null ? void 0 : _a3.then((e) => e == null ? void 0 : e.discard()), R = null;
 }
-const Q = /* @__PURE__ */ new Map(), at = /* @__PURE__ */ new Set(), Dt = /* @__PURE__ */ new Set(), G = /* @__PURE__ */ new Set();
+const Q = /* @__PURE__ */ new Map(), at = /* @__PURE__ */ new Set(), qt = /* @__PURE__ */ new Set(), G = /* @__PURE__ */ new Set();
 let _ = { branch: [], error: null, url: null }, rt = false, re = false, Me = true, J = false, M = false, ot = false, Te = false, Ie, y, x, N;
 const oe = /* @__PURE__ */ new Set(), Fe = /* @__PURE__ */ new Map();
 async function ln(e, t, n) {
   var _a3, _b2, _c2, _d2, _e6;
-  ((_a3 = globalThis.__sveltekit_q4xy7v) == null ? void 0 : _a3.data) && globalThis.__sveltekit_q4xy7v.data, document.URL !== location.href && (location.href = location.href), w = e, await ((_c2 = (_b2 = e.hooks).init) == null ? void 0 : _c2.call(_b2)), Ue = Lt(e), O = document.documentElement, ve = t, me = e.nodes[0], te = e.nodes[1], me(), te(), y = (_d2 = history.state) == null ? void 0 : _d2[B], x = (_e6 = history.state) == null ? void 0 : _e6[W], y || (y = x = Date.now(), history.replaceState({ ...history.state, [B]: y, [W]: x }, ""));
-  const a = q[y];
+  ((_a3 = globalThis.__sveltekit_ce9ygu) == null ? void 0 : _a3.data) && globalThis.__sveltekit_ce9ygu.data, document.URL !== location.href && (location.href = location.href), v = e, await ((_c2 = (_b2 = e.hooks).init) == null ? void 0 : _c2.call(_b2)), Ue = Lt(e), O = document.documentElement, we = t, me = e.nodes[0], te = e.nodes[1], me(), te(), y = (_d2 = history.state) == null ? void 0 : _d2[B], x = (_e6 = history.state) == null ? void 0 : _e6[W], y || (y = x = Date.now(), history.replaceState({ ...history.state, [B]: y, [W]: x }, ""));
+  const a = D[y];
   function r() {
     a && (history.scrollRestoration = "manual", scrollTo(a.x, a.y));
   }
-  n ? (r(), await Zt(ve, n)) : (await K({ type: "enter", url: Je(w.hash ? nn(new URL(location.href)) : location.href), replace_state: true }), r()), Qt();
+  n ? (r(), await Zt(we, n)) : (await K({ type: "enter", url: Je(v.hash ? nn(new URL(location.href)) : location.href), replace_state: true }), r()), Qt();
 }
 function Vt() {
   ne.length = 0, Te = false;
@@ -423,11 +423,11 @@ function it(e) {
   });
 }
 function Ge() {
-  Le(y), De(ze, q), st(x), De(Ye, z);
+  Le(y), qe(ze, D), st(x), qe(Ye, z);
 }
 async function Bt(e, t, n, a) {
   let r;
-  t.invalidateAll && we(), await K({ type: "goto", url: Je(e), keepfocus: t.keepFocus, noscroll: t.noScroll, replace_state: t.replaceState, state: t.state, redirect_count: n, nav_token: a, accept: () => {
+  t.invalidateAll && ve(), await K({ type: "goto", url: Je(e), keepfocus: t.keepFocus, noscroll: t.noScroll, replace_state: t.replaceState, state: t.state, redirect_count: n, nav_token: a, accept: () => {
     t.invalidateAll && (Te = true, r = [...Fe.keys()]), t.invalidate && t.invalidate.forEach(Xt);
   } }), t.invalidateAll && Z().then(Z).then(() => {
     Fe.forEach(({ resource: s }, o) => {
@@ -438,13 +438,13 @@ async function Bt(e, t, n, a) {
 }
 async function Kt(e) {
   if (e.id !== (R == null ? void 0 : R.id)) {
-    we();
+    ve();
     const t = {};
-    if (oe.add(t), R = { id: e.id, token: t, promise: lt({ ...e, preload: t }).then((n) => (oe.delete(t), n.type === "loaded" && n.state.error && we(), n)), fork: null }, qe) {
+    if (oe.add(t), R = { id: e.id, token: t, promise: lt({ ...e, preload: t }).then((n) => (oe.delete(t), n.type === "loaded" && n.state.error && ve(), n)), fork: null }, De) {
       const n = R;
       n.fork = n.promise.then((a) => {
         if (n === R && a.type === "loaded") try {
-          return qe(() => {
+          return De(() => {
             Ie.$set(a.props), tt(a.props.page);
           });
         } catch {
@@ -464,7 +464,7 @@ async function ct(e, t, n) {
   var _a3;
   _ = e.state;
   const a = document.querySelector("style[data-sveltekit]");
-  if (a && a.remove(), Object.assign(k, e.props.page), Ie = new w.root({ target: t, props: { ...e.props, stores: C, components: ae }, hydrate: n, sync: false }), await Promise.resolve(), it(x), n) {
+  if (a && a.remove(), Object.assign(k, e.props.page), Ie = new v.root({ target: t, props: { ...e.props, stores: C, components: ae }, hydrate: n, sync: false }), await Promise.resolve(), it(x), n) {
     const r = { from: null, to: { params: _.params, route: { id: ((_a3 = _.route) == null ? void 0 : _a3.id) ?? null }, url: new URL(location.href) }, willUnload: false, type: "enter", complete: Promise.resolve() };
     G.forEach((s) => s(r));
   }
@@ -527,13 +527,13 @@ async function lt({ id: e, invalidating: t, url: n, params: a, route: r, preload
   o.forEach((p) => p == null ? void 0 : p().catch(() => {
   })), l.forEach((p) => p == null ? void 0 : p[1]().catch(() => {
   }));
-  const f = _.url ? e !== ie(_.url) : false, h = _.route ? r.id !== _.route.id : false, v = Gt(_.url, n);
+  const f = _.url ? e !== ie(_.url) : false, h = _.route ? r.id !== _.route.id : false, w = Gt(_.url, n);
   let u = false;
   const g = l.map(async (p, d) => {
     var _a3;
     if (!p) return;
     const S = _.branch[d];
-    return p[1] === (S == null ? void 0 : S.loader) && !Ft(u, h, f, v, (_a3 = S.universal) == null ? void 0 : _a3.uses, a) ? S : (u = true, Oe({ loader: p[1], url: n, params: a, route: r, parent: async () => {
+    return p[1] === (S == null ? void 0 : S.loader) && !Ft(u, h, f, w, (_a3 = S.universal) == null ? void 0 : _a3.uses, a) ? S : (u = true, Oe({ loader: p[1], url: n, params: a, route: r, parent: async () => {
       var _a4;
       const P = {};
       for (let L = 0; L < d; L += 1) Object.assign(P, (_a4 = await g[L]) == null ? void 0 : _a4.data);
@@ -588,10 +588,10 @@ async function zt(e) {
   let n;
   try {
     const a = (async () => {
-      let r = await w.hooks.reroute({ url: new URL(e), fetch: async (s, o) => Mt(s, o, e).promise }) ?? e;
+      let r = await v.hooks.reroute({ url: new URL(e), fetch: async (s, o) => Mt(s, o, e).promise }) ?? e;
       if (typeof r == "string") {
         const s = new URL(e);
-        w.hash ? s.hash = r : s.pathname = r, r = s;
+        v.hash ? s.hash = r : s.pathname = r, r = s;
       }
       return r;
     })();
@@ -603,7 +603,7 @@ async function zt(e) {
   return n;
 }
 async function ue(e, t) {
-  if (e && !le(e, A, w.hash)) {
+  if (e && !le(e, A, v.hash)) {
     const n = await zt(e);
     if (!n) return;
     const a = Ht(n);
@@ -614,10 +614,10 @@ async function ue(e, t) {
   }
 }
 function Ht(e) {
-  return _t(w.hash ? e.hash.replace(/^#/, "").replace(/[?#].+/, "") : e.pathname.slice(A.length)) || "/";
+  return _t(v.hash ? e.hash.replace(/^#/, "").replace(/[?#].+/, "") : e.pathname.slice(A.length)) || "/";
 }
 function ie(e) {
-  return (w.hash ? e.hash.replace(/^#/, "") : e.pathname) + e.search;
+  return (v.hash ? e.hash.replace(/^#/, "") : e.pathname) + e.search;
 }
 function ut({ url: e, type: t, intent: n, delta: a, event: r }) {
   let s = false;
@@ -630,18 +630,18 @@ function ut({ url: e, type: t, intent: n, delta: a, event: r }) {
 }
 async function K({ type: e, url: t, popped: n, keepfocus: a, noscroll: r, replace_state: s, state: o = {}, redirect_count: i = 0, nav_token: c = {}, accept: l = Ke, block: f = Ke, event: h }) {
   var _a3;
-  const v = N;
+  const w = N;
   N = c;
   const u = await ue(t, false), g = e === "enter" ? Ce(_, u, t, e) : ut({ url: t, type: e, delta: n == null ? void 0 : n.delta, intent: u, event: h });
   if (!g) {
-    f(), N === c && (N = v);
+    f(), N === c && (N = w);
     return;
   }
   const m = y, p = x;
   l(), J = true, re && g.navigation.type !== "enter" && C.navigating.set(Y.current = g.navigation);
   let d = u && await lt(u);
   if (!d) {
-    if (le(t, A, w.hash)) return await H(t, s);
+    if (le(t, A, v.hash)) return await H(t, s);
     d = await ft(t, { id: null }, await X(new Ee(404, "Not Found", `Not found: ${t.pathname}`), { url: t, params: {}, route: { id: null } }), 404, s);
   }
   if (t = (u == null ? void 0 : u.url) || t, N !== c) return g.reject(new Error("navigation aborted")), false;
@@ -653,14 +653,14 @@ async function K({ type: e, url: t, popped: n, keepfocus: a, noscroll: r, replac
     d = await $e({ status: 500, error: await X(new Error("Redirect loop"), { url: t, params: {}, route: { id: null } }), url: t, route: { id: null } });
   } else d.props.page.status >= 400 && await C.updated.check() && (await nt(), await H(t, s));
   if (Vt(), Le(m), st(p), d.props.page.url.pathname !== t.pathname && (t.pathname = d.props.page.url.pathname), o = n ? n.state : o, !n) {
-    const b = s ? 0 : 1, D = { [B]: y += b, [W]: x += b, [He]: o };
-    (s ? history.replaceState : history.pushState).call(history, D, "", t), s || qt(y, x);
+    const b = s ? 0 : 1, q = { [B]: y += b, [W]: x += b, [He]: o };
+    (s ? history.replaceState : history.pushState).call(history, q, "", t), s || Dt(y, x);
   }
   const S = u && (R == null ? void 0 : R.id) === u.id ? R.fork : null;
   R = null, d.props.page.state = o;
   let E;
   if (re) {
-    const b = (await Promise.all(Array.from(Dt, ($) => $(g.navigation)))).filter(($) => typeof $ == "function");
+    const b = (await Promise.all(Array.from(qt, ($) => $(g.navigation)))).filter(($) => typeof $ == "function");
     if (b.length > 0) {
       let $ = function() {
         b.forEach((fe) => {
@@ -672,9 +672,9 @@ async function K({ type: e, url: t, popped: n, keepfocus: a, noscroll: r, replac
       });
     }
     _ = d.state, d.props.page && (d.props.page.url = t);
-    const D = S && await S;
-    D ? E = D.commit() : (Ie.$set(d.props), tt(d.props.page), E = (_a3 = pt) == null ? void 0 : _a3()), ot = true;
-  } else await ct(d, ve, false);
+    const q = S && await S;
+    q ? E = q.commit() : (Ie.$set(d.props), tt(d.props.page), E = (_a3 = pt) == null ? void 0 : _a3()), ot = true;
+  } else await ct(d, we, false);
   const { activeElement: P } = document;
   await E, await Z(), await Z();
   let L = n ? n.scroll : r ? ce() : null;
@@ -683,8 +683,8 @@ async function K({ type: e, url: t, popped: n, keepfocus: a, noscroll: r, replac
     if (L) scrollTo(L.x, L.y);
     else if (b) {
       b.scrollIntoView();
-      const { top: D, left: $ } = b.getBoundingClientRect();
-      L = { x: pageXOffset + $, y: pageYOffset + D };
+      const { top: q, left: $ } = b.getBoundingClientRect();
+      L = { x: pageXOffset + $, y: pageYOffset + q };
     } else scrollTo(0, 0);
   }
   const ht = document.activeElement !== P && document.activeElement !== document.body;
@@ -711,8 +711,8 @@ function Jt() {
   async function s(i, c) {
     const l = Qe(i, O), f = l === t && c >= n;
     if (!l || f) return;
-    const { url: h, external: v, download: u } = _e(l, A, w.hash);
-    if (v || u) return;
+    const { url: h, external: w, download: u } = _e(l, A, v.hash);
+    if (w || u) return;
     const g = ee(l), m = h && ie(_.url) === ie(h);
     if (!(g.reload || m)) if (c <= g.preload_data) {
       t = l, n = j.tap;
@@ -724,7 +724,7 @@ function Jt() {
   function o() {
     r.disconnect();
     for (const i of O.querySelectorAll("a")) {
-      const { url: c, external: l, download: f } = _e(i, A, w.hash);
+      const { url: c, external: l, download: f } = _e(i, A, v.hash);
       if (l || f) continue;
       const h = ee(i);
       h.reload || (h.preload_code === j.viewport && r.observe(i), h.preload_code === j.eager && ge(c));
@@ -735,7 +735,7 @@ function Jt() {
 function X(e, t) {
   if (e instanceof ke) return e.body;
   const n = Ae(e), a = Ct(e);
-  return w.hooks.handleError({ error: e, event: t, status: n, message: a }) ?? { message: a };
+  return v.hooks.handleError({ error: e, event: t, status: n, message: a }) ?? { message: a };
 }
 function Xt(e) {
   if (typeof e == "function") ne.push(e);
@@ -761,21 +761,21 @@ function Qt() {
     if (t.button || t.which !== 1 || t.metaKey || t.ctrlKey || t.shiftKey || t.altKey || t.defaultPrevented) return;
     const n = Qe(t.composedPath()[0], O);
     if (!n) return;
-    const { url: a, external: r, target: s, download: o } = _e(n, A, w.hash);
+    const { url: a, external: r, target: s, download: o } = _e(n, A, v.hash);
     if (!a) return;
     if (s === "_parent" || s === "_top") {
       if (window.parent !== window) return;
     } else if (s && s !== "_self") return;
     const i = ee(n);
     if (!(n instanceof SVGAElement) && a.protocol !== location.protocol && !(a.protocol === "https:" || a.protocol === "http:") || o) return;
-    const [l, f] = (w.hash ? a.hash.replace(/^#/, "") : a.href).split("#"), h = l === de(location);
+    const [l, f] = (v.hash ? a.hash.replace(/^#/, "") : a.href).split("#"), h = l === de(location);
     if (r || i.reload && (!h || !f)) {
       ut({ url: a, type: "link", event: t }) ? J = true : t.preventDefault();
       return;
     }
     if (f !== void 0 && h) {
-      const [, v] = _.url.href.split("#");
-      if (v === f) {
+      const [, w] = _.url.href.split("#");
+      if (w === f) {
         if (t.preventDefault(), f === "" || f === "top" && n.ownerDocument.getElementById("top") === null) scrollTo({ top: 0 });
         else {
           const u = n.ownerDocument.getElementById(decodeURIComponent(f));
@@ -786,10 +786,10 @@ function Qt() {
       if (M = true, Le(y), e(a), !i.replace_state) return;
       M = false;
     }
-    t.preventDefault(), await new Promise((v) => {
+    t.preventDefault(), await new Promise((w) => {
       requestAnimationFrame(() => {
-        setTimeout(v, 0);
-      }), setTimeout(v, 100);
+        setTimeout(w, 0);
+      }), setTimeout(w, 100);
     }), await K({ type: "link", url: a, keepfocus: i.keepfocus, noscroll: i.noscroll, replace_state: i.replace_state ?? a.href === location.href, event: t });
   }), O.addEventListener("submit", (t) => {
     if (t.defaultPrevented) return;
@@ -808,9 +808,9 @@ function Qt() {
       if ((_a4 = t.state) == null ? void 0 : _a4[B]) {
         const n = t.state[B];
         if (N = {}, n === y) return;
-        const a = q[n], r = t.state[He] ?? {}, s = new URL(t.state[It] ?? location.href), o = t.state[W], i = _.url ? de(location) === de(_.url) : false;
+        const a = D[n], r = t.state[He] ?? {}, s = new URL(t.state[It] ?? location.href), o = t.state[W], i = _.url ? de(location) === de(_.url) : false;
         if (o === x && (ot || i)) {
-          r !== k.state && (k.state = r), e(s), q[y] = ce(), a && scrollTo(a.x, a.y), y = n;
+          r !== k.state && (k.state = r), e(s), D[y] = ce(), a && scrollTo(a.x, a.y), y = n;
           return;
         }
         const l = n - y;
@@ -821,7 +821,7 @@ function Qt() {
         }, nav_token: N, event: t });
       } else if (!M) {
         const n = new URL(location.href);
-        e(n), w.hash && location.reload();
+        e(n), v.hash && location.reload();
       }
     }
   }), addEventListener("hashchange", () => {
@@ -840,11 +840,11 @@ async function Zt(e, { status: t = 200, error: n, node_ids: a, params: r, route:
   const l = new URL(location.href);
   let f;
   ({ params: r = {}, route: s = { id: null } } = await ue(l, false) || {}), f = Ue.find(({ id: u }) => u === s.id);
-  let h, v = true;
+  let h, w = true;
   try {
     const u = a.map(async (m, p) => {
       const d = i[p];
-      return (d == null ? void 0 : d.uses) && (d.uses = en(d.uses)), Oe({ loader: w.nodes[m], url: l, params: r, route: s, parent: async () => {
+      return (d == null ? void 0 : d.uses) && (d.uses = en(d.uses)), Oe({ loader: v.nodes[m], url: l, params: r, route: s, parent: async () => {
         const S = {};
         for (let E = 0; E < p; E += 1) Object.assign(S, (await u[E]).data);
         return S;
@@ -860,9 +860,9 @@ async function Zt(e, { status: t = 200, error: n, node_ids: a, params: r, route:
       await H(new URL(u.location, location.href));
       return;
     }
-    h = await $e({ status: Ae(u), error: await X(u, { url: l, params: r, route: s }), url: l, route: s }), e.textContent = "", v = false;
+    h = await $e({ status: Ae(u), error: await X(u, { url: l, params: r, route: s }), url: l, route: s }), e.textContent = "", w = false;
   }
-  h.props.page && (h.props.page.state = {}), await ct(h, e, v);
+  h.props.page && (h.props.page.state = {}), await ct(h, e, w);
 }
 function en(e) {
   return { dependencies: new Set((e == null ? void 0 : e.dependencies) ?? []), params: new Set((e == null ? void 0 : e.params) ?? []), parent: !!(e == null ? void 0 : e.parent), route: !!(e == null ? void 0 : e.route), url: !!(e == null ? void 0 : e.url), search_params: new Set((e == null ? void 0 : e.search_params) ?? []) };
@@ -877,7 +877,7 @@ function tn(e, t = null) {
       const { x: s, y: o } = t ?? ce();
       setTimeout(() => {
         const i = history.state;
-        ye = true, location.replace(`#${a}`), w.hash && location.replace(e.hash), history.replaceState(i, "", e.hash), scrollTo(s, o), ye = false;
+        ye = true, location.replace(`#${a}`), v.hash && location.replace(e.hash), history.replaceState(i, "", e.hash), scrollTo(s, o), ye = false;
       });
     } else {
       const s = document.body, o = s.getAttribute("tabindex");
@@ -917,7 +917,7 @@ function nn(e) {
 }
 function dt(e) {
   let t;
-  if (w.hash) {
+  if (v.hash) {
     const [, , n] = e.hash.split("#", 3);
     t = n ?? "";
   } else t = e.hash.slice(1);
