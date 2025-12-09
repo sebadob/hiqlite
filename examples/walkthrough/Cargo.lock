@@ -255,7 +255,7 @@ dependencies = [
  "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
- "hyper 1.6.0",
+ "hyper 1.8.1",
  "hyper-util",
  "itoa",
  "matchit",
@@ -298,20 +298,20 @@ dependencies = [
 
 [[package]]
 name = "axum-server"
-version = "0.7.2"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "495c05f60d6df0093e8fb6e74aa5846a0ad06abaf96d76166283720bf740f8ab"
+checksum = "b1df331683d982a0b9492b38127151e6453639cd34926eb9c07d4cd8c6d22bfc"
 dependencies = [
  "arc-swap",
  "bytes",
+ "either",
  "fs-err",
  "http 1.3.1",
  "http-body 1.0.1",
- "hyper 1.6.0",
+ "hyper 1.8.1",
  "hyper-util",
  "pin-project-lite",
  "rustls 0.23.26",
- "rustls-pemfile 2.2.0",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls 0.26.2",
@@ -736,9 +736,9 @@ dependencies = [
 
 [[package]]
 name = "cryptr"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08ee59a0c85e4637256cc920a0be1f1fab90aaed501b6f05823b0d678d6f97ee"
+checksum = "6943335d74a7d9e723a25abe3a26f313679b872ceb0b5ef8094b1eaa5529a6f2"
 dependencies = [
  "argon2",
  "async-stream",
@@ -748,7 +748,7 @@ dependencies = [
  "bytes",
  "chacha20poly1305",
  "dotenvy",
- "flume",
+ "flume 0.11.1",
  "futures",
  "lazy_static",
  "rand 0.9.1",
@@ -908,6 +908,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
+name = "fastrand"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+dependencies = [
+ "getrandom 0.2.16",
+]
+
+[[package]]
 name = "fastwebsockets"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -919,7 +928,7 @@ dependencies = [
  "bytes",
  "http 1.3.1",
  "http-body-util",
- "hyper 1.6.0",
+ "hyper 1.8.1",
  "hyper-util",
  "pin-project",
  "rand 0.8.5",
@@ -939,6 +948,18 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "nanorand",
+ "spin",
+]
+
+[[package]]
+name = "flume"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
+dependencies = [
+ "fastrand",
+ "futures-core",
+ "futures-sink",
  "spin",
 ]
 
@@ -1218,7 +1239,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiqlite"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "axum",
  "axum-server",
@@ -1232,14 +1253,14 @@ dependencies = [
  "dotenvy",
  "eventsource-client",
  "fastwebsockets",
- "flume",
+ "flume 0.12.0",
  "futures-util",
  "getrandom 0.3.2",
  "hex",
  "hiqlite-wal",
  "hostname",
  "http-body-util",
- "hyper 1.6.0",
+ "hyper 1.8.1",
  "hyper-util",
  "lazy_static",
  "lz4-sys",
@@ -1266,7 +1287,7 @@ dependencies = [
 
 [[package]]
 name = "hiqlite-macros"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "hiqlite",
  "rust-embed",
@@ -1274,12 +1295,12 @@ dependencies = [
 
 [[package]]
 name = "hiqlite-wal"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "bincode",
  "byteorder",
  "crc",
- "flume",
+ "flume 0.12.0",
  "fs4",
  "memmap2",
  "openraft",
@@ -1412,13 +1433,14 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "1.6.0"
+version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc2b571658e38e0c01b1fdca3bbbe93c00d3d71693ff2770043f8c29bc7d6f80"
+checksum = "2ab2d4f250c3d7b1c9fcdff1cece94ea4e2dfbec68614f7b87cb205f24ca9d11"
 dependencies = [
+ "atomic-waker",
  "bytes",
  "futures-channel",
- "futures-util",
+ "futures-core",
  "h2 0.4.9",
  "http 1.3.1",
  "http-body 1.0.1",
@@ -1426,6 +1448,7 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
+ "pin-utils",
  "smallvec",
  "tokio",
  "want",
@@ -1455,7 +1478,7 @@ checksum = "2d191583f3da1305256f22463b9bb0471acad48a4e534a5218b9963e9c1f59b2"
 dependencies = [
  "futures-util",
  "http 1.3.1",
- "hyper 1.6.0",
+ "hyper 1.8.1",
  "hyper-util",
  "rustls 0.23.26",
  "rustls-pki-types",
@@ -1479,16 +1502,17 @@ dependencies = [
 
 [[package]]
 name = "hyper-util"
-version = "0.1.11"
+version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "497bbc33a26fdd4af9ed9c70d63f61cf56a938375fbb32df34db9b1cd6d643f2"
+checksum = "727805d60e7938b76b826a6ef209eb70eaa1812794f9424d4a4e2d740662df5f"
 dependencies = [
  "bytes",
  "futures-channel",
+ "futures-core",
  "futures-util",
  "http 1.3.1",
  "http-body 1.0.1",
- "hyper 1.6.0",
+ "hyper 1.8.1",
  "libc",
  "pin-project-lite",
  "socket2",
@@ -2337,7 +2361,7 @@ dependencies = [
  "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
- "hyper 1.6.0",
+ "hyper 1.8.1",
  "hyper-rustls 0.27.5",
  "hyper-util",
  "ipnet",
@@ -2625,14 +2649,14 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
 name = "s3-simple"
-version = "0.5.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13035e27e89dd12a179200e78c495b03ff569f87cb7510280085ef86dde6af78"
+checksum = "81e155efebca242b484e29c778f9d14b847ed83dd40a8e716f883668e4868156"
 dependencies = [
  "base64 0.22.1",
  "bytes",
  "dotenvy",
- "flume",
+ "flume 0.11.1",
  "futures-util",
  "hex",
  "hmac",
