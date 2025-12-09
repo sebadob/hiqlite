@@ -251,21 +251,24 @@ pub async fn become_cluster_member(
         );
         set_raft_running(&state, raft_type);
 
-        // wait until we have a leader before returning to the main application
-        time::sleep(Duration::from_secs(1)).await;
-        let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
-        info!("Waiting for Raft Leader");
-        for _ in 0..5 {
-            // Make sure that this node is not the current leader,
-            // which can happen after too quick restarts.
-            if let Some(id) = metrics.current_leader
-                && id != this_node
-            {
-                info!("Current Raft Leader: {id}");
-                break;
+        // Wait until we have a leader before returning to the main application.
+        // Only makes sense for actual HA deployments.
+        if nodes.len() > 1 {
+            time::sleep(Duration::from_secs(1)).await;
+            let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
+            info!("Waiting for Raft Leader");
+            for _ in 0..5 {
+                // Make sure that this node is not the current leader,
+                // which can happen after too quick restarts.
+                if let Some(id) = metrics.current_leader
+                    && id != this_node
+                {
+                    info!("Current Raft Leader: {id}");
+                    break;
+                }
+                time::sleep(Duration::from_millis(1000)).await;
+                metrics = helpers::get_raft_metrics(&state, raft_type).await;
             }
-            time::sleep(Duration::from_millis(1000)).await;
-            metrics = helpers::get_raft_metrics(&state, raft_type).await;
         }
 
         return Ok(());
