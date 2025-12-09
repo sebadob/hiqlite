@@ -1,5 +1,10 @@
 # Changelog
 
+## hiqlie-v0.12.1
+
+Tiny fix for `hiqlite` to improve quality of life and DX. The "wait for non-leader" during startup with an already
+initialized Raft will be skipped for single instance deployments. This makes startups immediate again.
+
 ## v0.12.0
 
 ### Breaking
