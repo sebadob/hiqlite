@@ -22,7 +22,7 @@ panic = "abort"
 argon2 = "0.5.3"
 axum = { version = "0.8.1", features = ["http2", "tokio"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
-axum-server = { version = "0.7.1", features = [
+axum-server = { version = "0.8", features = [
     "tls-rustls",
     "tls-rustls-no-provider",
 ] }
@@ -49,7 +49,7 @@ fastwebsockets = { version = "0.10.0", features = [
     "with_axum",
     "unstable-split",
 ] }
-flume = "0.11.0"
+flume = "0.12"
 fs4 = { version = "0.13.1", features = ["sync"] }
 futures-util = "0.3.30"
 getrandom = { version = "0.3", features = ["std"] }
