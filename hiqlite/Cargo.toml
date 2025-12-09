@@ -1,6 +1,6 @@
 [package]
 name = "hiqlite"
-version = "0.12.0"
+version = "0.12.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -77,8 +77,8 @@ webpki-roots = [
 ]
 
 [dependencies]
-#hiqlite-wal = { version = "0.12" }
-hiqlite-wal = { path = "../hiqlite-wal" }
+hiqlite-wal = { version = "0.12" }
+#hiqlite-wal = { path = "../hiqlite-wal" }
 
 argon2 = { workspace = true, optional = true }
 axum.workspace = true
