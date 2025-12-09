@@ -1,6 +1,8 @@
 # Changelog
 
-## UNRELEASED
+## v0.12.0
+
+### Breaking
 
 The `shutdown_delay_millis` config option was removed. It is not necessary to set it manually anymore. Instead, more
 automatic detection is being applied and a necessary delay to smooth out rolling releases or make sure the readiness
@@ -53,9 +55,18 @@ livenessProbe:
     scheme: HTTP
     port: 8200
     path: /health
-    initialDelaySeconds: 30
+    initialDelaySeconds: 60
     periodSeconds: 30
+    # Require 2 failures because you may get one during a leader switch.
+    failureThreshold: 2
 ```
+
+### Bugfix
+
+The `hiqlite-wal` had a bug where the `last_purged_log_id` was overwritten with `None` during a log truncation, even
+if it had a value from a log purge before. If the node restarted before another log purge fixed it, it would result in
+an error during startup. The new version includes a check + fix, if you start up an instance with a data set that
+currently has this issue.
 
 ## hiqlite v0.11.1
 
