@@ -712,7 +712,8 @@ async fn handle_socket_concurrent(
     let _ = tx_write.send_async(WsWriteMsg::Break).await;
     drop(tx_write);
 
-    handle_write.await.unwrap();
+    // may panic in a race condition during shutdown
+    let _ = handle_write.await;
 
     debug!("handle_socket_concurrent exiting");
 
