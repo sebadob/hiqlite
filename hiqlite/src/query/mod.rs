@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::query::rows::{ColumnOwned, RowOwned};
 use crate::store::state_machine::sqlite::state_machine::SqlitePool;
-use crate::store::state_machine::sqlite::TypeConfigSqlite;
+use crate::store::state_machine::sqlite::{TypeConfigSqlite, writer};
 use crate::{Error, Params};
 use openraft::Raft;
 use serde::de::DeserializeOwned;
@@ -29,22 +29,25 @@ where
 pub(crate) async fn query_owned_local<S>(
     log_statements: bool,
     read_pool: SqlitePool,
-    stmt: S,
+    sql: S,
     params: Params,
 ) -> Result<Vec<RowOwned>, Error>
 where
     S: Into<Cow<'static, str>>,
 {
-    let stmt: Cow<'static, str> = stmt.into();
+    let sql: Cow<'static, str> = sql.into();
     if log_statements {
-        info!("query_owned_local:\n{}\n{:?}", stmt, params)
+        info!("query_owned_local:\n{}\n{:?}", sql, params)
     }
 
     let conn = read_pool.get().await?;
 
     task::spawn_blocking(move || {
-        let mut stmt = conn.prepare_cached(stmt.as_ref())?;
+        let mut stmt = conn.prepare_cached(sql.as_ref())?;
         let columns = ColumnOwned::mapping_cols_from_stmt(stmt.columns())?;
+
+        #[cfg(debug_assertions)]
+        writer::check_stmt_params_count(&stmt, &params, &sql);
 
         let mut idx = 1;
         for param in params {
@@ -66,21 +69,24 @@ where
 #[inline(always)]
 pub(crate) async fn query_map<T, S>(
     state: &Arc<AppState>,
-    stmt: S,
+    sql: S,
     params: Params,
 ) -> Result<Vec<T>, Error>
 where
     T: for<'r> From<rows::Row<'r>> + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
-    let stmt: Cow<'static, str> = stmt.into();
+    let sql: Cow<'static, str> = sql.into();
     if state.raft_db.log_statements {
-        info!("query_map_typed:\n{}\n{:?}", stmt, params)
+        info!("query_map_typed:\n{}\n{:?}", sql, params)
     }
 
     let conn = state.raft_db.read_pool.get().await?;
     task::spawn_blocking(move || {
-        let mut stmt = conn.prepare_cached(stmt.as_ref())?;
+        let mut stmt = conn.prepare_cached(sql.as_ref())?;
+
+        #[cfg(debug_assertions)]
+        writer::check_stmt_params_count(&stmt, &params, &sql);
 
         let mut idx = 1;
         for param in params {
@@ -101,14 +107,14 @@ where
 #[inline]
 pub(crate) async fn query_map_one<T, S>(
     state: &Arc<AppState>,
-    stmt: S,
+    sql: S,
     params: Params,
 ) -> Result<T, Error>
 where
     T: for<'r> From<rows::Row<'r>> + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
-    let mut rows: Vec<T> = query_map(state, stmt, params).await?;
+    let mut rows: Vec<T> = query_map(state, sql, params).await?;
     if rows.is_empty() {
         Err(Error::QueryReturnedNoRows("no rows returned".into()))
     } else if rows.len() > 1 {
@@ -123,14 +129,14 @@ where
 #[inline]
 pub(crate) async fn query_map_optional<T, S>(
     state: &Arc<AppState>,
-    stmt: S,
+    sql: S,
     params: Params,
 ) -> Result<Option<T>, Error>
 where
     T: for<'r> From<rows::Row<'r>> + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
-    let mut rows: Vec<T> = query_map(state, stmt, params).await?;
+    let mut rows: Vec<T> = query_map(state, sql, params).await?;
     if rows.is_empty() {
         Ok(None)
     } else {
@@ -141,21 +147,24 @@ where
 #[inline]
 pub(crate) async fn query_as<T, S>(
     state: &Arc<AppState>,
-    stmt: S,
+    sql: S,
     params: Params,
 ) -> Result<Vec<T>, Error>
 where
     T: DeserializeOwned + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
-    let stmt: Cow<'static, str> = stmt.into();
+    let sql: Cow<'static, str> = sql.into();
     if state.raft_db.log_statements {
-        info!("query_as:\n{}\n{:?}", stmt, params)
+        info!("query_as:\n{}\n{:?}", sql, params)
     }
 
     let conn = state.raft_db.read_pool.get().await?;
     task::spawn_blocking(move || {
-        let mut stmt = conn.prepare_cached(stmt.as_ref())?;
+        let mut stmt = conn.prepare_cached(sql.as_ref())?;
+
+        #[cfg(debug_assertions)]
+        writer::check_stmt_params_count(&stmt, &params, &sql);
 
         let mut idx = 1;
         for param in params {
@@ -176,14 +185,14 @@ where
 #[inline]
 pub(crate) async fn query_as_one<T, S>(
     state: &Arc<AppState>,
-    stmt: S,
+    sql: S,
     params: Params,
 ) -> Result<T, Error>
 where
     T: DeserializeOwned + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
-    let mut rows: Vec<T> = query_as(state, stmt, params).await?;
+    let mut rows: Vec<T> = query_as(state, sql, params).await?;
     if rows.is_empty() {
         Err(Error::QueryReturnedNoRows("no rows returned".into()))
     } else if rows.len() > 1 {
@@ -198,14 +207,14 @@ where
 #[inline]
 pub(crate) async fn query_as_optional<T, S>(
     state: &Arc<AppState>,
-    stmt: S,
+    sql: S,
     params: Params,
 ) -> Result<Option<T>, Error>
 where
     T: DeserializeOwned + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
-    let mut rows: Vec<T> = query_as(state, stmt, params).await?;
+    let mut rows: Vec<T> = query_as(state, sql, params).await?;
     if rows.is_empty() {
         Ok(None)
     } else {

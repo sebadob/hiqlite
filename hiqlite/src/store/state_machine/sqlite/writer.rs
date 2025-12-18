@@ -9,7 +9,7 @@ use crate::store::state_machine::sqlite::state_machine::{
 use crate::store::state_machine::sqlite::transaction_env::{
     TransactionEnv, TransactionParamContext,
 };
-use crate::{AppliedMigration, Error, Node, NodeId};
+use crate::{AppliedMigration, Error, Node, NodeId, Param};
 use chrono::Utc;
 use flume::RecvError;
 use openraft::{LogId, SnapshotMeta, StorageError, StorageIOError, StoredMembership};
@@ -17,7 +17,7 @@ use rusqlite::backup::Progress;
 use rusqlite::fallible_iterator::FallibleIterator;
 use rusqlite::fallible_streaming_iterator::FallibleStreamingIterator;
 use rusqlite::types::Value;
-use rusqlite::{Batch, Rows, Transaction};
+use rusqlite::{Batch, CachedStatement, Rows, Transaction};
 use std::borrow::Cow;
 use std::default::Default;
 use std::ops::Sub;
@@ -189,6 +189,9 @@ CREATE TABLE IF NOT EXISTS _metadata
                                 }
                             };
 
+                            #[cfg(debug_assertions)]
+                            check_stmt_params_count(&stmt, &q.params, &q.sql);
+
                             // let params_len = q.params.len();
                             let mut params_err = None;
                             let mut idx = 1;
@@ -233,6 +236,9 @@ CREATE TABLE IF NOT EXISTS _metadata
                                     continue;
                                 }
                             };
+
+                            #[cfg(debug_assertions)]
+                            check_stmt_params_count(&stmt, &q.params, &q.sql);
 
                             let columns = match ColumnOwned::mapping_cols_from_stmt(stmt.columns())
                             {
@@ -321,6 +327,9 @@ CREATE TABLE IF NOT EXISTS _metadata
                                     break;
                                 }
                             };
+
+                            #[cfg(debug_assertions)]
+                            check_stmt_params_count(&stmt, &params, &sql);
 
                             let mut idx = 1;
                             for param in params {
@@ -686,6 +695,36 @@ fn persist_metadata(
     let mut stmt = conn.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
     stmt.execute([meta_bytes])?;
     Ok(())
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn check_stmt_params_count(stmt: &CachedStatement, params: &[Param], sql: &str) {
+    if stmt.parameter_count() != params.len() {
+        error!(
+            r#"
+
+!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!!!!!!!!
+
+Parameter count of Statement:
+
+{}
+
+does not match the given parameter count!
+
+Expected: {}
+Got:      {}
+
+!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!!!!!!!!
+"#,
+            sql,
+            stmt.parameter_count(),
+            params.len()
+        );
+    }
 }
 
 #[inline]
