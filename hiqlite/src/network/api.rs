@@ -40,6 +40,7 @@ use axum::response::sse;
 #[cfg(feature = "listen_notify")]
 use futures_util::stream::Stream;
 use openraft::ServerState;
+use tokio::sync::oneshot;
 
 pub async fn health(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
@@ -179,6 +180,56 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                         .into(),
                 ));
             }
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn post_create_backup(state: AppStateExt, headers: HeaderMap) -> Result<(), Error> {
+    validate_secret(&state, &headers)?;
+
+    #[cfg(all(feature = "backup", feature = "sqlite"))]
+    {
+        let mut leader = 0;
+        for _ in 0..3 {
+            match state.raft_db.raft.current_leader().await {
+                None => {
+                    time::sleep(Duration::from_secs(1)).await;
+                }
+                Some(current) => {
+                    leader = current;
+                    break;
+                }
+            }
+        }
+        if leader == 0 {
+            return Err(Error::LeaderChange("Leader election ongoing".into()));
+        }
+
+        let now = Utc::now().timestamp();
+        if leader == state.id {
+            state
+                .raft_db
+                .raft
+                .client_write(QueryWrite::Backup((state.id, now)))
+                .await?;
+        } else {
+            let (ack, rx) = oneshot::channel();
+            state
+                .tx_client_stream
+                .send_async(crate::client::stream::ClientStreamReq::Backup(
+                    crate::client::stream::ClientBackupPayload {
+                        request_id: state.new_request_id(),
+                        node_id: leader,
+                        ts: now,
+                        ack,
+                    },
+                ))
+                .await
+                .map_err(|err| Error::Error(err.to_string().into()))?;
+            rx.await
+                .map_err(|err| Error::Error(err.to_string().into()))??;
         }
     }
 
