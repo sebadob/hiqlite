@@ -7,11 +7,13 @@ use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use chrono::Utc;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
+use openraft::ServerState;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::ops::{Deref, Sub};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::sync::oneshot;
 use tokio::{task, time};
 use tracing::{debug, error, info, warn};
 
@@ -39,8 +41,6 @@ use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 use axum::response::sse;
 #[cfg(feature = "listen_notify")]
 use futures_util::stream::Stream;
-use openraft::ServerState;
-use tokio::sync::oneshot;
 
 pub async fn health(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
@@ -192,7 +192,7 @@ pub async fn post_create_backup(state: AppStateExt, headers: HeaderMap) -> Resul
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     {
         let mut leader = 0;
-        for _ in 0..3 {
+        for _ in 0..5 {
             match state.raft_db.raft.current_leader().await {
                 None => {
                     time::sleep(Duration::from_secs(1)).await;
