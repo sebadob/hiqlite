@@ -1,6 +1,19 @@
 # Changelog
 
-## UNRELEASED
+## hiqlite-v0.12.2
+
+### Changes
+
+It is now possible to trigger a backup manually via direct API POST request, with something like:
+
+```bash
+curl -i -XPOST -H 'X-API-SECRET: SuperSecureSecret1337' localhost:8200/backup
+```
+
+Apart from that, a small DX change was added. When `debug_assertions` are active, the prepared statement will always be
+compared to the given params it will make sure that the amount of params accepted matches exactly the length of the
+amount of params given. Such a check existed before already, but if you had nullable params at the end of your query,
+these could slip through.
 
 ### Bugfix
 
