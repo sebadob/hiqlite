@@ -297,10 +297,14 @@ where
     )
     .await;
 
-    #[cfg(all(feature = "backup", feature = "s3"))]
-    if let Some(s3_config) = node_config.s3_config {
-        backup::start_cron(client.clone(), s3_config, node_config.backup_config);
-    }
+    // TODO fix that and also start backup cron jobs with no S3 config
+    #[cfg(feature = "backup")]
+    backup::start_cron(
+        client.clone(),
+        node_config.backup_config,
+        #[cfg(feature = "s3")]
+        node_config.s3_config,
+    );
 
     Ok(client)
 }

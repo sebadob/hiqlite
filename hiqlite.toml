@@ -195,7 +195,7 @@ secret_api = "SuperSecureSecret1337"
 #
 # default: "0 30 2 * * * *"
 # overwritten by: HQL_BACKUP_CRON
-#backup_cron = "0 30 2 * * * *"
+backup_cron = "0 30 2 * * * *"
 
 # Backups older than the configured days will be cleaned up on S3
 # after the backup cron job `backup_cron`.
