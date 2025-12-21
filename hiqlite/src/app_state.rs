@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex;
 
-#[cfg(feature = "dashboard")]
+#[cfg(any(feature = "backup", feature = "dashboard"))]
 use crate::client::stream::ClientStreamReq;
 #[cfg(feature = "dashboard")]
 use crate::dashboard::DashboardState;
@@ -22,7 +22,7 @@ use crate::store::state_machine::memory::{TypeConfigKV, kv_handler::CacheRequest
 use crate::store::state_machine::sqlite::{
     TypeConfigSqlite, state_machine::SqlitePool, writer::WriterRequest,
 };
-#[cfg(feature = "dashboard")]
+#[cfg(any(feature = "backup", feature = "dashboard"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -69,14 +69,14 @@ pub(crate) struct AppState {
     pub secret_api: String,
     #[cfg(feature = "dashboard")]
     pub dashboard: DashboardState,
-    #[cfg(feature = "dashboard")]
+    #[cfg(any(feature = "backup", feature = "dashboard"))]
     pub client_request_id: AtomicUsize,
-    #[cfg(feature = "dashboard")]
+    #[cfg(any(feature = "backup", feature = "dashboard"))]
     pub tx_client_stream: flume::Sender<ClientStreamReq>,
     pub health_check_delay_secs: u32,
 }
 
-#[cfg(feature = "dashboard")]
+#[cfg(any(feature = "backup", feature = "dashboard"))]
 impl AppState {
     #[inline(always)]
     pub fn new_request_id(&self) -> usize {

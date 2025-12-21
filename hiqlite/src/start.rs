@@ -99,9 +99,9 @@ where
         dashboard: dashboard::DashboardState {
             password_dashboard: node_config.password_dashboard,
         },
-        #[cfg(feature = "dashboard")]
+        #[cfg(any(feature = "backup", feature = "dashboard"))]
         client_request_id: std::sync::atomic::AtomicUsize::new(0),
-        #[cfg(feature = "dashboard")]
+        #[cfg(any(feature = "backup", feature = "dashboard"))]
         tx_client_stream: tx_client_stream.clone(),
         health_check_delay_secs: node_config.health_check_delay_secs,
         #[cfg(feature = "s3")]
@@ -178,6 +178,7 @@ where
         )
         .route("/listen", get(api::listen))
         .route("/stream/{raft_type}", get(api::stream))
+        .route("/backup", post(api::post_create_backup))
         .route("/health", get(api::health))
         .route("/ready", get(api::ready))
         .route("/ping", get(api::ping));
