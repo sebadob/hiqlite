@@ -1,6 +1,5 @@
 use crate::app_state::AppState;
 use crate::helpers::{deserialize, set_path_access};
-use crate::s3::S3Config;
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{
     PathBackups, PathDb, PathLockFile, PathSnapshots, QueryWrite, StateMachineData,
@@ -17,6 +16,9 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio::{fs, task, time};
 use tracing::{debug, error, info, warn};
+
+#[cfg(feature = "s3")]
+use crate::s3::S3Config;
 
 pub const BACKUP_DB_NAME: &str = "restore.sqlite";
 
@@ -88,7 +90,11 @@ impl BackupSource {
     }
 }
 
-pub fn start_cron(client: Client, s3_config: Arc<S3Config>, backup_config: BackupConfig) {
+pub fn start_cron(
+    client: Client,
+    backup_config: BackupConfig,
+    #[cfg(feature = "s3")] s3_config: Option<Arc<S3Config>>,
+) {
     task::spawn(async move {
         info!("Backup cron task started");
 
@@ -114,7 +120,14 @@ pub fn start_cron(client: Client, s3_config: Arc<S3Config>, backup_config: Backu
             let retries = 5;
 
             for _ in 0..retries {
-                match backup_cron_job(&client, &s3_config, backup_config.keep_days).await {
+                match backup_cron_job(
+                    &client,
+                    backup_config.keep_days,
+                    #[cfg(feature = "s3")]
+                    &s3_config,
+                )
+                .await
+                {
                     Ok(_) => {
                         info!("Backup task finished successfully");
                         success = true;
@@ -144,27 +157,32 @@ pub fn start_cron(client: Client, s3_config: Arc<S3Config>, backup_config: Backu
 
 async fn backup_cron_job(
     client: &Client,
-    s3_config: &Arc<S3Config>,
     keep_days: u16,
+    #[cfg(feature = "s3")] s3_config: &Option<Arc<S3Config>>,
 ) -> Result<(), Error> {
     client.backup().await?;
 
-    // the backup task will be async in the background, but we can start cleaning up already
-    let threshold = Utc::now().sub(chrono::Duration::days(keep_days as i64));
+    #[cfg(feature = "s3")]
+    {
+        if let Some(s3_config) = s3_config {
+            // the backup task will be async in the background, but we can start cleaning up already
+            let threshold = Utc::now().sub(chrono::Duration::days(keep_days as i64));
 
-    let list = s3_config.bucket.list("", None).await?;
-    for bucket in list {
-        if bucket.name != s3_config.bucket.name {
-            info!("Found non-configured bucket {} - skipping", bucket.name);
-            continue;
-        }
+            let list = s3_config.bucket.list("", None).await?;
+            for bucket in list {
+                if bucket.name != s3_config.bucket.name {
+                    info!("Found non-configured bucket {} - skipping", bucket.name);
+                    continue;
+                }
 
-        for object in bucket.contents.iter() {
-            if let Some(dt) = dt_from_backup_name(&object.key)
-                && dt < threshold
-            {
-                info!("Deleting expired backup: {}", object.key);
-                s3_config.bucket.delete(object.key.clone()).await?;
+                for object in bucket.contents.iter() {
+                    if let Some(dt) = dt_from_backup_name(&object.key)
+                        && dt < threshold
+                    {
+                        info!("Deleting expired backup: {}", object.key);
+                        s3_config.bucket.delete(object.key.clone()).await?;
+                    }
+                }
             }
         }
     }

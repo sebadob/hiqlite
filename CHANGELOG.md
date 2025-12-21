@@ -1,5 +1,11 @@
 # Changelog
 
+## UNRELEASED
+
+### Bugfix
+
+- When no S3 config was given, the backup cron job was not started and no local backups were created.
+
 ## hiqlie-v0.12.1
 
 Tiny fix for `hiqlite` to improve quality of life and DX. The "wait for non-leader" during startup with an already
