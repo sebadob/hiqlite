@@ -1,6 +1,7 @@
 use crate::Error;
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::error;
 
 #[derive(Debug)]
 pub enum Row<'a> {
@@ -15,8 +16,16 @@ impl Row<'_> {
         T: TryFrom<ValueOwned, Error = crate::Error> + rusqlite::types::FromSql,
     {
         match self {
-            Row::Borrowed(b) => b.get_unwrap(idx),
-            Row::Owned(o) => o.try_get(idx).unwrap(),
+            Row::Borrowed(b) => {
+                let res = b.get(idx);
+                if res.is_err() {
+                    error!("Cannot convert column index '{idx}' to requested type");
+                }
+                res.unwrap()
+            }
+            Row::Owned(o) => o.try_get(idx).unwrap_or_else(|err| {
+                panic!("Cannot convert column index '{idx}' to requested type: {err:?}")
+            }),
         }
     }
 
