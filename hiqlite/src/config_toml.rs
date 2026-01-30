@@ -13,8 +13,6 @@ impl NodeConfig {
     /// You can overwrite most values from the file with ENV vars. If this is possible, it is
     /// mentioned in the documentation for each value.
     ///
-    /// # Panics
-    ///
     /// If any config values are incorrect, in an invalid format, or required ones are missing.
     pub async fn from_toml(
         path: &str,
@@ -25,9 +23,9 @@ impl NodeConfig {
 
         let t_name = table.unwrap_or("hiqlite");
 
-        let Ok(config) = fs::read_to_string(path).await else {
-            panic!("Cannot read config file from: {path}");
-        };
+        let config = fs::read_to_string(path)
+            .await
+            .map_err(|err| Error::String(format!("Cannot read config file from: {path}: {err}")))?;
 
         // Note: these inner parsers are very verbose, but they allow the upfront memory allocation
         // and memory fragmentation, after the quite big toml has been freed and the config stays
@@ -35,10 +33,10 @@ impl NodeConfig {
 
         let mut root = config
             .parse::<toml::Table>()
-            .expect("Cannot parse TOML file");
-        let Some(table) = t_table(&mut root, t_name) else {
-            panic!("Cannot find table '{t_name}' in {path}");
-        };
+            .map_err(|err| Error::String(format!("Cannot parse TOML file: {err}")))?;
+        let table = t_table(&mut root, t_name).ok_or(Error::String(
+            format!("Cannot find table '{t_name}' in {path}").into(),
+        ))?;
 
         Self::from_toml_table(
             table,
@@ -114,7 +112,10 @@ impl NodeConfig {
 
         let wal_sync = if let Some(v) = t_str(&mut map, t_name, "log_sync", "HQL_LOG_SYNC") {
             let Ok(sync) = LogSync::try_from(v.as_str()) else {
-                panic!("{}", err_t("log_sync", t_name, "LogSync"));
+                return Err(Error::String(format!(
+                    "{}",
+                    err_t("log_sync", t_name, "LogSync")
+                )));
             };
             sync
         } else {
@@ -171,10 +172,10 @@ impl NodeConfig {
         };
 
         let Some(secret_raft) = t_str(&mut map, t_name, "secret_raft", "HQL_SECRET_RAFT") else {
-            panic!("{t_name}.secret_raft is a mandatory value");
+            return Err(format!("{t_name}.secret_raft is a mandatory value").into());
         };
         let Some(secret_api) = t_str(&mut map, t_name, "secret_api", "HQL_SECRET_API") else {
-            panic!("{t_name}.secret_api is a mandatory value");
+            return Err(format!("{t_name}.secret_api is a mandatory value").into());
         };
 
         let health_check_delay_secs =
@@ -200,7 +201,7 @@ impl NodeConfig {
 
             let backup_config =
                 crate::backup::BackupConfig::new(backup_cron.as_ref(), backup_keep_days)
-                    .expect("Error building BackupConfig");
+                    .map_err(|err| Error::String(format!("Error building BackupConfig: {err}")))?;
             (backup_config, backup_keep_days_local)
         };
 
@@ -208,23 +209,28 @@ impl NodeConfig {
         let s3_config = if let Some(url) = t_str(&mut map, t_name, "s3_url", "HQL_S3_URL") {
             // we expect all values to exist when we can read the url successfully
 
-            let bucket = t_str(&mut map, t_name, "s3_bucket", "HQL_S3_BUCKET")
-                .expect("Missing config variable `s3_bucket`");
-            let region = t_str(&mut map, t_name, "s3_region", "HQL_S3_REGION")
-                .expect("Missing config variable `s3_region`");
+            let bucket = t_str(&mut map, t_name, "s3_bucket", "HQL_S3_BUCKET").ok_or(
+                Error::String("Missing config variable `s3_bucket`".to_string()),
+            )?;
+            let region = t_str(&mut map, t_name, "s3_region", "HQL_S3_REGION").ok_or(
+                Error::String("Missing config variable `s3_region`".to_string()),
+            )?;
             let path_style =
                 t_bool(&mut map, t_name, "s3_path_style", "HQL_S3_PATH_STYLE").unwrap_or(true);
 
-            let key = t_str(&mut map, t_name, "s3_key", "HQL_S3_KEY")
-                .expect("Missing config variable `s3_key`");
-            let secret = t_str(&mut map, t_name, "s3_secret", "HQL_S3_SECRET")
-                .expect("Missing config variable `s3_secret`");
+            let key = t_str(&mut map, t_name, "s3_key", "HQL_S3_KEY").ok_or(Error::String(
+                "Missing config variable `s3_key`".to_string(),
+            ))?;
+            let secret = t_str(&mut map, t_name, "s3_secret", "HQL_S3_SECRET").ok_or(
+                Error::String("Missing config variable `s3_secret`".to_string()),
+            )?;
 
-            let Ok(config) =
-                crate::s3::S3Config::new(&url, bucket, region, key, secret, path_style)
-            else {
-                panic!("Cannot build S3Config from given S3 values in {t_name}.");
-            };
+            let config = crate::s3::S3Config::new(&url, bucket, region, key, secret, path_style)
+                .map_err(|err| {
+                    Error::String(format!(
+                        "Cannot build S3Config from given S3 values in {t_name}: {err:?}"
+                    ))
+                })?;
             Some(config)
         } else {
             None
@@ -251,13 +257,13 @@ impl NodeConfig {
         let enc_keys = if let Some(keys) = enc_keys {
             keys
         } else {
-            let Some(enc_key_active) = t_str(&mut map, t_name, "enc_key_active", "ENC_KEY_ACTIVE")
-            else {
-                panic!("{t_name}.enc_key_active is a mandatory value");
-            };
-            let Some(enc_keys) = t_str_vec(&mut map, t_name, "enc_keys", "ENC_KEYS") else {
-                panic!("{t_name}.enc_keys is a mandatory value");
-            };
+            let enc_key_active = t_str(&mut map, t_name, "enc_key_active", "ENC_KEY_ACTIVE")
+                .ok_or(Error::String(format!(
+                    "{t_name}.enc_key_active is a mandatory value"
+                )))?;
+            let enc_keys = t_str_vec(&mut map, t_name, "enc_keys", "ENC_KEYS").ok_or(
+                Error::String(format!("{t_name}.enc_keys is a mandatory value")),
+            )?;
             cryptr::EncKeys::try_parse(enc_key_active, enc_keys)?
         };
 

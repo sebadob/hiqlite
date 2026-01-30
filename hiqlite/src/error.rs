@@ -88,6 +88,9 @@ pub enum Error {
     WAL(String),
     #[error("WebSocket: {0}")]
     WebSocket(String),
+    #[cfg(feature = "toml")]
+    #[error("Error: {0}")]
+    String(String),
 }
 
 impl Error {
@@ -158,6 +161,8 @@ impl IntoResponse for Error {
             Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Error::WAL(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::WebSocket(_) => StatusCode::BAD_REQUEST,
+            #[cfg(feature = "toml")]
+            Error::String(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         (status, Json(self)).into_response()
@@ -388,5 +393,12 @@ impl From<hiqlite_wal::error::Error> for Error {
     fn from(value: hiqlite_wal::error::Error) -> Self {
         trace!("hiqlite_wal::error::Error: {value}");
         Self::WAL(value.to_string())
+    }
+}
+
+#[cfg(feature = "toml")]
+impl From<std::string::String> for Error {
+    fn from(err: std::string::String) -> Self {
+        Error::String(err.into())
     }
 }
