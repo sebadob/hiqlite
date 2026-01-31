@@ -71,10 +71,10 @@ impl NodeConfig {
             if v == "k8s" {
                 Self::node_id_from_hostname()
             } else {
-                t_u64(&mut map, t_name, "node_id", "HQL_NODE_ID").unwrap_or(0)
+                t_u64(&mut map, t_name, "node_id", "HQL_NODE_ID")?.unwrap_or(0)
             }
         } else {
-            t_u64(&mut map, t_name, "node_id", "HQL_NODE_ID").unwrap_or(0)
+            t_u64(&mut map, t_name, "node_id", "HQL_NODE_ID")?.unwrap_or(0)
         };
         let nodes = if let Some(nodes) = t_str_vec(&mut map, t_name, "nodes", "HQL_NODES") {
             nodes
@@ -105,10 +105,10 @@ impl NodeConfig {
         let log_statements =
             t_bool(&mut map, t_name, "log_statements", "HQL_LOG_STATEMENTS")?.unwrap_or(false);
         let prepared_statement_cache_capacity =
-            t_u16(&mut map, t_name, "prepared_statement_cache_capacity", "").unwrap_or(1000)
+            t_u16(&mut map, t_name, "prepared_statement_cache_capacity", "")?.unwrap_or(1000)
                 as usize;
         let read_pool_size =
-            t_u16(&mut map, t_name, "read_pool_size", "HQL_READ_POOL_SIZE").unwrap_or(4) as usize;
+            t_u16(&mut map, t_name, "read_pool_size", "HQL_READ_POOL_SIZE")?.unwrap_or(4) as usize;
 
         let wal_sync = if let Some(v) = t_str(&mut map, t_name, "log_sync", "HQL_LOG_SYNC") {
             let Ok(sync) = LogSync::try_from(v.as_str()) else {
@@ -122,7 +122,7 @@ impl NodeConfig {
             LogSync::ImmediateAsync
         };
         let wal_size =
-            t_u32(&mut map, t_name, "wal_size", "HQL_WAL_SIZE").unwrap_or(2 * 1024 * 1024);
+            t_u32(&mut map, t_name, "wal_size", "HQL_WAL_SIZE")?.unwrap_or(2 * 1024 * 1024);
 
         #[cfg(feature = "cache")]
         let cache_storage_disk = t_bool(
@@ -138,7 +138,7 @@ impl NodeConfig {
             t_name,
             "logs_until_snapshot",
             "HQL_LOGS_UNTIL_SNAPSHOT",
-        )
+        )?
         .unwrap_or(10_000);
 
         let tls_raft_key = t_str(&mut map, t_name, "tls_raft_key", "HQL_TLS_RAFT_KEY");
@@ -179,7 +179,7 @@ impl NodeConfig {
         };
 
         let health_check_delay_secs =
-            t_u32(&mut map, t_name, "health_check_delay_secs", "").unwrap_or(30);
+            t_u32(&mut map, t_name, "health_check_delay_secs", "")?.unwrap_or(30);
 
         #[cfg(feature = "backup")]
         let (backup_config, backup_keep_days_local) = {
@@ -190,13 +190,13 @@ impl NodeConfig {
                     Cow::from("0 30 2 * * * *")
                 };
             let backup_keep_days =
-                t_u16(&mut map, t_name, "backup_keep_days", "HQL_BACKUP_KEEP_DAYS").unwrap_or(30);
+                t_u16(&mut map, t_name, "backup_keep_days", "HQL_BACKUP_KEEP_DAYS")?.unwrap_or(30);
             let backup_keep_days_local = t_u16(
                 &mut map,
                 t_name,
                 "backup_keep_days_local",
                 "HQL_BACKUP_KEEP_DAYS_LOCAL",
-            )
+            )?
             .unwrap_or(30);
 
             let backup_config =
@@ -324,56 +324,67 @@ fn t_bool(
     Ok(Some(value))
 }
 
-fn t_i64(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<i64> {
-    if !env_var.is_empty()
-        && let Ok(v) = env::var(env_var)
-            .as_deref()
-            .map(|v| match v.parse::<i64>() {
-                Ok(b) => b,
-                Err(_) => {
-                    panic!("{}", err_env(env_var, "Integer"));
-                }
-            })
-    {
-        return Some(v);
+fn t_u64(
+    map: &mut toml::Table,
+    parent: &str,
+    key: &str,
+    env_var: &str,
+) -> Result<Option<u64>, Error> {
+    if env_var.is_empty() {
+        let value: u64 = map
+            .remove(key)
+            .and_then(|v| v.as_str().and_then(|v| v.parse::<u64>().ok()))
+            .ok_or(Error::String(err_t(key, parent, "Integer (u64)")))?;
+        return Ok(Some(value));
     }
 
-    let Value::Integer(i) = map.remove(key)? else {
-        panic!("{}", err_t(key, parent, "i64"));
-    };
-    Some(i)
+    let value: u64 = env::var(env_var)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .ok_or(Error::String(err_env(env_var, "Integer (u64)")))?;
+    Ok(Some(value))
 }
 
-fn t_u64(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<u64> {
-    if let Some(v) = t_i64(map, parent, key, env_var) {
-        if v < 0 {
-            panic!("{}", err_t(key, parent, "u64"));
-        }
-        Some(v as u64)
-    } else {
-        None
+fn t_u32(
+    map: &mut toml::Table,
+    parent: &str,
+    key: &str,
+    env_var: &str,
+) -> Result<Option<u32>, Error> {
+    if env_var.is_empty() {
+        let value: u32 = map
+            .remove(key)
+            .and_then(|v| v.as_str().and_then(|v| v.parse::<u32>().ok()))
+            .ok_or(Error::String(err_t(key, parent, "Integer (u32)")))?;
+        return Ok(Some(value));
     }
+
+    let value: u32 = env::var(env_var)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .ok_or(Error::String(err_env(env_var, "Integer (u32)")))?;
+    Ok(Some(value))
 }
 
-fn t_u32(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<u32> {
-    if let Some(v) = t_i64(map, parent, key, env_var) {
-        if v < 0 || v > u32::MAX as i64 {
-            panic!("{}", err_t(key, parent, "u32"));
-        }
-        Some(v as u32)
-    } else {
-        None
+fn t_u16(
+    map: &mut toml::Table,
+    parent: &str,
+    key: &str,
+    env_var: &str,
+) -> Result<Option<u16>, Error> {
+    if env_var.is_empty() {
+        let value: u16 = map
+            .remove(key)
+            .and_then(|v| v.as_str().and_then(|v| v.parse::<u16>().ok()))
+            .ok_or(Error::String(err_t(key, parent, "Integer (u16)")))?;
+        return Ok(Some(value));
     }
-}
-fn t_u16(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<u16> {
-    if let Some(v) = t_i64(map, parent, key, env_var) {
-        if v < 0 || v > u16::MAX as i64 {
-            panic!("{}", err_t(key, parent, "u16"));
-        }
-        Some(v as u16)
-    } else {
-        None
-    }
+
+    let value: u16 = env::var(env_var)
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .ok_or(Error::String(err_env(env_var, "Integer (u16)")))?;
+    Ok(Some(value))
 }
 
 fn t_str(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<String> {
