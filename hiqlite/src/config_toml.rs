@@ -435,7 +435,7 @@ fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
         .remove(key)
         .ok_or(Error::String(format!("Expected type `Table` for {key}")))?;
     toml::Table::try_from(value).map_err(|err| {
-        Error::String(format!("cannot build toml table from removed value: {err}").into())
+        Error::String(format!("Cannot build toml table from removed value: {err}").into())
     })
 }
 
