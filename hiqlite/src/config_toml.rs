@@ -34,9 +34,9 @@ impl NodeConfig {
         let mut root = config
             .parse::<toml::Table>()
             .map_err(|err| Error::String(format!("Cannot parse TOML file: {err}")))?;
-        let table = t_table(&mut root, t_name).ok_or(Error::String(
-            format!("Cannot find table '{t_name}' in {path}").into(),
-        ))?;
+        let table = t_table(&mut root, t_name).map_err(|err| {
+            Error::String(format!("Cannot find table '{t_name}' in {path}: {err}").into())
+        })?;
 
         Self::from_toml_table(
             table,
@@ -418,11 +418,13 @@ fn t_str_vec(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> O
     Some(res)
 }
 
-fn t_table(map: &mut toml::Table, key: &str) -> Option<toml::Table> {
-    let Value::Table(t) = map.remove(key)? else {
-        panic!("Expected type `Table` for {key}")
-    };
-    Some(t)
+fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
+    let value = map
+        .remove(key)
+        .ok_or(Error::String(format!("Expected type `Table` for {key}")))?;
+    toml::Table::try_from(value).map_err(|err| {
+        Error::String(format!("cannot build toml table from removed value: {err}").into())
+    })
 }
 
 #[inline]
