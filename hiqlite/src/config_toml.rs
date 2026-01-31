@@ -339,7 +339,7 @@ fn t_i64(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Optio
     }
 
     let Value::Integer(i) = map.remove(key)? else {
-        panic!("{}", err_t(key, parent, "bool"));
+        panic!("{}", err_t(key, parent, "i64"));
     };
     Some(i)
 }
