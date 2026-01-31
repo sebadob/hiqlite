@@ -251,7 +251,7 @@ impl NodeConfig {
         });
         #[cfg(feature = "dashboard")]
         let insecure_cookie =
-            t_bool(&mut map, t_name, "insecure_cookie", "HQL_INSECURE_COOKIE").unwrap_or(false);
+            t_bool(&mut map, t_name, "insecure_cookie", "HQL_INSECURE_COOKIE")?.unwrap_or(false);
 
         #[cfg(any(feature = "s3", feature = "dashboard"))]
         let enc_keys = if let Some(keys) = enc_keys {
