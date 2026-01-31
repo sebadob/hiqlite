@@ -103,7 +103,7 @@ impl NodeConfig {
             .map(Cow::from)
             .unwrap_or_else(|| "hiqlite.db".into());
         let log_statements =
-            t_bool(&mut map, t_name, "log_statements", "HQL_LOG_STATEMENTS").unwrap_or(false);
+            t_bool(&mut map, t_name, "log_statements", "HQL_LOG_STATEMENTS")?.unwrap_or(false);
         let prepared_statement_cache_capacity =
             t_u16(&mut map, t_name, "prepared_statement_cache_capacity", "").unwrap_or(1000)
                 as usize;
@@ -144,11 +144,11 @@ impl NodeConfig {
         let tls_raft_key = t_str(&mut map, t_name, "tls_raft_key", "HQL_TLS_RAFT_KEY");
         let tls_raft_cert = t_str(&mut map, t_name, "tls_raft_cert", "HQL_TLS_RAFT_CERT");
         let tls_raft_danger_tls_no_verify =
-            t_bool(&mut map, t_name, "tls_raft_danger_tls_no_verify", "").unwrap_or(false);
+            t_bool(&mut map, t_name, "tls_raft_danger_tls_no_verify", "")?.unwrap_or(false);
         let tls_api_key = t_str(&mut map, t_name, "tls_api_key", "HQL_TLS_API_KEY");
         let tls_api_cert = t_str(&mut map, t_name, "tls_api_cert", "HQL_TLS_API_CERT");
         let tls_api_danger_tls_no_verify =
-            t_bool(&mut map, t_name, "tls_raft_danger_tls_no_verify", "").unwrap_or(false);
+            t_bool(&mut map, t_name, "tls_raft_danger_tls_no_verify", "")?.unwrap_or(false);
 
         #[allow(clippy::unnecessary_unwrap)]
         let tls_raft = if tls_raft_key.is_some() && tls_raft_cert.is_some() {
@@ -216,7 +216,7 @@ impl NodeConfig {
                 Error::String("Missing config variable `s3_region`".to_string()),
             )?;
             let path_style =
-                t_bool(&mut map, t_name, "s3_path_style", "HQL_S3_PATH_STYLE").unwrap_or(true);
+                t_bool(&mut map, t_name, "s3_path_style", "HQL_S3_PATH_STYLE")?.unwrap_or(true);
 
             let key = t_str(&mut map, t_name, "s3_key", "HQL_S3_KEY").ok_or(Error::String(
                 "Missing config variable `s3_key`".to_string(),
@@ -303,24 +303,25 @@ impl NodeConfig {
     }
 }
 
-fn t_bool(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<bool> {
-    if !env_var.is_empty()
-        && let Ok(v) = env::var(env_var)
-            .as_deref()
-            .map(|v| match v.parse::<bool>() {
-                Ok(b) => b,
-                Err(_) => {
-                    panic!("{}", err_env(env_var, "bool"));
-                }
-            })
-    {
-        return Some(v);
+fn t_bool(
+    map: &mut toml::Table,
+    parent: &str,
+    key: &str,
+    env_var: &str,
+) -> Result<Option<bool>, Error> {
+    if env_var.is_empty() {
+        let value: bool = map
+            .remove(key)
+            .and_then(|v| v.as_str().and_then(|v| v.parse::<bool>().ok()))
+            .ok_or(Error::String(err_t(key, parent, "bool")))?;
+        return Ok(Some(value));
     }
 
-    let Value::Boolean(b) = map.remove(key)? else {
-        panic!("{}", err_t(key, parent, "bool"));
-    };
-    Some(b)
+    let value: bool = env::var(env_var)
+        .ok()
+        .and_then(|v| v.parse::<bool>().ok())
+        .ok_or(Error::String(err_env(env_var, "bool")))?;
+    Ok(Some(value))
 }
 
 fn t_i64(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<i64> {
