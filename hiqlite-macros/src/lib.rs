@@ -1,5 +1,7 @@
 // Copyright 2025 Sebastian Dobe <sebastiandobe@mailbox.org>
 
+pub use hiqlite_derive::FromRow;
+
 pub mod embed {
     pub use rust_embed::{self, *};
 }
@@ -742,4 +744,45 @@ macro_rules! params {
             params
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use hiqlite_derive::FromRow;
+
+    #[allow(dead_code)]
+    #[derive(Debug, FromRow)]
+    struct Test {
+        pub id: i64,
+        #[column(rename = "name_db")]
+        name: String,
+        desc: Option<String>,
+        #[column(skip)]
+        desc2: Option<String>,
+        #[column(flatten)]
+        sub: Sub,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, FromRow)]
+    struct Sub {
+        id: i64,
+        name: String,
+    }
+
+    #[test]
+    fn from_row() {
+        // Just make sure that the From<Row> impl compiles fine.
+        #[allow(unused)]
+        let t = Test {
+            id: 13,
+            name: "Name".to_string(),
+            desc: Some("description".to_string()),
+            desc2: None,
+            sub: Sub {
+                id: 27,
+                name: "SubName".to_string(),
+            },
+        };
+    }
 }
