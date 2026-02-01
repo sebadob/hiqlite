@@ -1,6 +1,6 @@
 [package]
 name = "hiqlite"
-version = "0.12.2"
+version = "0.13.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -117,6 +117,7 @@ sha2.workspace = true
 spow = { workspace = true, optional = true }
 strum.workspace = true
 thiserror.workspace = true
+thread-priority.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 toml = { workspace = true, optional = true }

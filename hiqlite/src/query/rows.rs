@@ -6,7 +6,6 @@ use tracing::error;
 #[derive(Debug)]
 pub enum Row<'a> {
     Borrowed(&'a rusqlite::Row<'a>),
-    // TODO we could only include ValueOwned + ref to ColumnInfo -> smaller payloads
     Owned(RowOwned),
 }
 

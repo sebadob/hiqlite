@@ -18,7 +18,7 @@ pub fn from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 let id = field.ident.as_ref()?;
                 let ts = match column_attr(&field.attrs) {
                     ColumnAttr::Flatten => {
-                        quote!(#id: ::std::convert::TryFrom::try_from(row).unwrap(),)
+                        quote!(#id: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),)
                     }
                     ColumnAttr::Rename(rename) => quote!(#id: row.get(#rename),),
                     ColumnAttr::None => {
@@ -27,7 +27,6 @@ pub fn from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     }
                     ColumnAttr::Skip => quote!(#id: ::std::default::Default::default(),),
                 };
-
                 Some(ts)
             })
             .collect::<Vec<TokenStream>>(),
@@ -35,16 +34,16 @@ pub fn from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         Data::Union(_) => unimplemented!(),
     };
 
-    TokenStream::from(quote!(
-        impl #impl_generics ::std::convert::From<::hiqlite::Row<'_>> for #name #ty_generics #where_clause {
+    quote!(
+        impl #impl_generics ::std::convert::From<&mut ::hiqlite::Row<'_>> for #name #ty_generics #where_clause {
             #[inline]
-            fn from(mut row: ::hiqlite::Row) -> Self {
+            fn from(row: &mut ::hiqlite::Row) -> Self {
                 Self {
                     #(#body)*
                 }
             }
         }
-    )).into()
+    ).into()
 }
 
 enum ColumnAttr {
@@ -58,20 +57,38 @@ fn column_attr(attrs: &[Attribute]) -> ColumnAttr {
     attrs
         .iter()
         .find_map(|attr| {
-            if let Meta::List(MetaList { path, tokens, .. }) = &attr.meta {
-                if path.segments.first()?.ident == "column" {
-                    let mut tokens = tokens.clone().into_iter();
-                    match tokens.next()?.to_string().as_str() {
-                        "skip" => return Some(ColumnAttr::Skip),
-                        "flatten" => return Some(ColumnAttr::Flatten),
-                        "rename" => {
-                            if matches!(tokens.next()?, TokenTree::Punct(p) if p.as_char() == '=') {
-                                if let TokenTree::Literal(lit) = tokens.next()? {
-                                    return Some(ColumnAttr::Rename(lit));
-                                }
-                            }
+            if let Meta::List(MetaList { path, tokens, .. }) = &attr.meta
+                && path.segments.first()?.ident == "column"
+            {
+                let mut tokens = tokens.clone().into_iter();
+                match tokens.next()?.to_string().as_str() {
+                    "skip" => return Some(ColumnAttr::Skip),
+                    "flatten" => return Some(ColumnAttr::Flatten),
+                    "rename" => {
+                        if matches!(tokens.next()?, TokenTree::Punct(p) if p.as_char() == '=')
+                            && let TokenTree::Literal(lit) = tokens.next()?
+                        {
+                            return Some(ColumnAttr::Rename(lit));
+                        } else {
+                            panic!(
+                                r#"
+Invalid syntax for '#[column(rename)]', expected something like:
+
+#[column(rename = "my_column")]
+"#
+                            );
                         }
-                        _ => {}
+                    }
+                    _ => {
+                        panic!(
+                            r#"
+Invalid syntax for '#[column]' attribute, expected one of:
+
+- skip
+- flatten
+- rename = "my_column"
+"#
+                        );
                     }
                 }
             }

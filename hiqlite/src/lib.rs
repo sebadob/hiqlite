@@ -1,4 +1,4 @@
-// Copyright 2025 Sebastian Dobe <sebastiandobe@mailbox.org>
+// Copyright 2026 Sebastian Dobe <sebastiandobe@mailbox.org>
 
 #![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
@@ -12,6 +12,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 use crate::store::state_machine::sqlite::state_machine::Response;
 pub use hiqlite_wal::LogSync;
 pub use openraft::SnapshotPolicy;
+pub use query::rows::ValueOwned as Column;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 
