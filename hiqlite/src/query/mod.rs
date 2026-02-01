@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::task;
 use tracing::info;
 
+pub mod cust_types;
 pub mod rows;
 
 pub(crate) async fn query_consistent_local<S>(

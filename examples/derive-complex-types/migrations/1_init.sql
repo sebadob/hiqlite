@@ -6,6 +6,7 @@ CREATE TABLE complex
     -- renamed via attribute
     name_db    TEXT    NOT NULL,
     desc       TEXT,
+    vec_wrap   TEXT,
     some_int   INTEGER NOT NULL,
 
     -- these will be mapped to our `EntitySub`

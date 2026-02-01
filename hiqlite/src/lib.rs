@@ -15,6 +15,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 use crate::store::state_machine::sqlite::state_machine::Response;
 pub use hiqlite_wal::LogSync;
 pub use openraft::SnapshotPolicy;
+pub use query::cust_types::VecText;
 pub use query::rows::ValueOwned as Column;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};

@@ -1,6 +1,6 @@
-use hiqlite::{Error, NodeConfig};
+use hiqlite::{Error, NodeConfig, VecText};
 use hiqlite_macros::embed::*;
-use hiqlite_macros::{params, FromRow};
+use hiqlite_macros::{FromRow, params};
 use std::fmt::{Debug, Display};
 use tokio::fs;
 use tracing_subscriber::EnvFilter;
@@ -37,11 +37,15 @@ struct Migrations;
 /// - `column(flatten)` can be used for any type that cannot be directly converted. You will use
 ///   this for all `struct`s, enums, or whatever other custom types you may have.
 #[derive(Debug, FromRow)]
+#[allow(dead_code)]
 struct Entity {
     id: i64,
     #[column(rename = "name_db")]
     name: String,
     desc: Option<String>,
+    /// This is using a smart wrapper type. This is `TEXT` column-backed and can be used to easily
+    /// convert into a `Vec<_>` later on, since SQLite does not support arrays natively.
+    vec_wrap: VecText<'\n'>,
     #[column(flatten)]
     sub: EntitySub,
     #[column(skip)]
@@ -57,6 +61,7 @@ struct Entity {
 }
 
 #[derive(Debug, FromRow)]
+#[allow(dead_code)]
 struct EntitySub {
     #[column(rename = "sub_id")]
     id: i64,
@@ -67,11 +72,13 @@ struct EntitySub {
 }
 
 #[derive(Debug, FromRow)]
+#[allow(dead_code)]
 struct EntitySubSub {
     secret: String,
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum MyEnum {
     Empty,
     One,
@@ -119,16 +126,20 @@ async fn main() -> Result<(), Error> {
     client.migrate::<Migrations>().await?;
 
     log("Insert a row");
+
+    let vec_wrap: VecText<'\n'> = VecText::new(&["Entry 1", "Entry 2", "And another one"])?;
+
     client
         .execute(
             r#"
-INSERT INTO complex (id, name_db, desc, some_int, sub_id, sub_name, secret, enum_value)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO complex (id, name_db, desc, vec_wrap, some_int, sub_id, sub_name, secret, enum_value)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 "#,
             params!(
                 13,
                 "Base Name",
                 "Some Description",
+                vec_wrap,
                 27,
                 1337,
                 "Sub Name",
@@ -145,6 +156,12 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         .await?;
 
     debug(&res);
+
+    let vs: Vec<String> = res.vec_wrap.into_vec()?;
+    log(format!(
+        "We can convert our smart Wrapper `VecText` easily into a `Vec<String>` \
+        for instance: {vs:?}"
+    ));
 
     log("That's it - our complex Entity mapped successfully");
 
