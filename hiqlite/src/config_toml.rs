@@ -80,7 +80,7 @@ impl NodeConfig {
         } else {
             t_type::<u64>(&mut map, t_name, "node_id", "HQL_NODE_ID")?.unwrap_or(0)
         };
-        let nodes = if let Some(nodes) = t_str_vec(&mut map, t_name, "nodes", "HQL_NODES") {
+        let nodes = if let Some(nodes) = t_str_vec(&mut map, t_name, "nodes", "HQL_NODES")? {
             nodes
                 .into_iter()
                 .map(|n| Node::from(n.as_str()))
@@ -279,7 +279,7 @@ impl NodeConfig {
                 t_type::<String>(&mut map, t_name, "enc_key_active", "ENC_KEY_ACTIVE")?.ok_or(
                     Error::String(format!("{t_name}.enc_key_active is a mandatory value")),
                 )?;
-            let enc_keys = t_str_vec(&mut map, t_name, "enc_keys", "ENC_KEYS").ok_or(
+            let enc_keys = t_str_vec(&mut map, t_name, "enc_keys", "ENC_KEYS")?.ok_or(
                 Error::String(format!("{t_name}.enc_keys is a mandatory value")),
             )?;
             cryptr::EncKeys::try_parse(enc_key_active, enc_keys)?
@@ -345,35 +345,42 @@ where
     Ok(Some(value))
 }
 
-fn t_str_vec(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<Vec<String>> {
-    if !env_var.is_empty()
-        && let Ok(arr) = env::var(env_var)
-    {
-        return Some(
-            arr.lines()
-                .filter_map(|l| {
-                    let trimmed = l.trim().to_string();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed)
-                    }
-                })
-                .collect(),
-        );
+fn t_str_vec(
+    map: &mut toml::Table,
+    parent: &str,
+    key: &str,
+    env_var: &str,
+) -> Result<Option<Vec<String>>, Error> {
+    if env_var.is_empty() {
+        let Value::Array(arr) = map
+            .remove(key)
+            .ok_or(Error::String(err_t(key, parent, "Array")))?
+        else {
+            return Ok(None);
+        };
+        let mut res = Vec::with_capacity(arr.len());
+        for value in arr {
+            let Value::String(s) = value else {
+                return Err(err_t(key, parent, "String").into());
+            };
+            res.push(s);
+        }
+        return Ok(Some(res));
     }
 
-    let Value::Array(arr) = map.remove(key)? else {
-        return None;
-    };
-    let mut res = Vec::with_capacity(arr.len());
-    for value in arr {
-        let Value::String(s) = value else {
-            panic!("{}", err_t(key, parent, "String"));
-        };
-        res.push(s);
-    }
-    Some(res)
+    let arr: String = env::var(env_var).map_err(|_| Error::String(err_env(env_var, "String")))?;
+    Ok(Some(
+        arr.lines()
+            .filter_map(|l| {
+                let trimmed = l.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            })
+            .collect(),
+    ))
 }
 
 fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
