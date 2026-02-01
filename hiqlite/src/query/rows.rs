@@ -271,7 +271,7 @@ impl TryFrom<ValueOwned> for Option<i64> {
 }
 
 #[cfg(any(feature = "cast_ints", feature = "cast_ints_unchecked"))]
-mod downcast {
+mod cast_ints {
     impl TryFrom<super::ValueOwned> for u64 {
         type Error = crate::Error;
 

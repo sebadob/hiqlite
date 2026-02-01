@@ -9,6 +9,7 @@ use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
+use thread_priority::ThreadPriority;
 use tokio::sync::oneshot;
 use tokio::time::Interval;
 use tokio::{task, time};
@@ -168,6 +169,8 @@ fn run(
     sync: LogSync,
     wal_size: u32,
 ) -> Result<(), Error> {
+    let _ = ThreadPriority::Max.set_for_current();
+
     let mut is_dirty = false;
     let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
     let data_len_limit = wal_size as usize - wal.active().offset_logs() - 2;
