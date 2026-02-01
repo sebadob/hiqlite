@@ -772,7 +772,7 @@ mod tests {
 
     #[test]
     fn from_row() {
-        // Just make sure that the `From<Row>` impl compiles fine.
+        // Just make sure that the `From<&mut Row<'_>` impl compiles fine.
         #[allow(unused)]
         let t = Test {
             id: 13,

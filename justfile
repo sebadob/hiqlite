@@ -120,12 +120,12 @@ docs:
     cargo +nightly doc --all-features --no-deps --open
 
 # runs the full set of tests
-test:
+test test="":
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
     # we need to run the tests with nightly to not get an error for docs auto cfg
-    RUSTFLAGS="--cfg tokio_unstable" cargo +nightly test --features cache,counters,dlock,listen_notify,toml
+    RUSTFLAGS="--cfg tokio_unstable" cargo +nightly test --features cache,counters,dlock,listen_notify,toml {{ test }}
 
 # builds the code
 build ty="server":

@@ -96,8 +96,8 @@ impl CacheIndex for Cache {
 }
 
 // This impl is needed for `query_map()` which gives you more control
-impl From<Row<'_>> for Entity {
-    fn from(mut row: Row<'_>) -> Self {
+impl From<&mut Row<'_>> for Entity {
+    fn from(row: &mut Row<'_>) -> Self {
         Self {
             id: row.get("id"),
             num: row.get("num"),
@@ -214,7 +214,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
 
         // The `.query_as` can be used for types that implement serde::Serialize / ::Deserialize.
         // This is easier and less work to implement, but a bit less efficient and slower than a
-        // manual implementation of `From<Row>`.
+        // manual implementation of `From<&mut Row<'_>`.
 
         let res: Entity = client
             .query_as_one("SELECT * FROM test WHERE id = $1", params!("id1"))

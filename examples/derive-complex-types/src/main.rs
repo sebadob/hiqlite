@@ -163,6 +163,11 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         for instance: {vs:?}"
     ));
 
+    // You can also convert to int `Vec`s and many other types like so:
+    let v = VecText::<','>::new(&[1, 2, -3])?;
+    let r = v.parse::<i32>()?;
+    assert_eq!(&[1, 2, -3], r.as_slice());
+
     log("That's it - our complex Entity mapped successfully");
 
     Ok(())

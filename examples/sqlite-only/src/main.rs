@@ -20,8 +20,8 @@ struct Entity {
 }
 
 // This impl is needed for `query_map()` which gives you more control
-impl<'r> From<Row<'r>> for Entity {
-    fn from(mut row: Row<'r>) -> Self {
+impl From<&mut Row<'_>> for Entity {
+    fn from(row: &mut Row<'_>) -> Self {
         Self {
             id: row.get("id"),
             num: row.get("num"),
@@ -67,7 +67,7 @@ async fn main() -> Result<(), Error> {
 
     // The `.query_as` can be used for types that implement serde::Serialize / ::Deserialize.
     // This is easier and less work to implement, but you have less control compared to a manual
-    // `impl<'r> From<Row<'r>>`
+    // `impl From<&mut Row<'_>>`
 
     let res: Entity = client
         .query_as_one("SELECT * FROM test WHERE id = $1", params!("id1"))

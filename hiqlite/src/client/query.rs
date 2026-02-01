@@ -54,7 +54,7 @@ impl Client {
 
     /// Query data from the database and map it to the given `struct`.
     ///
-    /// The `struct` must implement `impl<'r> From<hiqlite::Row<'r>>` for this to work:
+    /// The `struct` must implement `impl From<&mut hiqlite::Row<'_>>` for this to work:
     ///
     /// ```rust, notest
     /// #[derive(Debug)]
@@ -64,8 +64,8 @@ impl Client {
     ///     pub description: Option<String>,
     /// }
     ///
-    /// impl<'r> From<Row<'r>> for MyStruct {
-    ///     fn from(mut row: Row<'r>) -> Self {
+    /// impl From<&mut Row<'_>> for MyStruct {
+    ///     fn from(row: &mut Row<'_>) -> Self {
     ///         Self {
     ///             id: row.get("id"),
     ///             num: row.get("num"),

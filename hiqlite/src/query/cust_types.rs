@@ -83,10 +83,13 @@ impl<const S: char> VecText<S> {
     #[inline]
     pub fn into_vec<T>(self) -> Result<Vec<T>, Error>
     where
-        T: Debug + Display + for<'a> TryFrom<&'a str>,
+        T: for<'a> TryFrom<&'a str>,
     {
         let mut res: Vec<T> = Vec::new();
         for line in self.0.split(S) {
+            if line.is_empty() {
+                continue;
+            }
             let t = T::try_from(line)
                 .map_err(|_| Error::Error("Cannot convert VecLf into Vec<_>".into()))?;
             res.push(t);
@@ -97,12 +100,60 @@ impl<const S: char> VecText<S> {
     #[inline]
     pub fn into_vec_opt<T>(self) -> Result<Option<Vec<T>>, Error>
     where
-        T: Debug + Display + for<'a> TryFrom<&'a str>,
+        T: for<'a> TryFrom<&'a str>,
     {
         if self.0.is_empty() {
             Ok(None)
         } else {
             Ok(Some(self.into_vec()?))
         }
+    }
+
+    #[inline]
+    pub fn parse<T>(self) -> Result<Vec<T>, Error>
+    where
+        T: ::std::str::FromStr,
+    {
+        let mut res: Vec<T> = Vec::new();
+        for line in self.0.split(S) {
+            if line.is_empty() {
+                continue;
+            }
+            let t: T = line
+                .parse()
+                .map_err(|_| Error::Error("Cannot convert VecLf into Vec<_>".into()))?;
+            res.push(t);
+        }
+        Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vec_text() {
+        // make sure conversions work as expected with the generic args
+
+        let v: VecText<'\n'> = VecText::new(&["Entry 1", "Entry 2", "And another one"]).unwrap();
+        // parse() will work here as well. The different impls just provide more flexibility.
+        let r = v.into_vec::<String>().unwrap();
+        assert_eq!(
+            vec![
+                "Entry 1".to_string(),
+                "Entry 2".to_string(),
+                "And another one".to_string()
+            ],
+            r
+        );
+
+        let v: VecText<','> = VecText::new(&[1, 2, -3]).unwrap();
+        let r = v.parse::<i32>().unwrap();
+        assert_eq!(&[1, 2, -3], r.as_slice());
+
+        let v: VecText<';'> = VecText::new(&[1, 2, 13]).unwrap();
+        let r = v.parse::<u8>().unwrap();
+        assert_eq!(&[1, 2, 13], r.as_slice());
     }
 }

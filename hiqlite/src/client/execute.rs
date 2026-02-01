@@ -79,7 +79,7 @@ impl Client {
     /// Execute a query on the database that includes a `RETURNING` statement.
     ///
     /// Returns the rows mapped to the output type on success. This only works for types that
-    /// `impl<'r> From<hiqlite::Row<'r>>`
+    /// `impl From<&mut hiqlite::Row<'_>>`
     pub async fn execute_returning_map<S, T>(
         &self,
         sql: S,
@@ -87,12 +87,12 @@ impl Client {
     ) -> Result<Vec<Result<T, Error>>, Error>
     where
         S: Into<Cow<'static, str>>,
-        T: for<'r> From<crate::Row<'r>> + Send + 'static,
+        T: for<'a, 'r> From<&'a mut crate::Row<'r>> + Send + 'static,
     {
         let rows: Vec<Result<crate::Row, Error>> = self.execute_returning::<S>(sql, params).await?;
         let mut res: Vec<Result<T, Error>> = Vec::with_capacity(rows.len());
         for row in rows {
-            res.push(row.map(T::from))
+            res.push(row.map(|mut row| T::from(&mut row)))
         }
         Ok(res)
     }
@@ -100,13 +100,13 @@ impl Client {
     /// Execute a query on the database that includes a `RETURNING` statement.
     ///
     /// Returns the row mapped to the output type on success. This only works for types that
-    /// `impl<'r> From<hiqlite::Row<'r>>`.
+    /// `impl From<&mut hiqlite::Row<'_>>`.
     ///
     /// Throws an error if not exactly 1 row has been returned.
     pub async fn execute_returning_map_one<S, T>(&self, sql: S, params: Params) -> Result<T, Error>
     where
         S: Into<Cow<'static, str>>,
-        T: for<'r> From<crate::Row<'r>> + Send + 'static,
+        T: for<'a, 'r> From<&'a mut crate::Row<'r>> + Send + 'static,
     {
         let mut rows = self.execute_returning_map::<S, T>(sql, params).await?;
         if rows.is_empty() {

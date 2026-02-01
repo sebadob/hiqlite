@@ -20,8 +20,8 @@ struct Data {
     json: serde_json::Value,
 }
 
-impl<'r> From<hiqlite::Row<'r>> for Data {
-    fn from(mut row: Row) -> Self {
+impl From<&mut Row<'_>> for Data {
+    fn from(row: &mut Row) -> Self {
         Self {
             id: row.get("id"),
             id_none: row.get("id_none"),
