@@ -82,7 +82,8 @@ clippy:
     cargo clippy
     cargo clippy --no-default-features
 
-    cargo clippy --no-default-features --features sqlite
+    cargo clippy --no-default-features --features sqlite,cast_ints
+    cargo clippy --no-default-features --features sqlite,cast_ints_unchecked
     # auto-heal should only apply to sqlite
     cargo clippy --no-default-features --features auto-heal
     cargo clippy --no-default-features --features sqlite,auto-heal
