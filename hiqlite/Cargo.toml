@@ -34,6 +34,8 @@ dashboard = [
     "sqlite",
 ]
 dlock = ["cache"]
+cast_ints = []
+cast_ints_unchecked = []
 full = [
     "auto-heal",
     "backup",

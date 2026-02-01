@@ -237,6 +237,7 @@ pub enum ValueOwned {
 }
 
 impl ValueOwned {
+    #[inline]
     fn try_as_str(&self) -> Result<&str, Error> {
         match self {
             ValueOwned::Text(s) => Ok(s.as_str()),
@@ -248,6 +249,7 @@ impl ValueOwned {
 impl TryFrom<ValueOwned> for i64 {
     type Error = crate::Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Integer(i) => Ok(i),
@@ -259,6 +261,7 @@ impl TryFrom<ValueOwned> for i64 {
 impl TryFrom<ValueOwned> for Option<i64> {
     type Error = crate::Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
@@ -267,9 +270,86 @@ impl TryFrom<ValueOwned> for Option<i64> {
     }
 }
 
+#[cfg(any(feature = "cast_ints", feature = "cast_ints_unchecked"))]
+mod downcast {
+    impl TryFrom<super::ValueOwned> for u64 {
+        type Error = crate::Error;
+
+        #[inline]
+        fn try_from(value: super::ValueOwned) -> Result<Self, Self::Error> {
+            let i = i64::try_from(value)?;
+            if i < 0 { Ok(0) } else { Ok(i as u64) }
+        }
+    }
+
+    impl TryFrom<super::ValueOwned> for Option<u64> {
+        type Error = crate::Error;
+
+        #[inline]
+        fn try_from(value: super::ValueOwned) -> Result<Option<u64>, Self::Error> {
+            let i: Option<i64> = value.try_into()?;
+            Ok(i.map(|i| i as u64))
+        }
+    }
+
+    macro_rules! downcast_int(
+        ($t:ty) => (
+            impl TryFrom<super::ValueOwned> for $t {
+                type Error = crate::Error;
+
+                #[inline]
+                fn try_from(value: super::ValueOwned) -> Result<Self, Self::Error> {
+                    let i = i64::try_from(value)?;
+
+                    #[cfg(feature = "cast_ints_unchecked")]
+                    return Ok(i as $t);
+
+                    #[cfg(feature = "cast_ints")]
+                    if i < 0 {
+                        Ok(::core::cmp::max(<$t>::MIN as i64, i) as $t)
+                    } else {
+                        Ok(::core::cmp::min(<$t>::MAX as i64, i) as $t)
+                    }
+                }
+            }
+        )
+    );
+
+    downcast_int!(i32);
+    downcast_int!(i16);
+    downcast_int!(i8);
+
+    downcast_int!(u32);
+    downcast_int!(u16);
+    downcast_int!(u8);
+
+    macro_rules! downcast_int_opt(
+        ($t:ty) => (
+            impl TryFrom<super::ValueOwned> for Option<$t> {
+                type Error = crate::Error;
+
+                #[inline]
+                fn try_from(value: super::ValueOwned) -> Result<Option<$t>, Self::Error> {
+                    let i: Option<i64> = value.try_into()?;
+                    Ok(i.map(|i| i as $t))
+                }
+            }
+        )
+    );
+
+    downcast_int_opt!(i32);
+    downcast_int_opt!(i16);
+    downcast_int_opt!(i8);
+
+    downcast_int_opt!(u32);
+    downcast_int_opt!(u16);
+    downcast_int_opt!(u8);
+}
+
 impl TryFrom<ValueOwned> for f64 {
     type Error = Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Real(r) => Ok(r),
@@ -281,6 +361,7 @@ impl TryFrom<ValueOwned> for f64 {
 impl TryFrom<ValueOwned> for Option<f64> {
     type Error = crate::Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
@@ -292,6 +373,7 @@ impl TryFrom<ValueOwned> for Option<f64> {
 impl TryFrom<ValueOwned> for bool {
     type Error = crate::Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Integer(i) => Ok(i == 1),
@@ -305,6 +387,7 @@ impl TryFrom<ValueOwned> for bool {
 impl TryFrom<ValueOwned> for Option<bool> {
     type Error = crate::Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
@@ -316,6 +399,7 @@ impl TryFrom<ValueOwned> for Option<bool> {
 impl TryFrom<ValueOwned> for String {
     type Error = crate::Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Text(s) => Ok(s),
@@ -327,6 +411,7 @@ impl TryFrom<ValueOwned> for String {
 impl TryFrom<ValueOwned> for Option<String> {
     type Error = crate::Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
@@ -338,6 +423,7 @@ impl TryFrom<ValueOwned> for Option<String> {
 impl TryFrom<ValueOwned> for Vec<u8> {
     type Error = Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Blob(b) => Ok(b),
@@ -349,6 +435,7 @@ impl TryFrom<ValueOwned> for Vec<u8> {
 impl TryFrom<ValueOwned> for Option<Vec<u8>> {
     type Error = crate::Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
@@ -360,6 +447,7 @@ impl TryFrom<ValueOwned> for Option<Vec<u8>> {
 impl<const N: usize> TryFrom<ValueOwned> for [u8; N] {
     type Error = crate::Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Blob(b) => Ok(b
@@ -373,6 +461,7 @@ impl<const N: usize> TryFrom<ValueOwned> for [u8; N] {
 impl<const N: usize> TryFrom<ValueOwned> for Option<[u8; N]> {
     type Error = crate::Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Null => Ok(None),
@@ -385,6 +474,7 @@ impl TryFrom<ValueOwned> for NaiveDate {
     type Error = crate::Error;
 
     /// "YYYY-MM-DD" => ISO 8601 calendar date without timezone.
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         let s = value.try_as_str()?;
         match Self::parse_from_str(s, "%F") {
@@ -398,6 +488,7 @@ impl TryFrom<ValueOwned> for NaiveTime {
     type Error = crate::Error;
 
     /// "HH:MM"/"HH:MM:SS"/"HH:MM:SS.SSS" => ISO 8601 time without timezone.
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         let s = value.try_as_str()?;
         let fmt = match s.len() {
@@ -419,6 +510,7 @@ impl TryFrom<ValueOwned> for NaiveDateTime {
     /// "YYYY-MM-DD HH:MM:SS"/"YYYY-MM-DD HH:MM:SS.SSS" => ISO 8601 combined date
     /// and time without timezone. ("YYYY-MM-DDTHH:MM:SS"/"YYYY-MM-DDTHH:MM:SS.SSS"
     /// also supported)
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         let s = value.try_as_str()?;
         let fmt = if s.len() >= 11 && s.as_bytes()[10] == b'T' {
@@ -438,6 +530,7 @@ impl TryFrom<ValueOwned> for DateTime<Utc> {
     type Error = crate::Error;
 
     /// RFC3339 ("YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM") into `DateTime<Utc>`.
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         {
             // Try to parse value as rfc3339 first.
@@ -463,6 +556,7 @@ impl TryFrom<ValueOwned> for DateTime<Local> {
     type Error = crate::Error;
 
     /// RFC3339 ("YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM") into `DateTime<Local>`.
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         let utc_dt = DateTime::<Utc>::try_from(value)?;
         Ok(utc_dt.with_timezone(&Local))
@@ -473,6 +567,7 @@ impl TryFrom<ValueOwned> for DateTime<FixedOffset> {
     type Error = crate::Error;
 
     /// RFC3339 ("YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM") into `DateTime<Local>`.
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         let s = value.try_as_str()?;
         Self::parse_from_rfc3339(s)
@@ -484,6 +579,7 @@ impl TryFrom<ValueOwned> for DateTime<FixedOffset> {
 impl TryFrom<ValueOwned> for serde_json::Value {
     type Error = crate::Error;
 
+    #[inline]
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         let slf = match value {
             ValueOwned::Null => serde_json::Value::Null,

@@ -4,6 +4,9 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(doc, feature(doc_auto_cfg))]
 
+#[cfg(all(feature = "cast_ints", feature = "cast_ints_unchecked"))]
+compile_error!("features `cast_ints` and `cast_ints_unchecked` are mutually exclusive!");
+
 #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;

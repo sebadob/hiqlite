@@ -46,7 +46,12 @@ struct Entity {
     sub: EntitySub,
     #[column(skip)]
     skipped: Option<String>,
-    some_int: i64,
+    /// Note: Because we enabled the `cast_ints` feature for `hiqlite`, we can use an
+    /// `i32` here. Even though such a cast is not safe by definition, because SQLite stores all
+    /// integers as i64, we can do the automatic downcast, when we are sure that only this Rust
+    /// program controls the input to the DB. In this case, Rust will give us the safety, even
+    /// though SQLite is able to store bigger integers than an `i32`.
+    some_int: i32,
     #[column(flatten)]
     my_enum: MyEnum,
 }
