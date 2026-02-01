@@ -118,6 +118,7 @@ Invalid syntax for '#[column(rename)]', expected something like:
 Invalid syntax for '#[column]' attribute, expected one of:
 
 - flatten
+- from_i64
 - from_str
 - from_string
 - rename = "my_column"
