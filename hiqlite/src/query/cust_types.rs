@@ -77,9 +77,7 @@ impl<const S: char> VecText<S> {
         }
         Ok(VecText(s))
     }
-}
 
-impl<const S: char> VecText<S> {
     #[inline]
     pub fn into_vec<T>(self) -> Result<Vec<T>, Error>
     where

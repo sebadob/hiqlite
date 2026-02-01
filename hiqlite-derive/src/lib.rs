@@ -10,6 +10,8 @@ pub fn from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let name = input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
+    let mut with_from_str = false;
+
     let body = match input.data {
         Data::Struct(data) => data
             .fields
@@ -18,14 +20,27 @@ pub fn from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 let id = field.ident.as_ref()?;
                 let ts = match column_attr(&field.attrs) {
                     ColumnAttr::Flatten => {
-                        quote!(#id: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),)
+                        quote! {#id: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),}
                     }
-                    ColumnAttr::Rename(rename) => quote!(#id: row.get(#rename),),
+                    ColumnAttr::FromI64 => {
+                        let raw_str = id.to_string();
+                        quote! {#id: row.get::<i64>(#raw_str).into(),}
+                    }
+                    ColumnAttr::FromStr => {
+                        with_from_str = true;
+                        let raw_str = id.to_string();
+                        quote! {#id: row.get::<String>(#raw_str).parse().unwrap(),}
+                    }
+                    ColumnAttr::FromString => {
+                        let raw_str = id.to_string();
+                        quote! {#id: row.get::<String>(#raw_str).into(),}
+                    }
                     ColumnAttr::None => {
                         let raw_str = id.to_string();
-                        quote!(#id: row.get(#raw_str),)
+                        quote! {#id: row.get(#raw_str),}
                     }
-                    ColumnAttr::Skip => quote!(#id: ::std::default::Default::default(),),
+                    ColumnAttr::Rename(rename) => quote! {#id: row.get(#rename),},
+                    ColumnAttr::Skip => quote! {#id: ::std::default::Default::default(),},
                 };
                 Some(ts)
             })
@@ -34,23 +49,38 @@ pub fn from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         Data::Union(_) => unimplemented!(),
     };
 
-    quote!(
+    let from_str = if with_from_str {
+        quote! {use ::std::str::FromStr;}
+    } else {
+        quote! {}
+    };
+
+    quote! {
         impl #impl_generics ::std::convert::From<&mut ::hiqlite::Row<'_>> for #name #ty_generics #where_clause {
             #[inline]
             fn from(row: &mut ::hiqlite::Row) -> Self {
+                #from_str
                 Self {
                     #(#body)*
                 }
             }
         }
-    ).into()
+    }.into()
 }
 
+// struct ColumnHandler {
+//     rename: Option<Literal>,
+//     attr: ColumnAttr,
+// }
+
 enum ColumnAttr {
-    Skip,
     Flatten,
+    FromI64,
+    FromStr,
+    FromString,
     None,
     Rename(Literal),
+    Skip,
 }
 
 fn column_attr(attrs: &[Attribute]) -> ColumnAttr {
@@ -62,8 +92,10 @@ fn column_attr(attrs: &[Attribute]) -> ColumnAttr {
             {
                 let mut tokens = tokens.clone().into_iter();
                 match tokens.next()?.to_string().as_str() {
-                    "skip" => return Some(ColumnAttr::Skip),
                     "flatten" => return Some(ColumnAttr::Flatten),
+                    "from_i64" => return Some(ColumnAttr::FromI64),
+                    "from_str" => return Some(ColumnAttr::FromStr),
+                    "from_string" => return Some(ColumnAttr::FromString),
                     "rename" => {
                         if matches!(tokens.next()?, TokenTree::Punct(p) if p.as_char() == '=')
                             && let TokenTree::Literal(lit) = tokens.next()?
@@ -79,14 +111,17 @@ Invalid syntax for '#[column(rename)]', expected something like:
                             );
                         }
                     }
+                    "skip" => return Some(ColumnAttr::Skip),
                     _ => {
                         panic!(
                             r#"
 Invalid syntax for '#[column]' attribute, expected one of:
 
-- skip
 - flatten
+- from_str
+- from_string
 - rename = "my_column"
+- skip
 "#
                         );
                     }

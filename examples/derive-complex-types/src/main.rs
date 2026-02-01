@@ -1,7 +1,10 @@
+#![allow(dead_code)]
+
 use hiqlite::{Error, NodeConfig, VecText};
 use hiqlite_macros::embed::*;
-use hiqlite_macros::{FromRow, params};
+use hiqlite_macros::{params, FromRow};
 use std::fmt::{Debug, Display};
+use std::str::FromStr;
 use tokio::fs;
 use tracing_subscriber::EnvFilter;
 
@@ -37,7 +40,6 @@ struct Migrations;
 /// - `column(flatten)` can be used for any type that cannot be directly converted. You will use
 ///   this for all `struct`s, enums, or whatever other custom types you may have.
 #[derive(Debug, FromRow)]
-#[allow(dead_code)]
 struct Entity {
     id: i64,
     #[column(rename = "name_db")]
@@ -45,6 +47,8 @@ struct Entity {
     desc: Option<String>,
     /// This is using a smart wrapper type. This is `TEXT` column-backed and can be used to easily
     /// convert into a `Vec<_>` later on, since SQLite does not support arrays natively.
+    /// In this example, `\n` will be used to separate the values, but it is free to choose.
+    /// Use whatever char cannot create a conflict with the data you want to save.
     vec_wrap: VecText<'\n'>,
     #[column(flatten)]
     sub: EntitySub,
@@ -58,10 +62,18 @@ struct Entity {
     some_int: i32,
     #[column(flatten)]
     my_enum: MyEnum,
+    /// If you have an `impl FromStr` for your type, you can use it for the conversion like so.
+    #[column(from_str)]
+    left_right: LeftRight,
+    /// for `From<String>` impls
+    #[column(from_string)]
+    up_down: UpDown,
+    /// for `From<i64>` impls
+    #[column(from_i64)]
+    number: Number,
 }
 
 #[derive(Debug, FromRow)]
-#[allow(dead_code)]
 struct EntitySub {
     #[column(rename = "sub_id")]
     id: i64,
@@ -72,13 +84,84 @@ struct EntitySub {
 }
 
 #[derive(Debug, FromRow)]
-#[allow(dead_code)]
 struct EntitySubSub {
     secret: String,
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
+enum LeftRight {
+    Left,
+    Right,
+}
+
+impl FromStr for LeftRight {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let slf = match s {
+            "left" => Self::Left,
+            "right" => Self::Right,
+            _ => {
+                return Err(Error::Error("parse err".into()));
+            }
+        };
+        Ok(slf)
+    }
+}
+
+impl LeftRight {
+    fn as_str(&self) -> &str {
+        match self {
+            LeftRight::Left => "left",
+            LeftRight::Right => "right",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum UpDown {
+    Up,
+    Down,
+}
+
+impl From<String> for UpDown {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "up" => Self::Up,
+            "down" => Self::Down,
+            _ => panic!("corrupted database"),
+        }
+    }
+}
+
+impl UpDown {
+    fn as_str(&self) -> &str {
+        match self {
+            UpDown::Up => "up",
+            UpDown::Down => "down",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum Number {
+    One = 1,
+    Two,
+    Three,
+}
+
+impl From<i64> for Number {
+    fn from(value: i64) -> Self {
+        match value {
+            1 => Self::One,
+            2 => Self::Two,
+            3 => Self::Three,
+            _ => panic!("corrupted database"),
+        }
+    }
+}
+
+#[derive(Debug)]
 enum MyEnum {
     Empty,
     One,
@@ -132,8 +215,11 @@ async fn main() -> Result<(), Error> {
     client
         .execute(
             r#"
-INSERT INTO complex (id, name_db, desc, vec_wrap, some_int, sub_id, sub_name, secret, enum_value)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO complex (
+    id, name_db, desc, vec_wrap, some_int, left_right, up_down, number, sub_id, sub_name, secret,
+    enum_value
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 "#,
             params!(
                 13,
@@ -141,6 +227,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 "Some Description",
                 vec_wrap,
                 27,
+                LeftRight::Left.as_str(),
+                UpDown::Up.as_str(),
+                Number::Two as i32,
                 1337,
                 "Sub Name",
                 "IAmSoSecureYouWillNeverGuess",
