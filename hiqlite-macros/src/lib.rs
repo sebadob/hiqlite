@@ -1,5 +1,6 @@
 // Copyright 2026 Sebastian Dobe <sebastiandobe@mailbox.org>
 
+pub use hiqlite_derive::CacheVariants;
 pub use hiqlite_derive::FromRow;
 
 pub mod embed {

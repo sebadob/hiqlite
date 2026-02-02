@@ -11,19 +11,19 @@ compile_error!("features `cast_ints` and `cast_ints_unchecked` are mutually excl
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[cfg(feature = "sqlite")]
-use crate::store::state_machine::sqlite::state_machine::Response;
 pub use hiqlite_wal::LogSync;
 pub use openraft::SnapshotPolicy;
-pub use query::cust_types::VecText;
-pub use query::rows::ValueOwned as Column;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 
+#[cfg(feature = "sqlite")]
+use crate::store::state_machine::sqlite::state_machine::Response;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use crate::{client::Client, error::Error};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use config::{NodeConfig, RaftConfig};
+#[cfg(feature = "sqlite")]
+pub use query::cust_types::VecText;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use tls::ServerTlsConfig;
 

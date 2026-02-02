@@ -2,7 +2,7 @@
 
 use hiqlite::{Error, NodeConfig, VecText};
 use hiqlite_macros::embed::*;
-use hiqlite_macros::{FromRow, params};
+use hiqlite_macros::{CacheVariants, FromRow, params};
 use std::fmt::{Debug, Display};
 use std::str::FromStr;
 use tokio::fs;
@@ -151,7 +151,7 @@ impl UpDown {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, CacheVariants)]
 enum Number {
     One = 1,
     Two,
@@ -198,6 +198,12 @@ impl From<&mut hiqlite::Row<'_>> for MyEnum {
         }
     }
 }
+
+// impl MyEnum {
+//     pub fn hiqlite_cache_variants() -> &'static [(i32, &'static str)] {
+//         &[(1, "Empty"), (2, "One")]
+//     }
+// }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
