@@ -329,19 +329,23 @@ fn t_type<T>(
 where
     T: FromStr,
 {
-    if env_var.is_empty() {
-        let value: T = map
-            .remove(key)
-            .and_then(|v| v.as_str().and_then(|v| v.parse::<T>().ok()))
-            .ok_or(Error::String(err_t(key, parent, type_name::<T>())))?;
-        return Ok(Some(value));
+    if !env_var.is_empty()
+        && let Ok(value) = env::var(env_var)
+    {
+        match value.parse::<T>() {
+            Ok(v) => Ok(Some(v)),
+            Err(_) => Err(Error::String(err_env(env_var, type_name::<T>()))),
+        }
+    } else if let Some(value) = map.remove(key)
+        && let Some(value) = value.as_str()
+    {
+        match value.parse::<T>() {
+            Ok(v) => Ok(Some(v)),
+            Err(_) => Err(Error::String(err_t(key, parent, type_name::<T>()))),
+        }
+    } else {
+        Ok(None)
     }
-
-    let value: T = env::var(env_var)
-        .ok()
-        .and_then(|v| v.parse::<T>().ok())
-        .ok_or(Error::String(err_env(env_var, type_name::<T>())))?;
-    Ok(Some(value))
 }
 
 fn t_str_vec(
@@ -350,36 +354,34 @@ fn t_str_vec(
     key: &str,
     env_var: &str,
 ) -> Result<Option<Vec<String>>, Error> {
-    if env_var.is_empty() {
-        let Value::Array(arr) = map
-            .remove(key)
-            .ok_or(Error::String(err_t(key, parent, "Array")))?
-        else {
-            return Ok(None);
-        };
-        let mut res = Vec::with_capacity(arr.len());
-        for value in arr {
-            let Value::String(s) = value else {
-                return Err(err_t(key, parent, "String").into());
-            };
-            res.push(s);
-        }
-        return Ok(Some(res));
+    if !env_var.is_empty()
+        && let Ok(arr) = env::var(env_var)
+    {
+        return Ok(Some(
+            arr.lines()
+                .filter_map(|l| {
+                    let trimmed = l.trim().to_string();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                })
+                .collect(),
+        ));
     }
 
-    let arr: String = env::var(env_var).map_err(|_| Error::String(err_env(env_var, "String")))?;
-    Ok(Some(
-        arr.lines()
-            .filter_map(|l| {
-                let trimmed = l.trim().to_string();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            })
-            .collect(),
-    ))
+    let Some(Value::Array(arr)) = map.remove(key) else {
+        return Ok(None);
+    };
+    let mut res = Vec::with_capacity(arr.len());
+    for value in arr {
+        let Value::String(s) = value else {
+            return Err(Error::String(err_t(key, parent, "String")));
+        };
+        res.push(s);
+    }
+    Ok(Some(res))
 }
 
 fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
