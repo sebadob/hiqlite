@@ -1,5 +1,4 @@
 use clap::Parser;
-use hiqlite::cache_idx::CacheIndex;
 use hiqlite::{start_node_with_cache, Client, Error, Node, NodeConfig};
 use hiqlite_macros::embed::*;
 use std::fmt::{Debug, Display};
@@ -174,16 +173,6 @@ async fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
 enum Cache {
     One,
     Two,
-}
-
-// This tiny block of boilerplate is necessary to index concurrent caches properly.
-// The result must always return each elements position in the iterator and this simple typecasting
-// is the easiest way to do it. It is checked for correctness and compared against the iterator
-// during startup.
-impl CacheIndex for Cache {
-    fn to_usize(self) -> usize {
-        self as usize
-    }
 }
 
 #[tokio::main]

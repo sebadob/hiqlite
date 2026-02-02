@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::network::raft_server;
 use crate::network::{api, management};
-use crate::{Client, Error, NodeConfig, init, split_brain_check, store};
+use crate::{CacheVariants, Client, Error, NodeConfig, init, split_brain_check, store};
 use axum::Router;
 use axum::routing::{get, post};
 use chrono::Utc;
@@ -23,7 +23,7 @@ use crate::dashboard;
 #[allow(clippy::extra_unused_type_parameters)]
 pub async fn start_node_inner<C>(node_config: NodeConfig) -> Result<Client, Error>
 where
-    C: Debug + strum::IntoEnumIterator + crate::cache_idx::CacheIndex,
+    C: Debug + CacheVariants,
 {
     node_config.is_valid()?;
 
@@ -57,6 +57,7 @@ where
     #[cfg(feature = "sqlite")]
     let raft_db =
         store::start_raft_db(&node_config, raft_config.clone(), _do_reset_metadata).await?;
+
     #[cfg(feature = "cache")]
     let raft_cache = store::start_raft_cache::<C>(&node_config, raft_config.clone()).await?;
 

@@ -1,7 +1,7 @@
 use crate::self_heal::test_self_healing;
 use futures_util::future::join_all;
-use hiqlite::cache_idx::CacheIndex;
 use hiqlite::Error;
+use hiqlite_derive::CacheVariants;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
@@ -44,17 +44,11 @@ macro_rules! params {
     };
 }
 
-#[derive(Debug, Serialize, Deserialize, strum::EnumIter)]
+#[derive(Debug, Serialize, Deserialize, CacheVariants)]
 enum Cache {
     One,
     Two,
     Three,
-}
-
-impl CacheIndex for Cache {
-    fn to_usize(self) -> usize {
-        self as usize
-    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

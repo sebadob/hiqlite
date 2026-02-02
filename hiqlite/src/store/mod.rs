@@ -2,7 +2,7 @@
 
 use crate::app_state::{AppState, RaftType};
 use crate::network::NetworkStreaming;
-use crate::{Error, NodeConfig, NodeId, RaftConfig, init};
+use crate::{CacheVariants, Error, NodeConfig, NodeId, RaftConfig, init};
 use hiqlite_wal::LogSync;
 use openraft::storage::RaftLogStorage;
 use openraft::{Raft, StorageError};
@@ -14,7 +14,6 @@ use std::mem;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
-use strum::IntoEnumIterator;
 use tokio::time;
 use tracing::info;
 
@@ -127,8 +126,10 @@ pub(crate) async fn start_raft_cache<C>(
     raft_config: Arc<RaftConfig>,
 ) -> Result<StateRaftCache, Error>
 where
-    C: Debug + IntoEnumIterator + crate::cache_idx::CacheIndex,
+    C: Debug + CacheVariants,
 {
+    // TODO add a check here and only start the cache layer, if the given Idx Enum is NOT empty
+
     // We always want to start stopped and set to `false` as soon as we found out,
     // that we are not pristine node and need cleanup.
     let is_raft_stopped = Arc::new(AtomicBool::new(true));

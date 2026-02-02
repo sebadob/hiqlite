@@ -1,11 +1,10 @@
-use crate::cache_idx::CacheIndex;
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
 use crate::helpers::deserialize;
 use crate::network::api::ApiStreamResponsePayload;
 use crate::network::serialize_network;
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
-use crate::{Client, Error};
+use crate::{CacheVariants, Client, Error};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -16,11 +15,11 @@ impl Client {
     /// Clears a single cache.
     pub async fn clear_cache<C>(&self, cache: C) -> Result<(), Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
     {
         self.cache_req_retry(
             CacheRequest::Clear {
-                cache_idx: cache.to_usize(),
+                cache_idx: cache.hiqlite_cache_index(),
             },
             false,
         )
@@ -33,11 +32,11 @@ impl Client {
     #[cfg(feature = "counters")]
     pub async fn clear_counters<C>(&self, cache: C) -> Result<(), Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
     {
         self.cache_req_retry(
             CacheRequest::ClearCounters {
-                cache_idx: cache.to_usize(),
+                cache_idx: cache.hiqlite_cache_index(),
             },
             false,
         )
@@ -70,7 +69,7 @@ impl Client {
     /// ```
     pub async fn get<C, K, V>(&self, cache: C, key: K) -> Result<Option<V>, Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
         K: Into<String>,
         V: for<'a> Deserialize<'a>,
     {
@@ -91,7 +90,7 @@ impl Client {
     /// Works in the same way as `.get()` without any value mapping.
     pub async fn get_bytes<C, K>(&self, cache: C, key: K) -> Result<Option<Vec<u8>>, Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
         K: Into<String>,
     {
         if let Some(state) = &self.inner.state {
@@ -99,7 +98,7 @@ impl Client {
             state
                 .raft_cache
                 .tx_caches
-                .get(cache.to_usize())
+                .get(cache.hiqlite_cache_index())
                 .unwrap()
                 .send(CacheRequestHandler::Get((key.into(), ack)))
                 .expect("kv handler to always be running");
@@ -111,7 +110,7 @@ impl Client {
             let res = self
                 .cache_req_retry(
                     CacheRequest::Get {
-                        cache_idx: cache.to_usize(),
+                        cache_idx: cache.hiqlite_cache_index(),
                         key: key.into(),
                     },
                     true,
@@ -131,7 +130,7 @@ impl Client {
     /// CAUTION: Entry expiry does not work on a snapshot. This is frozen in time and not live data!
     pub async fn get_snapshot<C, V>(&self, cache: C) -> Result<BTreeMap<String, V>, Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
         V: for<'a> Deserialize<'a>,
     {
         if let Some(state) = &self.inner.state {
@@ -139,7 +138,7 @@ impl Client {
             state
                 .raft_cache
                 .tx_caches
-                .get(cache.to_usize())
+                .get(cache.hiqlite_cache_index())
                 .unwrap()
                 .send(CacheRequestHandler::SnapshotBuildCacheOnly(ack))
                 .expect("kv handler to always be running");
@@ -184,7 +183,7 @@ impl Client {
         ttl: Option<i64>,
     ) -> Result<(), Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
         K: Into<Cow<'static, str>>,
         V: Serialize,
     {
@@ -202,12 +201,12 @@ impl Client {
         ttl: Option<i64>,
     ) -> Result<(), Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
         K: Into<Cow<'static, str>>,
     {
         self.cache_req_retry(
             CacheRequest::Put {
-                cache_idx: cache.to_usize(),
+                cache_idx: cache.hiqlite_cache_index(),
                 key: key.into(),
                 value,
                 expires: ttl.map(|seconds| Utc::now().timestamp().saturating_add(seconds)),
@@ -222,12 +221,12 @@ impl Client {
     /// `Delete` a value from the cache.
     pub async fn delete<C, K>(&self, cache: C, key: K) -> Result<(), Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
         K: Into<Cow<'static, str>>,
     {
         self.cache_req_retry(
             CacheRequest::Delete {
-                cache_idx: cache.to_usize(),
+                cache_idx: cache.hiqlite_cache_index(),
                 key: key.into(),
             },
             false,
@@ -241,7 +240,7 @@ impl Client {
     #[cfg(feature = "counters")]
     pub async fn counter_get<C, K>(&self, cache: C, key: K) -> Result<Option<i64>, Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
         K: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.inner.state {
@@ -249,7 +248,7 @@ impl Client {
             state
                 .raft_cache
                 .tx_caches
-                .get(cache.to_usize())
+                .get(cache.hiqlite_cache_index())
                 .unwrap()
                 .send(CacheRequestHandler::CounterGet((
                     key.into().to_string(),
@@ -264,7 +263,7 @@ impl Client {
             let res = self
                 .cache_req_retry(
                     CacheRequest::CounterGet {
-                        cache_idx: cache.to_usize(),
+                        cache_idx: cache.hiqlite_cache_index(),
                         key: key.into(),
                     },
                     true,
@@ -281,12 +280,12 @@ impl Client {
     #[cfg(feature = "counters")]
     pub async fn counter_set<C, K>(&self, cache: C, key: K, value: i64) -> Result<(), Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
         K: Into<Cow<'static, str>>,
     {
         self.cache_req_retry(
             CacheRequest::CounterSet {
-                cache_idx: cache.to_usize(),
+                cache_idx: cache.hiqlite_cache_index(),
                 key: key.into(),
                 value,
             },
@@ -301,13 +300,13 @@ impl Client {
     #[cfg(feature = "counters")]
     pub async fn counter_add<C, K>(&self, cache: C, key: K, value: i64) -> Result<i64, Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
         K: Into<Cow<'static, str>>,
     {
         let resp = self
             .cache_req_retry(
                 CacheRequest::CounterAdd {
-                    cache_idx: cache.to_usize(),
+                    cache_idx: cache.hiqlite_cache_index(),
                     key: key.into(),
                     value,
                 },
@@ -327,12 +326,12 @@ impl Client {
     #[cfg(feature = "counters")]
     pub async fn counter_del<C, K>(&self, cache: C, key: K) -> Result<(), Error>
     where
-        C: CacheIndex,
+        C: CacheVariants,
         K: Into<Cow<'static, str>>,
     {
         self.cache_req_retry(
             CacheRequest::CounterDel {
-                cache_idx: cache.to_usize(),
+                cache_idx: cache.hiqlite_cache_index(),
                 key: key.into(),
             },
             false,

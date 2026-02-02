@@ -11,12 +11,11 @@ pub fn impl_cache_variants(input: DeriveInput) -> proc_macro::TokenStream {
     match input.data {
         Data::Enum(e) => {
             for (idx, var) in e.variants.iter().enumerate() {
-                let i = idx as i32;
                 let id = &var.ident;
                 let name = id.to_string();
 
-                index_matches.push(quote! {Self::#id => #i,});
-                variants_return.push(quote! {(#i, #name)});
+                index_matches.push(quote! {Self::#id => #idx,});
+                variants_return.push(quote! {(#idx, #name)});
             }
         }
         Data::Struct(_) | Data::Union(_) => unimplemented!(),
@@ -25,13 +24,13 @@ pub fn impl_cache_variants(input: DeriveInput) -> proc_macro::TokenStream {
     quote! {
         impl ::hiqlite::CacheVariants for #impl_generics #name #ty_generics #where_clause {
             #[inline(always)]
-            fn hiqlite_cache_index(&self) -> i32 {
+            fn hiqlite_cache_index(&self) -> usize {
                 match self {
                     #(#index_matches)*
                 }
             }
 
-            fn hiqlite_cache_variants() -> &'static [(i32, &'static str)] {
+            fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
                 &[#(#variants_return),*]
             }
         }

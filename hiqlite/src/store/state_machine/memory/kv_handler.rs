@@ -40,17 +40,14 @@ pub enum CacheRequestHandler {
     CounterDel(String),
 }
 
-pub fn spawn<C: Debug>(cache: C) -> flume::Sender<CacheRequestHandler> {
+pub fn spawn(cache_name: &'static str) -> flume::Sender<CacheRequestHandler> {
     let (tx, rx) = flume::unbounded();
-    let cache_name = format!("{cache:?}");
-
     task::spawn(kv_handler(cache_name, rx));
-
     tx
 }
 
 #[tracing::instrument(level = "debug", skip(rx))]
-async fn kv_handler(cache_name: String, rx: flume::Receiver<CacheRequestHandler>) {
+async fn kv_handler(cache_name: &'static str, rx: flume::Receiver<CacheRequestHandler>) {
     info!(
         "Cache {} running on Thread {:?}",
         cache_name,

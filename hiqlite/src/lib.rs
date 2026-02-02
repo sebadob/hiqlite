@@ -37,6 +37,7 @@ pub use crate::store::state_machine::sqlite::{
 };
 #[cfg(feature = "dlock")]
 pub use client::dlock::Lock;
+use hiqlite_derive::CacheVariants;
 #[cfg(feature = "sqlite")]
 pub use migration::AppliedMigration;
 
@@ -65,8 +66,6 @@ mod tls;
 
 #[cfg(feature = "backup")]
 mod backup;
-#[cfg(any(feature = "sqlite", feature = "cache"))]
-pub mod cache_idx;
 #[cfg(feature = "dashboard")]
 mod dashboard;
 #[cfg(feature = "sqlite")]
@@ -90,10 +89,10 @@ type NodeId = u64;
 
 pub trait CacheVariants {
     /// Returns the Enum Variants index, strictly matching the output of `hiqlite_cache_variants()`.
-    fn hiqlite_cache_index(&self) -> i32;
+    fn hiqlite_cache_index(&self) -> usize;
 
     /// Returns the Enum Variants as `(idx, name)` in strictly ascending order, starting at `0`.
-    fn hiqlite_cache_variants() -> &'static [(i32, &'static str)];
+    fn hiqlite_cache_variants() -> &'static [(usize, &'static str)];
 }
 
 /// A Raft / Hiqlite node
@@ -122,20 +121,30 @@ impl Display for Node {
     }
 }
 
+#[cfg(feature = "sqlite")]
+mod empty {
+    use crate::CacheVariants;
+
+    #[derive(Debug)]
+    pub enum Empty {}
+
+    impl CacheVariants for Empty {
+        fn hiqlite_cache_index(&self) -> usize {
+            unreachable!()
+        }
+
+        fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
+            &[]
+        }
+    }
+}
+
 /// The main entry function to start a Raft / Hiqlite node.
 /// # Panics
 /// If an incorrect `node_config` was given.
 #[cfg(feature = "sqlite")]
 pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
-    #[derive(Debug, strum::EnumIter)]
-    enum Empty {}
-    impl cache_idx::CacheIndex for Empty {
-        fn to_usize(self) -> usize {
-            0
-        }
-    }
-
-    start::start_node_inner::<Empty>(node_config).await
+    start::start_node_inner::<empty::Empty>(node_config).await
 }
 
 /// The main entry function to start a Raft / Hiqlite node.
@@ -146,7 +155,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
 #[cfg(feature = "cache")]
 pub async fn start_node_with_cache<C>(node_config: NodeConfig) -> Result<Client, Error>
 where
-    C: Debug + strum::IntoEnumIterator + cache_idx::CacheIndex,
+    C: Debug + CacheVariants,
 {
     start::start_node_inner::<C>(node_config).await
 }
