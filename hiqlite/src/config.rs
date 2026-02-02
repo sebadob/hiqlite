@@ -116,7 +116,7 @@ impl Default for NodeConfig {
             nodes: vec![],
             listen_addr_api: "0.0.0.0".into(),
             listen_addr_raft: "0.0.0.0".into(),
-            data_dir: "hiqlite".into(),
+            data_dir: "data".into(),
             filename_db: "hiqlite.db".into(),
             log_statements: false,
             prepared_statement_cache_capacity: 1024,
