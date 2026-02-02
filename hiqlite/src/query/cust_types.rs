@@ -4,12 +4,18 @@ use rusqlite::types::{FromSqlResult, ValueRef};
 use std::fmt::{Debug, Display, Write};
 use tracing::error;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VecText<const S: char>(String);
 
 impl<const S: char> From<VecText<S>> for Param {
     fn from(value: VecText<S>) -> Self {
         Self::Text(value.0)
+    }
+}
+
+impl<const S: char> From<&VecText<S>> for Param {
+    fn from(value: &VecText<S>) -> Self {
+        Self::Text(value.0.clone())
     }
 }
 

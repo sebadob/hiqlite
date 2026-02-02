@@ -133,14 +133,14 @@ impl ColumnType {
         if let Some(t) = typ {
             // We will check "correct" types first for better speed with correct definitions.
             // SQLITE will convert int, integer, text, blob, real to UPPERCASE on creation.
-            if t.starts_with("INT") {
+            if t.starts_with("INT") || t.starts_with("int") {
                 return Self::Integer;
             }
 
             match t {
-                "TEXT" => Self::Text,
-                "BLOB" => Self::Blob,
-                "REAL" => Self::Real,
+                "TEXT" | "text" => Self::Text,
+                "BLOB" | "blob" => Self::Blob,
+                "REAL" | "real" => Self::Real,
                 _ => {
                     // When the proper types don't exist, try check type-affinity.
                     // Type affinity matches will NOT be converted to uppercase automatically!
@@ -149,7 +149,6 @@ impl ColumnType {
                         return Self::Blob;
                     }
 
-                    // A new allocation is less expensive than checking each match twice.
                     let ty = t.to_uppercase();
 
                     // 3.1. Determination Of Column Affinity from SQLite docs:
@@ -592,5 +591,89 @@ impl TryFrom<ValueOwned> for serde_json::Value {
             }
         };
         Ok(slf)
+    }
+}
+
+impl TryFrom<ValueOwned> for Option<url::Url> {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Text(s) => {
+                if s.is_empty() {
+                    return Ok(None);
+                }
+                match url::Url::parse(&s) {
+                    Ok(url) => Ok(Some(url)),
+                    Err(_) => Err(Error::Sqlite(
+                        "Cannot parse URL from given input: {s}".into(),
+                    )),
+                }
+            }
+            _ => Err(Error::Sqlite(
+                "Cannot only parse URL from TEXT column".into(),
+            )),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for url::Url {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Text(s) => match url::Url::parse(&s) {
+                Ok(url) => Ok(url),
+                Err(_) => Err(Error::Sqlite(
+                    "Cannot parse URL from given input: {s}".into(),
+                )),
+            },
+            _ => Err(Error::Sqlite(
+                "Cannot only parse URL from TEXT column".into(),
+            )),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for Option<uuid::Uuid> {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Blob(b) => {
+                if b.is_empty() {
+                    return Ok(None);
+                }
+                let bytes = <[u8; 16]>::try_from(b.as_slice()).map_err(|_| {
+                    Error::Sqlite("Invalid data in BLOB to be able to convert to UUID".into())
+                })?;
+                Ok(Some(uuid::Uuid::from_u128(u128::from_be_bytes(bytes))))
+            }
+            _ => Err(Error::Sqlite(
+                "Cannot only parse UUID from BLOB column".into(),
+            )),
+        }
+    }
+}
+
+impl TryFrom<ValueOwned> for uuid::Uuid {
+    type Error = crate::Error;
+
+    #[inline]
+    fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
+        match value {
+            ValueOwned::Blob(b) => {
+                let bytes = <[u8; 16]>::try_from(b.as_slice()).map_err(|_| {
+                    Error::Sqlite("Invalid data in BLOB to be able to convert to UUID".into())
+                })?;
+                Ok(uuid::Uuid::from_u128(u128::from_be_bytes(bytes)))
+            }
+            _ => Err(Error::Sqlite(
+                "Cannot only parse UUID from BLOB column".into(),
+            )),
+        }
     }
 }

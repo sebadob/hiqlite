@@ -2,7 +2,7 @@
 
 use hiqlite::{Error, NodeConfig, VecText};
 use hiqlite_macros::embed::*;
-use hiqlite_macros::{FromRow, params};
+use hiqlite_macros::{params, FromRow};
 use std::fmt::{Debug, Display};
 use std::str::FromStr;
 use tokio::fs;
@@ -100,6 +100,9 @@ struct EntitySub {
     name: String,
     #[column(flatten)]
     sub_sub: EntitySubSub,
+    url: Option<url::Url>,
+    /// UUIDs can be stored as `BLOB` and parsed directly
+    uuid: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, FromRow)]
@@ -230,26 +233,31 @@ async fn main() -> Result<(), Error> {
     log("Insert a row");
 
     let vec_wrap: VecText<'\n'> = VecText::new(&["Entry 1", "Entry 2", "And another one"])?;
+    let url: url::Url = "http://localhost:8080".parse().unwrap();
+    let uuid = uuid::Uuid::now_v7();
 
     client
         .execute(
             r#"
 INSERT INTO complex (
-    id, name_db, desc, vec_wrap, some_int, left_right, ud, num, sub_id, sub_name, secret, enum_value
+    id, name_db, desc, vec_wrap, some_int, left_right, ud, num, sub_id, sub_name, url, uuid,
+    secret, enum_value
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 "#,
             params!(
                 13,
                 "Base Name",
                 "Some Description",
-                vec_wrap,
+                &vec_wrap,
                 27,
                 LeftRight::Left.as_str(),
                 UpDown::Up.as_str(),
                 Number::Two as i32,
                 1337,
                 "Sub Name",
+                &url,
+                &uuid,
                 "IAmSoSecureYouWillNeverGuess",
                 "Some 'Other' value for MyEnum"
             ),
@@ -264,6 +272,27 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 
     debug(&res);
 
+    assert_eq!(res.id, 13);
+    assert_eq!(res.name, "Base Name");
+    assert_eq!(res.desc.as_deref(), Some("Some Description"));
+    assert_eq!(res.vec_wrap, vec_wrap);
+    assert_eq!(res.some_int, 27);
+    assert_eq!(res.left_right as i32, LeftRight::Left as i32);
+    assert_eq!(res.up_down as i32, UpDown::Up as i32);
+    assert_eq!(res.number as i32, Number::Two as i32);
+
+    assert_eq!(res.sub.id, 1337);
+    assert_eq!(res.sub.name, "Sub Name");
+    assert_eq!(res.sub.url, Some(url));
+    assert_eq!(res.sub.uuid, Some(uuid));
+
+    assert_eq!(res.sub.sub_sub.secret, "IAmSoSecureYouWillNeverGuess");
+    let MyEnum::Other(s) = res.my_enum else {
+        unreachable!()
+    };
+    assert_eq!(s, "Some 'Other' value for MyEnum");
+
+    // this is how we can convert the `VecText` into a real `Vec<_>`.
     let vs: Vec<String> = res.vec_wrap.into_vec()?;
     log(format!(
         "We can convert our smart Wrapper `VecText` easily into a `Vec<String>` \

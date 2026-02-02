@@ -15,6 +15,8 @@ CREATE TABLE complex
     -- these will be mapped to our `EntitySub`
     sub_id     INTEGER NOT NULL,
     sub_name   TEXT    NOT NULL,
+    url        TEXT,
+    uuid       BLOB,
 
     -- will be mapped to `EntitySubSub`
     secret     TEXT    NULL,
