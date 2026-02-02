@@ -88,6 +88,14 @@ pub mod server;
 
 type NodeId = u64;
 
+pub trait CacheVariants {
+    /// Returns the Enum Variants index, strictly matching the output of `hiqlite_cache_variants()`.
+    fn hiqlite_cache_index(&self) -> i32;
+
+    /// Returns the Enum Variants as `(idx, name)` in strictly ascending order, starting at `0`.
+    fn hiqlite_cache_variants() -> &'static [(i32, &'static str)];
+}
+
 /// A Raft / Hiqlite node
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Node {
