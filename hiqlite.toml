@@ -41,6 +41,8 @@ listen_addr_api = "0.0.0.0"
 listen_addr_raft = "0.0.0.0"
 
 # The data dir hiqlite will store raft logs and state machine data in.
+# `data_dir` must exist and be writable, even if cache only is used!
+# See also `cache_storage_disk`.
 #
 # default: data
 # overwritten by: HQL_DATA_DIR
@@ -141,6 +143,7 @@ wal_size = 2097152
 # all your cached data will be gone.
 # In-memory only hugegly increases the throughput though, so it
 # depends on your needs, what you should prefer.
+# See also `data_dir`.
 #
 # default: true
 # overwritten by: HQL_CACHE_STORAGE_DISK

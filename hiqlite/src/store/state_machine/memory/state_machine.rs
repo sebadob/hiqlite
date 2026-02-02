@@ -259,7 +259,9 @@ impl StateMachineMemory {
             // because otherwise there would be a gap in logs
             let _ = fs::remove_dir_all(&path_snapshots).await;
         }
-        fs::create_dir_all(&path_snapshots).await?;
+        fs::create_dir_all(&path_snapshots).await.map_err(|err| {
+            Error::String(format!("Cannot create directory '{path_snapshots}': {err}"))
+        })?;
         set_path_access(&path_sm, 0o700)
             .await
             .expect("Cannot set access rights for path_sm");
