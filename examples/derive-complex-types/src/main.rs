@@ -2,7 +2,7 @@
 
 use hiqlite::{Error, NodeConfig, VecText};
 use hiqlite_macros::embed::*;
-use hiqlite_macros::{params, FromRow};
+use hiqlite_macros::{FromRow, params};
 use std::fmt::{Debug, Display};
 use std::str::FromStr;
 use tokio::fs;
@@ -35,10 +35,17 @@ struct Migrations;
 /// ```
 ///
 /// You have the following `column` attributes available:
-/// - `column(rename = "name_db")` will rename the struct value to a different column name
-/// - `column(skip)` will skip that value in the `From<_>` impl and use `Default::default()`
-/// - `column(flatten)` can be used for any type that cannot be directly converted. You will use
+///
+/// - `rename = "name_db"` will rename the struct value to a different column name
+/// - `skip` will skip that value in the `From<_>` impl and use `Default::default()`
+/// - `flatten` can be used for any type that cannot be directly converted. You will use
 ///   this for all `struct`s, enums, or whatever other custom types you may have.
+/// - `from_str` if the `impl FromStr` for the type should be used
+/// - `from_string` if the `impl From<String>` for the type should be used
+/// - `from_i64` if the `impl From<i64>` for the type should be used
+///
+/// You can combine `rename` with one of the `from_*` attributes, but not with `skip` or `flatten`.
+/// The order does not amtter in this case.
 #[derive(Debug, FromRow)]
 struct Entity {
     id: i64,
@@ -66,10 +73,11 @@ struct Entity {
     #[column(from_str)]
     left_right: LeftRight,
     /// for `From<String>` impls
-    #[column(from_string)]
+    #[column(rename = "ud", from_string)]
     up_down: UpDown,
     /// for `From<i64>` impls
-    #[column(from_i64)]
+    /// The order when using `rename` does not matter.
+    #[column(from_i64, rename = "num")]
     number: Number,
 }
 
@@ -216,8 +224,7 @@ async fn main() -> Result<(), Error> {
         .execute(
             r#"
 INSERT INTO complex (
-    id, name_db, desc, vec_wrap, some_int, left_right, up_down, number, sub_id, sub_name, secret,
-    enum_value
+    id, name_db, desc, vec_wrap, some_int, left_right, ud, num, sub_id, sub_name, secret, enum_value
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 "#,

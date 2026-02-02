@@ -18,28 +18,49 @@ pub fn from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             .iter()
             .filter_map(|field| {
                 let id = field.ident.as_ref()?;
-                let ts = match column_attr(&field.attrs) {
+                let ch = ColumnHandler::from(field.attrs.as_slice());
+
+                let ts = match ch.attr {
                     ColumnAttr::Flatten => {
                         quote! {#id: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),}
                     }
                     ColumnAttr::FromI64 => {
-                        let raw_str = id.to_string();
-                        quote! {#id: row.get::<i64>(#raw_str).into(),}
+                        // TODO I don't really like doing this 4 times, but (probably becuase
+                        //  of lack of knowledge) some reason, when I use the `Literal.to_string()`
+                        //  in advance, it always outputs an escaped string. The `Ident` behaves
+                        //  differently.
+                        if let Some(name) = ch.rename {
+                            quote! {#id: row.get::<i64>(#name).into(),}
+                        } else {
+                            let name = id.to_string();
+                            quote! {#id: row.get::<i64>(#name).into(),}
+                        }
                     }
                     ColumnAttr::FromStr => {
                         with_from_str = true;
-                        let raw_str = id.to_string();
-                        quote! {#id: row.get::<String>(#raw_str).parse().unwrap(),}
+                        if let Some(name) = ch.rename {
+                            quote! {#id: row.get::<String>(#name).parse().unwrap(),}
+                        } else {
+                            let name = id.to_string();
+                            quote! {#id: row.get::<String>(#name).parse().unwrap(),}
+                        }
                     }
                     ColumnAttr::FromString => {
-                        let raw_str = id.to_string();
-                        quote! {#id: row.get::<String>(#raw_str).into(),}
+                        if let Some(name) = ch.rename {
+                            quote! {#id: row.get::<String>(#name).into(),}
+                        } else {
+                            let name = id.to_string();
+                            quote! {#id: row.get::<String>(#name).into(),}
+                        }
                     }
                     ColumnAttr::None => {
-                        let raw_str = id.to_string();
-                        quote! {#id: row.get(#raw_str),}
+                        if let Some(name) = ch.rename {
+                            quote! {#id: row.get(#name),}
+                        } else {
+                            let name = id.to_string();
+                            quote! {#id: row.get(#name),}
+                        }
                     }
-                    ColumnAttr::Rename(rename) => quote! {#id: row.get(#rename),},
                     ColumnAttr::Skip => quote! {#id: ::std::default::Default::default(),},
                 };
                 Some(ts)
@@ -68,10 +89,10 @@ pub fn from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     }.into()
 }
 
-// struct ColumnHandler {
-//     rename: Option<Literal>,
-//     attr: ColumnAttr,
-// }
+struct ColumnHandler {
+    rename: Option<Literal>,
+    attr: ColumnAttr,
+}
 
 enum ColumnAttr {
     Flatten,
@@ -79,43 +100,18 @@ enum ColumnAttr {
     FromStr,
     FromString,
     None,
-    Rename(Literal),
     Skip,
 }
 
-fn column_attr(attrs: &[Attribute]) -> ColumnAttr {
-    attrs
-        .iter()
-        .find_map(|attr| {
-            if let Meta::List(MetaList { path, tokens, .. }) = &attr.meta
-                && path.segments.first()?.ident == "column"
-            {
-                let mut tokens = tokens.clone().into_iter();
-                match tokens.next()?.to_string().as_str() {
-                    "flatten" => return Some(ColumnAttr::Flatten),
-                    "from_i64" => return Some(ColumnAttr::FromI64),
-                    "from_str" => return Some(ColumnAttr::FromStr),
-                    "from_string" => return Some(ColumnAttr::FromString),
-                    "rename" => {
-                        if matches!(tokens.next()?, TokenTree::Punct(p) if p.as_char() == '=')
-                            && let TokenTree::Literal(lit) = tokens.next()?
-                        {
-                            return Some(ColumnAttr::Rename(lit));
-                        } else {
-                            panic!(
-                                r#"
-Invalid syntax for '#[column(rename)]', expected something like:
+impl From<&[Attribute]> for ColumnHandler {
+    fn from(attrs: &[Attribute]) -> Self {
+        let mut rename: Option<Literal> = None;
+        let mut attr = ColumnAttr::None;
 
-#[column(rename = "my_column")]
-"#
-                            );
-                        }
-                    }
-                    "skip" => return Some(ColumnAttr::Skip),
-                    _ => {
-                        panic!(
-                            r#"
-Invalid syntax for '#[column]' attribute, expected one of:
+        let do_panic = |idx: String| {
+            panic!(
+                r#"
+Invalid syntax for '#[column]' - '{idx}' attribute, expected one of:
 
 - flatten
 - from_i64
@@ -123,12 +119,104 @@ Invalid syntax for '#[column]' attribute, expected one of:
 - from_string
 - rename = "my_column"
 - skip
+- rename may be combined with one of the from_* attributes
 "#
-                        );
+            )
+        };
+
+        for att in attrs {
+            let Meta::List(MetaList { path, tokens, .. }) = &att.meta else {
+                continue;
+            };
+            if let Some(seg) = path.segments.first()
+                && seg.ident != "column"
+            {
+                continue;
+            }
+
+            let mut stream = tokens.clone().into_iter();
+            let Some(tree) = stream.next() else {
+                do_panic("missing first argument".to_string());
+                break;
+            };
+            let value = tree.to_string();
+            match value.as_str() {
+                "flatten" => attr = ColumnAttr::Flatten,
+                "skip" => attr = ColumnAttr::Skip,
+                "rename" => {
+                    if matches!(stream.next(), Some(TokenTree::Punct(p)) if p.as_char() == '=')
+                        && let Some(TokenTree::Literal(lit)) = stream.next()
+                    {
+                        rename = Some(lit);
+
+                        // check possibly following from_* attr
+                        if let Some(tree) = stream.next() {
+                            let TokenTree::Punct(p) = tree else {
+                                do_panic("Invalid punctuation after rename".to_string());
+                                break;
+                            };
+                            if p.as_char() != ',' {
+                                do_panic(
+                                    "Invalid punctuation after rename, expected ','".to_string(),
+                                );
+                            }
+                            let Some(tree) = stream.next() else {
+                                do_panic("Missing value after rename".to_string());
+                                break;
+                            };
+                            let value = tree.to_string();
+                            match value.as_str() {
+                                "from_i64" => attr = ColumnAttr::FromI64,
+                                "from_str" => attr = ColumnAttr::FromStr,
+                                "from_string" => attr = ColumnAttr::FromString,
+                                _ => do_panic(format!(
+                                    "Invalid syntax for 'from_*' after 'rename': {value}"
+                                )),
+                            }
+                        }
+                    } else {
+                        do_panic("cannot parse 'rename'".to_string());
+                    }
+                }
+                other => {
+                    match other {
+                        "from_i64" => attr = ColumnAttr::FromI64,
+                        "from_str" => attr = ColumnAttr::FromStr,
+                        "from_string" => attr = ColumnAttr::FromString,
+                        _ => do_panic(format!("Invalid syntax for 'from_*': {other}")),
+                    }
+                    if let Some(tree) = stream.next() {
+                        let TokenTree::Punct(p) = tree else {
+                            do_panic("Invalid punctuation after rename".to_string());
+                            break;
+                        };
+                        if p.as_char() != ',' {
+                            do_panic("Invalid punctuation after rename, expected ','".to_string());
+                        }
+                        let Some(tree) = stream.next() else {
+                            do_panic("Missing value after rename".to_string());
+                            break;
+                        };
+                        let value = tree.to_string();
+                        if value != "rename" {
+                            do_panic(format!(
+                                "from_* attributes can only be combined with a rename, found: {value}"
+                            ));
+                            break;
+                        }
+
+                        if matches!(stream.next(), Some(TokenTree::Punct(p)) if p.as_char() == '=')
+                            && let Some(TokenTree::Literal(lit)) = stream.next()
+                        {
+                            rename = Some(lit);
+                        } else {
+                            do_panic("cannot parse 'rename' after 'from_*'".to_string());
+                        }
                     }
                 }
             }
-            None
-        })
-        .unwrap_or(ColumnAttr::None)
+        }
+
+        Self { rename, attr }
+    }
 }

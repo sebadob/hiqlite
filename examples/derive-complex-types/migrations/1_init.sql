@@ -9,8 +9,8 @@ CREATE TABLE complex
     vec_wrap   TEXT,
     some_int   INTEGER NOT NULL,
     left_right TEXT    NOT NULL,
-    up_down    TEXT    NOT NULL,
-    number     INTEGER NOT NULL,
+    ud         TEXT    NOT NULL,
+    num        INTEGER NOT NULL,
 
     -- these will be mapped to our `EntitySub`
     sub_id     INTEGER NOT NULL,
