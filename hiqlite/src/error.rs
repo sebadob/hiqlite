@@ -89,6 +89,9 @@ pub enum Error {
     WAL(String),
     #[error("WebSocket: {0}")]
     WebSocket(String),
+    #[cfg(feature = "toml")]
+    #[error("Error: {0}")]
+    String(String),
 }
 
 impl Error {
@@ -159,6 +162,8 @@ impl IntoResponse for Error {
             Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Error::WAL(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::WebSocket(_) => StatusCode::BAD_REQUEST,
+            #[cfg(feature = "toml")]
+            Error::String(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         (status, Json(self)).into_response()
@@ -396,5 +401,12 @@ impl From<Infallible> for Error {
     fn from(value: Infallible) -> Self {
         trace!("Infallible: {value}");
         Self::Error(value.to_string().into())
+    }
+}
+
+#[cfg(feature = "toml")]
+impl From<std::string::String> for Error {
+    fn from(err: std::string::String) -> Self {
+        Error::String(err)
     }
 }
