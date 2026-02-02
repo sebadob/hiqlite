@@ -1,7 +1,9 @@
 use crate::{Error, Node, NodeConfig, ServerTlsConfig};
 use hiqlite_wal::LogSync;
+use std::any::type_name;
 use std::borrow::Cow;
 use std::env;
+use std::str::FromStr;
 use tokio::fs;
 use toml::Value;
 
@@ -12,10 +14,6 @@ impl NodeConfig {
     ///
     /// You can overwrite most values from the file with ENV vars. If this is possible, it is
     /// mentioned in the documentation for each value.
-    ///
-    /// # Panics
-    ///
-    /// If any config values are incorrect, in an invalid format, or required ones are missing.
     pub async fn from_toml(
         path: &str,
         table: Option<&str>,
@@ -25,9 +23,9 @@ impl NodeConfig {
 
         let t_name = table.unwrap_or("hiqlite");
 
-        let Ok(config) = fs::read_to_string(path).await else {
-            panic!("Cannot read config file from: {path}");
-        };
+        let config = fs::read_to_string(path)
+            .await
+            .map_err(|err| Error::String(format!("Cannot read config file from: {path}: {err}")))?;
 
         // Note: these inner parsers are very verbose, but they allow the upfront memory allocation
         // and memory fragmentation, after the quite big toml has been freed and the config stays
@@ -35,10 +33,10 @@ impl NodeConfig {
 
         let mut root = config
             .parse::<toml::Table>()
-            .expect("Cannot parse TOML file");
-        let Some(table) = t_table(&mut root, t_name) else {
-            panic!("Cannot find table '{t_name}' in {path}");
-        };
+            .map_err(|err| Error::String(format!("Cannot parse TOML file: {err}")))?;
+        let table = t_table(&mut root, t_name).map_err(|err| {
+            Error::String(format!("Cannot find table '{t_name}' in {path}: {err}"))
+        })?;
 
         Self::from_toml_table(
             table,
@@ -55,10 +53,6 @@ impl NodeConfig {
     ///
     /// You can overwrite most values from the file with ENV vars. If this is possible, it is
     /// mentioned in the documentation for each value.
-    ///
-    /// # Panics
-    ///
-    /// If any config values are incorrect, in an invalid format, or required ones are missing.
     pub async fn from_toml_table(
         table: toml::Table,
         table_name: &str,
@@ -69,16 +63,18 @@ impl NodeConfig {
         let t_name = table_name;
         let mut map = table;
 
-        let node_id = if let Some(v) = t_str(&mut map, t_name, "node_id_from", "HQL_NODE_ID_FROM") {
+        let node_id = if let Some(v) =
+            t_type::<String>(&mut map, t_name, "node_id_from", "HQL_NODE_ID_FROM")?
+        {
             if v == "k8s" {
                 Self::node_id_from_hostname()
             } else {
-                t_u64(&mut map, t_name, "node_id", "HQL_NODE_ID").unwrap_or(0)
+                t_type::<u64>(&mut map, t_name, "node_id", "HQL_NODE_ID")?.unwrap_or(0)
             }
         } else {
-            t_u64(&mut map, t_name, "node_id", "HQL_NODE_ID").unwrap_or(0)
+            t_type::<u64>(&mut map, t_name, "node_id", "HQL_NODE_ID")?.unwrap_or(0)
         };
-        let nodes = if let Some(nodes) = t_str_vec(&mut map, t_name, "nodes", "HQL_NODES") {
+        let nodes = if let Some(nodes) = t_str_vec(&mut map, t_name, "nodes", "HQL_NODES")? {
             nodes
                 .into_iter()
                 .map(|n| Node::from(n.as_str()))
@@ -91,63 +87,69 @@ impl NodeConfig {
             }]
         };
 
-        let listen_addr_api = t_str(&mut map, t_name, "listen_addr_api", "HQL_LISTEN_ADDR_API")
-            .map(Cow::from)
-            .unwrap_or_else(|| "0.0.0.0".into());
-        let listen_addr_raft = t_str(&mut map, t_name, "listen_addr_raft", "HQL_LISTEN_ADDR_RAFT")
-            .map(Cow::from)
-            .unwrap_or_else(|| "0.0.0.0".into());
+        let listen_addr_api =
+            t_type::<String>(&mut map, t_name, "listen_addr_api", "HQL_LISTEN_ADDR_API")?
+                .map(Cow::from)
+                .unwrap_or_else(|| "0.0.0.0".into());
+        let listen_addr_raft =
+            t_type::<String>(&mut map, t_name, "listen_addr_raft", "HQL_LISTEN_ADDR_RAFT")?
+                .map(Cow::from)
+                .unwrap_or_else(|| "0.0.0.0".into());
 
-        let data_dir = t_str(&mut map, t_name, "data_dir", "HQL_DATA_DIR")
+        let data_dir = t_type::<String>(&mut map, t_name, "data_dir", "HQL_DATA_DIR")?
             .map(Cow::from)
             .unwrap_or_else(|| "data".into());
-        let filename_db = t_str(&mut map, t_name, "filename_db", "HQL_FILENAME_DB")
+        let filename_db = t_type::<String>(&mut map, t_name, "filename_db", "HQL_FILENAME_DB")?
             .map(Cow::from)
             .unwrap_or_else(|| "hiqlite.db".into());
         let log_statements =
-            t_bool(&mut map, t_name, "log_statements", "HQL_LOG_STATEMENTS").unwrap_or(false);
+            t_type::<bool>(&mut map, t_name, "log_statements", "HQL_LOG_STATEMENTS")?
+                .unwrap_or(false);
         let prepared_statement_cache_capacity =
-            t_u16(&mut map, t_name, "prepared_statement_cache_capacity", "").unwrap_or(1000)
-                as usize;
+            t_type::<u16>(&mut map, t_name, "prepared_statement_cache_capacity", "")?
+                .unwrap_or(1000) as usize;
         let read_pool_size =
-            t_u16(&mut map, t_name, "read_pool_size", "HQL_READ_POOL_SIZE").unwrap_or(4) as usize;
+            t_type::<u16>(&mut map, t_name, "read_pool_size", "HQL_READ_POOL_SIZE")?.unwrap_or(4)
+                as usize;
 
-        let wal_sync = if let Some(v) = t_str(&mut map, t_name, "log_sync", "HQL_LOG_SYNC") {
-            let Ok(sync) = LogSync::try_from(v.as_str()) else {
-                panic!("{}", err_t("log_sync", t_name, "LogSync"));
+        let wal_sync =
+            if let Some(v) = t_type::<String>(&mut map, t_name, "log_sync", "HQL_LOG_SYNC")? {
+                let Ok(sync) = LogSync::try_from(v.as_str()) else {
+                    return Err(Error::String(err_t("log_sync", t_name, "LogSync")));
+                };
+                sync
+            } else {
+                LogSync::ImmediateAsync
             };
-            sync
-        } else {
-            LogSync::ImmediateAsync
-        };
         let wal_size =
-            t_u32(&mut map, t_name, "wal_size", "HQL_WAL_SIZE").unwrap_or(2 * 1024 * 1024);
+            t_type::<u32>(&mut map, t_name, "wal_size", "HQL_WAL_SIZE")?.unwrap_or(2 * 1024 * 1024);
 
         #[cfg(feature = "cache")]
-        let cache_storage_disk = t_bool(
+        let cache_storage_disk = t_type::<bool>(
             &mut map,
             t_name,
             "cache_storage_disk",
             "HQL_CACHE_STORAGE_DISK",
-        )
+        )?
         .unwrap_or(true);
 
-        let logs_until_snapshot = t_u64(
+        let logs_until_snapshot = t_type::<u64>(
             &mut map,
             t_name,
             "logs_until_snapshot",
             "HQL_LOGS_UNTIL_SNAPSHOT",
-        )
+        )?
         .unwrap_or(10_000);
 
-        let tls_raft_key = t_str(&mut map, t_name, "tls_raft_key", "HQL_TLS_RAFT_KEY");
-        let tls_raft_cert = t_str(&mut map, t_name, "tls_raft_cert", "HQL_TLS_RAFT_CERT");
+        let tls_raft_key = t_type::<String>(&mut map, t_name, "tls_raft_key", "HQL_TLS_RAFT_KEY")?;
+        let tls_raft_cert =
+            t_type::<String>(&mut map, t_name, "tls_raft_cert", "HQL_TLS_RAFT_CERT")?;
         let tls_raft_danger_tls_no_verify =
-            t_bool(&mut map, t_name, "tls_raft_danger_tls_no_verify", "").unwrap_or(false);
-        let tls_api_key = t_str(&mut map, t_name, "tls_api_key", "HQL_TLS_API_KEY");
-        let tls_api_cert = t_str(&mut map, t_name, "tls_api_cert", "HQL_TLS_API_CERT");
+            t_type::<bool>(&mut map, t_name, "tls_raft_danger_tls_no_verify", "")?.unwrap_or(false);
+        let tls_api_key = t_type::<String>(&mut map, t_name, "tls_api_key", "HQL_TLS_API_KEY")?;
+        let tls_api_cert = t_type::<String>(&mut map, t_name, "tls_api_cert", "HQL_TLS_API_CERT")?;
         let tls_api_danger_tls_no_verify =
-            t_bool(&mut map, t_name, "tls_raft_danger_tls_no_verify", "").unwrap_or(false);
+            t_type::<bool>(&mut map, t_name, "tls_raft_danger_tls_no_verify", "")?.unwrap_or(false);
 
         #[allow(clippy::unnecessary_unwrap)]
         let tls_raft = if tls_raft_key.is_some() && tls_raft_cert.is_some() {
@@ -170,94 +172,115 @@ impl NodeConfig {
             None
         };
 
-        let Some(secret_raft) = t_str(&mut map, t_name, "secret_raft", "HQL_SECRET_RAFT") else {
-            panic!("{t_name}.secret_raft is a mandatory value");
+        let Some(secret_raft) =
+            t_type::<String>(&mut map, t_name, "secret_raft", "HQL_SECRET_RAFT")?
+        else {
+            return Err(format!("{t_name}.secret_raft is a mandatory value").into());
         };
-        let Some(secret_api) = t_str(&mut map, t_name, "secret_api", "HQL_SECRET_API") else {
-            panic!("{t_name}.secret_api is a mandatory value");
+        let Some(secret_api) = t_type::<String>(&mut map, t_name, "secret_api", "HQL_SECRET_API")?
+        else {
+            return Err(format!("{t_name}.secret_api is a mandatory value").into());
         };
 
         let health_check_delay_secs =
-            t_u32(&mut map, t_name, "health_check_delay_secs", "").unwrap_or(30);
+            t_type::<u32>(&mut map, t_name, "health_check_delay_secs", "")?.unwrap_or(30);
 
         #[cfg(feature = "backup")]
         let (backup_config, backup_keep_days_local) = {
-            let backup_cron =
-                if let Some(v) = t_str(&mut map, t_name, "backup_config", "HQL_BACKUP_CRON") {
-                    Cow::from(v)
-                } else {
-                    Cow::from("0 30 2 * * * *")
-                };
+            let backup_cron = if let Some(v) =
+                t_type::<String>(&mut map, t_name, "backup_config", "HQL_BACKUP_CRON")?
+            {
+                Cow::from(v)
+            } else {
+                Cow::from("0 30 2 * * * *")
+            };
             let backup_keep_days =
-                t_u16(&mut map, t_name, "backup_keep_days", "HQL_BACKUP_KEEP_DAYS").unwrap_or(30);
-            let backup_keep_days_local = t_u16(
+                t_type::<u16>(&mut map, t_name, "backup_keep_days", "HQL_BACKUP_KEEP_DAYS")?
+                    .unwrap_or(30);
+            let backup_keep_days_local = t_type::<u16>(
                 &mut map,
                 t_name,
                 "backup_keep_days_local",
                 "HQL_BACKUP_KEEP_DAYS_LOCAL",
-            )
+            )?
             .unwrap_or(30);
 
             let backup_config =
                 crate::backup::BackupConfig::new(backup_cron.as_ref(), backup_keep_days)
-                    .expect("Error building BackupConfig");
+                    .map_err(|err| Error::String(format!("Error building BackupConfig: {err}")))?;
             (backup_config, backup_keep_days_local)
         };
 
         #[cfg(feature = "s3")]
-        let s3_config = if let Some(url) = t_str(&mut map, t_name, "s3_url", "HQL_S3_URL") {
+        let s3_config = if let Some(url) =
+            t_type::<String>(&mut map, t_name, "s3_url", "HQL_S3_URL")?
+        {
             // we expect all values to exist when we can read the url successfully
 
-            let bucket = t_str(&mut map, t_name, "s3_bucket", "HQL_S3_BUCKET")
-                .expect("Missing config variable `s3_bucket`");
-            let region = t_str(&mut map, t_name, "s3_region", "HQL_S3_REGION")
-                .expect("Missing config variable `s3_region`");
+            let bucket = t_type::<String>(&mut map, t_name, "s3_bucket", "HQL_S3_BUCKET")?.ok_or(
+                Error::String("Missing config variable `s3_bucket`".to_string()),
+            )?;
+            let region = t_type::<String>(&mut map, t_name, "s3_region", "HQL_S3_REGION")?.ok_or(
+                Error::String("Missing config variable `s3_region`".to_string()),
+            )?;
             let path_style =
-                t_bool(&mut map, t_name, "s3_path_style", "HQL_S3_PATH_STYLE").unwrap_or(true);
+                t_type::<bool>(&mut map, t_name, "s3_path_style", "HQL_S3_PATH_STYLE")?
+                    .unwrap_or(true);
 
-            let key = t_str(&mut map, t_name, "s3_key", "HQL_S3_KEY")
-                .expect("Missing config variable `s3_key`");
-            let secret = t_str(&mut map, t_name, "s3_secret", "HQL_S3_SECRET")
-                .expect("Missing config variable `s3_secret`");
+            let key = t_type::<String>(&mut map, t_name, "s3_key", "HQL_S3_KEY")?.ok_or(
+                Error::String("Missing config variable `s3_key`".to_string()),
+            )?;
+            let secret = t_type::<String>(&mut map, t_name, "s3_secret", "HQL_S3_SECRET")?.ok_or(
+                Error::String("Missing config variable `s3_secret`".to_string()),
+            )?;
 
-            let Ok(config) =
-                crate::s3::S3Config::new(&url, bucket, region, key, secret, path_style)
-            else {
-                panic!("Cannot build S3Config from given S3 values in {t_name}.");
-            };
+            let config = crate::s3::S3Config::new(&url, bucket, region, key, secret, path_style)
+                .map_err(|err| {
+                    Error::String(format!(
+                        "Cannot build S3Config from given S3 values in {t_name}: {err:?}"
+                    ))
+                })?;
             Some(config)
         } else {
             None
         };
 
         #[cfg(feature = "dashboard")]
-        let password_dashboard = t_str(
+        let password_dashboard = match t_type::<String>(
             &mut map,
             t_name,
             "password_dashboard",
             "HQL_PASSWORD_DASHBOARD",
-        )
-        .map(|b64| {
-            String::from_utf8(
-                cryptr::utils::b64_decode(&b64).expect("password_dashboard must be valid base64"),
-            )
-            .expect("password_dashboard must contain String characters only")
-        });
+        )? {
+            Some(password_dashboard_b64) => {
+                let password_dashboard_vec_u8 = cryptr::utils::b64_decode(&password_dashboard_b64)
+                    .map_err(|_| {
+                        Error::String("password_dashboard must be valid base64.".to_string())
+                    })?;
+                Some(String::from_utf8(password_dashboard_vec_u8).map_err(|_| {
+                    Error::String(
+                        "password_dashboard must contain String characters only".to_string(),
+                    )
+                })?)
+            }
+            None => None,
+        };
         #[cfg(feature = "dashboard")]
         let insecure_cookie =
-            t_bool(&mut map, t_name, "insecure_cookie", "HQL_INSECURE_COOKIE").unwrap_or(false);
+            t_type::<bool>(&mut map, t_name, "insecure_cookie", "HQL_INSECURE_COOKIE")?
+                .unwrap_or(false);
 
         #[cfg(any(feature = "s3", feature = "dashboard"))]
         let enc_keys = if let Some(keys) = enc_keys {
             keys
         } else {
-            let Some(enc_key_active) = t_str(&mut map, t_name, "enc_key_active", "ENC_KEY_ACTIVE")
-            else {
-                panic!("{t_name}.enc_key_active is a mandatory value");
-            };
-            let Some(enc_keys) = t_str_vec(&mut map, t_name, "enc_keys", "ENC_KEYS") else {
-                panic!("{t_name}.enc_keys is a mandatory value");
-            };
+            let enc_key_active =
+                t_type::<String>(&mut map, t_name, "enc_key_active", "ENC_KEY_ACTIVE")?.ok_or(
+                    Error::String(format!("{t_name}.enc_key_active is a mandatory value")),
+                )?;
+            let enc_keys = t_str_vec(&mut map, t_name, "enc_keys", "ENC_KEYS")?.ok_or(
+                Error::String(format!("{t_name}.enc_keys is a mandatory value")),
+            )?;
             cryptr::EncKeys::try_parse(enc_key_active, enc_keys)?
         };
 
@@ -297,95 +320,44 @@ impl NodeConfig {
     }
 }
 
-fn t_bool(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<bool> {
+fn t_type<T>(
+    map: &mut toml::Table,
+    parent: &str,
+    key: &str,
+    env_var: &str,
+) -> Result<Option<T>, Error>
+where
+    T: FromStr,
+{
     if !env_var.is_empty()
-        && let Ok(v) = env::var(env_var)
-            .as_deref()
-            .map(|v| match v.parse::<bool>() {
-                Ok(b) => b,
-                Err(_) => {
-                    panic!("{}", err_env(env_var, "bool"));
-                }
-            })
+        && let Ok(value) = env::var(env_var)
     {
-        return Some(v);
-    }
-
-    let Value::Boolean(b) = map.remove(key)? else {
-        panic!("{}", err_t(key, parent, "bool"));
-    };
-    Some(b)
-}
-
-fn t_i64(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<i64> {
-    if !env_var.is_empty()
-        && let Ok(v) = env::var(env_var)
-            .as_deref()
-            .map(|v| match v.parse::<i64>() {
-                Ok(b) => b,
-                Err(_) => {
-                    panic!("{}", err_env(env_var, "Integer"));
-                }
-            })
+        match value.parse::<T>() {
+            Ok(v) => Ok(Some(v)),
+            Err(_) => Err(Error::String(err_env(env_var, type_name::<T>()))),
+        }
+    } else if let Some(value) = map.remove(key)
+        && let Some(value) = value.as_str()
     {
-        return Some(v);
-    }
-
-    let Value::Integer(i) = map.remove(key)? else {
-        panic!("{}", err_t(key, parent, "bool"));
-    };
-    Some(i)
-}
-
-fn t_u64(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<u64> {
-    if let Some(v) = t_i64(map, parent, key, env_var) {
-        if v < 0 {
-            panic!("{}", err_t(key, parent, "u64"));
+        match value.parse::<T>() {
+            Ok(v) => Ok(Some(v)),
+            Err(_) => Err(Error::String(err_t(key, parent, type_name::<T>()))),
         }
-        Some(v as u64)
     } else {
-        None
+        Ok(None)
     }
 }
 
-fn t_u32(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<u32> {
-    if let Some(v) = t_i64(map, parent, key, env_var) {
-        if v < 0 || v > u32::MAX as i64 {
-            panic!("{}", err_t(key, parent, "u32"));
-        }
-        Some(v as u32)
-    } else {
-        None
-    }
-}
-fn t_u16(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<u16> {
-    if let Some(v) = t_i64(map, parent, key, env_var) {
-        if v < 0 || v > u16::MAX as i64 {
-            panic!("{}", err_t(key, parent, "u16"));
-        }
-        Some(v as u16)
-    } else {
-        None
-    }
-}
-
-fn t_str(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<String> {
-    if !env_var.is_empty()
-        && let Ok(v) = env::var(env_var)
-    {
-        return Some(v);
-    }
-    let Value::String(s) = map.remove(key)? else {
-        panic!("{}", err_t(key, parent, "String"));
-    };
-    Some(s)
-}
-
-fn t_str_vec(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> Option<Vec<String>> {
+fn t_str_vec(
+    map: &mut toml::Table,
+    parent: &str,
+    key: &str,
+    env_var: &str,
+) -> Result<Option<Vec<String>>, Error> {
     if !env_var.is_empty()
         && let Ok(arr) = env::var(env_var)
     {
-        return Some(
+        return Ok(Some(
             arr.lines()
                 .filter_map(|l| {
                     let trimmed = l.trim().to_string();
@@ -396,27 +368,28 @@ fn t_str_vec(map: &mut toml::Table, parent: &str, key: &str, env_var: &str) -> O
                     }
                 })
                 .collect(),
-        );
+        ));
     }
 
-    let Value::Array(arr) = map.remove(key)? else {
-        return None;
+    let Some(Value::Array(arr)) = map.remove(key) else {
+        return Ok(None);
     };
     let mut res = Vec::with_capacity(arr.len());
     for value in arr {
         let Value::String(s) = value else {
-            panic!("{}", err_t(key, parent, "String"));
+            return Err(Error::String(err_t(key, parent, "String")));
         };
         res.push(s);
     }
-    Some(res)
+    Ok(Some(res))
 }
 
-fn t_table(map: &mut toml::Table, key: &str) -> Option<toml::Table> {
-    let Value::Table(t) = map.remove(key)? else {
-        panic!("Expected type `Table` for {key}")
-    };
-    Some(t)
+fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
+    let value = map
+        .remove(key)
+        .ok_or(Error::String(format!("Expected type `Table` for {key}")))?;
+    toml::Table::try_from(value)
+        .map_err(|err| Error::String(format!("Cannot build toml table from removed value: {err}")))
 }
 
 #[inline]
