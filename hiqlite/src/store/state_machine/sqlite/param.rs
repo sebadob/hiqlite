@@ -1,15 +1,15 @@
 use std::borrow::Cow;
 
-use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use rusqlite::types::{ToSqlOutput, Value};
-use serde::{Deserialize, Serialize};
-
-use crate::Error;
-
 use super::{
     transaction_env::{TransactionEnv, TransactionParamContext},
     transaction_variable::StmtColumn,
 };
+use crate::Error;
+use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use rusqlite::types::{ToSqlOutput, Value};
+use serde::{Deserialize, Serialize};
+use url::Url;
+use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Param {
@@ -85,14 +85,6 @@ impl From<isize> for Param {
     #[inline]
     fn from(i: isize) -> Param {
         Param::Integer(i as i64)
-    }
-}
-
-impl From<uuid::Uuid> for Param {
-    #[inline]
-    fn from(id: uuid::Uuid) -> Param {
-        // TODO need to be converted to BE bytes for correct ordering -> feature flag
-        Param::Blob(id.as_bytes().to_vec())
     }
 }
 
@@ -229,6 +221,32 @@ impl From<serde_json::Value> for Param {
     }
 }
 
+impl From<url::Url> for Param {
+    fn from(value: url::Url) -> Self {
+        Param::Text(value.to_string())
+    }
+}
+
+impl From<&url::Url> for Param {
+    fn from(value: &url::Url) -> Self {
+        Param::Text(value.to_string())
+    }
+}
+
+impl From<uuid::Uuid> for Param {
+    #[inline]
+    fn from(id: uuid::Uuid) -> Param {
+        Param::Blob(id.as_bytes().to_vec())
+    }
+}
+
+impl From<&uuid::Uuid> for Param {
+    #[inline]
+    fn from(id: &uuid::Uuid) -> Param {
+        Param::Blob(id.as_bytes().to_vec())
+    }
+}
+
 impl<T> From<Option<T>> for Param
 where
     T: Into<Param>,
@@ -270,5 +288,36 @@ impl From<StmtColumn<&'static str>> for Param {
 impl From<StmtColumn<String>> for Param {
     fn from(value: StmtColumn<String>) -> Self {
         Param::StmtOutputNamed(value.stmt_index.0, value.column.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query::rows::ValueOwned;
+    use uuid::{NoContext, Timestamp};
+
+    #[test]
+    fn make_sure_uuid_be_bytes() {
+        // We want to be really sure that the Uuid::as_bytes() returns them in BE order.
+        let uuid = uuid::Uuid::now_v7();
+        let p = Param::from(uuid);
+        let Param::Blob(bytes) = p else {
+            unreachable!();
+        };
+        let v = ValueOwned::Blob(bytes);
+        // The `impl TryFrom<ValueOwned> for uuid::Uuid` uses `from_be_bytes()` explicitly.
+        let uuid_back = Uuid::try_from(v).unwrap();
+        assert_eq!(uuid, uuid_back);
+    }
+
+    #[test]
+    fn url_to_from_sql() {
+        let url: Url = "http://localhost:8080".parse().unwrap();
+        let p = Param::from(url.clone());
+        let Param::Text(s) = p else { unreachable!() };
+        let v = ValueOwned::Text(s);
+        let url_back = Url::try_from(v).unwrap();
+        assert_eq!(url, url_back);
     }
 }

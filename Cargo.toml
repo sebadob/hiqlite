@@ -68,7 +68,6 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 rusqlite = { version = "0.38", features = [
-    #    "array",
     "backup",
     "bundled",
     "cache",
@@ -80,8 +79,8 @@ rusqlite = { version = "0.38", features = [
     "load_extension",
     "serde_json",
     "series",
-    #    "url",
-    #    "uuid",
+    "url",
+    "uuid",
     "vtab",
 ] }
 rust-embed = { version = "8.5.0", features = [] }
@@ -105,6 +104,7 @@ tower-http = { version = "0.6.0", features = [
 ] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+url = "2.4"
 uuid = { version = "1.8.0", features = ["v7"] }
 webpki-roots = { version = "1" }
 
