@@ -8,6 +8,7 @@ use fastwebsockets::WebSocketError;
 use openraft::error::{CheckIsLeaderError, ClientWriteError, Fatal, RaftError};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::convert::Infallible;
 use thiserror::Error;
 use tokio::task::JoinError;
 use tracing::trace;
@@ -393,6 +394,13 @@ impl From<hiqlite_wal::error::Error> for Error {
     fn from(value: hiqlite_wal::error::Error) -> Self {
         trace!("hiqlite_wal::error::Error: {value}");
         Self::WAL(value.to_string())
+    }
+}
+
+impl From<Infallible> for Error {
+    fn from(value: Infallible) -> Self {
+        trace!("Infallible: {value}");
+        Self::Error(value.to_string().into())
     }
 }
 

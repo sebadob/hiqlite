@@ -82,8 +82,8 @@ pub struct AppliedMigration {
     pub hash: String,
 }
 
-impl<'r> From<crate::Row<'r>> for AppliedMigration {
-    fn from(mut row: crate::Row<'r>) -> Self {
+impl From<&mut crate::Row<'_>> for AppliedMigration {
+    fn from(row: &mut crate::Row<'_>) -> Self {
         Self {
             id: row.get::<i64>("id") as u32,
             name: row.get("name"),

@@ -23,6 +23,7 @@ use std::default::Default;
 use std::ops::Sub;
 use std::thread;
 use std::time::{Duration, Instant};
+use thread_priority::ThreadPriority;
 use tokio::sync::oneshot;
 use tokio::{fs, task};
 use tracing::{debug, error, info, warn};
@@ -142,6 +143,8 @@ pub fn spawn_writer(
     let (tx, rx) = flume::bounded::<WriterRequest>(1);
 
     task::spawn_blocking(move || {
+        let _ = ThreadPriority::Max.set_for_current();
+
         let mut sm_data = StateMachineData::default();
         let mut ts_last_backup = None;
         let mut shutdown_ack: Option<oneshot::Sender<()>> = None;

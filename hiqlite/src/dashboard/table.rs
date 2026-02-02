@@ -1,7 +1,7 @@
 use crate::dashboard::handlers::TableFilterRequest;
 use crate::network::AppStateExt;
 use crate::query::query_map;
-use crate::{Error, Param, Params, Row};
+use crate::{Error, Param, Params};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -33,8 +33,8 @@ pub struct Table {
     sql: Option<String>,
 }
 
-impl<'r> From<crate::Row<'r>> for Table {
-    fn from(mut row: Row<'r>) -> Self {
+impl From<&mut crate::Row<'_>> for Table {
+    fn from(row: &mut crate::Row<'_>) -> Self {
         Self {
             typ: TableType::from(row.get::<String>("type").as_str()),
             name: row.get("name"),
@@ -45,15 +45,6 @@ impl<'r> From<crate::Row<'r>> for Table {
 }
 
 impl Table {
-    // pub async fn find(state: &AppStateExt, name: String) -> Result<Self, Error> {
-    //     query_map_one(
-    //         state,
-    //         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name = $1",
-    //         params!(name),
-    //     )
-    //     .await
-    // }
-
     pub async fn find_all(state: &AppStateExt) -> Result<Vec<Self>, Error> {
         let res: Vec<Self> = query_map(
             state,
@@ -79,28 +70,3 @@ impl Table {
         Ok(res)
     }
 }
-
-// #[derive(Debug, Serialize)]
-// pub struct TableDetails {
-//     typ: TableType,
-//     name: String,
-//     tbl_name: String,
-//     sql: Option<String>,
-//     columns: Vec<(String, String)>,
-// }
-//
-// impl TableDetails {
-//     pub async fn find(state: &AppStateExt, name: String) -> Result<Self, Error> {
-//         let sql = format!("SELECT * FROM {}", name);
-//         let columns = query_columns(&state.raft_db.read_pool, sql).await?;
-//         let t = Table::find(state, name).await?;
-//
-//         Ok(Self {
-//             typ: t.typ,
-//             name: t.name,
-//             tbl_name: t.tbl_name,
-//             sql: t.sql,
-//             columns,
-//         })
-//     }
-// }

@@ -1,24 +1,29 @@
-// Copyright 2025 Sebastian Dobe <sebastiandobe@mailbox.org>
+// Copyright 2026 Sebastian Dobe <sebastiandobe@mailbox.org>
 
 #![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 #![cfg_attr(doc, feature(doc_auto_cfg))]
 
+#[cfg(all(feature = "cast_ints", feature = "cast_ints_unchecked"))]
+compile_error!("features `cast_ints` and `cast_ints_unchecked` are mutually exclusive!");
+
 #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[cfg(feature = "sqlite")]
-use crate::store::state_machine::sqlite::state_machine::Response;
 pub use hiqlite_wal::LogSync;
 pub use openraft::SnapshotPolicy;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 
+#[cfg(feature = "sqlite")]
+use crate::store::state_machine::sqlite::state_machine::Response;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use crate::{client::Client, error::Error};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use config::{NodeConfig, RaftConfig};
+#[cfg(feature = "sqlite")]
+pub use query::cust_types::VecText;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use tls::ServerTlsConfig;
 
@@ -32,6 +37,7 @@ pub use crate::store::state_machine::sqlite::{
 };
 #[cfg(feature = "dlock")]
 pub use client::dlock::Lock;
+use hiqlite_derive::CacheVariants;
 #[cfg(feature = "sqlite")]
 pub use migration::AppliedMigration;
 
@@ -60,8 +66,6 @@ mod tls;
 
 #[cfg(feature = "backup")]
 mod backup;
-#[cfg(any(feature = "sqlite", feature = "cache"))]
-pub mod cache_idx;
 #[cfg(feature = "dashboard")]
 mod dashboard;
 #[cfg(feature = "sqlite")]
@@ -82,6 +86,14 @@ pub mod s3;
 pub mod server;
 
 type NodeId = u64;
+
+pub trait CacheVariants {
+    /// Returns the Enum Variants index, strictly matching the output of `hiqlite_cache_variants()`.
+    fn hiqlite_cache_index(&self) -> usize;
+
+    /// Returns the Enum Variants as `(idx, name)` in strictly ascending order, starting at `0`.
+    fn hiqlite_cache_variants() -> &'static [(usize, &'static str)];
+}
 
 /// A Raft / Hiqlite node
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -109,20 +121,30 @@ impl Display for Node {
     }
 }
 
+#[cfg(feature = "sqlite")]
+mod empty {
+    use crate::CacheVariants;
+
+    #[derive(Debug)]
+    pub enum Empty {}
+
+    impl CacheVariants for Empty {
+        fn hiqlite_cache_index(&self) -> usize {
+            unreachable!()
+        }
+
+        fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
+            &[]
+        }
+    }
+}
+
 /// The main entry function to start a Raft / Hiqlite node.
 /// # Panics
 /// If an incorrect `node_config` was given.
 #[cfg(feature = "sqlite")]
 pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
-    #[derive(Debug, strum::EnumIter)]
-    enum Empty {}
-    impl cache_idx::CacheIndex for Empty {
-        fn to_usize(self) -> usize {
-            0
-        }
-    }
-
-    start::start_node_inner::<Empty>(node_config).await
+    start::start_node_inner::<empty::Empty>(node_config).await
 }
 
 /// The main entry function to start a Raft / Hiqlite node.
@@ -133,7 +155,7 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
 #[cfg(feature = "cache")]
 pub async fn start_node_with_cache<C>(node_config: NodeConfig) -> Result<Client, Error>
 where
-    C: Debug + strum::IntoEnumIterator + cache_idx::CacheIndex,
+    C: Debug + CacheVariants,
 {
     start::start_node_inner::<C>(node_config).await
 }

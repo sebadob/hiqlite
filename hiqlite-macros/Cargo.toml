@@ -1,6 +1,6 @@
 [package]
 name = "hiqlite-macros"
-version = "0.12.0"
+version = "0.13.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -13,5 +13,6 @@ repository = "https://github.com/sebadob/hiqlite"
 [dependencies]
 #hiqlite = { version = "0.12" }
 hiqlite = { path = "../hiqlite" }
+hiqlite-derive = { path = "../hiqlite-derive" }
 
 rust-embed.workspace = true

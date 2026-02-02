@@ -13,7 +13,6 @@ use std::fmt::Debug;
 use std::ops::{Deref, Sub};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::sync::oneshot;
 use tokio::{task, time};
 use tracing::{debug, error, info, warn};
 
@@ -215,7 +214,7 @@ pub async fn post_create_backup(state: AppStateExt, headers: HeaderMap) -> Resul
                 .client_write(QueryWrite::Backup((state.id, now)))
                 .await?;
         } else {
-            let (ack, rx) = oneshot::channel();
+            let (ack, rx) = tokio::sync::oneshot::channel();
             state
                 .tx_client_stream
                 .send_async(crate::client::stream::ClientStreamReq::Backup(

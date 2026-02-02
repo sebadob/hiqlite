@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::task;
 use tracing::info;
 
+pub mod cust_types;
 pub mod rows;
 
 pub(crate) async fn query_consistent_local<S>(
@@ -73,7 +74,7 @@ pub(crate) async fn query_map<T, S>(
     params: Params,
 ) -> Result<Vec<T>, Error>
 where
-    T: for<'r> From<rows::Row<'r>> + Send + 'static,
+    T: for<'r> From<&'r mut rows::Row<'r>> + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
     let sql: Cow<'static, str> = sql.into();
@@ -97,7 +98,7 @@ where
         let mut rows = stmt.raw_query();
         let mut res = Vec::new();
         while let Ok(Some(row)) = rows.next() {
-            res.push(T::from(rows::Row::Borrowed(row)));
+            res.push(T::from(&mut rows::Row::Borrowed(row)));
         }
         Ok::<Vec<T>, Error>(res)
     })
@@ -111,7 +112,7 @@ pub(crate) async fn query_map_one<T, S>(
     params: Params,
 ) -> Result<T, Error>
 where
-    T: for<'r> From<rows::Row<'r>> + Send + 'static,
+    T: for<'r> From<&'r mut rows::Row<'r>> + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
     let mut rows: Vec<T> = query_map(state, sql, params).await?;
@@ -133,7 +134,7 @@ pub(crate) async fn query_map_optional<T, S>(
     params: Params,
 ) -> Result<Option<T>, Error>
 where
-    T: for<'r> From<rows::Row<'r>> + Send + 'static,
+    T: for<'r> From<&'r mut rows::Row<'r>> + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
     let mut rows: Vec<T> = query_map(state, sql, params).await?;

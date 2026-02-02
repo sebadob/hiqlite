@@ -1,0 +1,19 @@
+[package]
+name = "hiqlite-derive"
+version = "0.13.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version = "1.88"
+categories = ["database", "caching"]
+keywords = ["database", "sql", "sqlite", "raft", "cache"]
+description = "Macros for Hiqlite"
+repository = "https://github.com/sebadob/hiqlite"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { version = "1.0.90", features = [] }
+syn = { version = "2.0.90", features = [] }
+quote = "1.0.30"

@@ -82,7 +82,8 @@ clippy:
     cargo clippy
     cargo clippy --no-default-features
 
-    cargo clippy --no-default-features --features sqlite
+    cargo clippy --no-default-features --features sqlite,cast_ints
+    cargo clippy --no-default-features --features sqlite,cast_ints_unchecked
     # auto-heal should only apply to sqlite
     cargo clippy --no-default-features --features auto-heal
     cargo clippy --no-default-features --features sqlite,auto-heal
@@ -119,12 +120,12 @@ docs:
     cargo +nightly doc --all-features --no-deps --open
 
 # runs the full set of tests
-test:
+test test="":
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
     # we need to run the tests with nightly to not get an error for docs auto cfg
-    RUSTFLAGS="--cfg tokio_unstable" cargo +nightly test --features cache,counters,dlock,listen_notify,toml
+    RUSTFLAGS="--cfg tokio_unstable" cargo +nightly test --features cache,counters,dlock,listen_notify,toml {{ test }}
 
 # builds the code
 build ty="server":

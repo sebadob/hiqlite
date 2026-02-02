@@ -1,0 +1,290 @@
+#![allow(dead_code)]
+
+use hiqlite::{Error, NodeConfig, VecText};
+use hiqlite_macros::embed::*;
+use hiqlite_macros::{FromRow, params};
+use std::fmt::{Debug, Display};
+use std::str::FromStr;
+use tokio::fs;
+use tracing_subscriber::EnvFilter;
+
+#[derive(Embed)]
+#[folder = "migrations"]
+struct Migrations;
+
+/// This is our complex database entity.
+/// The table definition can be found in `migrations/1_init.sql`.
+///
+/// The `FromRow` derive macro will create (in this example) the following impl:
+///
+/// ```rust, notest
+/// impl ::std::convert::From<&mut ::hiqlite::Row<'_>> for Entity {
+///     #[inline]
+///     fn from(row: &mut ::hiqlite::Row) -> Self {
+///         use ::std::str::FromStr;
+///         Self {
+///             id: row.get("id"),
+///             name: row.get("name_db"),
+///             desc: row.get("desc"),
+///             vec_wrap: row.get("vec_wrap"),
+///             sub: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),
+///             skipped: ::std::default::Default::default(),
+///             some_int: row.get("some_int"),
+///             my_enum: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),
+///             left_right: row.get::<String>("left_right").parse().unwrap(),
+///             up_down: row.get::<String>("ud").into(),
+///             number: row.get::<i64>("num").into(),
+///         }
+///     }
+/// }
+/// ```
+///
+/// You have the following `column` attributes available:
+///
+/// - `rename = "some_col_name"` will rename the struct value to a different column name
+/// - `skip` will skip that value in the `From<_>` impl and use `Default::default()`
+/// - `flatten` can be used for any type that cannot be directly converted. You will use
+///   this for all `struct`s, enums, or whatever other custom types you may have.
+/// - `from_str` if the `impl FromStr` for the type should be used
+/// - `from_string` if the `impl From<String>` for the type should be used
+/// - `from_i64` if the `impl From<i64>` for the type should be used
+///
+/// You can combine `rename` with one of the `from_*` attributes, but not with `skip` or `flatten`.
+/// The order does not matter in this case.
+#[derive(Debug, FromRow)]
+struct Entity {
+    id: i64,
+    #[column(rename = "name_db")]
+    name: String,
+    desc: Option<String>,
+    /// This is using a smart wrapper type. This is `TEXT` column-backed and can be used to easily
+    /// convert into a `Vec<_>` later on, since SQLite does not support arrays natively.
+    /// In this example, `\n` will be used to separate the values, but it is free to choose.
+    /// Use whatever `char` cannot create a conflict with the data you want to save.
+    ///
+    /// This type comes already with impls for converting it into a `hiqlite::Param` and to get it
+    /// back from a DB column. See the code below for examples.
+    vec_wrap: VecText<'\n'>,
+    /// `flatten` will use the `FromRow` impl for `EntitySub` directly. It will have access to the
+    /// exact same `Row`.
+    #[column(flatten)]
+    sub: EntitySub,
+    #[column(skip)]
+    skipped: Option<String>,
+    /// Note: Because we enabled the `cast_ints` feature for `hiqlite`, we can use an
+    /// `i32` here. Even though such a cast is not safe by definition, because SQLite stores all
+    /// integers as `i64`, we can do the automatic cast, when we are sure that only this Rust
+    /// program controls the input to the DB. In this case, Rust will give us the safety, even
+    /// though SQLite is able to store bigger integers than an `i32`.
+    some_int: i32,
+    #[column(flatten)]
+    my_enum: MyEnum,
+    /// If you already have an `impl FromStr` for your type, you can use it for the conversion like
+    /// so, and you won't need an additional `flatten` + `From<&mut Row<_>>` impl.
+    #[column(from_str)]
+    left_right: LeftRight,
+    /// for `From<String>` impls
+    #[column(rename = "ud", from_string)]
+    up_down: UpDown,
+    /// for `From<i64>` impls
+    /// The order when using `rename` additionally does not matter.
+    #[column(from_i64, rename = "num")]
+    number: Number,
+}
+
+#[derive(Debug, FromRow)]
+struct EntitySub {
+    #[column(rename = "sub_id")]
+    id: i64,
+    #[column(rename = "sub_name")]
+    name: String,
+    #[column(flatten)]
+    sub_sub: EntitySubSub,
+}
+
+#[derive(Debug, FromRow)]
+struct EntitySubSub {
+    secret: String,
+}
+
+#[derive(Debug)]
+enum LeftRight {
+    Left,
+    Right,
+}
+
+impl FromStr for LeftRight {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let slf = match s {
+            "left" => Self::Left,
+            "right" => Self::Right,
+            _ => {
+                return Err(Error::Error("parse err".into()));
+            }
+        };
+        Ok(slf)
+    }
+}
+
+impl LeftRight {
+    fn as_str(&self) -> &str {
+        match self {
+            LeftRight::Left => "left",
+            LeftRight::Right => "right",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum UpDown {
+    Up,
+    Down,
+}
+
+impl From<String> for UpDown {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "up" => Self::Up,
+            "down" => Self::Down,
+            _ => panic!("corrupted database"),
+        }
+    }
+}
+
+impl UpDown {
+    fn as_str(&self) -> &str {
+        match self {
+            UpDown::Up => "up",
+            UpDown::Down => "down",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum Number {
+    One = 1,
+    Two,
+    Three,
+}
+
+impl From<i64> for Number {
+    fn from(value: i64) -> Self {
+        match value {
+            1 => Self::One,
+            2 => Self::Two,
+            3 => Self::Three,
+            _ => panic!("corrupted database"),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum MyEnum {
+    Empty,
+    One,
+    Two,
+    Other(String),
+}
+
+/// This shows a fully custom implementation to get the proper value from the database.
+///
+/// In contrast to many other crates, `hiqlite`s goal is to keep it simple here. You will not
+/// have multiple different `From*` traits you need to impl, and even worse, different ones for
+/// different Rust types. No matter what it is, you will always need to impl just
+/// `From<&mut hiqlite::Row<'_>>` in combination with `#[column(flatten)]` on the parent. This
+/// gives you the most amount of flexibility, and you only need to remember this single trait, not
+/// like 5-8 different ones.
+impl From<&mut hiqlite::Row<'_>> for MyEnum {
+    fn from(row: &mut hiqlite::Row<'_>) -> Self {
+        if let Some(value) = row.get::<Option<String>>("enum_value") {
+            match value.as_str() {
+                "One" => MyEnum::One,
+                "Two" => MyEnum::Two,
+                _ => MyEnum::Other(value),
+            }
+        } else {
+            Self::Empty
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    // make sure we always start clean
+    let _ = fs::remove_dir_all("./data").await;
+
+    tracing_subscriber::fmt()
+        .with_target(true)
+        .with_level(true)
+        .with_env_filter(EnvFilter::from("info"))
+        .init();
+
+    let config = NodeConfig::from_toml("../../hiqlite.toml", None, None).await?;
+    let client = hiqlite::start_node(config).await?;
+
+    log("Apply our database migrations");
+    client.migrate::<Migrations>().await?;
+
+    log("Insert a row");
+
+    let vec_wrap: VecText<'\n'> = VecText::new(&["Entry 1", "Entry 2", "And another one"])?;
+
+    client
+        .execute(
+            r#"
+INSERT INTO complex (
+    id, name_db, desc, vec_wrap, some_int, left_right, ud, num, sub_id, sub_name, secret, enum_value
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+"#,
+            params!(
+                13,
+                "Base Name",
+                "Some Description",
+                vec_wrap,
+                27,
+                LeftRight::Left.as_str(),
+                UpDown::Up.as_str(),
+                Number::Two as i32,
+                1337,
+                "Sub Name",
+                "IAmSoSecureYouWillNeverGuess",
+                "Some 'Other' value for MyEnum"
+            ),
+        )
+        .await?;
+
+    log("Let's get the data back from the DB");
+
+    let res: Entity = client
+        .query_map_one("SELECT * FROM complex WHERE id = $1", params!(13))
+        .await?;
+
+    debug(&res);
+
+    let vs: Vec<String> = res.vec_wrap.into_vec()?;
+    log(format!(
+        "We can convert our smart Wrapper `VecText` easily into a `Vec<String>` \
+        for instance: {vs:?}"
+    ));
+
+    // You can also convert to int `Vec`s and many other types like so:
+    let v = VecText::<','>::new(&[1, 2, -3])?;
+    let r = v.parse::<i32>()?;
+    assert_eq!(&[1, 2, -3], r.as_slice());
+
+    log("That's it - our complex Entity mapped successfully");
+
+    Ok(())
+}
+
+// this way of logging makes our logs easier to see with all the raft logging enabled
+fn log<S: Display>(s: S) {
+    println!("\n\n>>> {s}\n");
+}
+
+fn debug<S: Debug>(s: &S) {
+    println!("\n\n>>> {s:?}\n",);
+}

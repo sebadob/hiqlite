@@ -13,8 +13,8 @@ pub struct TestData {
     pub description: Option<String>,
 }
 
-impl<'r> From<hiqlite::Row<'r>> for TestData {
-    fn from(mut row: hiqlite::Row<'r>) -> Self {
+impl From<&mut hiqlite::Row<'_>> for TestData {
+    fn from(row: &mut hiqlite::Row<'_>) -> Self {
         Self {
             id: row.get("id"),
             ts: row.get("ts"),

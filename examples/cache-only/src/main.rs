@@ -1,5 +1,5 @@
-use hiqlite::cache_idx::CacheIndex;
 use hiqlite::{Error, NodeConfig};
+use hiqlite_macros::CacheVariants;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::time::Duration;
@@ -8,20 +8,10 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 /// This enum is used as our cache identifier.
-#[derive(Debug, strum::EnumIter)]
+#[derive(Debug, CacheVariants)]
 enum Cache {
     One,
     Two,
-}
-
-// This tiny block of boilerplate is necessary to index concurrent caches properly.
-// The result must always return each elements position in the iterator and this simple typecasting
-// is the easiest way to do it. It is checked for correctness and compared against the iterator
-// during startup.
-impl CacheIndex for Cache {
-    fn to_usize(self) -> usize {
-        self as usize
-    }
 }
 
 /// We will use this as our test value for the cache
@@ -43,7 +33,7 @@ async fn main() -> Result<(), Error> {
         .with_env_filter(EnvFilter::from("info"))
         .init();
 
-    let config = NodeConfig::from_toml("../../hiqlite.toml", None).await?;
+    let config = NodeConfig::from_toml("../../hiqlite.toml", None, None).await?;
     // Hiqlite Caches are (by default) disk-backed. This means they provide the consistency of Raft
     // and can rebuild their in-memory data after a restart and never lose it. With
     // `config.cache_storage_disk = true`, the Cache WAL files + Snapshots will be persisted to

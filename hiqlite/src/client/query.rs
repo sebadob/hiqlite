@@ -2,7 +2,7 @@ use crate::client::stream::{ClientQueryPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::state_machine::Query;
-use crate::{query, Client, Error, Params};
+use crate::{Client, Error, Params, query};
 use serde::de::DeserializeOwned;
 use std::borrow::Cow;
 use tokio::sync::oneshot;
@@ -41,20 +41,20 @@ impl Client {
     /// You should only use it, if you really need to.
     pub async fn query_consistent_map<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
     where
-        T: for<'r> From<crate::Row<'r>> + Send + 'static,
+        T: for<'a, 'r> From<&'a mut crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
         Ok(self
             .query_remote(stmt, params, true)
             .await?
             .into_iter()
-            .map(T::from)
+            .map(|mut row| T::from(&mut row))
             .collect())
     }
 
     /// Query data from the database and map it to the given `struct`.
     ///
-    /// The `struct` must implement `impl<'r> From<hiqlite::Row<'r>>` for this to work:
+    /// The `struct` must implement `impl From<&mut hiqlite::Row<'_>>` for this to work:
     ///
     /// ```rust, notest
     /// #[derive(Debug)]
@@ -64,8 +64,8 @@ impl Client {
     ///     pub description: Option<String>,
     /// }
     ///
-    /// impl<'r> From<Row<'r>> for MyStruct {
-    ///     fn from(mut row: Row<'r>) -> Self {
+    /// impl From<&mut Row<'_>> for MyStruct {
+    ///     fn from(row: &mut Row<'_>) -> Self {
     ///         Self {
     ///             id: row.get("id"),
     ///             num: row.get("num"),
@@ -86,7 +86,7 @@ impl Client {
     /// ```
     pub async fn query_map<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
     where
-        T: for<'r> From<crate::Row<'r>> + Send + 'static,
+        T: for<'a, 'r> From<&'a mut crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.inner.state {
@@ -96,7 +96,7 @@ impl Client {
                 .query_remote(stmt, params, false)
                 .await?
                 .into_iter()
-                .map(T::from)
+                .map(|mut row| T::from(&mut row))
                 .collect())
         }
     }
@@ -112,7 +112,7 @@ impl Client {
     /// ```
     pub async fn query_map_one<T, S>(&self, stmt: S, params: Params) -> Result<T, Error>
     where
-        T: for<'r> From<crate::Row<'r>> + Send + 'static,
+        T: for<'r> From<&'r mut crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.inner.state {
@@ -126,7 +126,7 @@ impl Client {
                     format!("cannot map {} rows into one", rows.len()).into(),
                 ))
             } else {
-                Ok(T::from(rows.swap_remove(0)))
+                Ok(T::from(&mut rows.swap_remove(0)))
             }
         }
     }
@@ -139,7 +139,7 @@ impl Client {
         params: Params,
     ) -> Result<Option<T>, Error>
     where
-        T: for<'r> From<crate::Row<'r>> + Send + 'static,
+        T: for<'r> From<&'r mut crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.inner.state {
@@ -149,7 +149,7 @@ impl Client {
             if rows.is_empty() {
                 Ok(None)
             } else {
-                Ok(Some(T::from(rows.swap_remove(0))))
+                Ok(Some(T::from(&mut rows.swap_remove(0))))
             }
         }
     }

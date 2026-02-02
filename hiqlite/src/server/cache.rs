@@ -1,13 +1,7 @@
-use crate::cache_idx::CacheIndex;
+use hiqlite_derive::CacheVariants;
 
-#[derive(Debug, strum::EnumIter)]
+#[derive(Debug, CacheVariants)]
 pub enum Cache {
     Intern,
     Extern,
-}
-
-impl CacheIndex for Cache {
-    fn to_usize(self) -> usize {
-        self as usize
-    }
 }

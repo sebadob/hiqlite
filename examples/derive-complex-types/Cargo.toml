@@ -1,0 +1,12 @@
+[package]
+name = "derive-complex-types"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hiqlite = { path = "../../hiqlite", features = ["cast_ints"] }
+hiqlite-macros = { path = "../../hiqlite-macros" }
+
+tokio = { version = "1.43.1", features = ["fs", "rt-multi-thread"] }
+#tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.0", features = ["env-filter"] }

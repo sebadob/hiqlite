@@ -17,8 +17,8 @@ struct Entity {
 }
 
 // This impl is needed for the more efficient and faster `query_map()`
-impl<'r> From<Row<'r>> for Entity {
-    fn from(mut row: Row<'r>) -> Self {
+impl From<&mut Row<'_>> for Entity {
+    fn from(row: &mut Row<'_>) -> Self {
         Self {
             id: row.get("id"),
             ts: row.get("ts"),

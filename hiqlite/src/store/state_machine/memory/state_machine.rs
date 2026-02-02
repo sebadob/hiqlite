@@ -1,11 +1,11 @@
-use crate::cache_idx::CacheIndex;
 use crate::helpers::{deserialize, serialize, set_path_access};
 use crate::store::StorageResult;
 use crate::store::state_machine::memory::cache_ttl_handler::TtlRequest;
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::{TypeConfigKV, cache_ttl_handler, kv_handler};
-use crate::{Error, Node, NodeId};
+use crate::{CacheVariants, Error, Node, NodeId};
 use chrono::Utc;
+use cron::TimeUnitSpec;
 use cryptr::utils::secure_random_alnum;
 use dotenvy::var;
 use openraft::storage::RaftStateMachine;
@@ -13,6 +13,7 @@ use openraft::{
     EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
     StorageIOError, StoredMembership,
 };
+use rust_decimal::prelude::ToPrimitive;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -21,7 +22,6 @@ use std::fmt::Debug;
 use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use strum::IntoEnumIterator;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Mutex, RwLock, oneshot};
@@ -249,7 +249,7 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
 impl StateMachineMemory {
     pub(crate) async fn new<C>(base_path: &str, in_memory_only: bool) -> Result<Self, Error>
     where
-        C: Debug + IntoEnumIterator + CacheIndex,
+        C: Debug + CacheVariants,
     {
         let path_sm = format!("{base_path}/state_machine_cache");
         let path_snapshots = format!("{path_sm}/snapshots");
@@ -264,30 +264,12 @@ impl StateMachineMemory {
             .await
             .expect("Cannot set access rights for path_sm");
 
-        // we must make sure that the index is correct and in order
-        let mut len = 0;
-        for variant in C::iter() {
-            let value = variant.to_usize();
-            if value != len {
-                return Err(Error::Config(
-                    format!(
-                        "'Cache' enum's `.to_usize()` must return each elements position in the \
-                    iterator. Expected {len} for {value:?}"
-                    )
-                    .into(),
-                ));
-            }
-            len += 1;
-        }
-        if len == 0 {
-            return Err(Error::Config("Cache Index enum is empty".into()));
-        }
-
         // we will start a separate task for each given cache index
-        let mut tx_caches = Vec::with_capacity(len);
-        let mut tx_ttls = Vec::with_capacity(len);
-        for variant in C::iter() {
-            let tx_cache = kv_handler::spawn(variant);
+        let variants = C::hiqlite_cache_variants();
+        let mut tx_caches = Vec::with_capacity(variants.len());
+        let mut tx_ttls = Vec::with_capacity(variants.len());
+        for (_, name) in variants {
+            let tx_cache = kv_handler::spawn(name);
             tx_caches.push(tx_cache.clone());
             tx_ttls.push(cache_ttl_handler::spawn(tx_cache));
         }

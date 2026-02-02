@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["hiqlite", "hiqlite-macros", "hiqlite-wal"]
+members = ["hiqlite", "hiqlite-macros", "hiqlite-derive", "hiqlite-wal"]
 exclude = ["examples"]
 
 [workspace.package]
@@ -43,7 +43,7 @@ cryptr = { version = "0.9", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"
-eventsource-client = "0.15"
+eventsource-client = "0.16"
 fastwebsockets = { version = "0.10.0", features = [
     "upgrade",
     "with_axum",
@@ -52,7 +52,7 @@ fastwebsockets = { version = "0.10.0", features = [
 flume = "0.12"
 fs4 = { version = "0.13.1", features = ["sync"] }
 futures-util = "0.3.30"
-getrandom = { version = "0.3", features = ["std"] }
+getrandom = { version = "0.4", features = ["std"] }
 hex = "0.4.3"
 home = "0.5.9"
 hostname = "0.4.0"
@@ -67,23 +67,32 @@ reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
 ] }
-rusqlite = { version = "0.37", features = [
+rusqlite = { version = "0.38", features = [
+    #    "array",
     "backup",
     "bundled",
+    "cache",
     "chrono",
+    "modern_sqlite",
     "column_decltype",
+    "csvtab",
     "functions",
+    "load_extension",
     "serde_json",
+    "series",
+    #    "url",
+    #    "uuid",
+    "vtab",
 ] }
 rust-embed = { version = "8.5.0", features = [] }
 rustls = { version = "0.23.12", features = ["ring"] }
 serde = { version = "1.0.114", features = ["derive"] }
 serde_json = "1.0.57"
-serde_rusqlite = "0.40"
+serde_rusqlite = "0.41"
 sha2 = { version = "0.10.8", features = [] }
 spow = { version = "0.6", features = ["server"] }
-strum = { version = "0.27", features = ["derive"] }
 thiserror = "2"
+thread-priority = "3.0.0"
 tikv-jemallocator = "0.6.0"
 tokio = { version = "1.43.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.0", features = ["ring"] }
