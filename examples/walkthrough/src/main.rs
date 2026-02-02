@@ -1,8 +1,7 @@
 use clap::Parser;
-use hiqlite::cache_idx::CacheIndex;
-use hiqlite::{start_node_with_cache, Error, Node, NodeConfig, Row, ServerTlsConfig};
+use hiqlite::{start_node_with_cache, Error, Node, NodeConfig, ServerTlsConfig};
 use hiqlite_macros::embed::*;
-use hiqlite_macros::params;
+use hiqlite_macros::{params, CacheVariants, FromRow};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
@@ -72,38 +71,18 @@ async fn node_config(node_id: u64, nodes: Vec<Node>) -> NodeConfig {
 
 /// Matches our test table for this example.
 /// serde derives are needed if you want to use the `query_as()` fn.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, FromRow)]
 struct Entity {
     pub id: String,
     pub num: i64,
     pub description: Option<String>,
 }
 
-#[derive(Debug, strum::EnumIter)]
+#[derive(Debug, CacheVariants)]
+#[allow(dead_code)]
 enum Cache {
     One,
     Two,
-}
-
-// This tiny block of boilerplate is necessary to index concurrent caches properly.
-// The result must always return each elements position in the iterator and this simple typecasting
-// is the easiest way to do it. It is checked for correctness and compared against the iterator
-// during startup.
-impl CacheIndex for Cache {
-    fn to_usize(self) -> usize {
-        self as usize
-    }
-}
-
-// This impl is needed for `query_map()` which gives you more control
-impl From<&mut Row<'_>> for Entity {
-    fn from(row: &mut Row<'_>) -> Self {
-        Self {
-            id: row.get("id"),
-            num: row.get("num"),
-            description: row.get("description"),
-        }
-    }
 }
 
 #[tokio::main]
@@ -212,9 +191,9 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
 
         log("Let's get the data back from the DB in easy mode");
 
-        // The `.query_as` can be used for types that implement serde::Serialize / ::Deserialize.
-        // This is easier and less work to implement, but a bit less efficient and slower than a
-        // manual implementation of `From<&mut Row<'_>`.
+        // The `.query_as*` can be used for types that implement serde::Serialize / ::Deserialize.
+        // If you don't need these on your types for something else anyway, it's more efficient
+        // to only use `FromRow` with the `.query_map*` queries instead.
 
         let res: Entity = client
             .query_as_one("SELECT * FROM test WHERE id = $1", params!("id1"))
@@ -253,10 +232,10 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
             Some("my description for 1. row")
         );
 
-        // Transactions do work already as well, but because of the Raft a bit differently how you
-        // might be used to them. You don't create a transactions and pass it around in your code,
-        // but instead you can provide as many queries as you like. This is kind of like batching, but
-        // everything inside a single transaction and each query is prepared and cached, which makes it
+        // Because of the Raft, transactions work a bit differently how you might be used to them.
+        // You don't create a transaction and pass it around in your code, but instead you can
+        // provide as many queries as you like. This is kind of like batching, but everything is
+        // inside a single transaction and each query is prepared and cached, which makes it
         // fast and safe against SQL injection.
         // If you can make use of this, use it! It is really fast!
 
@@ -275,7 +254,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
         // The first result is for the transaction commit itself
         assert!(res.is_ok());
 
-        // The inner value is a Vec<Result<_>> contain a result for each single execute in the
+        // The inner value is a Vec<Result<_>> contain a result for each single `execute` in the
         // exact same order as they were provided.
         for inner_res in res? {
             let rows_affected = inner_res?;
@@ -366,7 +345,7 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
     // - register an automatic shutdown handle with the DbClient like shown above
     // - trigger the shutdown manually at the end of your application
     //   This makes sense when you already have structures implemented that catch shutdown signals,
-    //   for instance if you `.await` and API being terminated.
+    //   for instance, if you `.await` and API being terminated.
     //   Then oyu can do a `client.shutdown().await?`
     let mut shutdown_handle = client.shutdown_handle()?;
     shutdown_handle.wait().await?;

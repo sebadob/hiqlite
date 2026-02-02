@@ -1,6 +1,6 @@
-use hiqlite::{Error, NodeConfig, Row, StmtIndex};
+use hiqlite::{Error, NodeConfig, StmtIndex};
 use hiqlite_macros::embed::*;
-use hiqlite_macros::params;
+use hiqlite_macros::{params, FromRow};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use tokio::fs;
@@ -11,23 +11,17 @@ use tracing_subscriber::EnvFilter;
 struct Migrations;
 
 /// Matches our test table for this example.
+///
 /// serde derives are needed if you want to use the `query_as()` fn.
-#[derive(Debug, Serialize, Deserialize)]
+///
+/// The `FromRow` macro will `impl From<&mut Row<'_>> for Entity` for us. For complex types,
+/// you  have additional attributes available, or you can do a manual impl. Check out the
+/// `derive-complex-types` in that case.
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 struct Entity {
     pub id: String,
     pub num: i64,
     pub description: Option<String>,
-}
-
-// This impl is needed for `query_map()` which gives you more control
-impl From<&mut Row<'_>> for Entity {
-    fn from(row: &mut Row<'_>) -> Self {
-        Self {
-            id: row.get("id"),
-            num: row.get("num"),
-            description: row.get("description"),
-        }
-    }
 }
 
 #[tokio::main]

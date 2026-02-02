@@ -1,6 +1,7 @@
 use clap::Parser;
 use hiqlite::{start_node_with_cache, Client, Error, Node, NodeConfig};
 use hiqlite_macros::embed::*;
+use hiqlite_macros::CacheVariants;
 use std::fmt::{Debug, Display};
 use std::time::Duration;
 use tokio::time;
@@ -169,7 +170,7 @@ async fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
     config
 }
 
-#[derive(Debug, strum::EnumIter)]
+#[derive(Debug, CacheVariants)]
 enum Cache {
     One,
     Two,

@@ -52,7 +52,7 @@ fastwebsockets = { version = "0.10.0", features = [
 flume = "0.12"
 fs4 = { version = "0.13.1", features = ["sync"] }
 futures-util = "0.3.30"
-getrandom = { version = "0.3", features = ["std"] }
+getrandom = { version = "0.4", features = ["std"] }
 hex = "0.4.3"
 home = "0.5.9"
 hostname = "0.4.0"

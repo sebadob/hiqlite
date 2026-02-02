@@ -2,7 +2,7 @@
 
 use hiqlite::{Error, NodeConfig, VecText};
 use hiqlite_macros::embed::*;
-use hiqlite_macros::{CacheVariants, FromRow, params};
+use hiqlite_macros::{FromRow, params};
 use std::fmt::{Debug, Display};
 use std::str::FromStr;
 use tokio::fs;
@@ -15,28 +15,33 @@ struct Migrations;
 /// This is our complex database entity.
 /// The table definition can be found in `migrations/1_init.sql`.
 ///
-/// The `FromRow` derive macro will create the following impl:
+/// The `FromRow` derive macro will create (in this example) the following impl:
 ///
 /// ```rust, notest
-///impl ::std::convert::From<&mut ::hiqlite::Row<'_>> for Entity {
-///    #[inline]
-///    fn from(row: &mut ::hiqlite::Row) -> Self {
-///        Self {
-///            id: row.get("id"),
-///            name: row.get("name_db"),
-///            desc: row.get("desc"),
-///            sub: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),
-///            skipped: ::std::default::Default::default(),
-///            some_int: row.get("some_int"),
-///            my_enum: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),
-///        }
-///    }
-///}
+/// impl ::std::convert::From<&mut ::hiqlite::Row<'_>> for Entity {
+///     #[inline]
+///     fn from(row: &mut ::hiqlite::Row) -> Self {
+///         use ::std::str::FromStr;
+///         Self {
+///             id: row.get("id"),
+///             name: row.get("name_db"),
+///             desc: row.get("desc"),
+///             vec_wrap: row.get("vec_wrap"),
+///             sub: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),
+///             skipped: ::std::default::Default::default(),
+///             some_int: row.get("some_int"),
+///             my_enum: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),
+///             left_right: row.get::<String>("left_right").parse().unwrap(),
+///             up_down: row.get::<String>("ud").into(),
+///             number: row.get::<i64>("num").into(),
+///         }
+///     }
+/// }
 /// ```
 ///
 /// You have the following `column` attributes available:
 ///
-/// - `rename = "name_db"` will rename the struct value to a different column name
+/// - `rename = "some_col_name"` will rename the struct value to a different column name
 /// - `skip` will skip that value in the `From<_>` impl and use `Default::default()`
 /// - `flatten` can be used for any type that cannot be directly converted. You will use
 ///   this for all `struct`s, enums, or whatever other custom types you may have.
@@ -45,7 +50,7 @@ struct Migrations;
 /// - `from_i64` if the `impl From<i64>` for the type should be used
 ///
 /// You can combine `rename` with one of the `from_*` attributes, but not with `skip` or `flatten`.
-/// The order does not amtter in this case.
+/// The order does not matter in this case.
 #[derive(Debug, FromRow)]
 struct Entity {
     id: i64,
@@ -55,28 +60,34 @@ struct Entity {
     /// This is using a smart wrapper type. This is `TEXT` column-backed and can be used to easily
     /// convert into a `Vec<_>` later on, since SQLite does not support arrays natively.
     /// In this example, `\n` will be used to separate the values, but it is free to choose.
-    /// Use whatever char cannot create a conflict with the data you want to save.
+    /// Use whatever `char` cannot create a conflict with the data you want to save.
+    ///
+    /// This type comes already with impls for converting it into a `hiqlite::Param` and to get it
+    /// back from a DB column. See the code below for examples.
     vec_wrap: VecText<'\n'>,
+    /// `flatten` will use the `FromRow` impl for `EntitySub` directly. It will have access to the
+    /// exact same `Row`.
     #[column(flatten)]
     sub: EntitySub,
     #[column(skip)]
     skipped: Option<String>,
     /// Note: Because we enabled the `cast_ints` feature for `hiqlite`, we can use an
     /// `i32` here. Even though such a cast is not safe by definition, because SQLite stores all
-    /// integers as i64, we can do the automatic downcast, when we are sure that only this Rust
+    /// integers as `i64`, we can do the automatic cast, when we are sure that only this Rust
     /// program controls the input to the DB. In this case, Rust will give us the safety, even
     /// though SQLite is able to store bigger integers than an `i32`.
     some_int: i32,
     #[column(flatten)]
     my_enum: MyEnum,
-    /// If you have an `impl FromStr` for your type, you can use it for the conversion like so.
+    /// If you already have an `impl FromStr` for your type, you can use it for the conversion like
+    /// so, and you won't need an additional `flatten` + `From<&mut Row<_>>` impl.
     #[column(from_str)]
     left_right: LeftRight,
     /// for `From<String>` impls
     #[column(rename = "ud", from_string)]
     up_down: UpDown,
     /// for `From<i64>` impls
-    /// The order when using `rename` does not matter.
+    /// The order when using `rename` additionally does not matter.
     #[column(from_i64, rename = "num")]
     number: Number,
 }
@@ -151,7 +162,7 @@ impl UpDown {
     }
 }
 
-#[derive(Debug, CacheVariants)]
+#[derive(Debug)]
 enum Number {
     One = 1,
     Two,
@@ -182,9 +193,9 @@ enum MyEnum {
 /// In contrast to many other crates, `hiqlite`s goal is to keep it simple here. You will not
 /// have multiple different `From*` traits you need to impl, and even worse, different ones for
 /// different Rust types. No matter what it is, you will always need to impl just
-/// `From<&mut hiqlite::Row<'_>>` in combination with `#[column(flatten)]` in the parent. This
+/// `From<&mut hiqlite::Row<'_>>` in combination with `#[column(flatten)]` on the parent. This
 /// gives you the most amount of flexibility, and you only need to remember this single trait, not
-/// 5-8 different ones.
+/// like 5-8 different ones.
 impl From<&mut hiqlite::Row<'_>> for MyEnum {
     fn from(row: &mut hiqlite::Row<'_>) -> Self {
         if let Some(value) = row.get::<Option<String>>("enum_value") {
@@ -198,12 +209,6 @@ impl From<&mut hiqlite::Row<'_>> for MyEnum {
         }
     }
 }
-
-// impl MyEnum {
-//     pub fn hiqlite_cache_variants() -> &'static [(i32, &'static str)] {
-//         &[(1, "Empty"), (2, "One")]
-//     }
-// }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
