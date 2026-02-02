@@ -14,8 +14,6 @@ impl NodeConfig {
     ///
     /// You can overwrite most values from the file with ENV vars. If this is possible, it is
     /// mentioned in the documentation for each value.
-    ///
-    /// If any config values are incorrect, in an invalid format, or required ones are missing.
     pub async fn from_toml(
         path: &str,
         table: Option<&str>,
@@ -37,7 +35,7 @@ impl NodeConfig {
             .parse::<toml::Table>()
             .map_err(|err| Error::String(format!("Cannot parse TOML file: {err}")))?;
         let table = t_table(&mut root, t_name).map_err(|err| {
-            Error::String(format!("Cannot find table '{t_name}' in {path}: {err}").into())
+            Error::String(format!("Cannot find table '{t_name}' in {path}: {err}"))
         })?;
 
         Self::from_toml_table(
@@ -55,10 +53,6 @@ impl NodeConfig {
     ///
     /// You can overwrite most values from the file with ENV vars. If this is possible, it is
     /// mentioned in the documentation for each value.
-    ///
-    /// # Panics
-    ///
-    /// If any config values are incorrect, in an invalid format, or required ones are missing.
     pub async fn from_toml_table(
         table: toml::Table,
         table_name: &str,
@@ -121,10 +115,7 @@ impl NodeConfig {
         let wal_sync =
             if let Some(v) = t_type::<String>(&mut map, t_name, "log_sync", "HQL_LOG_SYNC")? {
                 let Ok(sync) = LogSync::try_from(v.as_str()) else {
-                    return Err(Error::String(format!(
-                        "{}",
-                        err_t("log_sync", t_name, "LogSync")
-                    )));
+                    return Err(Error::String(err_t("log_sync", t_name, "LogSync")));
                 };
                 sync
             } else {
@@ -134,12 +125,12 @@ impl NodeConfig {
             t_type::<u32>(&mut map, t_name, "wal_size", "HQL_WAL_SIZE")?.unwrap_or(2 * 1024 * 1024);
 
         #[cfg(feature = "cache")]
-        let cache_storage_disk = t_bool(
+        let cache_storage_disk = t_type::<bool>(
             &mut map,
             t_name,
             "cache_storage_disk",
             "HQL_CACHE_STORAGE_DISK",
-        )
+        )?
         .unwrap_or(true);
 
         let logs_until_snapshot = t_type::<u64>(
@@ -255,21 +246,29 @@ impl NodeConfig {
         };
 
         #[cfg(feature = "dashboard")]
-        let password_dashboard = t_str(
+        let password_dashboard = match t_type::<String>(
             &mut map,
             t_name,
             "password_dashboard",
             "HQL_PASSWORD_DASHBOARD",
-        )
-        .map(|b64| {
-            String::from_utf8(
-                cryptr::utils::b64_decode(&b64).expect("password_dashboard must be valid base64"),
-            )
-            .expect("password_dashboard must contain String characters only")
-        });
+        )? {
+            Some(password_dashboard_b64) => {
+                let password_dashboard_vec_u8 = cryptr::utils::b64_decode(&password_dashboard_b64)
+                    .map_err(|_| {
+                        Error::String("password_dashboard must be valid base64.".to_string())
+                    })?;
+                Some(String::from_utf8(password_dashboard_vec_u8).map_err(|_| {
+                    Error::String(
+                        "password_dashboard must contain String characters only".to_string(),
+                    )
+                })?)
+            }
+            None => None,
+        };
         #[cfg(feature = "dashboard")]
         let insecure_cookie =
-            t_bool(&mut map, t_name, "insecure_cookie", "HQL_INSECURE_COOKIE")?.unwrap_or(false);
+            t_type::<bool>(&mut map, t_name, "insecure_cookie", "HQL_INSECURE_COOKIE")?
+                .unwrap_or(false);
 
         #[cfg(any(feature = "s3", feature = "dashboard"))]
         let enc_keys = if let Some(keys) = enc_keys {
@@ -387,9 +386,8 @@ fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
     let value = map
         .remove(key)
         .ok_or(Error::String(format!("Expected type `Table` for {key}")))?;
-    toml::Table::try_from(value).map_err(|err| {
-        Error::String(format!("Cannot build toml table from removed value: {err}").into())
-    })
+    toml::Table::try_from(value)
+        .map_err(|err| Error::String(format!("Cannot build toml table from removed value: {err}")))
 }
 
 #[inline]

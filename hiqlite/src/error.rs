@@ -399,6 +399,6 @@ impl From<hiqlite_wal::error::Error> for Error {
 #[cfg(feature = "toml")]
 impl From<std::string::String> for Error {
     fn from(err: std::string::String) -> Self {
-        Error::String(err.into())
+        Error::String(err)
     }
 }
