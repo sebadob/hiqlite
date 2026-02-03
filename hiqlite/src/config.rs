@@ -78,8 +78,9 @@ pub struct NodeConfig {
     /// The internal Raft config. This must be the same on each node.
     /// You will get good defaults with `NodeConfig::default_raft_config(_)`.
     pub raft_config: RaftConfig,
-    /// If RPC and HTTP connections should use TLS
+    /// Specific TLS certificates for the Raft traffic. Overwrites `tls_auto_certificates`.
     pub tls_raft: Option<ServerTlsConfig>,
+    /// Specific TLS certificates for the API traffic. Overwrites `tls_auto_certificates`.
     pub tls_api: Option<ServerTlsConfig>,
     /// Secret for all Raft internal messages - at least 16 characters long
     pub secret_raft: String,

@@ -37,7 +37,6 @@ pub use crate::store::state_machine::sqlite::{
 };
 #[cfg(feature = "dlock")]
 pub use client::dlock::Lock;
-use hiqlite_derive::CacheVariants;
 #[cfg(feature = "sqlite")]
 pub use migration::AppliedMigration;
 

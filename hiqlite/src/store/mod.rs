@@ -104,7 +104,7 @@ pub(crate) async fn start_raft_db(
         node_config
             .tls_api
             .as_ref()
-            .map(|c| c.danger_tls_no_verify)
+            .map(|c| c.danger_tls_no_verify())
             .unwrap_or(false),
     )
     .await?;
@@ -202,7 +202,7 @@ where
         node_config
             .tls_api
             .as_ref()
-            .map(|c| c.danger_tls_no_verify)
+            .map(|c| c.danger_tls_no_verify())
             .unwrap_or(false),
     )
     .await?;

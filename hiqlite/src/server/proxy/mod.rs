@@ -1,7 +1,7 @@
 use crate::server::proxy::state::AppStateProxy;
 use crate::{Client, Error};
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use config::Config;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -29,7 +29,7 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
         config
             .tls_config
             .as_ref()
-            .map(|c| c.danger_tls_no_verify)
+            .map(|c| c.danger_tls_no_verify())
             .unwrap_or(false),
         config.secret_api.clone(),
         false,
@@ -63,12 +63,12 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
         .route("/ping", get(handlers::ping))
         .with_state(state.clone());
 
-    let addr = format!("0.0.0.0:{}", config.listen_port);
-    info!("listening on {}", addr);
-    let addr = SocketAddr::from_str(&addr).expect("valid socket address");
+    let addr_str = format!("0.0.0.0:{}", config.listen_port);
+    info!("listening on {}", addr_str);
+    let addr = SocketAddr::from_str(&addr_str).expect("valid socket address");
 
     if let Some(config) = &config.tls_config {
-        let tls_config = config.server_config().await;
+        let tls_config = config.server_config(&addr_str).await;
 
         axum_server::bind_rustls(addr, tls_config)
             .serve(router.into_make_service())

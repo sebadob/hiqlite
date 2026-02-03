@@ -39,7 +39,7 @@ where
     let tls_no_verify = node_config
         .tls_raft
         .as_ref()
-        .map(|c| c.danger_tls_no_verify)
+        .map(|c| c.danger_tls_no_verify())
         .unwrap_or(false);
 
     #[cfg(any(feature = "s3", feature = "dashboard"))]
@@ -135,7 +135,7 @@ where
     info!("rpc internal listening on {}", &rpc_addr);
 
     let tls_config = if let Some(config) = &node_config.tls_raft {
-        Some(config.server_config().await)
+        Some(config.server_config(&node_config.listen_addr_raft).await)
     } else {
         None
     };
@@ -221,7 +221,7 @@ where
 
     info!("api external listening on {api_addr}");
     let tls_config = if let Some(config) = &node_config.tls_api {
-        Some(config.server_config().await)
+        Some(config.server_config(&node_config.listen_addr_api).await)
     } else {
         None
     };

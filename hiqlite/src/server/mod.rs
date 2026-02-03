@@ -1,6 +1,7 @@
+use crate::empty::Empty;
 use crate::server::args::{Args, LogLevel};
 use crate::server::proxy::config::Config;
-use crate::{start_node_with_cache, Error};
+use crate::{Error, start_node_with_cache};
 use clap::Parser;
 use tracing::info;
 
@@ -20,7 +21,7 @@ pub async fn server() -> Result<(), Error> {
             info!("Hiqlite Server v{}", APP_VERSION);
 
             let node_config = config::build_node_config(args).await?;
-            let client = start_node_with_cache::<cache::Cache>(node_config).await?;
+            let client = start_node_with_cache::<Empty>(node_config).await?;
 
             let mut shutdown_handle = client.shutdown_handle()?;
             shutdown_handle.wait().await?;

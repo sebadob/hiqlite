@@ -81,7 +81,7 @@ webpki-roots = [
 [dependencies]
 #hiqlite-wal = { version = "0.12" }
 hiqlite-wal = { path = "../hiqlite-wal" }
-hiqlite-derive = { path = "../hiqlite-derive" }
+#hiqlite-derive = { path = "../hiqlite-derive" }
 
 argon2 = { workspace = true, optional = true }
 axum.workspace = true
@@ -109,6 +109,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 mime_guess = { workspace = true, optional = true }
 openraft.workspace = true
+rcgen.workspace = true
 reqwest.workspace = true
 rusqlite = { workspace = true, optional = true }
 rust-embed.workspace = true
@@ -120,6 +121,7 @@ sha2.workspace = true
 spow = { workspace = true, optional = true }
 thiserror.workspace = true
 thread-priority.workspace = true
+time.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 toml = { workspace = true, optional = true }
