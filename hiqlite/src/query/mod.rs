@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::query::rows::{ColumnOwned, RowOwned};
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine::SqlitePool;
-use crate::store::state_machine::sqlite::{TypeConfigSqlite, writer};
 use crate::{Error, Params};
 use openraft::Raft;
 use serde::de::DeserializeOwned;
@@ -9,6 +9,9 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use tokio::task;
 use tracing::info;
+
+#[cfg(debug_assertions)]
+use crate::store::state_machine::sqlite::writer;
 
 pub mod cust_types;
 pub mod rows;

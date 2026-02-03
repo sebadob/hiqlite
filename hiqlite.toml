@@ -157,6 +157,20 @@ cache_storage_disk = true
 # overwritten by: HQL_LOGS_UNTIL_SNAPSHOT
 logs_until_snapshot = 10000
 
+# The `tls_auto_certificates` will generate self-signed TLS
+# certificates for internal Raft and API traffic. Clients will
+# simply not validate the certificates for ease of use because
+# they don't have to. They do a 3-way handshake anyway, which
+# validates both client and server without the secret ever being
+# sent over the network.
+#
+# If you specify specific certificates with either `tls_raft_*` or
+# `tls_api_*`, they will be used instead.
+#
+# default: false
+# overwritten by: HQL_TLS_AUTO_CERTS
+tls_auto_certificates = false
+
 # If given, these keys / certificates will be used to establish
 # TLS connections between nodes.
 #
