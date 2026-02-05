@@ -94,7 +94,7 @@ spow = { version = "0.6", features = ["server"] }
 thiserror = "2"
 thread-priority = "3.0.0"
 tikv-jemallocator = "0.6.0"
-time = "0.3.46"
+time = "0.3.47"
 tokio = { version = "1.43.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.0", features = ["ring"] }
 toml = "0.9.5"
