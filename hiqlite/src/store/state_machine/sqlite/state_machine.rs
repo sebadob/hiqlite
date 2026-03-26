@@ -582,13 +582,13 @@ impl StateMachineSqlite {
             let mut stmt = conn
                 .prepare("SELECT data FROM _metadata WHERE key = 'meta'")
                 .map_err(|err| {
-                    error!(
-                        "Error preparing metadata read stmt in read from snapshot: {}",
-                        err
-                    );
-                    StorageError::IO {
-                        source: StorageIOError::write(&err),
-                    }
+                    Error::Sqlite(
+                        format!(
+                            "Error preparing metadata read stmt in read from snapshot: {}",
+                            err
+                        )
+                        .into(),
+                    )
                 })?;
             let mut metadata = stmt
                 .query_row((), |row| {
@@ -598,23 +598,25 @@ impl StateMachineSqlite {
                     Ok(metadata)
                 })
                 .map_err(|err| {
-                    error!(
-                        "Error reading metadata from Snapshot '{}': {}",
-                        path_dbg, err
-                    );
-                    StorageError::IO {
-                        source: StorageIOError::write(&err),
-                    }
+                    Error::Sqlite(
+                        format!(
+                            "Error reading metadata from Snapshot '{}': {}",
+                            path_dbg, err
+                        )
+                        .into(),
+                    )
                 })?;
 
-            Ok::<StateMachineData, StorageError<NodeId>>(metadata)
+            Ok::<StateMachineData, Error>(metadata)
         })
         .await
         .map_err(|err| StorageError::IO {
             source: StorageIOError::write(&err),
         })?;
 
-        let metadata = metadata?;
+        let metadata = metadata.map_err(|err| StorageError::IO {
+            source: StorageIOError::write(&err),
+        })?;
         let snapshot_id = id.to_string();
         assert_eq!(
             Some(snapshot_id.as_str()),

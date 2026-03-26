@@ -150,6 +150,7 @@ impl<const S: char> VecText<S> {
         self.0.split(S)
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn iter_as<T>(&self) -> Map<Split<'_, char>, fn(&str) -> Result<T, Error>>
     where
         T: ::std::str::FromStr,
