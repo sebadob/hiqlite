@@ -1,9 +1,10 @@
 use crate::app_state::{AppState, RaftType};
 use crate::client::DbClient;
-use crate::{tls, Client, Error};
-use std::sync::atomic::AtomicUsize;
+use crate::http_client::build_http_client;
+use crate::{Client, Error, tls};
 use std::sync::Arc;
-use tokio::sync::{watch, RwLock};
+use std::sync::atomic::AtomicUsize;
+use tokio::sync::{RwLock, watch};
 
 #[cfg(feature = "listen_notify")]
 use crate::client::listen_notify::remote::RemoteListener;
@@ -147,12 +148,7 @@ impl Client {
             #[cfg(feature = "cache")]
             leader_cache,
             nodes,
-            client: Some(
-                reqwest::Client::builder()
-                    .http2_prior_knowledge()
-                    .danger_accept_invalid_certs(tls_no_verify)
-                    .build()?,
-            ),
+            client: Some(build_http_client(tls_no_verify)),
             #[cfg(feature = "cache")]
             tx_client_cache,
             #[cfg(feature = "sqlite")]

@@ -2,6 +2,8 @@ use crate::query::rows::ValueOwned;
 use crate::{Error, Param};
 use rusqlite::types::{FromSqlResult, ValueRef};
 use std::fmt::{Debug, Display, Write};
+use std::iter::Map;
+use std::str::Split;
 use tracing::error;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,7 +58,7 @@ where
     type Error = Error;
 
     fn try_from(value: VecText<S>) -> Result<Self, Self::Error> {
-        value.into_vec()
+        value.try_into_vec()
     }
 }
 
@@ -67,54 +69,37 @@ where
     type Error = Error;
 
     fn try_from(value: VecText<S>) -> Result<Self, Self::Error> {
-        value.into_vec_opt()
+        value.try_into_vec_opt()
     }
 }
 
 impl<const S: char> VecText<S> {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn new<T>(value: &[T]) -> Result<VecText<S>, Error>
     where
         T: Debug + Display,
     {
+        if value.is_empty() {
+            return Ok(VecText(String::default()));
+        }
+
         // make a guess for preallocation
         let mut s = String::with_capacity(value.len() * 2);
         for item in value {
             write!(s, "{item}{S}")?;
         }
+
+        // remove the trailing separator
+        s.pop();
+
         Ok(VecText(s))
     }
 
     #[inline]
-    pub fn into_vec<T>(self) -> Result<Vec<T>, Error>
-    where
-        T: for<'a> TryFrom<&'a str>,
-    {
-        let mut res: Vec<T> = Vec::new();
-        for line in self.0.split(S) {
-            if line.is_empty() {
-                continue;
-            }
-            let t = T::try_from(line)
-                .map_err(|_| Error::Error("Cannot convert VecLf into Vec<_>".into()))?;
-            res.push(t);
-        }
-        Ok(res)
-    }
-
-    #[inline]
-    pub fn into_vec_opt<T>(self) -> Result<Option<Vec<T>>, Error>
-    where
-        T: for<'a> TryFrom<&'a str>,
-    {
-        if self.0.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(self.into_vec()?))
-        }
-    }
-
-    #[inline]
-    pub fn parse<T>(self) -> Result<Vec<T>, Error>
+    pub fn parse<T>(&self) -> Result<Vec<T>, Error>
     where
         T: ::std::str::FromStr,
     {
@@ -130,6 +115,50 @@ impl<const S: char> VecText<S> {
         }
         Ok(res)
     }
+
+    #[inline]
+    pub fn try_into_vec<T>(self) -> Result<Vec<T>, Error>
+    where
+        T: for<'a> TryFrom<&'a str>,
+    {
+        let mut res: Vec<T> = Vec::new();
+        for line in self.0.split(S) {
+            if line.is_empty() {
+                continue;
+            }
+            let t = T::try_from(line)
+                .map_err(|_| Error::Error("Cannot convert VecLf into Vec<_>".into()))?;
+            res.push(t);
+        }
+        Ok(res)
+    }
+
+    /// Will be `None` if the inner `String` is empty.
+    #[inline]
+    pub fn try_into_vec_opt<T>(self) -> Result<Option<Vec<T>>, Error>
+    where
+        T: for<'a> TryFrom<&'a str>,
+    {
+        if self.0.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(self.try_into_vec()?))
+        }
+    }
+
+    pub fn values(&self) -> Split<'_, char> {
+        self.0.split(S)
+    }
+
+    pub fn iter_as<T>(&self) -> Map<Split<'_, char>, fn(&str) -> Result<T, Error>>
+    where
+        T: ::std::str::FromStr,
+    {
+        self.0.split(S).map(|v| {
+            v.parse::<T>()
+                .map_err(|_| Error::Error("Cannot parse value".into()))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -140,17 +169,16 @@ mod tests {
     fn vec_text() {
         // make sure conversions work as expected with the generic args
 
-        let v: VecText<'\n'> = VecText::new(&["Entry 1", "Entry 2", "And another one"]).unwrap();
-        // parse() will work here as well. The different impls just provide more flexibility.
-        let r = v.into_vec::<String>().unwrap();
-        assert_eq!(
-            vec![
-                "Entry 1".to_string(),
-                "Entry 2".to_string(),
-                "And another one".to_string()
-            ],
-            r
-        );
+        let values = vec![
+            "Entry 1".to_string(),
+            "Entry 2".to_string(),
+            "And another one".to_string(),
+        ];
+        let v: VecText<'\n'> = VecText::new(&values).unwrap();
+        // `parse()` will work here as well instead of `try_into_vec()`.
+        // The different impls just provide more flexibility.
+        let r = v.try_into_vec::<String>().unwrap();
+        assert_eq!(values, r);
 
         let v: VecText<','> = VecText::new(&[1, 2, -3]).unwrap();
         let r = v.parse::<i32>().unwrap();

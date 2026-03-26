@@ -1,6 +1,5 @@
+use hiqlite::macros::{embed::*, params, FromRow};
 use hiqlite::{Error, NodeConfig, StmtIndex};
-use hiqlite_macros::embed::*;
-use hiqlite_macros::{params, FromRow};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use tokio::fs;

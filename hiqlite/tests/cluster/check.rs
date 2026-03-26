@@ -1,9 +1,10 @@
 use crate::execute_query::TestData;
-use crate::{debug, log, params};
+use crate::{debug, log};
+use hiqlite::macros::params;
 use hiqlite::{Client, Error};
 
-use crate::cache::{KEY, KEY_2, VALUE, VALUE_2};
 use crate::Cache;
+use crate::cache::{KEY, KEY_2, VALUE, VALUE_2};
 
 pub async fn is_client_db_healthy(client: &Client, id: Option<u64>) -> Result<(), Error> {
     client.wait_until_healthy_db().await;

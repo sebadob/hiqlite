@@ -42,12 +42,12 @@ full = [
     "cache",
     "dashboard",
     "dlock",
-    "listen_notify",
+    "listen_notify_local",
+    "macros",
     "s3",
     "shutdown-handle",
     "sqlite",
     "toml",
-    "webpki-roots",
 ]
 jemalloc = ["dep:tikv-jemallocator"]
 listen_notify = [
@@ -58,6 +58,7 @@ listen_notify_local = [
     "dep:futures-util",
     "cache"
 ]
+macros = ["dep:hiqlite-derive"]
 toml = ["dep:toml"]
 s3 = ["backup"]
 server = [
@@ -74,14 +75,13 @@ sqlite = [
     "dep:serde_rusqlite",
 ]
 webpki-roots = [
-    "dep:webpki-roots",
-    "reqwest/rustls-tls-webpki-roots",
+    "dep:webpki-root-certs",
 ]
 
 [dependencies]
+hiqlite-derive = { path = "../hiqlite-derive", optional = true }
 #hiqlite-wal = { version = "0.12" }
 hiqlite-wal = { path = "../hiqlite-wal" }
-#hiqlite-derive = { path = "../hiqlite-derive" }
 
 argon2 = { workspace = true, optional = true }
 axum.workspace = true
@@ -131,7 +131,8 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
 url.workspace = true
 uuid.workspace = true
-webpki-roots = { workspace = true, optional = true }
+# reqwest 0.13 requires the full certs to make them useable
+webpki-root-certs = { workspace = true, optional = true }
 
 # make minimal versions happy
 lazy_static.workspace = true

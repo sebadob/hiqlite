@@ -278,12 +278,7 @@ impl Client {
                 // before doing a shutdown.
                 info!("Leaving in-memory-only cache cluster");
 
-                let client = reqwest::Client::builder()
-                    .http2_prior_knowledge()
-                    .danger_accept_invalid_certs(tls_no_verify)
-                    .connect_timeout(Duration::from_secs(3))
-                    .timeout(Duration::from_secs(30))
-                    .build()?;
+                let client = crate::http_client::build_http_client(tls_no_verify);
                 let scheme = if with_tls { "https" } else { "http" };
 
                 if metrics.current_leader == Some(state.id) {

@@ -241,6 +241,32 @@ The `hiqlite::Client` will get new functions like `get()` and `put()`. The `cach
 raft-replicated, in-memory caches on all nodes. Basically an in-memory KV store with optional per cache per entry
 TTL for each key.
 
+### `cast_ints`
+
+This feature will make it possible to do integer casts when converting from a DB INTEGER. SQLites `INTEGER` is
+technically always an `i64`. This means you cannot safely convert into e.g. a `u32`. However, since Rust is strictly
+typed, you can assume that even though columns can store `i64`, they will never contain values outside a `u32`.
+
+This version will do boundary checks. For instance, when you want to cast to `u32` and your DB column contains a value
+bigger than `u32::MAX`, it will only contain up to `u32::MAX`. When it's below `0`, it will only contain `0`, and never
+overflow.
+
+DB column values can be cast into the following types with this feature:
+
+- `u64`
+- `i32`
+- `u32`
+- `i16`
+- `u16`
+- `i8`
+- `u8`
+- `Option<any_of_the_above_ints>`
+
+### `cast_ints_unchecked`
+
+This works in the same way as `cast_ints`, with the exception that it's a tiny bit faster. It will do an unchecked
+cast without boundary checks. When you insert into properly typed values with your queries, this is safe to use.
+
 ### `dashboard`
 
 This feature is the one that makes the crate size on crates.io that big. Hiqlite comes with pre-built, static

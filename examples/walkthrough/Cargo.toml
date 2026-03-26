@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hiqlite = { path = "../../hiqlite", features = ["cache", "dlock", "listen_notify", "shutdown-handle"] }
-hiqlite-macros = { path = "../../hiqlite-macros" }
+hiqlite = { path = "../../hiqlite", features = [
+    "cache", "dlock", "listen_notify", "macros", "shutdown-handle"
+] }
 
 clap = { version = "4.1.11", features = ["derive", "env"] }
 serde = { version = "1.0.203", features = ["derive"] }

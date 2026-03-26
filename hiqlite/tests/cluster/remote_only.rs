@@ -1,7 +1,8 @@
 use crate::execute_query::TestData;
 use crate::start::SECRET_API;
-use crate::{check, log, params, start, Cache};
+use crate::{Cache, check, log, start};
 use chrono::Utc;
+use hiqlite::macros::params;
 use hiqlite::{Client, Error, Lock};
 use std::time::Duration;
 use tokio::{task, time};

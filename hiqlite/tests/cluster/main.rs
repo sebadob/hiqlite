@@ -1,8 +1,7 @@
 use crate::self_heal::test_self_healing;
 use futures_util::future::join_all;
 use hiqlite::Error;
-use hiqlite_derive::CacheVariants;
-use serde::{Deserialize, Serialize};
+use hiqlite::macros::CacheVariants;
 use std::fmt::{Debug, Display};
 use std::time::Duration;
 use std::{env, fs, process};
@@ -15,36 +14,21 @@ use tracing_subscriber::{EnvFilter, Layer};
 mod backup;
 mod backup_restore;
 mod batch;
+mod cache;
 mod check;
+mod dlock;
 mod execute_query;
+mod listen_notify;
 mod migration;
+mod remote_only;
 mod self_heal;
 mod start;
 mod transaction;
-
-mod cache;
-mod dlock;
-mod listen_notify;
-mod remote_only;
 mod type_conversions;
 
 pub const TEST_DATA_DIR: &str = "tests/data_test";
 
-#[macro_export]
-macro_rules! params {
-    ( $( $param:expr ),* ) => {
-        {
-            #[allow(unused_mut)]
-            let mut params = Vec::with_capacity(2);
-            $(
-                params.push(hiqlite::Param::from($param));
-            )*
-            params
-        }
-    };
-}
-
-#[derive(Debug, Serialize, Deserialize, CacheVariants)]
+#[derive(Debug, CacheVariants)]
 enum Cache {
     One,
     Two,

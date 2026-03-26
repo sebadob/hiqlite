@@ -1,7 +1,6 @@
 use clap::Parser;
+use hiqlite::macros::{embed::*, CacheVariants};
 use hiqlite::{start_node_with_cache, Client, Error, Node, NodeConfig};
-use hiqlite_macros::embed::*;
-use hiqlite_macros::CacheVariants;
 use std::fmt::{Debug, Display};
 use std::time::Duration;
 use tokio::time;

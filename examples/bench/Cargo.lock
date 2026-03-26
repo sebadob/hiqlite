@@ -405,7 +405,6 @@ dependencies = [
  "chrono",
  "clap",
  "hiqlite",
- "hiqlite-macros",
  "serde",
  "tokio",
  "tracing",
@@ -1394,6 +1393,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.1",
  "hex",
+ "hiqlite-derive",
  "hiqlite-wal",
  "hostname",
  "http-body-util",
@@ -1433,15 +1433,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
-]
-
-[[package]]
-name = "hiqlite-macros"
-version = "0.13.0"
-dependencies = [
- "hiqlite",
- "hiqlite-derive",
- "rust-embed",
 ]
 
 [[package]]

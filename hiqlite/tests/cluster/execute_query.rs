@@ -1,5 +1,6 @@
-use crate::{log, params};
+use crate::log;
 use chrono::Utc;
+use hiqlite::macros::params;
 use hiqlite::{Client, Error};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

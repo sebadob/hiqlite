@@ -1,5 +1,277 @@
 # Changelog
 
+## UNRELEASED
+
+This is a pretty exciting release with very much improved DX.
+
+### Breaking
+
+#### Changed `impl From<hiqlite::Row<'_>>`
+
+To make the new derive macros work, and make it possible to theoretically infinitely nest the parsing when you use
+`#[column(flatten)]` in combination with `FromRow` (see below), the necessary `impl` was changed slightly from:
+
+```rust
+impl From<hiqlite::Row<'_>> for MyStruct {
+    fn from(mut row: hiqlite::Row<'_>) -> Self {
+        todo!()
+    }
+}
+```
+
+to:
+
+```rust
+impl From<&mut hiqlite::Row<'_>> for MyStruct {
+    fn from(row: &mut hiqlite::Row<'_>) -> Self {
+        todo!()
+    }
+}
+```
+
+This migration is easily done with 2 global *find and replace*:
+
+- rename all `impl From<hiqlite::Row<'_>> for` to `impl From<&mut hiqlite::Row<'_>>`
+- rename all `fn from(mut row: hiqlite::Row<'_>) -> Self {` to `fn from(row: &mut hiqlite::Row<'_>) -> Self {`
+
+> If you did not use the `'_` lifetime elision and used for instance `impl<'a> From<hiqlite::Row<'a>>` before, you need
+> to adjust the global find of course. Both versions work just fine.
+
+The function body will work in the same way.
+
+#### `hiqlite_macros` embedded into `hiqlite`
+
+The `hiqlite_macros` crate was necessary to add to your `Cargo.toml`, if you wanted to get the `params!()` macro. With
+the addition of the new derive macros and an internal rework, this has been moved into the `hiqlite` main crate behind
+the feature flag `macros`. The migration is easily done with a global find and replace. Remove the `hiqlite_macros`
+dependency, add the `macros` feature to `hiqlite`, and then replace all `use hiqlite_macros::` with
+`use hiqlite::macros::`.
+
+The `hiqlite_macros` crate will only work for versions until this one. The derive macros needed their own crate anyway,
+and the `params!()` macro was added to the `hiqlite` main crate directly.
+
+#### No `strum` dependency anymore and `CacheIndex` is gone
+
+While `strum` is a really nice crate, adding another dependency for `hiqlite` felt weird. Only the `strum::EnumIter`
+derive was needed anyway if you wanted to use the cache. This is gone now. Instead of `strum::EnumIter`, you now only
+derive `hiqlite::macros::CacheVariants` (with the `macros` feature).
+
+In addition, you can remove the `impl CacheIndex`. The derive macro will take care of everything necessary.
+
+#### `hiqlite::ServerTlsConfig` moved into `hiqlite::tls::ServerTlsConfig`
+
+Because of additional features, the `ServerTlsConfig` was moved into the `tls` module.
+
+#### `full` feature changes
+
+Since it's unnecessary when you use auto TLS certificates, the `webpki-roots` feature is not added anymore with the
+`full` feature. In addition, full does not include `listen_notify` anymore, but `listen_notify_local` instead, which
+makes way more sense in almost all situations.
+
+### Changes
+
+#### `FromRow` macro
+
+If you use any or the `query_map*` functions, you had to manually `impl From<hiqlite::Row<'_>>` before. This is not
+the case anymore. You now get the `FromRow` derive macro. In combination with quite a few possible `column` attributes,
+most `struct`s don't need a manual implementation anymore.
+
+For instance, if you define the following:
+
+```rust
+#[derive(Debug, FromRow)]
+struct Entity {
+    id: i64,
+    #[column(rename = "name_db")]
+    name: String,
+    desc: Option<String>,
+    vec_wrap: VecText<'\n'>,
+    #[column(flatten)]
+    sub: EntitySub,
+    #[column(skip)]
+    skipped: Option<String>,
+    some_int: i32,
+    #[column(flatten)]
+    my_enum: MyEnum,
+    #[column(parse)]
+    left_right: Option<LeftRight>,
+    #[column(rename = "ud", from_string)]
+    up_down: UpDown,
+    #[column(from_i64, rename = "num")]
+    number: Number,
+}
+```
+
+... the `FromRow` macro will generate the following output:
+
+```rust
+impl ::std::convert::From<&mut ::hiqlite::Row<'_>> for Entity {
+    #[inline]
+    fn from(row: &mut ::hiqlite::Row) -> Self {
+        use ::std::str::FromStr;
+        Self {
+            id: row.get("id"),
+            name: row.get("name_db"),
+            desc: row.get("desc"),
+            vec_wrap: row.get("vec_wrap"),
+            sub: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),
+            skipped: ::std::default::Default::default(),
+            some_int: row.get("some_int"),
+            my_enum: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),
+            left_right: row
+                .get::<Option<String>>("left_right")
+                .map(|s| s.parse().unwrap()),
+            up_down: row.get::<String>("ud").into(),
+            number: row.get::<i64>("num").into(),
+        }
+    }
+}
+```
+
+For more in-depth information, take a look at
+the [derive-complex-types](https://github.com/sebadob/hiqlite/tree/main/examples/derive-complex-types) example.
+
+#### New type `VecText<const S: char>`
+
+This is a smart wrapper type for cases when you want to save `Vec<_>` into your DB, and of course parse them during
+`query_map*` as well. SQLite can work with arrays, but it needs virtual tables to do this, which comes with a
+performance hit and additional overhead on DB level, which is far from ideal.
+
+To overcome this, I added `VecText<const S: char>`. This type will store and `Vec<_>` inside `TEXT` columns, separated
+by the custom separator. This means way easier and quicker handling on the database, and you can even lazily convert
+into a `Vec<_>` later when you actually need it. This means fewer memory allocations upfront and faster queries.
+
+It will basically store all values as a CSV with the exception that you can choose the separation character to match
+your input data. For instance, you might have values inside your `Vec<_>` which may contain `,`, which makes it of
+course impossible to use it as a separator. But let's say values will never contain `\n` or `;`, then you can use these
+for separation.
+
+This type can be used inside the `params!()` macro directly, and it can be parsed from DB columns easily, since it's
+only a `String` behind the scenes until you actually need it to be a `Vec<_>`. The basic usage may look like this:
+
+```rust, notest
+use hiqlite::VecText;
+
+let values = vec![
+    "Entry 1".to_string(),
+    "Entry 2".to_string(),
+    "And another one".to_string(),
+];
+let v: VecText<'\n'> = VecText::new(&values).unwrap();
+// `parse()` will work here as well instead of `try_into_vec()`.
+// The different impls just provide more flexibility.
+let r = v.try_into_vec::<String>().unwrap();
+assert_eq!(values, r);
+
+let v: VecText<','> = VecText::new(&[1, 2, -3]).unwrap();
+let r = v.parse::<i32>().unwrap();
+assert_eq!(&[1, 2, -3], r.as_slice());
+
+let v: VecText<';'> = VecText::new(&[1, 2, 13]).unwrap();
+let r = v.parse::<u8>().unwrap();
+assert_eq!(&[1, 2, 13], r.as_slice());
+```
+
+#### New features `cast_ints` and `cast_ints_unchecked`
+
+##### `cast_ints`
+
+This feature will make it possible to do integer casts when converting from a DB INTEGER. SQLites `INTEGER` is
+technically always an `i64`. This means you cannot safely convert into e.g. a `u32`. However, since Rust is strictly
+typed, you can assume that even though columns can store `i64`, they will never contain values outside a `u32`.
+
+This version will do boundary checks. For instance, when you want to cast to `u32` and your DB column contains a value
+bigger than `u32::MAX`, it will only contain up to `u32::MAX`. When it's below `0`, it will only contain `0`, and never
+overflow.
+
+DB column values can be cast into the following types with this feature:
+
+- `u64`
+- `i32`
+- `u32`
+- `i16`
+- `u16`
+- `i8`
+- `u8`
+- `Option<any_of_the_above_ints>`
+
+##### `cast_ints_unchecked`
+
+This works in the same way as `cast_ints`, with the exception that it's a tiny bit faster. It will do an unchecked
+cast without boundary checks. When you insert into properly typed values with your queries, this is safe to use.
+
+#### `url::Url` + `uuid::Uuid` as DB values
+
+`url::Url` and `uuid::Uuid` can now be converted into `hiqlite::Param` and parsed from DB values automatically.
+The `url::Url` will be `TEXT`-backed, while the `uuid::Uuid` can be stored in a `BLOB` column for better efficiency and
+sorting.
+
+#### Improved `params!()` macro
+
+The performance and efficiency of the `params!()` macro has been improved. The macro is typed out very specifically for
+up to 24 given parameters. This means proper upfront memory allocation for the `Vec<_>` under the hood. Only if 24
+params are exceeded, it changes to a dynamic version that starts with a pre-allocated capacity of 25 and then grows as
+needed.
+
+#### Auto-TLS certificates
+
+The way how you could add TLS certificates was changed slightly because of the new addition to auto-generate them.
+Before, you would have added TLS certificates like so:
+
+```rust,notest
+use hiqlite::ServerTlsConfig;
+
+config.tls_raft = Some(ServerTlsConfig {
+    key: "../../tls/key.pem".into(),
+    cert: "../../tls/cert-chain.pem".into(),
+    danger_tls_no_verify: true,
+});
+```
+
+Now, you are doing it like so:
+
+```rust,notest
+use hiqlite::tls::{ServerTlsConfig, ServerTlsConfigCerts};
+
+config.tls_raft = Some(ServerTlsConfig::Specific(ServerTlsConfigCerts {
+    key: "../../tls/key.pem".into(),
+    cert: "../../tls/cert-chain.pem".into(),
+    danger_tls_no_verify: true,
+});
+```
+
+On top of that, you can also use auto-generated certificates. If set, `hiqlite` will generate self-signed certificates
+on startup, and all connections will be encrypted by default. This means you don't need to care about expiring
+certificates and renewing them. With each restart, a new pair of certificates will be generated. Nodes do not validate
+them for even more ease of use, because they don't have to. They will do a mutual-authenticating handshake using the
+given secrets anyway. This makes using TLS a lot easier now without any additional maintenance.
+
+Auto-Certificates can be used like so:
+
+```rust,notest
+use hiqlite::tls::ServerTlsConfig;
+
+config.tls_raft = Some(ServerTlsConfig::TlsAutoCertificates);
+```
+
+When setting up your instance via TOML, you have a new config variable:
+
+```toml
+# The `tls_auto_certificates` will generate self-signed TLS
+# certificates for internal Raft and API traffic. Clients will
+# simply not validate the certificates for ease of use because
+# they don't have to. They do a 3-way handshake anyway, which
+# validates both client and server without the secret ever being
+# sent over the network.
+#
+# If you specify specific certificates with either `tls_raft_*` or
+# `tls_api_*`, they will be used instead.
+#
+# default: false
+# overwritten by: HQL_TLS_AUTO_CERTS
+tls_auto_certificates = true
+```
+
 ## hiqlite-v0.12.2
 
 ### Changes
@@ -533,7 +805,7 @@ have S3 available and will make sure, that you will still have a backup "somewhe
 
 The self-healing tests have been simplified to make them easier to maintain in the future. They do not decide between
 different folders being lost because you usually lose the whole volume or nothing at all. So if any issue comes up on
-a Raft member node, the easiest solution is to simply delete the whole volume, restart and let it rebuild anyway.
+a Raft member node, the easiest solution is to simply delete the whole volume, restart, and let it rebuild anyway.
 
 ## v0.2.0
 
@@ -586,7 +858,7 @@ This first release comes with the following features:
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
-- fully encrypted backups to s3, cron job or manual (
+- fully encrypted backups to s3, cron job, or manual (
   with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
 - restore from remote backup (with log index roll-over)
 - strongly consistent, replicated `EXECUTE` queries
