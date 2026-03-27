@@ -66,6 +66,7 @@ server = [
     "dep:home",
     "dep:tracing-subscriber",
     "full",
+    "listen_notify",
     "tokio/macros",
 ]
 shutdown-handle = ["dep:ctrlc"]
