@@ -144,6 +144,11 @@ tower-service.workspace = true
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
 
+# Necessary to fix security issues in current versions.
+aws-lc-sys.workspace = true
+aws-lc-rs.workspace = true
+rkyv.workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util", "tracing"] }
 tokio-test = "0.4.4"

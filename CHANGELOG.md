@@ -1,6 +1,6 @@
 # Changelog
 
-## UNRELEASED
+## v0.13.0
 
 This is a pretty exciting release with very much improved DX.
 
@@ -42,12 +42,13 @@ The function body will work in the same way.
 #### `hiqlite_macros` embedded into `hiqlite`
 
 The `hiqlite_macros` crate was necessary to add to your `Cargo.toml`, if you wanted to get the `params!()` macro. With
-the addition of the new derive macros and an internal rework, this has been moved into the `hiqlite` main crate behind
+the addition of the new `derive` macros and an internal rework, this has been moved into the `hiqlite` main crate behind
 the feature flag `macros`. The migration is easily done with a global find and replace. Remove the `hiqlite_macros`
 dependency, add the `macros` feature to `hiqlite`, and then replace all `use hiqlite_macros::` with
 `use hiqlite::macros::`.
 
-The `hiqlite_macros` crate will only work for versions until this one. The derive macros needed their own crate anyway,
+The `hiqlite_macros` crate will only work for versions until this one. The `derive` macros needed their own crate
+anyway,
 and the `params!()` macro was added to the `hiqlite` main crate directly.
 
 #### No `strum` dependency anymore and `CacheIndex` is gone
