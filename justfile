@@ -246,15 +246,15 @@ publish-wal: verify-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish -p hiqlite-wal
-    echo "WAL published - now update the version in hiqlite/Cargo.toml and publish-core"
+    echo "WAL published - now update the version in hiqlite/Cargo.toml and publish-derive"
 
 publish-derive:
     #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish -p hiqlite-derive
+    echo "Derive published - now update the version in hiqlite/Cargo.toml and publish-core"
 
 publish-core:
     #!/usr/bin/env bash
     set -euxo pipefail
     cargo publish -p hiqlite
-    echo "Core published - now update the version in hiqlite-macros/Cargo.toml and publish-macros"
