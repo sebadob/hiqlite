@@ -1,7 +1,8 @@
 use crate::backup::BACKUP_PATH_FILE;
 use crate::execute_query::TestData;
 use crate::start::build_config;
-use crate::{Cache, backup, log, params};
+use crate::{Cache, backup, log};
+use hiqlite::macros::params;
 use hiqlite::{Client, Error, start_node_with_cache};
 use std::env;
 use tokio::task;

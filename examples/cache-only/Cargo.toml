@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hiqlite = { path = "../../hiqlite", default-features = false, features = ["cache", "toml"] }
-hiqlite-macros = { path = "../../hiqlite-macros" }
+hiqlite = { path = "../../hiqlite", default-features = false, features = ["cache", "macros", "toml"] }
 
 serde = { version = "1.0.203", features = ["derive"] }
 tokio = { version = "1.43.1", features = ["fs", "rt-multi-thread"] }

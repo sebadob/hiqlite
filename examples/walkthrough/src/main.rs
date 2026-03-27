@@ -1,7 +1,7 @@
 use clap::Parser;
-use hiqlite::{start_node_with_cache, Error, Node, NodeConfig, ServerTlsConfig};
-use hiqlite_macros::embed::*;
-use hiqlite_macros::{params, CacheVariants, FromRow};
+use hiqlite::macros::{embed::*, params, CacheVariants, FromRow};
+use hiqlite::tls::ServerTlsConfig;
+use hiqlite::{start_node_with_cache, Error, Node, NodeConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
@@ -56,16 +56,8 @@ async fn node_config(node_id: u64, nodes: Vec<Node>) -> NodeConfig {
     config.node_id = node_id;
     config.nodes = nodes;
     config.log_statements = true;
-    config.tls_raft = Some(ServerTlsConfig {
-        key: "../../tls/key.pem".into(),
-        cert: "../../tls/cert-chain.pem".into(),
-        danger_tls_no_verify: true,
-    });
-    config.tls_api = Some(ServerTlsConfig {
-        key: "../../tls/key.pem".into(),
-        cert: "../../tls/cert-chain.pem".into(),
-        danger_tls_no_verify: true,
-    });
+    config.tls_raft = Some(ServerTlsConfig::TlsAutoCertificates);
+    config.tls_api = Some(ServerTlsConfig::TlsAutoCertificates);
     config
 }
 

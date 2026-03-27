@@ -1,6 +1,6 @@
 use proc_macro2::{Literal, TokenStream, TokenTree};
 use quote::quote;
-use syn::{Attribute, Data, DeriveInput, Meta, MetaList};
+use syn::{Attribute, Data, DeriveInput, Meta, MetaList, Type};
 
 pub fn impl_from_row(input: DeriveInput) -> proc_macro::TokenStream {
     let name = input.ident;
@@ -14,48 +14,68 @@ pub fn impl_from_row(input: DeriveInput) -> proc_macro::TokenStream {
             .iter()
             .filter_map(|field| {
                 let id = field.ident.as_ref()?;
+                let is_opt = is_field_ty_opt(&field.ty).unwrap_or(false);
                 let ch = ColumnHandler::from(field.attrs.as_slice());
+                let name = if let Some(name) = &ch.rename {
+                    quote! {#name}
+                } else {
+                    let name = id.to_string();
+                    quote! {#name}
+                };
 
                 let ts = match ch.attr {
                     ColumnAttr::Flatten => {
                         quote! {#id: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),}
                     }
-                    ColumnAttr::FromI64 => {
-                        // TODO I don't really like doing this 4 times, but (probably becuase
-                        //  of lack of knowledge) some reason, when I use the `Literal.to_string()`
-                        //  in advance, it always outputs an escaped string. The `Ident` behaves
-                        //  differently.
-                        if let Some(name) = ch.rename {
-                            quote! {#id: row.get::<i64>(#name).into(),}
+                    ColumnAttr::FromI32 => {
+                        if is_opt {
+                            quote! {
+                                #id: row.get::<Option<i64>>(#name)
+                                    .map(|i| {
+                                        if i > 0 {
+                                            (::std::cmp::min(i, i32::MAX as i64) as i32).into()
+                                        } else {
+                                            (::std::cmp::max(i, i32::MIN as i64) as i32).into()
+                                        }
+                                    }),
+                            }
                         } else {
-                            let name = id.to_string();
+                            quote! {#id: {
+                                let i = row.get::<i64>(#name);
+                                if i > 0 {
+                                    (::std::cmp::min(i, i32::MAX as i64) as i32).into()
+                                } else {
+                                    (::std::cmp::max(i, i32::MIN as i64) as i32).into()
+                                }
+                            },}
+                        }
+                    }
+                    ColumnAttr::FromI64 => {
+                        if is_opt {
+                            quote! {#id: row.get::<Option<i64>>(#name).map(|i| i.into()),}
+                        } else {
                             quote! {#id: row.get::<i64>(#name).into(),}
                         }
                     }
-                    ColumnAttr::FromStr => {
+                    ColumnAttr::Parse => {
                         with_from_str = true;
-                        if let Some(name) = ch.rename {
-                            quote! {#id: row.get::<String>(#name).parse().unwrap(),}
+                        if is_opt {
+                            quote! {
+                                #id: row.get::<Option<String>>(#name).map(|s| s.parse().unwrap()),
+                            }
                         } else {
-                            let name = id.to_string();
                             quote! {#id: row.get::<String>(#name).parse().unwrap(),}
                         }
                     }
                     ColumnAttr::FromString => {
-                        if let Some(name) = ch.rename {
-                            quote! {#id: row.get::<String>(#name).into(),}
+                        if is_opt {
+                            quote! {#id: row.get::<Option<String>>(#name).map(|s| s.into()),}
                         } else {
-                            let name = id.to_string();
                             quote! {#id: row.get::<String>(#name).into(),}
                         }
                     }
                     ColumnAttr::None => {
-                        if let Some(name) = ch.rename {
-                            quote! {#id: row.get(#name),}
-                        } else {
-                            let name = id.to_string();
-                            quote! {#id: row.get(#name),}
-                        }
+                        quote! {#id: row.get(#name),}
                     }
                     ColumnAttr::Skip => quote! {#id: ::std::default::Default::default(),},
                 };
@@ -85,6 +105,23 @@ pub fn impl_from_row(input: DeriveInput) -> proc_macro::TokenStream {
     }.into()
 }
 
+#[inline]
+fn is_field_ty_opt(ty: &Type) -> Option<bool> {
+    let Type::Path(ty) = ty else {
+        return Some(false);
+    };
+    let mut iter = ty.path.segments.iter();
+
+    let mut s = iter.next()?.ident.to_string();
+    if s == "std" {
+        s = iter.next()?.ident.to_string();
+    }
+    if s == "option" {
+        s = iter.next()?.ident.to_string();
+    }
+    Some(s.as_str() == "Option")
+}
+
 struct ColumnHandler {
     rename: Option<Literal>,
     attr: ColumnAttr,
@@ -92,8 +129,9 @@ struct ColumnHandler {
 
 enum ColumnAttr {
     Flatten,
+    FromI32,
     FromI64,
-    FromStr,
+    Parse,
     FromString,
     None,
     Skip,
@@ -110,12 +148,13 @@ impl From<&[Attribute]> for ColumnHandler {
 Invalid syntax for '#[column]' - '{idx}' attribute, expected one of:
 
 - flatten
+- from_i32
 - from_i64
-- from_str
 - from_string
+- parse
 - rename = "my_column"
 - skip
-- rename may be combined with one of the from_* attributes
+- rename may be combined with one of the from_* or parse attributes
 "#
             )
         };
@@ -162,9 +201,10 @@ Invalid syntax for '#[column]' - '{idx}' attribute, expected one of:
                             };
                             let value = tree.to_string();
                             match value.as_str() {
+                                "from_i32" => attr = ColumnAttr::FromI32,
                                 "from_i64" => attr = ColumnAttr::FromI64,
-                                "from_str" => attr = ColumnAttr::FromStr,
                                 "from_string" => attr = ColumnAttr::FromString,
+                                "parse" => attr = ColumnAttr::Parse,
                                 _ => do_panic(format!(
                                     "Invalid syntax for 'from_*' after 'rename': {value}"
                                 )),
@@ -176,9 +216,10 @@ Invalid syntax for '#[column]' - '{idx}' attribute, expected one of:
                 }
                 other => {
                     match other {
+                        "from_i32" => attr = ColumnAttr::FromI32,
                         "from_i64" => attr = ColumnAttr::FromI64,
-                        "from_str" => attr = ColumnAttr::FromStr,
                         "from_string" => attr = ColumnAttr::FromString,
+                        "parse" => attr = ColumnAttr::Parse,
                         _ => do_panic(format!("Invalid syntax for 'from_*': {other}")),
                     }
                     if let Some(tree) = stream.next() {

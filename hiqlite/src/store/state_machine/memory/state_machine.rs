@@ -5,7 +5,6 @@ use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::{TypeConfigKV, cache_ttl_handler, kv_handler};
 use crate::{CacheVariants, Error, Node, NodeId};
 use chrono::Utc;
-use cron::TimeUnitSpec;
 use cryptr::utils::secure_random_alnum;
 use dotenvy::var;
 use openraft::storage::RaftStateMachine;

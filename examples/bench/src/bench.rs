@@ -1,7 +1,7 @@
 use crate::{log, Cache, Options};
 use chrono::Utc;
+use hiqlite::macros::params;
 use hiqlite::{Client, Error, Params, Row};
-use hiqlite_macros::params;
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
 use tokio::task;

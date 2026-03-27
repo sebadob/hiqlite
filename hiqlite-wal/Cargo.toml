@@ -33,3 +33,6 @@ thiserror.workspace = true
 thread-priority.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+# fix security issues in deps
+rkyv.workspace = true

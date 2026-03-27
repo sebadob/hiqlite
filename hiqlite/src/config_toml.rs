@@ -1,5 +1,5 @@
-use crate::tls::ServerTlsConfigCerts;
-use crate::{Error, Node, NodeConfig, ServerTlsConfig};
+use crate::tls::{ServerTlsConfig, ServerTlsConfigCerts};
+use crate::{Error, Node, NodeConfig};
 use hiqlite_wal::LogSync;
 use std::borrow::Cow;
 use std::env;

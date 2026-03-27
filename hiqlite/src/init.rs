@@ -16,6 +16,7 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
 
+use crate::http_client::build_http_client;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use std::collections::BTreeMap;
 use std::env;
@@ -158,10 +159,7 @@ async fn should_node_1_skip_init(
         return Ok(false);
     }
 
-    let client = reqwest::Client::builder()
-        .http2_prior_knowledge()
-        .danger_accept_invalid_certs(tls_no_verify)
-        .build()?;
+    let client = build_http_client(tls_no_verify);
 
     // no need for +1 since this very node is the +1
     let quorum = nodes.len() / 2;
@@ -274,12 +272,7 @@ pub async fn become_cluster_member(
         return Ok(());
     }
 
-    let client = reqwest::Client::builder()
-        .http2_prior_knowledge()
-        .danger_accept_invalid_certs(tls_no_verify)
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let client = build_http_client(tls_no_verify);
     let scheme = if tls { "https" } else { "http" };
 
     // It is possible that this node is un-initialized while still being a member on a remote

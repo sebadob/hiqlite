@@ -1,5 +1,5 @@
+use hiqlite::macros::CacheVariants;
 use hiqlite::{Error, NodeConfig};
-use hiqlite_macros::CacheVariants;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::time::Duration;
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Error> {
         .with_env_filter(EnvFilter::from("info"))
         .init();
 
-    let config = NodeConfig::from_toml("../../hiqlite.toml", None, None).await?;
+    let config = NodeConfig::from_toml("../../hiqlite.toml", None).await?;
     // Hiqlite Caches are (by default) disk-backed. This means they provide the consistency of Raft
     // and can rebuild their in-memory data after a restart and never lose it. With
     // `config.cache_storage_disk = true`, the Cache WAL files + Snapshots will be persisted to

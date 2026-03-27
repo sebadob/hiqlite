@@ -24,8 +24,6 @@ pub use crate::{client::Client, error::Error};
 pub use config::{NodeConfig, RaftConfig};
 #[cfg(feature = "sqlite")]
 pub use query::cust_types::VecText;
-#[cfg(any(feature = "sqlite", feature = "cache"))]
-pub use tls::ServerTlsConfig;
 
 #[cfg(feature = "sqlite")]
 pub use crate::query::rows::Row;
@@ -60,8 +58,6 @@ mod network;
 mod start;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 mod store;
-#[cfg(any(feature = "sqlite", feature = "cache"))]
-mod tls;
 
 #[cfg(feature = "backup")]
 mod backup;
@@ -71,7 +67,11 @@ mod dashboard;
 mod migration;
 #[cfg(feature = "sqlite")]
 mod query;
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 mod split_brain_check;
+
+#[cfg(feature = "macros")]
+pub mod macros;
 
 /// Exports and types to set up a connection to an S3 storage bucket.
 /// Needs the feature `s3` enabled.
@@ -83,6 +83,10 @@ pub mod s3;
 /// They should only be used internally to compile the standalone binary.
 #[cfg(feature = "server")]
 pub mod server;
+
+mod http_client;
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+pub mod tls;
 
 type NodeId = u64;
 

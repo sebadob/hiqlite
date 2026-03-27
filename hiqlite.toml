@@ -6,7 +6,7 @@
 # overwritten by: HQL_NODE_ID_FROM
 #node_id_from = "k8s"
 
-# The node id must exist in the nodes and there must always be
+# The node id must exist in the nodes, and there must always be
 # at least a node with ID 1
 # Will be ignored if `node_id_from = k8s`
 #

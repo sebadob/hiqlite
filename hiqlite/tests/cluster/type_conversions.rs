@@ -1,5 +1,6 @@
-use crate::{debug, params};
+use crate::debug;
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use hiqlite::macros::params;
 use hiqlite::{Client, Error, Row};
 
 #[derive(Debug, Clone, PartialEq)]

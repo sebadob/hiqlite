@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["hiqlite", "hiqlite-macros", "hiqlite-derive", "hiqlite-wal"]
+members = ["hiqlite", "hiqlite-derive", "hiqlite-wal"]
 exclude = ["examples"]
 
 [workspace.package]
@@ -17,6 +17,7 @@ panic = "abort"
 [patch.crates-io]
 #cryptr = { path = "../cryptr" }
 #cryptr = { git = "https://github.com/sebadob/cryptr" }
+#s3-simple = { path = "../s3-simple" }
 
 [workspace.dependencies]
 argon2 = "0.5.3"
@@ -38,12 +39,15 @@ chrono = { version = "0.4.38", default-features = false, features = [
 ] }
 clap = { version = "4.1.11", features = ["derive", "env"] }
 crc = "3.3.0"
-cron = { version = "0.15" }
-cryptr = { version = "0.9", features = ["s3"] }
+cron = { version = "0.16" }
+cryptr = { version = "0.10", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
-deadpool = { version = "0.12.1", features = ["rt_tokio_1"] }
+deadpool = { version = "0.13", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"
-eventsource-client = "0.16"
+# TODO
+#  The new version requires weird 3rd party dependencies or lots of manual work for the Transport.
+#  This development is annoying and not worth it -> migrate to WebSocket in the future.
+eventsource-client = { version = "0.16" }
 fastwebsockets = { version = "0.10.0", features = [
     "upgrade",
     "with_axum",
@@ -61,14 +65,15 @@ hyper = { version = "1.4.1", features = ["client", "http2"] }
 hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
 memmap2 = "0.9.5"
 mime_guess = "2.0.5"
-openraft = { version = "0.9.19", features = ["serde", "storage-v2"] }
+openraft = { version = "0.9.21", features = ["serde", "storage-v2"] }
 rcgen = "0.14.7"
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { version = "0.13", default-features = false, features = [
+    "charset",
     "http2",
     "json",
-    "rustls-tls",
+    "rustls-no-provider",
 ] }
-rusqlite = { version = "0.38", features = [
+rusqlite = { version = "0.39", features = [
     "backup",
     "bundled",
     "cache",
@@ -85,11 +90,13 @@ rusqlite = { version = "0.38", features = [
     "vtab",
 ] }
 rust-embed = { version = "8.5.0", features = [] }
-rustls = { version = "0.23.12", features = ["ring"] }
+rustls = { version = "0.23.37", default-features = false, features = [
+    "logging", "prefer-post-quantum", "std", "tls12", "ring"
+] }
 serde = { version = "1.0.114", features = ["derive"] }
 serde_json = "1.0.57"
-serde_rusqlite = "0.41.1"
-sha2 = { version = "0.10.8", features = [] }
+serde_rusqlite = "0.42"
+sha2 = { version = "0.11", features = [] }
 spow = { version = "0.6", features = ["server"] }
 thiserror = "2"
 thread-priority = "3.0.0"
@@ -97,7 +104,7 @@ tikv-jemallocator = "0.6.0"
 time = "0.3.47"
 tokio = { version = "1.43.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.0", features = ["ring"] }
-toml = "0.9.5"
+toml = "1"
 tower = { version = "0.5", features = [] }
 tower-http = { version = "0.6.0", features = [
     "set-header",
@@ -108,7 +115,7 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 url = "2.4"
 uuid = { version = "1.8.0", features = ["v7"] }
-webpki-roots = { version = "1" }
+webpki-root-certs = { version = "1" }
 
 # make minimal versions happy
 lazy_static = "1.0.2"
@@ -116,3 +123,9 @@ lz4-sys = "1.9.5"
 rust_decimal = "1.15"
 tower-layer = "0.3.3"
 tower-service = "0.3.3"
+
+# Necessary to fix security issues in current versions.
+aws-lc-sys = "0.39"
+aws-lc-rs = "1.16.2"
+quinn-proto = "0.11.14"
+rkyv = "0.7.46"
