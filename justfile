@@ -197,7 +197,7 @@ msrv-verify:
     cargo msrv verify
     cd ..
 
-    cd hiqlite-macros
+    cd hiqlite-derive
     cargo msrv verify
     cd ..
 
