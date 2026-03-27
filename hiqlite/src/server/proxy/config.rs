@@ -1,4 +1,4 @@
-use crate::{Error, Node, ServerTlsConfig};
+use crate::{Error, Node, tls::ServerTlsConfig};
 use cryptr::EncKeys;
 use spow::pow::Pow;
 use std::env;

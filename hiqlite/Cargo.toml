@@ -66,6 +66,7 @@ server = [
     "dep:home",
     "dep:tracing-subscriber",
     "full",
+    "listen_notify",
     "tokio/macros",
 ]
 shutdown-handle = ["dep:ctrlc"]
@@ -79,8 +80,9 @@ webpki-roots = [
 ]
 
 [dependencies]
+#hiqlite-derive = { version = "0.13", optional = true }
 hiqlite-derive = { path = "../hiqlite-derive", optional = true }
-#hiqlite-wal = { version = "0.12" }
+#hiqlite-wal = { version = "0.13" }
 hiqlite-wal = { path = "../hiqlite-wal" }
 
 argon2 = { workspace = true, optional = true }
