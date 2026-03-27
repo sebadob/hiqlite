@@ -59,6 +59,7 @@ and self-healing capabilities in case of any errors or problems.
 - `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
 - `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
   more flexible method with more manual work
+- a `FromRow` derive macro with different optional `column` attributes to reduce boilderplate
 - in addition to SQLite, multiple in-memory K/V caches with optional independent TTL per entry per cache - K/V caches
   are disk-backed and store their WAL file + Snapshots on disk, which means they are easy on your memory, and they can
   rebuild their in-memory data after a restart
@@ -111,9 +112,9 @@ AMD Ryzen 9950X, DDR5-5200 with highly optimized timings, M2 SSD Gen4
 
 | Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
 |-------------|----------------------|-----------------------------| 
-| 4           | ~29.000 / s          | ~710.000 / s                |
-| 16          | ~58.000 / s          | ~593.000 / s                |
-| 64          | ~91.000 / s          | ~528.000 / s                |
+| 4           | ~40.000 / s          | ~710.000 / s                |
+| 16          | ~77.000 / s          | ~593.000 / s                |
+| 64          | ~102.000 / s         | ~528.000 / s                |
 
 For a simple `SELECT`, we have 2 different metrics. By default, `hiqlite` caches all prepared statements.
 A simple `SELECT` with a fresh connection, which has not been prepared and cached yet, it took ~180-210 micros.
@@ -124,21 +125,23 @@ Once the connection has been used once and the statement has been cached, this d
 
 | Concurrency | 100k single PUT | single entry GET |
 |-------------|-----------------|------------------| 
-| 4           | ~35.000 / s     | ~6 micros        |
-| 16          | ~78.000 / s     |                  |
-| 64          | ~94.000 / s     |                  |
+| 4           | ~51.000 / s     | ~6 micros        |
+| 16          | ~83.000 / s     |                  |
+| 64          | ~104.000 / s    |                  |
 
 **Cache (full in-memory):**
 
 | Concurrency | 100k single PUT |
 |-------------|-----------------| 
 | 4           | ~89.000 / s     |
-| 16          | ~262.000 / s    |
-| 64          | ~504.000 / s    |
+| 16          | ~268.000 / s    |
+| 64          | ~515.000 / s    |
 
 ### Older Workstation
 
 AMD Ryzen 3900X, DDR4-3000, 2x M2 SSD Gen3 as Raid 0
+
+Note: These tests were not performed with the latest version yet. They are expected to be ~12% faster now.
 
 **SQLite:**
 
@@ -552,7 +555,7 @@ spec:
     spec:
       containers:
         - name: hiqlite
-          image: ghcr.io/sebadob/hiqlite:0.12.2
+          image: ghcr.io/sebadob/hiqlite:0.13.0
           securityContext:
             allowPrivilegeEscalation: false
           ports:

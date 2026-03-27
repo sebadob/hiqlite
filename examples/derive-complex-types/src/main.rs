@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
+use hiqlite::macros::embed::Embed;
+use hiqlite::macros::{FromRow, embed::*, params};
 use hiqlite::{Error, NodeConfig, VecText};
-use hiqlite_macros::embed::*;
-use hiqlite_macros::{params, FromRow};
 use std::fmt::{Debug, Display};
 use std::str::FromStr;
 use tokio::fs;
@@ -45,9 +45,10 @@ struct Migrations;
 /// - `skip` will skip that value in the `From<_>` impl and use `Default::default()`
 /// - `flatten` can be used for any type that cannot be directly converted. You will use
 ///   this for all `struct`s, enums, or whatever other custom types you may have.
-/// - `from_str` if the `impl FromStr` for the type should be used
+/// - `parse` if the `impl FromStr` for the type should be used
 /// - `from_string` if the `impl From<String>` for the type should be used
 /// - `from_i64` if the `impl From<i64>` for the type should be used
+/// - `from_i32` if the `impl From<i32>` for the type should be used
 ///
 /// You can combine `rename` with one of the `from_*` attributes, but not with `skip` or `flatten`.
 /// The order does not matter in this case.
@@ -81,7 +82,7 @@ struct Entity {
     my_enum: MyEnum,
     /// If you already have an `impl FromStr` for your type, you can use it for the conversion like
     /// so, and you won't need an additional `flatten` + `From<&mut Row<_>>` impl.
-    #[column(from_str)]
+    #[column(parse)]
     left_right: LeftRight,
     /// for `From<String>` impls
     #[column(rename = "ud", from_string)]
@@ -293,7 +294,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
     assert_eq!(s, "Some 'Other' value for MyEnum");
 
     // this is how we can convert the `VecText` into a real `Vec<_>`.
-    let vs: Vec<String> = res.vec_wrap.into_vec()?;
+    let vs = res.vec_wrap.parse::<String>()?;
     log(format!(
         "We can convert our smart Wrapper `VecText` easily into a `Vec<String>` \
         for instance: {vs:?}"

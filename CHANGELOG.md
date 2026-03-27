@@ -2,7 +2,7 @@
 
 ## v0.13.0
 
-This is a pretty exciting release with very much improved DX.
+This is a pretty exciting release with very much improved DX. ~12% improvements in throughput have been made as well.
 
 ### Breaking
 
