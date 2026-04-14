@@ -1,5 +1,10 @@
 # Changelog
 
+## hiqlite-v0.13.1
+
+When using the secure cookie with the Dashboard, the builder string was not formatted correctly and the `Path` was not
+set.
+
 ## v0.13.0
 
 This is a pretty exciting release with very much improved DX. ~12% improvements in throughput have been made as well.
@@ -150,7 +155,7 @@ for separation.
 This type can be used inside the `params!()` macro directly, and it can be parsed from DB columns easily, since it's
 only a `String` behind the scenes until you actually need it to be a `Vec<_>`. The basic usage may look like this:
 
-```rust, notest
+```rust
 use hiqlite::VecText;
 
 let values = vec![
@@ -158,17 +163,17 @@ let values = vec![
     "Entry 2".to_string(),
     "And another one".to_string(),
 ];
-let v: VecText<'\n'> = VecText::new(&values).unwrap();
+let v: VecText<'\n' > = VecText::new( & values).unwrap();
 // `parse()` will work here as well instead of `try_into_vec()`.
 // The different impls just provide more flexibility.
 let r = v.try_into_vec::<String>().unwrap();
 assert_eq!(values, r);
 
-let v: VecText<','> = VecText::new(&[1, 2, -3]).unwrap();
+let v: VecText<',' > = VecText::new(& [1, 2, - 3]).unwrap();
 let r = v.parse::<i32>().unwrap();
 assert_eq!(&[1, 2, -3], r.as_slice());
 
-let v: VecText<';'> = VecText::new(&[1, 2, 13]).unwrap();
+let v: VecText<';' > = VecText::new(& [1, 2, 13]).unwrap();
 let r = v.parse::<u8>().unwrap();
 assert_eq!(&[1, 2, 13], r.as_slice());
 ```
