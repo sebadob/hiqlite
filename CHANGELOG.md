@@ -1,5 +1,10 @@
 # Changelog
 
+## hiqlite-v0.13.2
+
+This release only exists to fix the removal of the `auto_doc_cfg` feature on docs.rs in the hope that docs now build
+again without errors.
+
 ## hiqlite-v0.13.1
 
 When using the secure cookie with the Dashboard, the builder string was not formatted correctly and the `Path` was not
@@ -53,8 +58,7 @@ dependency, add the `macros` feature to `hiqlite`, and then replace all `use hiq
 `use hiqlite::macros::`.
 
 The `hiqlite_macros` crate will only work for versions until this one. The `derive` macros needed their own crate
-anyway,
-and the `params!()` macro was added to the `hiqlite` main crate directly.
+anyway, and the `params!()` macro was added to the `hiqlite` main crate directly.
 
 #### No `strum` dependency anymore and `CacheIndex` is gone
 
@@ -78,9 +82,9 @@ makes way more sense in almost all situations.
 
 #### `FromRow` macro
 
-If you use any or the `query_map*` functions, you had to manually `impl From<hiqlite::Row<'_>>` before. This is not
-the case anymore. You now get the `FromRow` derive macro. In combination with quite a few possible `column` attributes,
-most `struct`s don't need a manual implementation anymore.
+If you use any or the `query_map*` functions, you had to manually `impl From<hiqlite::Row<'_>>` before. This is not the
+case anymore. You now get the `FromRow` derive macro. In combination with quite a few possible `column` attributes, most
+`struct`s don't need a manual implementation anymore.
 
 For instance, if you define the following:
 
@@ -203,13 +207,13 @@ DB column values can be cast into the following types with this feature:
 
 ##### `cast_ints_unchecked`
 
-This works in the same way as `cast_ints`, with the exception that it's a tiny bit faster. It will do an unchecked
-cast without boundary checks. When you insert into properly typed values with your queries, this is safe to use.
+This works in the same way as `cast_ints`, with the exception that it's a tiny bit faster. It will do an unchecked cast
+without boundary checks. When you insert into properly typed values with your queries, this is safe to use.
 
 #### `url::Url` + `uuid::Uuid` as DB values
 
-`url::Url` and `uuid::Uuid` can now be converted into `hiqlite::Param` and parsed from DB values automatically.
-The `url::Url` will be `TEXT`-backed, while the `uuid::Uuid` can be stored in a `BLOB` column for better efficiency and
+`url::Url` and `uuid::Uuid` can now be converted into `hiqlite::Param` and parsed from DB values automatically. The
+`url::Url` will be `TEXT`-backed, while the `uuid::Uuid` can be stored in a `BLOB` column for better efficiency and
 sorting.
 
 #### Improved `params!()` macro
@@ -307,13 +311,13 @@ initialized Raft will be skipped for single instance deployments. This makes sta
 ### Breaking
 
 The `shutdown_delay_millis` config option was removed. It is not necessary to set it manually anymore. Instead, more
-automatic detection is being applied and a necessary delay to smooth out rolling releases or make sure the readiness
-of a container is being caught is added without the need for additional config.
+automatic detection is being applied and a necessary delay to smooth out rolling releases or make sure the readiness of
+a container is being caught is added without the need for additional config.
 
 Apart from that, lots of improvements have been made to rolling releases and how WebSocket re-connects and node startups
 are being handled in general. There is a new `/ready` endpoint on the public API as well. It can be used in e.g.
-Kubernetes to smooth out rolling releases and detect a pod shutdown before it becomes unable to handle Raft requests.
-To do so, it is important however to not have too high `periodSeconds`, and the `headless` service needs to
+Kubernetes to smooth out rolling releases and detect a pod shutdown before it becomes unable to handle Raft requests. To
+do so, it is important however to not have too high `periodSeconds`, and the `headless` service needs to
 `publishNotReadyAddresses` ports before ready, like so:
 
 ```yaml
@@ -365,10 +369,10 @@ livenessProbe:
 
 ### Bugfix
 
-The `hiqlite-wal` had a bug where the `last_purged_log_id` was overwritten with `None` during a log truncation, even
-if it had a value from a log purge before. If the node restarted before another log purge fixed it, it would result in
-an error during startup. The new version includes a check + fix, if you start up an instance with a data set that
-currently has this issue.
+The `hiqlite-wal` had a bug where the `last_purged_log_id` was overwritten with `None` during a log truncation, even if
+it had a value from a log purge before. If the node restarted before another log purge fixed it, it would result in an
+error during startup. The new version includes a check + fix, if you start up an instance with a data set that currently
+has this issue.
 
 ## hiqlite v0.11.1
 
@@ -382,8 +386,8 @@ is the pretty important bugfix below.
 
 ### Bugfix
 
-- It was possible to get into situations where the automatic WAL file cleanup was not working as expected, even when
-  the log IDs were covered by the latest snapshot. This could lead to the volume filling up endlessly.
+- It was possible to get into situations where the automatic WAL file cleanup was not working as expected, even when the
+  log IDs were covered by the latest snapshot. This could lead to the volume filling up endlessly.
 
 ## hiqlite v0.10.1
 
@@ -427,8 +431,8 @@ used anyway. This feature only acts as a safety-net.
 It is now possible to list backups. For local ones, the `hiqlite::Client` provides the possibility to get a
 `tokio::fs::File` handle, while S3 backups can be streamed via a `ChannelReceiver`.
 
-This version also changes the way that filenames for local backups are built. The timestamp for the filename will be
-the exact same for all local backups in a cluster. This makes downloading via a load balancer a lot easier.
+This version also changes the way that filenames for local backups are built. The timestamp for the filename will be the
+exact same for all local backups in a cluster. This makes downloading via a load balancer a lot easier.
 
 ## v0.8.0
 
@@ -456,9 +460,9 @@ listen_addr_raft = "0.0.0.0"
 
 ## hiqlite-wal v0.7.1
 
-The `hiqlite-wal-v0.7.0` had a bug when truncating WAL logs and shifted the front offset instead of the back.
-This could happen, if a leader goes down with a already added, but not fully commited log entry. In such a case, the old
-leader would need to truncate the Logs until the last fully commited point.
+The `hiqlite-wal-v0.7.0` had a bug when truncating WAL logs and shifted the front offset instead of the back. This could
+happen, if a leader goes down with a already added, but not fully commited log entry. In such a case, the old leader
+would need to truncate the Logs until the last fully commited point.
 
 ## hiqlite v0.7.1
 
@@ -476,9 +480,9 @@ Rocksdb is a huge dependency and it takes a long time to compile. It also adds ~
 impossible to compile to `musl`.
 
 To overcome these issues, `hiqlite-wal` has been created from the ground up. It provides memory-mapped WAL files, that
-are append-only and perfectly serve the purpose of a Raft Log Store. It is very light-weight in terms of code-,
-binary size and compile time, and only provides the functionality we actually need. If also has implementations that try
-to auto-recover lost WAL records in case of an application crash in the middle of writing. This is a situation you could
+are append-only and perfectly serve the purpose of a Raft Log Store. It is very light-weight in terms of code-, binary
+size and compile time, and only provides the functionality we actually need. If also has implementations that try to
+auto-recover lost WAL records in case of an application crash in the middle of writing. This is a situation you could
 not easily get out of with `rocksdb` as well. Even if it fails recovering everything it needs, it will at least make
 everything work on its own in probably almost all cases, and only if it cannot, you at least have the possibility to
 easily fix it.
@@ -512,8 +516,8 @@ whatever reason.
 
 Many small fixes and additional checks have been added in lots of places to improve the shutdown / restart stability
 with an in-memory only Cache layer. The main issue with this is, that the Raft Logs are ephemeral, which could lead to
-many different issues. However, at least to my knowledge, all the existing issues and edge cases has been taken care
-of and it should be perfectly stable now to use in-memory only Raft Logs.
+many different issues. However, at least to my knowledge, all the existing issues and edge cases has been taken care of
+and it should be perfectly stable now to use in-memory only Raft Logs.
 
 #### Distributed Counters
 
@@ -535,9 +539,9 @@ You can enable the `jemalloc` feature and Hiqlite will pull in `jemalloc` as the
 The new `hiqlite-wal` provides some new config options. You can set a custom `log_sync` / flush strategy depending on
 your needs, set the `wal_size` for WAL files, and `cache_storage_disk` will define if for the Cache layer, either an
 in-memory Raft Log Store will be used, of if true (default now), WAL + Snapshots for the Cache will be written to disk.
-This brings the possibility to have persistent caches, that can be rebuilt from disk even after a complete shutdown.
-The Cache / KV store itself will still be in-memory only and therefore have very fast read access, even though writes
-will be limited by your disk speed.
+This brings the possibility to have persistent caches, that can be rebuilt from disk even after a complete shutdown. The
+Cache / KV store itself will still be in-memory only and therefore have very fast read access, even though writes will
+be limited by your disk speed.
 
 More information can be found in the example [hiqlite.toml](https://github.com/sebadob/hiqlite/blob/main/hiqlite.toml).
 
@@ -600,9 +604,9 @@ need the manual import of `hiqlite::Param` each time when using this macro.
 
 Additionally, you don't need to add `rust_embed`, `num-traits` and possibly `num-derive` macros manually anymore.
 `num-traits` and `num-derive` have been dropped completely and instead of adding these external dependencies to your
-application, you now need a tiny, usually 5 lines long, boilerplate `impl CacheIndex for MyCacheEnum`. The re-export
-of the `strum` macro from `hiqlite::` has been removed as well, because it needed the dependency manually anyway, which
-was weird to use.
+application, you now need a tiny, usually 5 lines long, boilerplate `impl CacheIndex for MyCacheEnum`. The re-export of
+the `strum` macro from `hiqlite::` has been removed as well, because it needed the dependency manually anyway, which was
+weird to use.
 
 The `rust_embed` dependency is now also re-exported from `hiqlite-macros` in a way that actually works without you
 needing to add it manually.
@@ -618,8 +622,8 @@ big improvement already.
 - Support for fixed-size u8 array conversion.
 - You can now refer to the output from statements execute before during a `hiqlite::Client::txn()`
   via `RETURNING` + `StmtIndex`. Take a look at the `sqlite-only` example.
-- Shutdown has been made quicker and more resilient, especially for `cache` Rafts which do not have a
-  persistent state between restarts.
+- Shutdown has been made quicker and more resilient, especially for `cache` Rafts which do not have a persistent state
+  between restarts.
 - Internal code and performance improvements and dependencies have been bumped.
 - MSRV has been bumped to `1.85.1`
 
@@ -631,29 +635,28 @@ big improvement already.
 - The `asm` feature has been removed from `sha2` to make it compile on windows.
 - The shutdown delay of 10 seconds is not being applied anymore if you only run a single instance, which usually is the
   case during local development. This greatly improves the DX.
-- `hiqlite::Client::query_raw_not_empty()` has been removed as it was redundant. `query_raw_one()` behaves in the
-  same way.
+- `hiqlite::Client::query_raw_not_empty()` has been removed as it was redundant. `query_raw_one()` behaves in the same
+  way.
 - MSRV has been bumped to `1.82.0`
 
 ## v0.4.0
 
 ### Updates
 
-Rocksdb major version has been updated from `8` to `9.9.3` under the hood.
-Some other smaller dependencies have been bumped to the latest versions as well.
+Rocksdb major version has been updated from `8` to `9.9.3` under the hood. Some other smaller dependencies have been
+bumped to the latest versions as well.
 
 ### Bugfix
 
-The dashboard cookie did not set a `path` when used in production and therefore browsers would reject it because of
-its `__Host-` prefix. The path has been added properly to fix this issue.
+The dashboard cookie did not set a `path` when used in production and therefore browsers would reject it because of its
+`__Host-` prefix. The path has been added properly to fix this issue.
 
 ## v0.3.3
 
 Fixes an issue where the DB writer would panic because of a mismatch in DB Migrations validation. This could have
 happened if migrations are applied between applications starts. The `hiqlite::Client` in that case would only send the
-migrations over the network that have not been applied already and optimizes already existing ones away.
-However, the additional validation inside the DB writer (to make sure the client did not mess up) was too strict, and it
-would error.
+migrations over the network that have not been applied already and optimizes already existing ones away. However, the
+additional validation inside the DB writer (to make sure the client did not mess up) was too strict, and it would error.
 
 ## v0.3.2
 
@@ -687,21 +690,21 @@ This version only bumps the `svelte` dependency for the prebuilt dashboard to fi
 The `hiqlite::Client` now provides a few more helpful functions and features:
 
 - `put_bytes()` for the cache to be able to just cache raw bytes without any serialization
-- `query_raw()` will return the raw `hiqlite::Row`s from the database in cases where you might just want to
-  have results without deserializing into a `struct`.
+- `query_raw()` will return the raw `hiqlite::Row`s from the database in cases where you might just want to have results
+  without deserializing into a `struct`.
 - `query_raw_one()` - the same as above, just returns a single `hiqlite::Row`
-- `query_raw_not_empty()` is a DX improvement. Often when you need `query_raw()`, you use it to retrieve a specific
-  set of columns or `COUNT(*)`, but you also don't want to check that the `Row`s are not empty before accessing.
-  This function will `Err()` if no `Row`s have been returned and therefore reduced boilerplate in these situations.
-- The migration process will panic and error early on migration hash mismatches and provide more clear
-  logging and information where exactly the issue is.
-- The new `query_as_optional()` and `query_map_optional()` return a `Result<Option<T>>` and don't error in case of
-  no rows returned.
+- `query_raw_not_empty()` is a DX improvement. Often when you need `query_raw()`, you use it to retrieve a specific set
+  of columns or `COUNT(*)`, but you also don't want to check that the `Row`s are not empty before accessing. This
+  function will `Err()` if no `Row`s have been returned and therefore reduced boilerplate in these situations.
+- The migration process will panic and error early on migration hash mismatches and provide more clear logging and
+  information where exactly the issue is.
+- The new `query_as_optional()` and `query_map_optional()` return a `Result<Option<T>>` and don't error in case of no
+  rows returned.
 - `execute_returning()`s return type has been changed to properly return a wrapping `Result<_>` like the others
 - `execute_returning_map_one()` and `execute_returning_one()` are available as well now to reduce boilerplate.
-- `batch()` will exit and error early, if the writer had issues with bad syntax. Because of the internal design
-  of the `Batch` reader, it is impossible to recover from syntax errors. Therefore the whole batch will not be applied
-  and the transaction will be rolled back in that case.
+- `batch()` will exit and error early, if the writer had issues with bad syntax. Because of the internal design of the
+  `Batch` reader, it is impossible to recover from syntax errors. Therefore the whole batch will not be applied and the
+  transaction will be rolled back in that case.
 
 In addition, there is now:
 
@@ -725,8 +728,8 @@ proper access rights after creation to make them only accessible by the user.
 
 #### Dynamically Available Dashboard
 
-If you have the `dashboard` feature enabled, you can choose to not provide a `HQL_PASSWORD_DASHBOARD` at startup.
-This value was mandatory before and is optional now.
+If you have the `dashboard` feature enabled, you can choose to not provide a `HQL_PASSWORD_DASHBOARD` at startup. This
+value was mandatory before and is optional now.
 
 If not given, all routes for the dashboard will not exist. This makes it possible to compile with the `dashboard`
 feature set and decide at runtime, if you maybe only want to enable is when necessary.
@@ -781,9 +784,9 @@ Raft logs batch. This is a pretty big tradeoff but may be necessary in some situ
 
 #### Prepared Statement Cache Size
 
-The max cache size for prepared statements is now configurable as well.
-The default is and has been 1024 before, which is probably a good size for production usage. However, if you are heavily
-resource constrained, you now have the possibility to reduce the cache size via the `NodeConfig`.
+The max cache size for prepared statements is now configurable as well. The default is and has been 1024 before, which
+is probably a good size for production usage. However, if you are heavily resource constrained, you now have the
+possibility to reduce the cache size via the `NodeConfig`.
 
 ### Bugfix
 
@@ -810,8 +813,8 @@ have S3 available and will make sure, that you will still have a backup "somewhe
 ### Self-Healing
 
 The self-healing tests have been simplified to make them easier to maintain in the future. They do not decide between
-different folders being lost because you usually lose the whole volume or nothing at all. So if any issue comes up on
-a Raft member node, the easiest solution is to simply delete the whole volume, restart, and let it rebuild anyway.
+different folders being lost because you usually lose the whole volume or nothing at all. So if any issue comes up on a
+Raft member node, the easiest solution is to simply delete the whole volume, restart, and let it rebuild anyway.
 
 ## v0.2.0
 
@@ -822,8 +825,8 @@ places.
 - `hiqlite::Client::is_leader_db()` + `::is_leader_cache` are now `pub` and can be used in downstream applications.
 - New functions `hiqlite::Client::clear_cache()` + `::clear_cache_all()` to clear caches without a restart.
 - A few (on purpose) `panic!`, `assert!` and `expect()` have been removed in favor of returned `Result` errors.
-- Hiqlite now always tries to install a `rustls` crypto provider which makes setup easier and less error-prone.
-  It will only log a `debug` if it fails to do so, which can only happen when it has been done already.
+- Hiqlite now always tries to install a `rustls` crypto provider which makes setup easier and less error-prone. It will
+  only log a `debug` if it fails to do so, which can only happen when it has been done already.
 - Additional type affinity checks for SQLite to be able to convert more things without user interaction, like for
   instance `INT` will be caught as well, even though it is no SQLite type by definition. Basically, the rules from
   3.1 https://www.sqlite.org/datatype3.html are applied. The "correct" SQLite type definitions will always be faster
@@ -864,23 +867,23 @@ This first release comes with the following features:
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
-- fully encrypted backups to s3, cron job, or manual (
-  with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
+- fully encrypted backups to s3, cron job, or manual
+  (with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
 - restore from remote backup (with log index roll-over)
 - strongly consistent, replicated `EXECUTE` queries
     - on a leader node, the client will not even bother with using networking
-    - on a non-leader node, it will automatically switch over to a network connection so the request
-      is forwarded and initiated on the current Raft leader
+    - on a non-leader node, it will automatically switch over to a network connection so the request is forwarded and
+      initiated on the current Raft leader
 - strongly consistent, replicated `EXECUTE` queries with returning statement through the Raft
     - you can either get a raw handle to the custom `RowOwned` struct
     - or you can map the `RETURNING` statement to an existing struct
 - transaction executes
 - simple `String` batch executes
 - consistent read / select queries on leader
-- `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
-  This will end up behind a `serde` feature in the future which is not implemented yet.
-- `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
-  faster method with more manual work
+- `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`. This will end up behind
+  a `serde` feature in the future which is not implemented yet.
+- `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the faster
+  method with more manual work
 - in addition to SQLite - multiple in-memory K/V caches with optional independent TTL per entry per cache
 - listen / notify to send real-time messages through the Raft
 - `dlock` feature provides access to distributed locks

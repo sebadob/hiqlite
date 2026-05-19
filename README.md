@@ -5,13 +5,13 @@ Hiqlite is an embeddable SQLite database that can form a Raft cluster to provide
 
 ## Why
 
-Why another SQLite replication solution? Other projects exist already that can do this. The problem is that none of
-them checks all boxes. They either require an additional independent process running on the side which can do async
+Why another SQLite replication solution? Other projects exist already that can do this. The problem is that none of them
+checks all boxes. They either require an additional independent process running on the side which can do async
 replication, need a special file system, have bad throughput / latency, or are running as a server.
 
 I don't think that running SQLite as a server is a good solution. Yes, it is very resource friendly, and it may be a
-good choice when you are heavily resource constrained, but you lose its biggest strength when doing this: having
-all your data local, which makes reads superfast without network latency.
+good choice when you are heavily resource constrained, but you lose its biggest strength when doing this: having all
+your data local, which makes reads superfast without network latency.
 
 Hiqlite builds on top of `rusqlite` and provides an async wrapper around it. For the Raft logic, it builds on top of
 `openraft` while providing its own storage and network implementations.
@@ -24,10 +24,10 @@ same time, it comes with the benefit that you don't have to manage an additional
 configure and more importantly maintain. And embedded SQLite will bring database updates basically for free when you
 build a new application version.
 
-When configured correctly, SQLite offers very good performance and can handle most workloads these days. In very
-first benchmarks that I did to find out if the project makes sense at all, I got up to 24.5k single inserts / s on a
-cheap consumer grade M2 SSD. These tests were done on localhost with 3 different processes, but still with real
-networking in between them. On another machine with older SATA SSDs it reached up to 16.5k inserts / s.
+When configured correctly, SQLite offers very good performance and can handle most workloads these days. In very first
+benchmarks that I did to find out if the project makes sense at all, I got up to 24.5k single inserts / s on a cheap
+consumer grade M2 SSD. These tests were done on localhost with 3 different processes, but still with real networking in
+between them. On another machine with older SATA SSDs it reached up to 16.5k inserts / s.
 
 At the end, the goal is that you can have the simplicity and all the advantages of an embedded SQLite while still being
 able to run your application highly available (which is almost always mandatory for me) and having automatic fail-over
@@ -43,13 +43,13 @@ and self-healing capabilities in case of any errors or problems.
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
-- fully encrypted backups to s3, cron job or manual (
-  with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
+- fully encrypted backups to s3, cron job or manual
+  (with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
 - restore from remote backup (with log index roll-over)
 - strongly consistent, replicated `EXECUTE` queries
     - on a leader node, the client will not even bother with using networking
-    - on a non-leader node, it will automatically switch over to a network connection so the request
-      is forwarded and initiated on the current Raft leader
+    - on a non-leader node, it will automatically switch over to a network connection so the request is forwarded and
+      initiated on the current Raft leader
 - strongly consistent, replicated `EXECUTE` queries with returning statement through the Raft
     - you can either get a raw handle to the custom `RowOwned` struct
     - or you can map the `RETURNING` statement to an existing struct
@@ -57,8 +57,8 @@ and self-healing capabilities in case of any errors or problems.
 - simple `String` batch executes
 - consistent read / select queries on leader
 - `query_as()` for local reads with auto-mapping to `struct`s implementing `serde::Deserialize`.
-- `query_map()` for local reads for `structs` that implement `impl<'r> From<hiqlite::Row<'r>>` which is the
-  more flexible method with more manual work
+- `query_map()` for local reads for `structs` that implement `impl From<&mut hiqlite::Row<'_>>` which is the more
+  flexible method with more manual work
 - a `FromRow` derive macro with different optional `column` attributes to reduce boilderplate
 - in addition to SQLite, multiple in-memory K/V caches with optional independent TTL per entry per cache - K/V caches
   are disk-backed and store their WAL file + Snapshots on disk, which means they are easy on your memory, and they can
@@ -116,10 +116,10 @@ AMD Ryzen 9950X, DDR5-5200 with highly optimized timings, M2 SSD Gen4
 | 16          | ~77.000 / s          | ~593.000 / s                |
 | 64          | ~102.000 / s         | ~528.000 / s                |
 
-For a simple `SELECT`, we have 2 different metrics. By default, `hiqlite` caches all prepared statements.
-A simple `SELECT` with a fresh connection, which has not been prepared and cached yet, it took ~180-210 micros.
-Once the connection has been used once and the statement has been cached, this drops down dramatically to
-6 -25 micros (hard to measure these short ones).
+For a simple `SELECT`, we have 2 different metrics. By default, `hiqlite` caches all prepared statements. A simple
+`SELECT` with a fresh connection, which has not been prepared and cached yet, it took ~180-210 micros. Once the
+connection has been used once and the statement has been cached, this drops down dramatically to 6 -25 micros (hard to
+measure these short ones).
 
 **Cache (disk-backed):**
 
@@ -180,56 +180,54 @@ By default, the following features are enabled:
 
 ### `auto-heal`
 
-This feature allows for auto-healing the State Machine (SQLite) in case of an un-graceful shutdown.
-To reduce I/O and improve performance, Hiqlite does not write the `last_applied_log_id` from the Raft messages
-into SQLite with each write. If it would do that, we would need to execute 1 extra query for each incoming
-request, which effectively would double the amount of I/O if we just think about single `EXECUTE` queries.
-Instead of doing that, it tracks the last applied ID in memory and only persists it into the DB in the
-following situations:
+This feature allows for auto-healing the State Machine (SQLite) in case of an un-graceful shutdown. To reduce I/O and
+improve performance, Hiqlite does not write the `last_applied_log_id` from the Raft messages into SQLite with each
+write. If it would do that, we would need to execute 1 extra query for each incoming request, which effectively would
+double the amount of I/O if we just think about single `EXECUTE` queries. Instead of doing that, it tracks the last
+applied ID in memory and only persists it into the DB in the following situations:
 
 - a new snapshot creation has been triggered
 - a backup has been triggered
 - the metadata of the whole Raft changes (leader change, a node has joined, ...)
 - the node is being shut down
 
-To make sure it would not start up a database where the last ID has not been persisted correctly, Hiqlite
-creates a lock file at startup (like most other DB's). If this file exists with the next start, it means that
-the application has been killed (host crashed, `kill -9`, ...), because otherwise it would remove the lock
-file after the `last_applied_log_id` has been persisted correctly.
+To make sure it would not start up a database where the last ID has not been persisted correctly, Hiqlite creates a lock
+file at startup (like most other DB's). If this file exists with the next start, it means that the application has been
+killed (host crashed, `kill -9`, ...), because otherwise it would remove the lock file after the `last_applied_log_id`
+has been persisted correctly.
 
-The `auto-heal` feature enabled the functionality to recover an un-graceful shutdown automatically by simply
-deleting the whole existing SQLite and rebuilding it from the latest snapshot + raft logs to always reach a
-clean state.
+The `auto-heal` feature enabled the functionality to recover an un-graceful shutdown automatically by simply deleting
+the whole existing SQLite and rebuilding it from the latest snapshot + raft logs to always reach a clean state.
 
-If you have special needs, you may not want this. I can't think of a situation where it would make much sense
-to disable it, but you could do it.
+If you have special needs, you may not want this. I can't think of a situation where it would make much sense to disable
+it, but you could do it.
 
 ### `backup`
 
 This feature allows the creation of automatic backups for disaster recovery. It pulls in `cron` as an additional
 dependency and enabled `sqlite` and `s3` features as well, because it does not make sense without these.
 
-When `backup` is enabled, you will get the (by default) nightly backup cron job and you can manually trigger
-backup creation's via the `hiqlite::Client`. Backups without pushing them to an S3 storage don't make too much
-sense, because even when a cluster node would lose its whole volume, it would simply be rebuilt from the current
-raft leader via snapshot + log replication.
+When `backup` is enabled, you will get the (by default) nightly backup cron job and you can manually trigger backup
+creation's via the `hiqlite::Client`. Backups without pushing them to an S3 storage don't make too much sense, because
+even when a cluster node would lose its whole volume, it would simply be rebuilt from the current raft leader via
+snapshot + log replication.
 
-Backups will be created locally first on each of the Raft nodes. Afterward, only the leader will encrypt the
-backup and push it to the configured S3 bucket for disaster recovery.
+Backups will be created locally first on each of the Raft nodes. Afterward, only the leader will encrypt the backup and
+push it to the configured S3 bucket for disaster recovery.
 
-Auto-restoring from a backup on S3 storage will also be possible with this feature enabled. The likelihood that you
-need to do this, is pretty low though.
+Auto-restoring from a backup on S3 storage will also be possible with this feature enabled. The likelihood that you need
+to do this, is pretty low though.
 
 #### You lose a cluster node
 
 If you lost a cluster node for whatever reason, you don't need a backup. Just shut down the node, get rid of any
-possibly left over data, and restart it. The node will join the cluster and fetch the latest snapshot + logs from
-the current leader node.
+possibly left over data, and restart it. The node will join the cluster and fetch the latest snapshot + logs from the
+current leader node.
 
 #### You lose the full cluster
 
-If you end up in a situation where you lost the complete cluster, it is the only moment when you probably need
-restore from backup as disaster recovery. The process is simple:
+If you end up in a situation where you lost the complete cluster, it is the only moment when you probably need restore
+from backup as disaster recovery. The process is simple:
 
 1. Have the cluster shut down. This is probably the case anyway, if you need to restore from a backup.
 2. Provide a backup file name on S3 storage with the `HQL_BACKUP_RESTORE` value with prefix `s3:` (encrypted), or a file
@@ -239,10 +237,9 @@ restore from backup as disaster recovery. The process is simple:
 
 ### `cache`
 
-This feature will start another independent raft group (can run without `sqlite` enabled as well).
-The `hiqlite::Client` will get new functions like `get()` and `put()`. The `cache` feature will build multiple
-raft-replicated, in-memory caches on all nodes. Basically an in-memory KV store with optional per cache per entry
-TTL for each key.
+This feature will start another independent raft group (can run without `sqlite` enabled as well). The `hiqlite::Client`
+will get new functions like `get()` and `put()`. The `cache` feature will build multiple raft-replicated, in-memory
+caches on all nodes. Basically an in-memory KV store with optional per cache per entry TTL for each key.
 
 ### `cast_ints`
 
@@ -267,34 +264,33 @@ DB column values can be cast into the following types with this feature:
 
 ### `cast_ints_unchecked`
 
-This works in the same way as `cast_ints`, with the exception that it's a tiny bit faster. It will do an unchecked
-cast without boundary checks. When you insert into properly typed values with your queries, this is safe to use.
+This works in the same way as `cast_ints`, with the exception that it's a tiny bit faster. It will do an unchecked cast
+without boundary checks. When you insert into properly typed values with your queries, this is safe to use.
 
 ### `dashboard`
 
-This feature is the one that makes the crate size on crates.io that big. Hiqlite comes with pre-built, static
-HTML files to optionally serve a simple dashboard. With this dashboard, you have the possibility to run queries
-against your database, which typically is not that easy for a SQLite in production, which is probably deployed
-inside some container.
+This feature is the one that makes the crate size on crates.io that big. Hiqlite comes with pre-built, static HTML files
+to optionally serve a simple dashboard. With this dashboard, you have the possibility to run queries against your
+database, which typically is not that easy for a SQLite in production, which is probably deployed inside some container.
 
-The dashboard will be served alongside the API HTTP server. It is very basic for now, but it gets the job done.
-It will pull in quite a few extra dependencies and enable `sqlite` feature, because it does not work with the
+The dashboard will be served alongside the API HTTP server. It is very basic for now, but it gets the job done. It will
+pull in quite a few extra dependencies and enable `sqlite` feature, because it does not work with the
 `cache` or other features currently.
 
 ![dashboard screenshot](https://raw.githubusercontent.com/sebadob/hiqlite/main/dashboard/screenshot.png)
 
 ### `dlock`
 
-The `dlock` feature gives you access to distributed locks, synchronized over all Raft nodes. It depends on
-the `cache` feature to work.
+The `dlock` feature gives you access to distributed locks, synchronized over all Raft nodes. It depends on the `cache`
+feature to work.
 
-In some cases, you can't achieve what you need to do within a single query or inside a transaction. For instance,
-you need to fetch data from the DB, compute stuff with it, and write something back to the DB while the data
-on the DB must be locked the whole time. Because transactions with Hiqlite can't let you hold a lock directly
-on the DB (because of the Raft replication), you get distributed locks.
+In some cases, you can't achieve what you need to do within a single query or inside a transaction. For instance, you
+need to fetch data from the DB, compute stuff with it, and write something back to the DB while the data on the DB must
+be locked the whole time. Because transactions with Hiqlite can't let you hold a lock directly on the DB (because of the
+Raft replication), you get distributed locks.
 
-You can lock any key, then do whatever you need, and as soon as the `Lock` you will get is being dropped, it will
-be released automatically.
+You can lock any key, then do whatever you need, and as soon as the `Lock` you will get is being dropped, it will be
+released automatically.
 
 **Important:**
 In the current version, a distributed lock is only valid for max 10 seconds, to avoid issues with network segmentation
@@ -320,8 +316,8 @@ This feature will simply enable everything apart from the `server` feature:
 ### `jemalloc`
 
 This feature enables the `jemallocator` instead of using the default glibc `malloc`. It is a lot more performant, solves
-some issues with memory fragmentation and can be tuned for specific use cases. However, it does not work on Windows
-MSVC targets and out of the box, without any tuning, it will use a bit more memory than default `malloc`.
+some issues with memory fragmentation and can be tuned for specific use cases. However, it does not work on Windows MSVC
+targets and out of the box, without any tuning, it will use a bit more memory than default `malloc`.
 
 ### `listen_notify`
 
@@ -331,11 +327,11 @@ deployment, without the need for message delivery guarantees or something like t
 depends on.
 
 Depending on your setup, you will get different levels of message delivery guarantees. The classic Postgres listen /
-notify will forward messages, if another connection is listening, and drop them if not, pretty simple.
-With Hiqlite, if your node is a real Raft member, meaning it is not using a remote client, you will have a guaranteed
-once delivery with any form of `listen()`. If however you have a remote client, which is connected to a remote Hiqlite
-cluster without a local replicated state, you will not receive missed messages, if you stopped listening for some time.
-In this case, you will have the classic Postgres behavior.
+notify will forward messages, if another connection is listening, and drop them if not, pretty simple. With Hiqlite, if
+your node is a real Raft member, meaning it is not using a remote client, you will have a guaranteed once delivery with
+any form of `listen()`. If however you have a remote client, which is connected to a remote Hiqlite cluster without a
+local replicated state, you will not receive missed messages, if you stopped listening for some time. In this case, you
+will have the classic Postgres behavior.
 
 **Important:**
 If you enabled this feature and you `notify()` via the `hiqlite::Client`, you must make sure to actually consume the
@@ -346,14 +342,14 @@ up if you `notify()` without `listen()`.
 
 You would probably never just enable the `s3` feature on its own in the current implementation. It has been outsourced
 for a possible future feature expansion. It depends on the `backup` feature and both will pull in each other as a
-dependency right now.
-This feature will enable the possibility to push encrypted State Machine (SQLite) backups to a configured `s3` bucket.
+dependency right now. This feature will enable the possibility to push encrypted State Machine (SQLite) backups to a
+configured `s3` bucket.
 
 ### `server`
 
-This feature only exists to make it possible to run Hiqlite as a standalone DB / Cluster, if you really want this.
-It will build a binary which spins up a cluster with the given configuration, or you you can use it to install Hiqlite
-to spin up instances easily with
+This feature only exists to make it possible to run Hiqlite as a standalone DB / Cluster, if you really want this. It
+will build a binary which spins up a cluster with the given configuration, or you you can use it to install Hiqlite to
+spin up instances easily with
 
 `cargo install hiqlite --features server`
 
@@ -365,32 +361,31 @@ Postgres, which would never be able to even come close to the read and `SELECT` 
 ### `shutdown-handle`
 
 As mentioned in other places already, a Hiqlite node should always be shut down gracefully to prevent full State Machine
-rebuilds with each restart. Most applications already have some sort of shutdown handles or can listen automatically.
-If you already have something like that, you can leave this feature disabled and simply call
+rebuilds with each restart. Most applications already have some sort of shutdown handles or can listen automatically. If
+you already have something like that, you can leave this feature disabled and simply call
 `hiqlite::Client.shutdown()`
-before exiting your `main()`.
-In any other case, you can enable the `shutdown-handle` and register an automatic shutdown handle like shown in the
-examples, which you can `.await` just before exiting your `main()`.
+before exiting your `main()`. In any other case, you can enable the `shutdown-handle` and register an automatic shutdown
+handle like shown in the examples, which you can `.await` just before exiting your `main()`.
 
 ### `sqlite`
 
-This is the main feature for Hiqlite, the main reason why it has been created. The `sqlite` feature will spin up a
-Raft cluster which uses a `SQLite` instance as the State Machine.
+This is the main feature for Hiqlite, the main reason why it has been created. The `sqlite` feature will spin up a Raft
+cluster which uses a `SQLite` instance as the State Machine.
 
 This SQLite database will always be on disk and never in-memory only. Actually, the in-memory SQLite is slower than
 on-disk with all the applied default optimizations. The reason is that an in-memory SQLite cannot use a WAL file. This
-makes it slower than on-disk with a WAL file and proper `PRAGMA` settings in all of my tests.
-Another issue with an in-memory SQLite is that you will get into problems with queries blocking each other all the time
-as soon as you have multiple connections for the same reason as above: no WAL file.
+makes it slower than on-disk with a WAL file and proper `PRAGMA` settings in all of my tests. Another issue with an
+in-memory SQLite is that you will get into problems with queries blocking each other all the time as soon as you have
+multiple connections for the same reason as above: no WAL file.
 
 This has its own feature though, because you may only be interested in having an in-memory cache / KV store sometimes.
-In this case, you can disable the default features and only enable `cache` or whatever you need. You would not even
-need any volume attached to your container in that case.
+In this case, you can disable the default features and only enable `cache` or whatever you need. You would not even need
+any volume attached to your container in that case.
 
 ### `webpki-roots`
 
-This feature will simply enable baked-in TLS ROOT CA's to be independent of any OS trust store, like for instance
-when you don't even have one inside your minimal docker container.
+This feature will simply enable baked-in TLS ROOT CA's to be independent of any OS trust store, like for instance when
+you don't even have one inside your minimal docker container.
 
 ## Standalone Server / Cluster
 
@@ -410,8 +405,8 @@ and then just execute it:
 hiqlite -h
 ```
 
-The current implementation is still a bit basic, but it will help you to get it up and running. I suggest to start
-with generating a template config file with
+The current implementation is still a bit basic, but it will help you to get it up and running. I suggest to start with
+generating a template config file with
 
 ```
 hiqlite generate-config -h
@@ -424,14 +419,14 @@ with `-p`. Once you have you config, you can start a node with
 hiqlite serve -h
 ```
 
-The `--node-id` must match a value from `HQL_NODES` inside your config. When you overwrite the node id at startup,
-you can re-use the same config for multiple nodes.
+The `--node-id` must match a value from `HQL_NODES` inside your config. When you overwrite the node id at startup, you
+can re-use the same config for multiple nodes.
 
 ### Example Config
 
 Take a look at the [examples](https://github.com/sebadob/hiqlite/tree/main/examples) or the example
-[config](https://github.com/sebadob/hiqlite/blob/main/config) to get an idea about the possible config values.
-The `NodeConfig` can be created programmatically or fully created either `from_toml()` or `from_env()` vars.
+[config](https://github.com/sebadob/hiqlite/blob/main/config) to get an idea about the possible config values. The
+`NodeConfig` can be created programmatically or fully created either `from_toml()` or `from_env()` vars.
 
 ### Cluster inside Kubernetes
 
@@ -491,8 +486,8 @@ stringData:
 #### StatefulSet
 
 The last one for testing (leaving Ingress out for this simple example) will create a StatefulSet, a load balanced
-Service you could access via a `NodePort` to reach the dashboard, and a headless Service to the nodes can create
-direct connections to each other. Create an `sts.yaml`:
+Service you could access via a `NodePort` to reach the dashboard, and a headless Service to the nodes can create direct
+connections to each other. Create an `sts.yaml`:
 
 ```yaml
 apiVersion: v1
@@ -639,9 +634,8 @@ There are currently some known issues:
 1. When creating synthetic benchmarks for testing write throughput at the absolute max, you will see error logs because
    of missed Raft heartbeats and leader switches, even though the network and everything else is fine. The reason is
    that the Raft heartbeats in the current implementation come in-order with the Raft data replication. So, if you
-   generate an insane amount of Raft data which takes time to replicate, because you end up being effectively I/O
-   bound by your physical disk, these heartbeats can get lost, because they won't happen in-time. This issue will be
-   resolved with the next major release of `openraft`, where heartbeats will be sent separately from the main data
-   replication.
+   generate an insane amount of Raft data which takes time to replicate, because you end up being effectively I/O bound
+   by your physical disk, these heartbeats can get lost, because they won't happen in-time. This issue will be resolved
+   with the next major release of `openraft`, where heartbeats will be sent separately from the main data replication.
 2. In the current version, the logging output is very verbose on the `info` level. This is on purpose until everything
    has been stabilized. In future versions, this will be reduced quite a bit.
