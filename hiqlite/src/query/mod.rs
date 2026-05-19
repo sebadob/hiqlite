@@ -54,6 +54,7 @@ where
         writer::check_stmt_params_count(&stmt, &params, &sql);
 
         let mut idx = 1;
+        #[allow(clippy::explicit_counter_loop)]
         for param in params {
             stmt.raw_bind_parameter(idx, param.into_sql())?;
             idx += 1;
@@ -93,6 +94,7 @@ where
         writer::check_stmt_params_count(&stmt, &params, &sql);
 
         let mut idx = 1;
+        #[allow(clippy::explicit_counter_loop)]
         for param in params {
             stmt.raw_bind_parameter(idx, param.into_sql())?;
             idx += 1;
@@ -171,6 +173,7 @@ where
         writer::check_stmt_params_count(&stmt, &params, &sql);
 
         let mut idx = 1;
+        #[allow(clippy::explicit_counter_loop)]
         for param in params {
             stmt.raw_bind_parameter(idx, param.into_sql())?;
             idx += 1;
