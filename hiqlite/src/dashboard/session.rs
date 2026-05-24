@@ -76,7 +76,7 @@ impl Session {
         let cookie_header = if *INSECURE_COOKIES {
             format!("{COOKIE_NAME_DEV}={b64}; HttpOnly; SameSite=Lax; Max-Age={max_age}")
         } else {
-            format!("{COOKIE_NAME}={b64}; Secure; HttpOnly; SameSite=Lax; Max-Age={max_age} Path=/")
+            format!("{COOKIE_NAME}={b64}; Secure; HttpOnly; SameSite=Lax; Max-Age={max_age}; Path=/")
         };
 
         Ok(cookie_header)

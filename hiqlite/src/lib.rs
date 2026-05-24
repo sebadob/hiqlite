@@ -2,7 +2,7 @@
 
 #![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
-#![cfg_attr(doc, feature(doc_auto_cfg))]
+#![cfg_attr(doc, feature(doc_cfg))]
 
 #[cfg(all(feature = "cast_ints", feature = "cast_ints_unchecked"))]
 compile_error!("features `cast_ints` and `cast_ints_unchecked` are mutually exclusive!");

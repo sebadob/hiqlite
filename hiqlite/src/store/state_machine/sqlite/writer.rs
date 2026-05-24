@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             // let params_len = q.params.len();
                             let mut params_err = None;
                             let mut idx = 1;
+                            #[allow(clippy::explicit_counter_loop)]
                             for param in q.params {
                                 if let Err(err) = stmt.raw_bind_parameter(idx, param.into_sql()) {
                                     error!(
@@ -256,6 +257,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             // let params_len = q.params.len();
                             let mut params_err = None;
                             let mut idx = 1;
+                            #[allow(clippy::explicit_counter_loop)]
                             for param in q.params {
                                 if let Err(err) = stmt.raw_bind_parameter(idx, param.into_sql()) {
                                     error!(
@@ -335,6 +337,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             check_stmt_params_count(&stmt, &params, &sql);
 
                             let mut idx = 1;
+                            #[allow(clippy::explicit_counter_loop)]
                             for param in params {
                                 let ctx = TransactionParamContext {
                                     txn: &txn,
