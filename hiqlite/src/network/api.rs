@@ -175,10 +175,7 @@ fn ensure_ready_member(
         .membership_config
         .nodes()
         .any(|(id, _)| *id == state.id);
-    let is_acceptable_learner =
-        state.learner_only && metrics.state == ServerState::Learner && is_member;
-
-    if metrics.state == ServerState::Shutdown || (!is_voter && !is_acceptable_learner) {
+    if !is_ready_member_state(state.learner_only, metrics.state, is_voter, is_member) {
         warn!("not yet a ready member of the {raft_label} raft");
         return Err(Error::Error(
             format!("not yet a ready member of the {raft_label} raft").into(),
@@ -186,6 +183,24 @@ fn ensure_ready_member(
     }
 
     Ok(())
+}
+
+fn is_ready_member_state(
+    learner_only: bool,
+    state: ServerState,
+    is_voter: bool,
+    is_member: bool,
+) -> bool {
+    if state == ServerState::Shutdown {
+        return false;
+    }
+
+    let is_ready_voter = state != ServerState::Learner && is_voter;
+    is_ready_voter || is_ready_learner(learner_only, state, is_member)
+}
+
+fn is_ready_learner(learner_only: bool, state: ServerState, is_member: bool) -> bool {
+    learner_only && state == ServerState::Learner && is_member
 }
 
 pub async fn post_create_backup(state: AppStateExt, headers: HeaderMap) -> Result<(), Error> {
@@ -239,6 +254,57 @@ pub async fn post_create_backup(state: AppStateExt, headers: HeaderMap) -> Resul
 }
 
 pub async fn ping() {}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_ready_learner, is_ready_member_state};
+    use openraft::ServerState;
+
+    #[test]
+    fn learner_only_readiness_accepts_committed_learner_member() {
+        assert!(is_ready_learner(true, ServerState::Learner, true));
+    }
+
+    #[test]
+    fn learner_only_readiness_rejects_non_member_learner() {
+        assert!(!is_ready_learner(true, ServerState::Learner, false));
+    }
+
+    #[test]
+    fn learner_only_readiness_rejects_learners_when_disabled() {
+        assert!(!is_ready_learner(false, ServerState::Learner, true));
+    }
+
+    #[test]
+    fn member_readiness_rejects_learner_state_without_learner_only() {
+        assert!(!is_ready_member_state(
+            false,
+            ServerState::Learner,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn member_readiness_accepts_voter_in_non_learner_state() {
+        assert!(is_ready_member_state(
+            false,
+            ServerState::Follower,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn member_readiness_rejects_shutdown_voter() {
+        assert!(!is_ready_member_state(
+            false,
+            ServerState::Shutdown,
+            true,
+            true
+        ));
+    }
+}
 
 #[cfg(feature = "listen_notify")]
 pub async fn listen(

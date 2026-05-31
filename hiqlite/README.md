@@ -427,6 +427,9 @@ can re-use the same config for multiple nodes.
 Take a look at the [examples](https://github.com/sebadob/hiqlite/tree/main/examples) or the example
 [config](https://github.com/sebadob/hiqlite/blob/main/config) to get an idea about the possible config values. The
 `NodeConfig` can be created programmatically or fully created either `from_toml()` or `from_env()` vars.
+For newly joining read-only replicas that should not become voting Raft members automatically
+during startup, set `learner_only = true` or `HQL_LEARNER_ONLY=true`. This does not demote an
+existing voter.
 
 ### Cluster inside Kubernetes
 

@@ -203,6 +203,13 @@ secret_api = "SuperSecureSecret1337"
 # default: 30
 #health_check_delay_secs = 30
 
+# Set a newly joining node to stay a learner during startup reconciliation.
+# This is useful for read-only replicas that should not become voting
+# Raft members automatically. This does not demote an existing voter.
+# default: false
+# overwritten by: HQL_LEARNER_ONLY
+#learner_only = false
+
 # When the auto-backup task should run.
 # Accepts cron syntax:
 # "sec min hour day_of_month month day_of_week year"

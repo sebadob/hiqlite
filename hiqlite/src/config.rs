@@ -108,8 +108,8 @@ pub struct NodeConfig {
     /// necessary to solve a chicken-and-egg problem when cold starting cluster which depend on
     /// health checks.
     pub health_check_delay_secs: u32,
-    /// If true, keep this node as a learner instead of promoting it to a voting member during
-    /// startup reconciliation.
+    /// If true, keep a newly joining node as a learner instead of promoting it to a voting member
+    /// during startup reconciliation. This does not demote an existing voter.
     pub learner_only: bool,
 }
 
