@@ -24,7 +24,7 @@ impl NodeConfig {
 
         let config = fs::read_to_string(path)
             .await
-            .map_err(|err| Error::String(format!("Cannot read config file from: {path}: {err}")))?;
+            .map_err(|err| Error::config(format!("Cannot read config file from: {path}: {err}")))?;
 
         // Note: these inner parsers are very verbose, but they allow the upfront memory allocation
         // and memory fragmentation, after the quite big toml has been freed and the config stays
@@ -32,9 +32,9 @@ impl NodeConfig {
 
         let mut root = config
             .parse::<toml::Table>()
-            .map_err(|err| Error::String(format!("Cannot parse TOML file: {err}")))?;
+            .map_err(|err| Error::config(format!("Cannot parse TOML file: {err}")))?;
         let table = t_table(&mut root, t_name).map_err(|err| {
-            Error::String(format!("Cannot find table '{t_name}' in {path}: {err}"))
+            Error::config(format!("Cannot find table '{t_name}' in {path}: {err}"))
         })?;
 
         Self::from_toml_table(
@@ -108,7 +108,7 @@ impl NodeConfig {
 
         let wal_sync = if let Some(v) = t_str(&mut map, t_name, "log_sync", "HQL_LOG_SYNC")? {
             let Ok(sync) = LogSync::try_from(v.as_str()) else {
-                return Err(Error::String(err_t("log_sync", t_name, "LogSync")));
+                return Err(Error::config(err_t("log_sync", t_name, "LogSync")));
             };
             sync
         } else {
@@ -177,10 +177,14 @@ impl NodeConfig {
         };
 
         let Some(secret_raft) = t_str(&mut map, t_name, "secret_raft", "HQL_SECRET_RAFT")? else {
-            return Err(format!("{t_name}.secret_raft is a mandatory value").into());
+            return Err(Error::config(format!(
+                "{t_name}.secret_raft is a mandatory value"
+            )));
         };
         let Some(secret_api) = t_str(&mut map, t_name, "secret_api", "HQL_SECRET_API")? else {
-            return Err(format!("{t_name}.secret_api is a mandatory value").into());
+            return Err(Error::config(format!(
+                "{t_name}.secret_api is a mandatory value"
+            )));
         };
 
         let health_check_delay_secs =
@@ -191,7 +195,7 @@ impl NodeConfig {
         #[cfg(feature = "backup")]
         let (backup_config, backup_keep_days_local) = {
             let backup_cron =
-                if let Some(v) = t_str(&mut map, t_name, "backup_config", "HQL_BACKUP_CRON")? {
+                if let Some(v) = t_str(&mut map, t_name, "backup_cron", "HQL_BACKUP_CRON")? {
                     Cow::from(v)
                 } else {
                     Cow::from("0 30 2 * * * *")
@@ -208,7 +212,7 @@ impl NodeConfig {
 
             let backup_config =
                 crate::backup::BackupConfig::new(backup_cron.as_ref(), backup_keep_days)
-                    .map_err(|err| Error::String(format!("Error building BackupConfig: {err}")))?;
+                    .map_err(|err| Error::config(format!("Error building BackupConfig: {err}")))?;
             (backup_config, backup_keep_days_local)
         };
 
@@ -217,24 +221,24 @@ impl NodeConfig {
             // we expect all values to exist when we can read the url successfully
 
             let bucket = t_str(&mut map, t_name, "s3_bucket", "HQL_S3_BUCKET")?.ok_or(
-                Error::String("Missing config variable `s3_bucket`".to_string()),
+                Error::config("Missing config variable `s3_bucket`".to_string()),
             )?;
             let region = t_str(&mut map, t_name, "s3_region", "HQL_S3_REGION")?.ok_or(
-                Error::String("Missing config variable `s3_region`".to_string()),
+                Error::config("Missing config variable `s3_region`".to_string()),
             )?;
             let path_style =
                 t_bool(&mut map, t_name, "s3_path_style", "HQL_S3_PATH_STYLE")?.unwrap_or(true);
 
-            let key = t_str(&mut map, t_name, "s3_key", "HQL_S3_KEY")?.ok_or(Error::String(
+            let key = t_str(&mut map, t_name, "s3_key", "HQL_S3_KEY")?.ok_or(Error::config(
                 "Missing config variable `s3_key`".to_string(),
             ))?;
             let secret = t_str(&mut map, t_name, "s3_secret", "HQL_S3_SECRET")?.ok_or(
-                Error::String("Missing config variable `s3_secret`".to_string()),
+                Error::config("Missing config variable `s3_secret`".to_string()),
             )?;
 
             let config = crate::s3::S3Config::new(&url, bucket, region, key, secret, path_style)
                 .map_err(|err| {
-                    Error::String(format!(
+                    Error::config(format!(
                         "Cannot build S3Config from given S3 values in {t_name}: {err:?}"
                     ))
                 })?;
@@ -253,10 +257,10 @@ impl NodeConfig {
             Some(password_dashboard_b64) => {
                 let password_dashboard_vec_u8 = cryptr::utils::b64_decode(&password_dashboard_b64)
                     .map_err(|_| {
-                        Error::String("password_dashboard must be valid base64.".to_string())
+                        Error::config("password_dashboard must be valid base64.".to_string())
                     })?;
                 Some(String::from_utf8(password_dashboard_vec_u8).map_err(|_| {
-                    Error::String(
+                    Error::config(
                         "password_dashboard must contain String characters only".to_string(),
                     )
                 })?)
@@ -272,14 +276,16 @@ impl NodeConfig {
             keys
         } else {
             let enc_key_active = t_str(&mut map, t_name, "enc_key_active", "ENC_KEY_ACTIVE")?
-                .ok_or(Error::String(format!(
+                .ok_or(Error::config(format!(
                     "{t_name}.enc_key_active is a mandatory value"
                 )))?;
             let enc_keys = t_str_vec(&mut map, t_name, "enc_keys", "ENC_KEYS")?.ok_or(
-                Error::String(format!("{t_name}.enc_keys is a mandatory value")),
+                Error::config(format!("{t_name}.enc_keys is a mandatory value")),
             )?;
             cryptr::EncKeys::try_parse(enc_key_active, enc_keys)?
         };
+
+        check_empty(map, table_name)?;
 
         Ok(NodeConfig {
             node_id,
@@ -318,24 +324,37 @@ impl NodeConfig {
     }
 }
 
+fn check_empty(table: toml::Table, tbl_name: &str) -> Result<(), Error> {
+    if table.is_empty() {
+        Ok(())
+    } else {
+        eprintln!("{table:#?}");
+        Err(Error::Config(
+            format!("Unknown Config data in section: '{tbl_name}': {table:?}").into(),
+        ))
+    }
+}
+
 fn t_bool(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
     env_var: &str,
 ) -> Result<Option<bool>, Error> {
+    let value = map.remove(key);
+
     if !env_var.is_empty()
         && let Ok(v) = env::var(env_var)
     {
         return match v.parse::<bool>() {
             Ok(b) => Ok(Some(b)),
-            Err(_) => Err(Error::String(err_t(key, parent, "bool"))),
+            Err(_) => Err(Error::config(err_t(key, parent, "bool"))),
         };
     }
 
-    if let Some(v) = map.remove(key) {
+    if let Some(v) = value {
         let Value::Boolean(b) = v else {
-            return Err(Error::String(err_t(key, parent, "bool")));
+            return Err(Error::config(err_t(key, parent, "bool")));
         };
         Ok(Some(b))
     } else {
@@ -349,18 +368,20 @@ fn t_i64(
     key: &str,
     env_var: &str,
 ) -> Result<Option<i64>, Error> {
+    let value = map.remove(key);
+
     if !env_var.is_empty()
         && let Ok(v) = env::var(env_var)
     {
         return match v.parse::<i64>() {
             Ok(i) => Ok(Some(i)),
-            Err(_) => Err(Error::String(err_t(key, parent, "i64"))),
+            Err(_) => Err(Error::config(err_t(key, parent, "i64"))),
         };
     }
 
-    if let Some(v) = map.remove(key) {
+    if let Some(v) = value {
         let Value::Integer(i) = v else {
-            return Err(Error::String(err_t(key, parent, "i64")));
+            return Err(Error::config(err_t(key, parent, "i64")));
         };
         Ok(Some(i))
     } else {
@@ -376,7 +397,7 @@ fn t_u64(
 ) -> Result<Option<u64>, Error> {
     if let Ok(Some(v)) = t_i64(map, parent, key, env_var) {
         if v < 0 {
-            return Err(Error::String(err_t(key, parent, "u64")));
+            return Err(Error::config(err_t(key, parent, "u64")));
         }
         Ok(Some(v as u64))
     } else {
@@ -392,7 +413,7 @@ fn t_u32(
 ) -> Result<Option<u32>, Error> {
     if let Ok(Some(v)) = t_i64(map, parent, key, env_var) {
         if v < 0 || v > u32::MAX as i64 {
-            return Err(Error::String(err_t(key, parent, "u32")));
+            return Err(Error::config(err_t(key, parent, "u32")));
         }
         Ok(Some(v as u32))
     } else {
@@ -407,7 +428,7 @@ fn t_u16(
 ) -> Result<Option<u16>, Error> {
     if let Ok(Some(v)) = t_i64(map, parent, key, env_var) {
         if v < 0 || v > u16::MAX as i64 {
-            return Err(Error::String(err_t(key, parent, "u16")));
+            return Err(Error::config(err_t(key, parent, "u16")));
         }
         Ok(Some(v as u16))
     } else {
@@ -421,15 +442,17 @@ fn t_str(
     key: &str,
     env_var: &str,
 ) -> Result<Option<String>, Error> {
+    let value = map.remove(key);
+
     if !env_var.is_empty()
         && let Ok(v) = env::var(env_var)
     {
         return Ok(Some(v));
     }
 
-    if let Some(v) = map.remove(key) {
+    if let Some(v) = value {
         let Value::String(s) = v else {
-            return Err(Error::String(err_t(key, parent, "String")));
+            return Err(Error::config(err_t(key, parent, "String")));
         };
         Ok(Some(s))
     } else {
@@ -443,6 +466,8 @@ fn t_str_vec(
     key: &str,
     env_var: &str,
 ) -> Result<Option<Vec<String>>, Error> {
+    let value = map.remove(key);
+
     if !env_var.is_empty()
         && let Ok(arr) = env::var(env_var)
     {
@@ -460,13 +485,13 @@ fn t_str_vec(
         ));
     }
 
-    let Some(Value::Array(arr)) = map.remove(key) else {
+    let Some(Value::Array(arr)) = value else {
         return Ok(None);
     };
     let mut res = Vec::with_capacity(arr.len());
     for value in arr {
         let Value::String(s) = value else {
-            return Err(Error::String(err_t(key, parent, "String")));
+            return Err(Error::config(err_t(key, parent, "String")));
         };
         res.push(s);
     }
@@ -476,9 +501,9 @@ fn t_str_vec(
 fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
     let value = map
         .remove(key)
-        .ok_or(Error::String(format!("Expected type `Table` for {key}")))?;
+        .ok_or(Error::config(format!("Expected type `Table` for {key}")))?;
     toml::Table::try_from(value)
-        .map_err(|err| Error::String(format!("Cannot build toml table from removed value: {err}")))
+        .map_err(|err| Error::config(format!("Cannot build toml table from removed value: {err}")))
 }
 
 #[inline]
