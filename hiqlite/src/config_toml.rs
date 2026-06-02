@@ -328,7 +328,6 @@ fn check_empty(table: toml::Table, tbl_name: &str) -> Result<(), Error> {
     if table.is_empty() {
         Ok(())
     } else {
-        eprintln!("{table:#?}");
         Err(Error::Config(
             format!("Unknown Config data in section: '{tbl_name}': {table:?}").into(),
         ))
