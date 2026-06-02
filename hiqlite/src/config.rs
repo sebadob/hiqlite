@@ -108,6 +108,9 @@ pub struct NodeConfig {
     /// necessary to solve a chicken-and-egg problem when cold starting cluster which depend on
     /// health checks.
     pub health_check_delay_secs: u32,
+    /// If true, keep a newly joining node as a learner instead of promoting it to a voting member
+    /// during startup reconciliation. This does not demote an existing voter.
+    pub learner_only: bool,
 }
 
 impl Default for NodeConfig {
@@ -144,6 +147,7 @@ impl Default for NodeConfig {
             #[cfg(feature = "dashboard")]
             insecure_cookie: false,
             health_check_delay_secs: 30,
+            learner_only: false,
             // #[cfg(feature = "dashboard")]
             // insecure_cookie: false,
         }
@@ -268,6 +272,11 @@ impl NodeConfig {
             #[cfg(feature = "dashboard")]
             insecure_cookie,
             health_check_delay_secs: 30,
+            learner_only: env::var("HQL_LEARNER_ONLY")
+                .as_deref()
+                .unwrap_or("false")
+                .parse::<bool>()
+                .expect("Cannot parse HQL_LEARNER_ONLY as bool"),
             #[cfg(feature = "backup")]
             backup_keep_days_local,
         };
@@ -449,5 +458,6 @@ mod tests {
 
         assert_eq!(c.secret_raft, "SuperSecureSecret1337");
         assert_eq!(c.secret_api, "SuperSecureSecret1337");
+        assert!(!c.learner_only);
     }
 }

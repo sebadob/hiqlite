@@ -74,6 +74,7 @@ pub(crate) struct AppState {
     #[cfg(any(feature = "backup", feature = "dashboard"))]
     pub tx_client_stream: flume::Sender<ClientStreamReq>,
     pub health_check_delay_secs: u32,
+    pub learner_only: bool,
 }
 
 #[cfg(any(feature = "backup", feature = "dashboard"))]

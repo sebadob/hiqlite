@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added `NodeConfig::learner_only`, `learner_only`, and `HQL_LEARNER_ONLY` to let newly joining
+  nodes stay learners during startup reconciliation instead of being promoted to voting members.
+
 ## hiqlite-v0.13.2
 
 This release only exists to fix the removal of the `auto_doc_cfg` feature on docs.rs in the hope that docs now build

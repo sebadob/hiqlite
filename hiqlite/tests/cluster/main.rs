@@ -18,6 +18,7 @@ mod cache;
 mod check;
 mod dlock;
 mod execute_query;
+mod learner_only;
 mod listen_notify;
 mod migration;
 mod remote_only;

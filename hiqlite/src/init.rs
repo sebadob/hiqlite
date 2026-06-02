@@ -354,6 +354,15 @@ pub async fn become_cluster_member(
         );
     }
 
+    if state.learner_only {
+        info!(
+            "Node {}: learner_only=true - skipping {} raft voter promotion",
+            state.id,
+            raft_type.as_str(),
+        );
+        return Ok(());
+    }
+
     info!(
         "Node {}: Trying to become {:?} raft member",
         state.id, raft_type

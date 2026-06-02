@@ -38,9 +38,17 @@ pub fn nodes() -> Vec<Node> {
 }
 
 pub async fn build_config(node_id: u64) -> NodeConfig {
-    let dir_1 = format!("{}/node_1", TEST_DATA_DIR);
-    let dir_2 = format!("{}/node_2", TEST_DATA_DIR);
-    let dir_3 = format!("{}/node_3", TEST_DATA_DIR);
+    build_config_with_nodes(node_id, nodes(), TEST_DATA_DIR).await
+}
+
+pub async fn build_config_with_nodes(
+    node_id: u64,
+    nodes: Vec<Node>,
+    data_dir_base: &str,
+) -> NodeConfig {
+    let dir_1 = format!("{data_dir_base}/node_1");
+    let dir_2 = format!("{data_dir_base}/node_2");
+    let dir_3 = format!("{data_dir_base}/node_3");
 
     fs::create_dir_all(&dir_1).await.unwrap();
     fs::create_dir_all(&dir_2).await.unwrap();
@@ -57,7 +65,7 @@ pub async fn build_config(node_id: u64) -> NodeConfig {
         .await
         .unwrap();
     config.node_id = node_id;
-    config.nodes = nodes();
+    config.nodes = nodes;
     config.data_dir = data_dir;
     config.log_statements = true;
     // very tiny WAL to make sure log roll-overs will happen during tests

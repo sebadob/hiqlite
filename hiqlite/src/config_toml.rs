@@ -185,6 +185,8 @@ impl NodeConfig {
 
         let health_check_delay_secs =
             t_u32(&mut map, t_name, "health_check_delay_secs", "")?.unwrap_or(30);
+        let learner_only =
+            t_bool(&mut map, t_name, "learner_only", "HQL_LEARNER_ONLY")?.unwrap_or(false);
 
         #[cfg(feature = "backup")]
         let (backup_config, backup_keep_days_local) = {
@@ -311,6 +313,7 @@ impl NodeConfig {
             #[cfg(feature = "dashboard")]
             insecure_cookie,
             health_check_delay_secs,
+            learner_only,
         })
     }
 }

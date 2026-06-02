@@ -1,3 +1,4 @@
+use crate::Node;
 use crate::app_state::RaftType;
 use crate::helpers::{deserialize, get_raft_metrics};
 use crate::network::handshake::HandshakeSecret;
@@ -7,7 +8,7 @@ use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use chrono::Utc;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
-use openraft::ServerState;
+use openraft::{ServerState, StoredMembership};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::ops::{Deref, Sub};
@@ -118,20 +119,14 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                 return Err(Error::Error("sqlite raft is not running".into()));
             }
 
-            // make sure we are a voting cluster member
             let metrics = get_raft_metrics(&state, &RaftType::Sqlite).await;
-            if metrics.state == ServerState::Learner
-                || metrics.state == ServerState::Shutdown
-                || !metrics
-                    .membership_config
-                    .voter_ids()
-                    .any(|id| id == state.id)
-            {
-                warn!("not yet a voting member of the sqlite raft");
-                return Err(Error::Error(
-                    "not yet a voting member of the sqlite raft".into(),
-                ));
-            }
+            ensure_ready_member(
+                state.id,
+                state.learner_only,
+                metrics.state,
+                &metrics.membership_config,
+                "sqlite",
+            )?;
 
             if metrics.current_leader.is_none() && (state.id != 1 || secs_since_start < 10) {
                 warn!("sqlite raft leader vote in progress - secs_since_start: {secs_since_start}");
@@ -157,20 +152,14 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                 return Err(Error::Error("cache raft is not running".into()));
             }
 
-            // make sure we are a voting cluster member
             let metrics = get_raft_metrics(&state, &RaftType::Cache).await;
-            if metrics.state == ServerState::Learner
-                || metrics.state == ServerState::Shutdown
-                || !metrics
-                    .membership_config
-                    .voter_ids()
-                    .any(|id| id == state.id)
-            {
-                warn!("not yet a voting member of the cache raft");
-                return Err(Error::Error(
-                    "not yet a voting member of the cache raft".into(),
-                ));
-            }
+            ensure_ready_member(
+                state.id,
+                state.learner_only,
+                metrics.state,
+                &metrics.membership_config,
+                "cache",
+            )?;
 
             if metrics.current_leader.is_none() && (state.id != 1 || secs_since_start < 10) {
                 warn!("cache raft leader vote in progress");
@@ -183,6 +172,40 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+fn ensure_ready_member(
+    id: u64,
+    learner_only: bool,
+    state: ServerState,
+    membership_config: &StoredMembership<u64, Node>,
+    raft_label: &'static str,
+) -> Result<(), Error> {
+    if state == ServerState::Shutdown {
+        warn!("not yet a ready member of the {raft_label} raft");
+        return Err(Error::Error(
+            format!("not yet a ready member of the {raft_label} raft").into(),
+        ));
+    }
+
+    if state != ServerState::Learner && membership_config.voter_ids().any(|voter_id| voter_id == id)
+    {
+        return Ok(());
+    }
+
+    if learner_only
+        && state == ServerState::Learner
+        && membership_config
+            .nodes()
+            .any(|(member_id, _)| *member_id == id)
+    {
+        return Ok(());
+    }
+
+    warn!("not yet a ready member of the {raft_label} raft");
+    Err(Error::Error(
+        format!("not yet a ready member of the {raft_label} raft").into(),
+    ))
 }
 
 pub async fn post_create_backup(state: AppStateExt, headers: HeaderMap) -> Result<(), Error> {
@@ -236,6 +259,78 @@ pub async fn post_create_backup(state: AppStateExt, headers: HeaderMap) -> Resul
 }
 
 pub async fn ping() {}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_ready_member;
+    use crate::Node;
+    use openraft::{Membership, ServerState, StoredMembership};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn learner_only_readiness_accepts_committed_learner_member() {
+        let membership = membership_with_voters_and_learners([1, 2], [1, 2, 3]);
+
+        assert!(ensure_ready_member(3, true, ServerState::Learner, &membership, "test").is_ok());
+    }
+
+    #[test]
+    fn learner_only_readiness_rejects_non_member_learner() {
+        let membership = membership_with_voters_and_learners([1, 2], [1, 2]);
+
+        assert!(ensure_ready_member(3, true, ServerState::Learner, &membership, "test").is_err());
+    }
+
+    #[test]
+    fn learner_only_readiness_rejects_learners_when_disabled() {
+        let membership = membership_with_voters_and_learners([1, 2], [1, 2, 3]);
+
+        assert!(ensure_ready_member(3, false, ServerState::Learner, &membership, "test").is_err());
+    }
+
+    #[test]
+    fn member_readiness_rejects_learner_state_without_learner_only() {
+        let membership = membership_with_voters_and_learners([1, 2, 3], [1, 2, 3]);
+
+        assert!(ensure_ready_member(3, false, ServerState::Learner, &membership, "test").is_err());
+    }
+
+    #[test]
+    fn member_readiness_accepts_voter_in_non_learner_state() {
+        let membership = membership_with_voters_and_learners([1, 2, 3], [1, 2, 3]);
+
+        assert!(ensure_ready_member(3, false, ServerState::Follower, &membership, "test").is_ok());
+    }
+
+    #[test]
+    fn member_readiness_rejects_shutdown_voter() {
+        let membership = membership_with_voters_and_learners([1, 2, 3], [1, 2, 3]);
+
+        assert!(ensure_ready_member(3, false, ServerState::Shutdown, &membership, "test").is_err());
+    }
+
+    fn membership_with_voters_and_learners<const VOTERS: usize, const MEMBERS: usize>(
+        voters: [u64; VOTERS],
+        members: [u64; MEMBERS],
+    ) -> StoredMembership<u64, Node> {
+        let voters = BTreeSet::from(voters);
+        let nodes = members
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    Node {
+                        id,
+                        addr_raft: format!("localhost:{}", 8100 + id),
+                        addr_api: format!("localhost:{}", 8200 + id),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        StoredMembership::new(None, Membership::new(vec![voters], nodes))
+    }
+}
 
 #[cfg(feature = "listen_notify")]
 pub async fn listen(
