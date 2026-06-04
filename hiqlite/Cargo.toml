@@ -4,7 +4,8 @@ version = "0.13.2"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-rust-version = "1.88.0"
+# Bumped to 1.95 by serde_rusqlite 0.43 (required for rusqlite 0.40), which depends on serde_core.
+rust-version = "1.95.0"
 categories = ["database", "caching"]
 keywords = ["database", "sql", "sqlite", "raft", "cache"]
 description = "Hiqlite - highly-available, embeddable, raft-based SQLite + cache"
