@@ -1270,10 +1270,8 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiqlite"
-version = "0.13.1"
+version = "0.14.0-202606024"
 dependencies = [
- "aws-lc-rs",
- "aws-lc-sys",
  "axum",
  "axum-server",
  "bincode",
@@ -1296,10 +1294,10 @@ dependencies = [
  "openraft",
  "rcgen",
  "reqwest",
- "rkyv",
  "rust-embed",
  "rust_decimal",
  "rustls",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1319,6 +1317,8 @@ dependencies = [
 [[package]]
 name = "hiqlite-derive"
 version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4edb6e4dbbb5f8e407335b3a55ea5ab79bd7c647ccffb09617d2b606d7f517b6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1328,6 +1328,8 @@ dependencies = [
 [[package]]
 name = "hiqlite-wal"
 version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05d53e55d82308a8433aab0cbbd8ba981e8e4fbecfa62b407ef26e92a671a65e"
 dependencies = [
  "bincode",
  "byteorder",
@@ -2612,7 +2614,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3118,9 +3120,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-rustls"
-version = "0.26.2"
+version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e727b36a1a0e8b74c376ac2211e40c2c8af09fb4013c60d910495810f008e9b"
+checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
  "tokio",
