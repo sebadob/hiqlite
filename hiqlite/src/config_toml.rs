@@ -328,9 +328,40 @@ fn check_empty(table: toml::Table, tbl_name: &str) -> Result<(), Error> {
     if table.is_empty() {
         Ok(())
     } else {
-        Err(Error::Config(
-            format!("Unknown Config data in section: '{tbl_name}': {table:?}").into(),
-        ))
+        // It may be the case that we found values that belong to not-activated features.
+        // We should not error on these.
+        let mut err = false;
+        for key in table.keys() {
+            if ![
+                "backup_cron",
+                "backup_keep_days",
+                "backup_keep_days_local",
+                "cache_storage_disk",
+                "s3_url",
+                "s3_bucket",
+                "s3_region",
+                "s3_path_style",
+                "s3_key",
+                "s3_secret",
+                "password_dashboard",
+                "insecure_cookie",
+                "enc_key_active",
+                "enc_keys",
+            ]
+            .contains(&key.as_str())
+            {
+                err = true;
+                break;
+            }
+        }
+
+        if err {
+            Err(Error::Config(
+                format!("Unknown Config data in section: '{tbl_name}': {table:?}").into(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 
