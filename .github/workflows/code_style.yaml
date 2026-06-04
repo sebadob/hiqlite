@@ -1,10 +1,5 @@
 name: Code Style
 
-# Single job, no third-party actions or images: runs inside the maintainer's
-# rauthy-builder container (which ships `just`, the Rust toolchain, clippy and
-# cc) and only uses the first-party actions/checkout. Steps run sequentially in
-# one job so the workspace is compiled once.
-
 on:
   pull_request:
     types:
@@ -15,8 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # hiqlite's justfile recipes start with `clear`, which exits non-zero when
-  # TERM is unset (as it is on a runner) and would abort the recipe under `set -e`.
+  # `clear` in the just recipes fails without TERM on CI runners
   TERM: xterm
 
 jobs:
@@ -34,3 +28,5 @@ jobs:
         run: just clippy
       - name: Clippy (examples)
         run: just clippy-examples
+      - name: Tests
+        run: just test
