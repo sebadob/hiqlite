@@ -1,5 +1,5 @@
 use crate::error::Error;
-use fs4::fs_std::FileExt;
+use fs4::FileExt;
 use std::fs::{self, File, OpenOptions};
 
 #[derive(Debug)]
@@ -41,12 +41,12 @@ impl LockFile {
     }
 
     fn lock_file(file: &File) -> Result<(), Error> {
-        match file.try_lock_exclusive() {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(Error::Internal(
+        match FileExt::try_lock(file) {
+            Ok(()) => Ok(()),
+            Err(fs4::TryLockError::WouldBlock) => Err(Error::Internal(
                 "WAL lock file is in use by another process".into(),
             )),
-            Err(err) => Err(Error::Internal(
+            Err(fs4::TryLockError::Error(err)) => Err(Error::Internal(
                 format!("Error locking WAL lock file: {err}").into(),
             )),
         }

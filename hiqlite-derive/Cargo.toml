@@ -1,6 +1,6 @@
 [package]
 name = "hiqlite-derive"
-version = "0.13.0"
+version = "0.14.0-202606024"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true

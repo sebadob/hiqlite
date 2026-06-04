@@ -1,10 +1,9 @@
 [package]
 name = "hiqlite"
-version = "0.13.2"
+version = "0.14.0-202606024"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-# Bumped to 1.95 by serde_rusqlite 0.43 (required for rusqlite 0.40), which depends on serde_core.
 rust-version = "1.95.0"
 categories = ["database", "caching"]
 keywords = ["database", "sql", "sqlite", "raft", "cache"]
