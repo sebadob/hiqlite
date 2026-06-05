@@ -151,7 +151,7 @@ mod empty {
 /// If an incorrect `node_config` was given.
 #[cfg(feature = "sqlite")]
 pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
-    start::start_node_inner::<empty::Empty>(node_config).await
+    start::start_node_inner::<empty::Empty>(Box::new(node_config)).await
 }
 
 /// The main entry function to start a Raft / Hiqlite node.
@@ -164,5 +164,5 @@ pub async fn start_node_with_cache<C>(node_config: NodeConfig) -> Result<Client,
 where
     C: Debug + CacheVariants,
 {
-    start::start_node_inner::<C>(node_config).await
+    start::start_node_inner::<C>(Box::new(node_config)).await
 }

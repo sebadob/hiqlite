@@ -95,7 +95,7 @@ pub fn start_cron(
     backup_config: BackupConfig,
     #[cfg(feature = "s3")] s3_config: Option<Arc<S3Config>>,
 ) {
-    task::spawn(async move {
+    task::spawn(Box::pin(async move {
         info!("Backup cron task started");
 
         loop {
@@ -152,7 +152,7 @@ pub fn start_cron(
                 warn!("Backup task failed after {} retries", retries);
             }
         }
-    });
+    }));
 }
 
 async fn backup_cron_job(

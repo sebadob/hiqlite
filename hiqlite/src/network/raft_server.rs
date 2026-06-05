@@ -120,11 +120,11 @@ pub async fn stream_cache(
     tracing::info!("WebSocket cache stream request accepted");
 
     let (response, socket) = ws.upgrade()?;
-    tokio::task::spawn(async move {
+    tokio::task::spawn(Box::pin(async move {
         if let Err(err) = handle_socket(state, socket).await {
             debug!("Cache WebSocket stream closed: {}", err);
         }
-    });
+    }));
 
     Ok(response)
 }
@@ -150,11 +150,11 @@ pub async fn stream_sqlite(
     tracing::info!("WebSocket sqlite stream request accepted");
 
     let (response, socket) = ws.upgrade()?;
-    tokio::task::spawn(async move {
+    tokio::task::spawn(Box::pin(async move {
         if let Err(err) = handle_socket(state, socket).await {
             debug!("SQLite WebSocket stream closed: {}", err);
         }
-    });
+    }));
 
     Ok(response)
 }

@@ -14,6 +14,13 @@ lto = true
 strip = true
 panic = "abort"
 
+[profile.profiling]
+inherits = "release"
+codegen-units = 1
+debug = true
+lto = false
+strip = false
+
 [patch.crates-io]
 #cryptr = { path = "../cryptr" }
 #cryptr = { git = "https://github.com/sebadob/cryptr" }
@@ -38,6 +45,7 @@ chrono = { version = "0.4.38", default-features = false, features = [
     #"serde",
 ] }
 clap = { version = "4.1.11", features = ["derive", "env"] }
+console-subscriber = "0.5.0"
 crc = "3.3.0"
 cron = { version = "0.16" }
 cryptr = { version = "0.10", features = ["s3"] }

@@ -10,7 +10,7 @@ use tokio::{task, time};
 use tracing::{debug, error, warn};
 
 pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
-    let handle = task::spawn(check_split_brain(state, nodes, tls));
+    let handle = task::spawn(Box::pin(check_split_brain(state, nodes, tls)));
 
     // TODO just a safety net until everything runs super smooth and stable
     task::spawn(async move {
