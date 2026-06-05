@@ -25,7 +25,7 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio::task;
-use tracing::{debug, info, warn};
+use tracing::warn;
 use uuid::Uuid;
 
 #[cfg(feature = "dlock")]
@@ -34,7 +34,7 @@ use crate::store::state_machine::memory::dlock_handler::{self, *};
 use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
 
 type Entry = openraft::Entry<TypeConfigKV>;
-type SnapshotData = fs::File;
+type SnapshotData = Cursor<Vec<u8>>;
 
 type SnapshotKVs = Vec<(BTreeMap<String, Vec<u8>>, BTreeMap<String, i64>)>;
 type SnapshotTTLs = Vec<BTreeMap<i64, String>>;
@@ -45,6 +45,8 @@ type SnapshotDataContent = (
     SnapshotTTLs,
     SnapshotLocks,
 );
+/// The latest snapshot kept in memory (`meta` + serialized bytes) for memory-only mode.
+type MemSnapshot = (SnapshotMeta<NodeId, Node>, Vec<u8>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CacheRequest {
@@ -127,6 +129,10 @@ pub struct StateMachineMemory {
     data: RwLock<StateMachineData>,
     path_snapshots: String,
     in_memory_only: bool,
+    /// Holds the latest snapshot when running purely in-memory (`in_memory_only == true`).
+    /// In that mode nothing is ever written to `data_dir`, so a cache-only node does not
+    /// require it to exist or be writable. Unused (always `None`) when persisting to disk.
+    snapshot_mem: RwLock<Option<MemSnapshot>>,
 
     pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     tx_ttls: Vec<flume::Sender<TtlRequest>>,
@@ -204,6 +210,16 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             (meta, snapshot_bytes)
         };
 
+        // In memory-only mode we keep the snapshot in memory and never touch `data_dir`,
+        // so a pure cache-only node does not require it to exist or be writable.
+        if self.in_memory_only {
+            *self.snapshot_mem.write().await = Some((meta.clone(), snapshot_bytes.clone()));
+            return Ok(Snapshot {
+                meta,
+                snapshot: Box::new(Cursor::new(snapshot_bytes)),
+            });
+        }
+
         let path = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
         let path_temp = format!("{path}.temp");
         {
@@ -218,9 +234,6 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
         fs::copy(&path_temp, &path)
             .await
             .map_err(|err| StorageIOError::write_state_machine(&err))?;
-        let file = fs::File::open(&path)
-            .await
-            .map_err(|err| StorageIOError::read_state_machine(&err))?;
 
         // cleanup task for old snapshots
         let id = meta.snapshot_id.clone();
@@ -236,12 +249,10 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             }
         });
 
-        let snapshot = Snapshot {
+        Ok(Snapshot {
             meta,
-            snapshot: Box::new(file),
-        };
-
-        Ok(snapshot)
+            snapshot: Box::new(Cursor::new(snapshot_bytes)),
+        })
     }
 }
 
@@ -253,15 +264,15 @@ impl StateMachineMemory {
         let path_sm = format!("{base_path}/state_machine_cache");
         let path_snapshots = format!("{path_sm}/snapshots");
 
-        if in_memory_only {
-            // in this case we must always start clean,
-            // because otherwise there would be a gap in logs
-            let _ = fs::remove_dir_all(&path_snapshots).await;
+        // In memory-only mode we never persist snapshots, so we must not touch `data_dir`
+        // at all: it does not need to exist for a pure cache-only node. When persisting to
+        // disk we create (and keep) the snapshot dir so existing snapshots survive a restart.
+        if !in_memory_only {
+            fs::create_dir_all(&path_snapshots).await?;
+            set_path_access(&path_sm, 0o700)
+                .await
+                .expect("Cannot set access rights for path_sm");
         }
-        fs::create_dir_all(&path_snapshots).await?;
-        set_path_access(&path_sm, 0o700)
-            .await
-            .expect("Cannot set access rights for path_sm");
 
         // we will start a separate task for each given cache index
         let variants = C::hiqlite_cache_variants();
@@ -283,6 +294,7 @@ impl StateMachineMemory {
             data: RwLock::new(StateMachineData::default()),
             path_snapshots,
             in_memory_only,
+            snapshot_mem: RwLock::new(None),
             tx_caches,
             tx_ttls,
             #[cfg(feature = "listen_notify_local")]
@@ -293,10 +305,13 @@ impl StateMachineMemory {
             tx_dlock,
         };
 
-        if let Some((_, content)) = slf
-            .read_current_snapshot()
-            .await
-            .expect("Cannot read current snapshot")
+        // Only disk-backed snapshots can be restored on startup. In memory-only mode the
+        // snapshot lives in `snapshot_mem` and starts empty, so there is nothing to read.
+        if !in_memory_only
+            && let Some((_, content)) = slf
+                .read_current_snapshot()
+                .await
+                .expect("Cannot read current snapshot")
         {
             slf.update_state_machine(content).await;
         }
@@ -678,19 +693,12 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn begin_receiving_snapshot(&mut self) -> Result<Box<fs::File>, StorageError<NodeId>> {
-        let path = format!("{}/temp", self.path_snapshots);
-        info!("Saving incoming snapshot to {}", path);
-
-        // clean up possible existing old data
-        let _ = fs::remove_file(&path).await;
-
-        match fs::File::create(path).await {
-            Ok(file) => Ok(Box::new(file)),
-            Err(err) => Err(StorageError::IO {
-                source: StorageIOError::write(&err),
-            }),
-        }
+    async fn begin_receiving_snapshot(
+        &mut self,
+    ) -> Result<Box<SnapshotData>, StorageError<NodeId>> {
+        // The incoming snapshot is streamed into memory. For disk-backed nodes it is
+        // persisted in `install_snapshot`; for memory-only nodes it never hits disk.
+        Ok(Box::new(Cursor::new(Vec::new())))
     }
 
     #[tracing::instrument(skip_all)]
@@ -699,21 +707,18 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         meta: &SnapshotMeta<NodeId, Node>,
         snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
-        let src = format!("{}/temp", self.path_snapshots);
-        let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
-        fs::copy(&src, &dest)
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::write(&err),
-            })?;
+        let bytes = (*snapshot).into_inner();
 
-        fs::remove_file(src).await.map_err(|err| StorageError::IO {
-            source: StorageIOError::write(&err),
-        })?;
-
-        let bytes = fs::read(dest)
-            .await
-            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+        if self.in_memory_only {
+            *self.snapshot_mem.write().await = Some((meta.clone(), bytes.clone()));
+        } else {
+            let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
+            fs::write(&dest, &bytes)
+                .await
+                .map_err(|err| StorageError::IO {
+                    source: StorageIOError::write(&err),
+                })?;
+        }
 
         let (meta_snap, kvs, ttls, locks) = deserialize::<SnapshotDataContent>(&bytes)
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
@@ -730,20 +735,92 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfigKV>>, StorageError<NodeId>> {
+        if self.in_memory_only {
+            let guard = self.snapshot_mem.read().await;
+            return Ok(guard.as_ref().map(|(meta, bytes)| Snapshot {
+                meta: meta.clone(),
+                snapshot: Box::new(Cursor::new(bytes.clone())),
+            }));
+        }
+
         match self.read_current_snapshot().await? {
             None => Ok(None),
-            Some((path, (meta, kvs, ttls, locks))) => {
-                let file = fs::File::open(path).await.map_err(|err| StorageError::IO {
+            Some((path, (meta, ..))) => {
+                let bytes = fs::read(&path).await.map_err(|err| StorageError::IO {
                     source: StorageIOError::read(&err),
                 })?;
 
                 let snapshot = Snapshot {
                     meta,
-                    snapshot: Box::new(file),
+                    snapshot: Box::new(Cursor::new(bytes)),
                 };
 
                 Ok(Some(snapshot))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CacheVariants;
+    use openraft::RaftSnapshotBuilder;
+    use openraft::storage::RaftStateMachine;
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    enum TestCache {
+        One,
+    }
+
+    impl CacheVariants for TestCache {
+        fn hiqlite_cache_index(&self) -> usize {
+            0
+        }
+
+        fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
+            &[(0, "One")]
+        }
+    }
+
+    /// A pure cache-only node running in-memory (`cache_storage_disk = false`) must never
+    /// touch `data_dir`: it does not need to exist or be writable. Snapshots are kept in
+    /// memory and are still retrievable for the Raft to stream to other members.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn in_memory_only_does_not_require_data_dir() {
+        let base_dir = std::env::temp_dir().join("hiqlite_inmem_only_no_datadir_test");
+        // make sure the path does not exist up-front
+        let _ = std::fs::remove_dir_all(&base_dir);
+        let base = base_dir.to_str().unwrap();
+
+        let mut sm = Arc::new(
+            StateMachineMemory::new::<TestCache>(base, true)
+                .await
+                .expect("in-memory state machine to start without a data_dir"),
+        );
+
+        // nothing may be created on disk in memory-only mode
+        assert!(
+            !base_dir.exists(),
+            "memory-only mode must not create the data_dir"
+        );
+
+        // building a snapshot keeps it in memory and still must not write to disk
+        let built = sm.build_snapshot().await.expect("snapshot build to succeed");
+        assert!(
+            !base_dir.exists(),
+            "building a snapshot must not create the data_dir in memory-only mode"
+        );
+
+        // the in-memory snapshot is retrievable (what the Raft streams to other members)
+        let current = sm
+            .get_current_snapshot()
+            .await
+            .expect("get_current_snapshot to succeed")
+            .expect("an in-memory snapshot to be present after building one");
+        assert_eq!(current.meta.snapshot_id, built.meta.snapshot_id);
+
+        let _ = std::fs::remove_dir_all(&base_dir);
     }
 }
