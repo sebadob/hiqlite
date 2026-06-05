@@ -61,7 +61,7 @@ impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
 
         let (sender, rx) = flume::bounded(1);
 
-        let task = tokio::task::spawn(Self::ws_handler(
+        let task = tokio::task::spawn(Box::pin(Self::ws_handler(
             self.node_id,
             self.raft_type.clone(),
             node.clone(),
@@ -71,7 +71,7 @@ impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
             self.heartbeat_interval,
             self.is_raft_stopped.clone(),
             self.is_startup_finished.clone(),
-        ));
+        )));
 
         NetworkConnectionStreaming {
             node: node.clone(),
@@ -91,7 +91,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
 
         let (sender, rx) = flume::bounded(1);
 
-        let task = tokio::task::spawn(Self::ws_handler(
+        let task = tokio::task::spawn(Box::pin(Self::ws_handler(
             self.node_id,
             self.raft_type.clone(),
             node.clone(),
@@ -101,7 +101,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
             self.heartbeat_interval,
             self.is_raft_stopped.clone(),
             self.is_startup_finished.clone(),
-        ));
+        )));
 
         NetworkConnectionStreaming {
             node: node.clone(),
@@ -274,8 +274,8 @@ impl NetworkStreaming {
             // IMPORTANT: the reader is NOT CANCEL SAFE in v0.8!
             let read = FragmentCollectorRead::new(read);
 
-            let handle_read = task::spawn(Self::stream_reader(read, tx_read.clone()));
-            let handle_write = task::spawn(Self::stream_writer(write, rx_write));
+            let handle_read = task::spawn(Box::pin(Self::stream_reader(read, tx_read.clone())));
+            let handle_write = task::spawn(Box::pin(Self::stream_writer(write, rx_write)));
 
             loop {
                 let res = select! {

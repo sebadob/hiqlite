@@ -21,7 +21,7 @@ use crate::backup;
 use crate::dashboard;
 
 #[allow(clippy::extra_unused_type_parameters)]
-pub async fn start_node_inner<C>(node_config: NodeConfig) -> Result<Client, Error>
+pub async fn start_node_inner<C>(node_config: Box<NodeConfig>) -> Result<Client, Error>
 where
     C: Debug + CacheVariants,
 {
@@ -135,14 +135,10 @@ where
 
     info!("rpc internal listening on {}", &rpc_addr);
 
-    let tls_config = if let Some(config) = &node_config.tls_raft {
-        Some(config.server_config(&node_config.listen_addr_raft).await)
-    } else {
-        None
-    };
     let shutdown = shutdown_signal(rx_shutdown.clone());
-    let _handle_internal = task::spawn(async move {
-        if let Some(config) = tls_config {
+    if let Some(config) = &node_config.tls_raft {
+        let config = config.server_config(&node_config.listen_addr_raft).await;
+        task::spawn(Box::pin(async move {
             let addr = SocketAddr::from_str(&rpc_addr).expect("valid RPC socket address");
             // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
             //  properly with axum directly
@@ -150,7 +146,9 @@ where
                 .serve(router_internal.into_make_service())
                 .await
                 .unwrap();
-        } else {
+        }));
+    } else {
+        task::spawn(Box::pin(async move {
             let listener = TcpListener::bind(rpc_addr)
                 .await
                 .expect("valid RPC socket address");
@@ -158,8 +156,8 @@ where
                 .with_graceful_shutdown(shutdown)
                 .await
                 .unwrap()
-        }
-    });
+        }));
+    };
 
     let default_routes = Router::new()
         .nest(
@@ -221,13 +219,9 @@ where
     };
 
     info!("api external listening on {api_addr}");
-    let tls_config = if let Some(config) = &node_config.tls_api {
-        Some(config.server_config(&node_config.listen_addr_api).await)
-    } else {
-        None
-    };
-    let _handle_external = task::spawn(async move {
-        if let Some(config) = tls_config {
+    if let Some(config) = &node_config.tls_api {
+        let config = config.server_config(&node_config.listen_addr_api).await;
+        task::spawn(Box::pin(async move {
             let addr = SocketAddr::from_str(&api_addr).expect("valid RPC socket address");
             // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
             //  properly with axum directly
@@ -235,7 +229,9 @@ where
                 .serve(router_api.into_make_service())
                 .await
                 .unwrap();
-        } else {
+        }));
+    } else {
+        task::spawn(Box::pin(async move {
             let listener = TcpListener::bind(api_addr)
                 .await
                 .expect("valid RPC socket address");
@@ -243,43 +239,45 @@ where
                 .with_graceful_shutdown(shutdown_signal(rx_shutdown))
                 .await
                 .unwrap()
-        }
-    });
+        }));
+    };
 
     #[cfg(feature = "sqlite")]
     let member_db = {
         let st = state.clone();
         let nodes = node_config.nodes.clone();
+        let node_id = node_config.node_id;
 
-        task::spawn(async move {
+        task::spawn(Box::pin(async move {
             init::become_cluster_member(
                 st,
                 &crate::app_state::RaftType::Sqlite,
-                node_config.node_id,
+                node_id,
                 &nodes,
                 tls_raft,
                 tls_no_verify,
             )
             .await
-        })
+        }))
     };
 
     #[cfg(feature = "cache")]
     let member_cache = {
         let st = state.clone();
         let nodes = node_config.nodes.clone();
+        let node_id = node_config.node_id;
 
-        task::spawn(async move {
+        task::spawn(Box::pin(async move {
             init::become_cluster_member(
                 st,
                 &crate::app_state::RaftType::Cache,
-                node_config.node_id,
+                node_id,
                 &nodes,
                 tls_raft,
                 tls_no_verify,
             )
             .await
-        })
+        }))
     };
 
     #[cfg(feature = "sqlite")]

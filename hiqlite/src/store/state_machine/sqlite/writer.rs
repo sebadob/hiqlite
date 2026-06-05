@@ -25,7 +25,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use thread_priority::ThreadPriority;
 use tokio::sync::oneshot;
-use tokio::{fs, task};
+use tokio::{fs, runtime, task};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -142,7 +142,9 @@ pub fn spawn_writer(
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(1);
 
-    task::spawn_blocking(move || {
+    let rt = runtime::Handle::current();
+
+    thread::spawn(move || {
         let _ = ThreadPriority::Max.set_for_current();
 
         let mut sm_data = StateMachineData::default();
@@ -634,6 +636,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                         req.target_folder.clone(),
                         #[cfg(feature = "s3")]
                         s3_config,
+                        #[cfg(feature = "s3")]
+                        &rt,
                     ) {
                         error!("Error creating backup: {:?}", err);
                         req.ack.send(Err(err));
@@ -641,7 +645,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                     }
 
                     #[cfg(feature = "backup")]
-                    task::spawn(async move {
+                    rt.spawn(async move {
                         if let Err(err) = crate::backup::backup_local_cleanup(
                             req.target_folder,
                             local_backup_keep_days,
@@ -746,6 +750,7 @@ fn create_backup(
     ts: i64,
     target_folder: String,
     #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
+    #[cfg(feature = "s3")] rt: &runtime::Handle,
 ) -> Result<(), Error> {
     // - build target db file name with node id and timestamp
     // - vacuum into target file
@@ -769,7 +774,7 @@ fn create_backup(
 
     #[cfg(feature = "s3")]
     if let Some(s3) = s3_config {
-        task::spawn(async move {
+        rt.spawn(async move {
             info!("Background task for database encryption and S3 backup task has been started");
 
             match s3.push(&path_full, &file).await {

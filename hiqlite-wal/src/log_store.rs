@@ -2,7 +2,7 @@ use crate::error::Error;
 use crate::lockfile::LockFile;
 use crate::metadata::Metadata;
 use crate::wal::WalFileSet;
-use crate::{reader, writer, LogSync, ShutdownHandle};
+use crate::{LogSync, ShutdownHandle, reader, writer};
 use openraft::RaftTypeConfig;
 use std::fs;
 use std::marker::PhantomData;

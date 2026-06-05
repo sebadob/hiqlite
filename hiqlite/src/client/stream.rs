@@ -132,20 +132,18 @@ enum WritePayload {
 impl Client {
     pub(crate) fn open_stream(
         &self,
-        // client: Client,
-        // tls_config: Option<Arc<rustls::ClientConfig>>,
         secret: Vec<u8>,
         leader: Arc<RwLock<(NodeId, String)>>,
         rx_client_stream: flume::Receiver<ClientStreamReq>,
         raft_type: RaftType,
     ) {
-        task::spawn(client_stream(
+        task::spawn(Box::pin(client_stream(
             self.clone(),
             secret,
             leader,
             rx_client_stream,
             raft_type,
-        ));
+        )));
     }
 }
 

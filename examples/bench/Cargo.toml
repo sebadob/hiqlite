@@ -3,13 +3,30 @@ name = "bench"
 version = "0.1.0"
 edition = "2021"
 
+[profile.profiling]
+inherits = "release"
+codegen-units = 1
+debug = true
+lto = false
+strip = false
+
+[features]
+default = ["hiqlite/jemalloc"]
+
+# This example is also used for memory profiling.
+# It's an easy way to generate data.
+# You don't have to worry about this.
+profiling = ["hiqlite/__profiling"]
+tokio-console = ["dep:console-subscriber"]
+
 [dependencies]
 hiqlite = { path = "../../hiqlite", features = [
-    "cache", "dlock", "jemalloc", "listen_notify", "macros", "shutdown-handle"
+    "cache", "dlock", "listen_notify", "macros", "shutdown-handle"
 ] }
 
 chrono = "0.4.38"
 clap = { version = "4.1.11", features = ["derive", "env"] }
+console-subscriber = { version = "0.5.0", optional = true }
 serde = { version = "1.0.203", features = ["derive"] }
 tokio = { version = "1.43.1", features = ["fs", "rt-multi-thread"] }
 tracing = "0.1.40"

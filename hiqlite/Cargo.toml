@@ -80,6 +80,9 @@ webpki-roots = [
     "dep:webpki-root-certs",
 ]
 
+# Internal use only
+__profiling = ["dep:console-subscriber"]
+
 [dependencies]
 #hiqlite-derive = { version = "0.13", optional = true }
 hiqlite-derive = { path = "../hiqlite-derive", optional = true }
@@ -94,6 +97,7 @@ bincode.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 clap = { workspace = true, optional = true }
+console-subscriber = { workspace = true, optional = true }
 cron = { workspace = true, optional = true }
 cryptr = { workspace = true }
 ctrlc = { workspace = true, optional = true }
