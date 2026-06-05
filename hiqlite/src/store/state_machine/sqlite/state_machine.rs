@@ -33,6 +33,8 @@ use uuid::Uuid;
 type Entry = openraft::Entry<TypeConfigSqlite>;
 type SnapshotData = tokio::fs::File;
 
+// TODO uses a `Mutex<_>` inside. We could make this pool a lot
+//  faster by building our own lock-free one.
 pub type SqlitePool = deadpool::unmanaged::Pool<rusqlite::Connection>;
 
 pub type Params = Vec<Param>;
@@ -112,7 +114,7 @@ pub struct StateMachineSqlite {
     #[cfg(feature = "s3")]
     s3_config: Option<Arc<crate::s3::S3Config>>,
 
-    pub read_pool: SqlitePool,
+    pub(crate) read_pool: SqlitePool,
     pub(crate) write_tx: flume::Sender<WriterRequest>,
 }
 
