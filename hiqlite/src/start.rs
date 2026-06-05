@@ -248,7 +248,6 @@ where
         let nodes = node_config.nodes.clone();
         let node_id = node_config.node_id.clone();
 
-        // TODO huge stack size warning
         task::spawn(Box::pin(async move {
             init::become_cluster_member(
                 st,
@@ -268,7 +267,6 @@ where
         let nodes = node_config.nodes.clone();
         let node_id = node_config.node_id.clone();
 
-        // TODO huge stack size warning
         task::spawn(Box::pin(async move {
             init::become_cluster_member(
                 st,
