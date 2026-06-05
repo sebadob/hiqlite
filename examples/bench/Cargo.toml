@@ -11,6 +11,8 @@ lto = false
 strip = false
 
 [features]
+default = ["hiqlite/jemalloc"]
+
 # This example is also used for memory profiling.
 # It's an easy way to generate data.
 # You don't have to worry about this.
