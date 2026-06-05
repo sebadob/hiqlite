@@ -246,7 +246,7 @@ where
     let member_db = {
         let st = state.clone();
         let nodes = node_config.nodes.clone();
-        let node_id = node_config.node_id.clone();
+        let node_id = node_config.node_id;
 
         task::spawn(Box::pin(async move {
             init::become_cluster_member(
@@ -265,7 +265,7 @@ where
     let member_cache = {
         let st = state.clone();
         let nodes = node_config.nodes.clone();
-        let node_id = node_config.node_id.clone();
+        let node_id = node_config.node_id;
 
         task::spawn(Box::pin(async move {
             init::become_cluster_member(

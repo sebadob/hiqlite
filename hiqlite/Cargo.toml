@@ -80,6 +80,7 @@ webpki-roots = [
     "dep:webpki-root-certs",
 ]
 
+# Internal use only
 __profiling = ["dep:console-subscriber"]
 
 [dependencies]

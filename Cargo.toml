@@ -133,8 +133,4 @@ tower-layer = "0.3.3"
 tower-service = "0.3.3"
 
 # Necessary to fix security issues in current versions.
-#aws-lc-sys = "0.39"
-#aws-lc-rs = "1.16.2"
-#quinn-proto = "0.11.14"
-#rkyv = "0.7.46"
 rustls-webpki = "0.103.13"
