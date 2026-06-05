@@ -2,3 +2,4 @@
 ./target
 ./data
 ./hiqlite
+heaptrack.*

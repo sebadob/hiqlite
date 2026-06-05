@@ -5,7 +5,6 @@ use std::fmt::{Debug, Display};
 use std::time::Duration;
 use tokio::time;
 use tokio::{fs, task};
-use tracing_subscriber::EnvFilter;
 
 mod bench;
 
@@ -158,8 +157,8 @@ async fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
     config.wal_size = 8 * 1024 * 1024;
 
     // `hiqlite::LogSync::Immediate` will sync immediately after a chunk of logs to append has
-    // been written, but with a huge performance penalty. `hiqlite::LogSync::Immediate` will do the
-    // same but not wait for completion, and therefore not block. This will usually have no
+    // been written, but with a huge performance penalty. `hiqlite::LogSync::ImmediateAsync` will
+    // do the same but not wait for completion, and therefore not block. This will usually have no
     // impact on performance at all.
     // However, both `hiqlite::LogSync::Immediate` + `hiqlite::LogSync::ImmediateAsync` will put
     // a lot of stress on your SSD in case of high traffic. The default is to sync every 200ms.
@@ -169,6 +168,7 @@ async fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
     config
 }
 
+#[allow(unused)]
 #[derive(Debug, CacheVariants)]
 enum Cache {
     One,
@@ -177,13 +177,18 @@ enum Cache {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    let args = Args::parse();
+
+    #[cfg(feature = "tokio-console")]
+    console_subscriber::init();
+
+    #[cfg(not(feature = "tokio-console"))]
     tracing_subscriber::fmt()
         .with_target(true)
         .with_level(true)
-        .with_env_filter(EnvFilter::from("error"))
+        .with_env_filter(tracing_subscriber::EnvFilter::from("error"))
         .init();
 
-    let args = Args::parse();
     if let Args::Remote(opts) = args {
         log(format!("Connecting to remote cluster: {:?}", opts.nodes));
         let client = Client::remote(
@@ -234,6 +239,10 @@ async fn main() -> Result<(), Error> {
 
     time::sleep(Duration::from_secs(3)).await;
 
+    // Sleep for longer to have more time to inspect with tokio-console
+    #[cfg(feature = "tokio-console")]
+    time::sleep(Duration::from_secs(300)).await;
+
     Ok(())
 }
 
@@ -251,8 +260,8 @@ async fn start_cluster(
     let mut client_3 = None;
 
     let expected_nodes = if full_cluster {
-        let mut config = node_config(test_nodes(), logs_until_snapshot).await;
         client_2 = task::spawn(async move {
+            let mut config = node_config(test_nodes(), logs_until_snapshot).await;
             config.node_id = 2;
             config.data_dir = format!("data/node_{}", 2).into();
             let client = start_node_with_cache::<Cache>(config).await.unwrap();
@@ -260,8 +269,8 @@ async fn start_cluster(
         })
         .await?;
 
-        let mut config = node_config(test_nodes(), logs_until_snapshot).await;
         client_3 = task::spawn(async move {
+            let mut config = node_config(test_nodes(), logs_until_snapshot).await;
             config.node_id = 3;
             config.data_dir = format!("data/node_{}", 3).into();
             let client = start_node_with_cache::<Cache>(config).await.unwrap();
