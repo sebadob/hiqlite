@@ -118,6 +118,7 @@ impl Error {
         None
     }
 
+    #[cfg(feature = "toml")]
     pub(crate) fn config<C: Into<Cow<'static, str>>>(err: C) -> Self {
         Self::Config(err.into())
     }

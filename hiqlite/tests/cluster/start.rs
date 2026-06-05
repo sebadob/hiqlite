@@ -1,5 +1,5 @@
-use crate::{log, Cache, TEST_DATA_DIR};
-use hiqlite::{start_node_with_cache, Client, Error, Node, NodeConfig};
+use crate::{Cache, TEST_DATA_DIR, log};
+use hiqlite::{Client, Error, Node, NodeConfig, start_node_with_cache};
 use std::time::Duration;
 use tokio::{fs, task, time};
 
@@ -64,6 +64,7 @@ pub async fn build_config_with_nodes(
     let mut config = NodeConfig::from_toml("../hiqlite.toml", None, None)
         .await
         .unwrap();
+
     config.node_id = node_id;
     config.nodes = nodes;
     config.data_dir = data_dir;

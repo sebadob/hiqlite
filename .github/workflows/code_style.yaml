@@ -1,4 +1,4 @@
-name: Code Style
+name: Check
 
 on:
   pull_request:
@@ -16,7 +16,7 @@ env:
 jobs:
   check:
     if: github.event.pull_request.draft == false
-    name: Check Code Style
+    name: Check
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/sebadob/rauthy-builder:20260519
@@ -29,4 +29,5 @@ jobs:
       - name: Clippy (examples)
         run: just clippy-examples
       - name: Tests
-        run: just test
+        # S3 tests cannot be done inside GitHub CI
+        run: just test-no-s3

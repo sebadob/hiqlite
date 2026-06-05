@@ -168,9 +168,17 @@ async fn exec_tests() -> Result<(), Error> {
     // just give the s3 upload task in the background some time to finish
     time::sleep(Duration::from_millis(1000)).await;
 
-    log("Trying to start the cluster again after shutdown with restore from S3 backup");
+    let restore_from = if env::var("TEST_SKIP_S3_RESTORE").as_deref() == Ok("true") {
+        "file"
+    } else {
+        "S3"
+    };
+    log(format!(
+        "Trying to start the cluster again after shutdown with restore from {restore_from} backup"
+    ));
     let (client_1, client_2, client_3) =
-        backup_restore::start_test_cluster_with_backup(false).await?;
+        backup_restore::start_test_cluster_with_backup(restore_from == "file").await?;
+
     log("Cluster has been started again");
 
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;

@@ -79,28 +79,27 @@ clippy:
     set -euxo pipefail
     clear
 
-    cargo clippy
-    cargo clippy --no-default-features
+    cargo clippy --no-default-features -- -D warnings
 
-    cargo clippy --no-default-features --features sqlite,cast_ints
-    cargo clippy --no-default-features --features sqlite,cast_ints_unchecked
+    cargo clippy --no-default-features --features sqlite,cast_ints -- -D warnings
+    cargo clippy --no-default-features --features sqlite,cast_ints_unchecked -- -D warnings
     # auto-heal should only apply to sqlite
-    cargo clippy --no-default-features --features auto-heal
-    cargo clippy --no-default-features --features sqlite,auto-heal
+    cargo clippy --no-default-features --features auto-heal -- -D warnings
+    cargo clippy --no-default-features --features sqlite,auto-heal -- -D warnings
     # backup / s3 should only apply to sqlite
-    cargo clippy --no-default-features --features backup
-    cargo clippy --no-default-features --features sqlite,backup
-    cargo clippy --no-default-features --features sqlite,auto-heal,backup
+    cargo clippy --no-default-features --features backup -- -D warnings
+    cargo clippy --no-default-features --features sqlite,backup -- -D warnings
+    cargo clippy --no-default-features --features sqlite,auto-heal,backup -- -D warnings
 
-    cargo clippy --no-default-features --features cache
-    cargo clippy --no-default-features --features counters
-    cargo clippy --no-default-features --features dlock
-    cargo clippy --no-default-features --features listen_notify_local
-    cargo clippy --no-default-features --features listen_notify
-    cargo clippy --no-default-features --features sqlite,cache
+    cargo clippy --no-default-features --features cache -- -D warnings
+    cargo clippy --no-default-features --features counters -- -D warnings
+    cargo clippy --no-default-features --features dlock -- -D warnings
+    cargo clippy --no-default-features --features listen_notify_local -- -D warnings
+    cargo clippy --no-default-features --features listen_notify -- -D warnings
+    cargo clippy --no-default-features --features sqlite,cache -- -D warnings
 
-    cargo clippy --no-default-features --features dashboard
-    cargo clippy --no-default-features --features shutdown-handle
+    cargo clippy --no-default-features --features dashboard -- -D warnings
+    cargo clippy --no-default-features --features shutdown-handle -- -D warnings
 
 clippy-examples:
     #!/usr/bin/env bash
@@ -124,8 +123,14 @@ test test="":
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
-    # we need to run the tests with nightly to not get an error for docs auto cfg
     cargo test --features cache,counters,dlock,listen_notify,macros,toml {{ test }}
+
+# runs the full set of tests excluding backup to S3 tests
+test-no-s3:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    clear
+    TEST_SKIP_S3_RESTORE="true" cargo test --features cache,counters,dlock,listen_notify,macros,toml
 
 # builds the code
 build ty="server":
