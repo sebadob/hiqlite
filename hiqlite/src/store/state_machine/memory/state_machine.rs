@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
+#[cfg(feature = "in-memory-snapshots")]
 use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,6 +26,8 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio::task;
+#[cfg(not(feature = "in-memory-snapshots"))]
+use tracing::info;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -34,6 +37,9 @@ use crate::store::state_machine::memory::dlock_handler::{self, *};
 use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
 
 type Entry = openraft::Entry<TypeConfigKV>;
+#[cfg(not(feature = "in-memory-snapshots"))]
+type SnapshotData = fs::File;
+#[cfg(feature = "in-memory-snapshots")]
 type SnapshotData = Cursor<Vec<u8>>;
 
 type SnapshotKVs = Vec<(BTreeMap<String, Vec<u8>>, BTreeMap<String, i64>)>;
@@ -46,6 +52,7 @@ type SnapshotDataContent = (
     SnapshotLocks,
 );
 /// The latest snapshot kept in memory (`meta` + serialized bytes) for memory-only mode.
+#[cfg(feature = "in-memory-snapshots")]
 type MemSnapshot = (SnapshotMeta<NodeId, Node>, Vec<u8>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,10 +135,14 @@ pub struct StateMachineData {
 pub struct StateMachineMemory {
     data: RwLock<StateMachineData>,
     path_snapshots: String,
+    /// Whether the cache runs fully in-memory (`cache_storage_disk = false`). Only relevant
+    /// with the `in-memory-snapshots` feature, which is the only mode that skips `data_dir`.
+    #[cfg(feature = "in-memory-snapshots")]
     in_memory_only: bool,
     /// Holds the latest snapshot when running purely in-memory (`in_memory_only == true`).
     /// In that mode nothing is ever written to `data_dir`, so a cache-only node does not
     /// require it to exist or be writable. Unused (always `None`) when persisting to disk.
+    #[cfg(feature = "in-memory-snapshots")]
     snapshot_mem: RwLock<Option<MemSnapshot>>,
 
     pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
@@ -147,68 +158,24 @@ pub struct StateMachineMemory {
 }
 
 impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
+    #[cfg(not(feature = "in-memory-snapshots"))]
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfigKV>, StorageError<NodeId>> {
-        let (meta, snapshot_bytes) = {
-            let data = self.data.read().await;
+        let (meta, snapshot_bytes) = self.build_snapshot_data().await?;
+        let path = self.persist_snapshot(&meta, &snapshot_bytes).await?;
 
-            // TODO should we include notifications in snapshots as well?
-            //  -> unsure if it makes sense or not
+        // Stream the snapshot straight from the persisted file (zero-copy).
+        let file = fs::File::open(&path)
+            .await
+            .map_err(|err| StorageIOError::read_state_machine(&err))?;
+        Ok(Snapshot {
+            meta,
+            snapshot: Box::new(file),
+        })
+    }
 
-            let mut ttls = Vec::with_capacity(self.tx_ttls.len());
-            for tx in &self.tx_ttls {
-                let (ack, rx) = oneshot::channel();
-                tx.send(TtlRequest::SnapshotBuild(ack))
-                    .expect("ttl handler to always be running");
-                let snap = rx
-                    .await
-                    .expect("to always receive an answer from ttl handler");
-                ttls.push(snap);
-            }
-
-            let mut caches = Vec::with_capacity(self.tx_caches.len());
-            for tx in &self.tx_caches {
-                let (ack, rx) = oneshot::channel();
-                tx.send(CacheRequestHandler::SnapshotBuild(ack))
-                    .expect("kv handler to always be running");
-                let snap = rx
-                    .await
-                    .expect("to always receive an answer from kv handler");
-                caches.push(snap);
-            }
-
-            #[cfg(feature = "dlock")]
-            let locks_bytes = {
-                let (ack, rx) = oneshot::channel();
-                self.tx_dlock
-                    .send(LockRequest::SnapshotBuild(ack))
-                    .expect("locks handler to always be running");
-                let locks = rx
-                    .await
-                    .expect("to always receive an answer from locks handler");
-                serialize(&locks).unwrap()
-            };
-            #[cfg(not(feature = "dlock"))]
-            let locks_bytes: Vec<u8> = Vec::default();
-
-            let now = Utc::now().timestamp();
-            let snapshot_id = if let Some(last) = data.last_applied_log_id {
-                format!("{}-{}-{}", now, last.leader_id, last.index)
-            } else {
-                format!("{now}--")
-            };
-
-            let meta = SnapshotMeta {
-                last_log_id: data.last_applied_log_id,
-                last_membership: data.last_membership.clone(),
-                snapshot_id,
-            };
-
-            let snap: SnapshotDataContent = (meta.clone(), caches, ttls, locks_bytes);
-            let snapshot_bytes =
-                serialize(&snap).map_err(|err| StorageIOError::write_state_machine(&err))?;
-
-            (meta, snapshot_bytes)
-        };
+    #[cfg(feature = "in-memory-snapshots")]
+    async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfigKV>, StorageError<NodeId>> {
+        let (meta, snapshot_bytes) = self.build_snapshot_data().await?;
 
         // In memory-only mode we keep the snapshot in memory and never touch `data_dir`,
         // so a pure cache-only node does not require it to exist or be writable.
@@ -220,35 +187,8 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             });
         }
 
-        let path = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
-        let path_temp = format!("{path}.temp");
-        {
-            let mut file = fs::File::create_new(&path_temp)
-                .await
-                .map_err(|err| StorageIOError::write_state_machine(&err))?;
-            file.write_all(&snapshot_bytes)
-                .await
-                .map_err(|err| StorageIOError::write_state_machine(&err))?;
-        }
-
-        fs::copy(&path_temp, &path)
-            .await
-            .map_err(|err| StorageIOError::write_state_machine(&err))?;
-
-        // cleanup task for old snapshots
-        let id = meta.snapshot_id.clone();
-        let path = self.path_snapshots.clone();
-        task::spawn(async move {
-            let mut dir = fs::read_dir(&path).await.unwrap();
-            while let Ok(Some(entry)) = dir.next_entry().await {
-                let fname = entry.file_name();
-                let name = fname.to_str().unwrap_or_default();
-                if !name.is_empty() && name != id {
-                    fs::remove_file(format!("{path}/{name}")).await.unwrap();
-                }
-            }
-        });
-
+        // Disk-backed: persist exactly like the default path, but stream from memory.
+        self.persist_snapshot(&meta, &snapshot_bytes).await?;
         Ok(Snapshot {
             meta,
             snapshot: Box::new(Cursor::new(snapshot_bytes)),
@@ -264,9 +204,22 @@ impl StateMachineMemory {
         let path_sm = format!("{base_path}/state_machine_cache");
         let path_snapshots = format!("{path_sm}/snapshots");
 
-        // In memory-only mode we never persist snapshots, so we must not touch `data_dir`
-        // at all: it does not need to exist for a pure cache-only node. When persisting to
-        // disk we create (and keep) the snapshot dir so existing snapshots survive a restart.
+        // Default: snapshots are always persisted, so `data_dir` is always required.
+        #[cfg(not(feature = "in-memory-snapshots"))]
+        {
+            if in_memory_only {
+                // in this case we must always start clean,
+                // because otherwise there would be a gap in logs
+                let _ = fs::remove_dir_all(&path_snapshots).await;
+            }
+            fs::create_dir_all(&path_snapshots).await?;
+            set_path_access(&path_sm, 0o700)
+                .await
+                .expect("Cannot set access rights for path_sm");
+        }
+        // With `in-memory-snapshots`, a memory-only node never persists snapshots and must
+        // not touch `data_dir` at all. Disk-backed nodes still create (and keep) the dir.
+        #[cfg(feature = "in-memory-snapshots")]
         if !in_memory_only {
             fs::create_dir_all(&path_snapshots).await?;
             set_path_access(&path_sm, 0o700)
@@ -293,7 +246,9 @@ impl StateMachineMemory {
         let slf = Self {
             data: RwLock::new(StateMachineData::default()),
             path_snapshots,
+            #[cfg(feature = "in-memory-snapshots")]
             in_memory_only,
+            #[cfg(feature = "in-memory-snapshots")]
             snapshot_mem: RwLock::new(None),
             tx_caches,
             tx_ttls,
@@ -305,8 +260,18 @@ impl StateMachineMemory {
             tx_dlock,
         };
 
-        // Only disk-backed snapshots can be restored on startup. In memory-only mode the
-        // snapshot lives in `snapshot_mem` and starts empty, so there is nothing to read.
+        // Restore the latest persisted snapshot on startup.
+        #[cfg(not(feature = "in-memory-snapshots"))]
+        if let Some((_, content)) = slf
+            .read_current_snapshot()
+            .await
+            .expect("Cannot read current snapshot")
+        {
+            slf.update_state_machine(content).await;
+        }
+        // In memory-only mode the snapshot lives in `snapshot_mem` and starts empty, so there
+        // is nothing on disk to read; disk-backed nodes still restore from `data_dir`.
+        #[cfg(feature = "in-memory-snapshots")]
         if !in_memory_only
             && let Some((_, content)) = slf
                 .read_current_snapshot()
@@ -317,6 +282,129 @@ impl StateMachineMemory {
         }
 
         Ok(slf)
+    }
+
+    /// Serializes the current cache state (caches, TTLs, locks) into a snapshot blob.
+    /// Shared by the disk-backed (default) and in-memory (`in-memory-snapshots`) paths.
+    async fn build_snapshot_data(
+        &self,
+    ) -> Result<(SnapshotMeta<NodeId, Node>, Vec<u8>), StorageError<NodeId>> {
+        let data = self.data.read().await;
+
+        // TODO should we include notifications in snapshots as well?
+        //  -> unsure if it makes sense or not
+
+        let mut ttls = Vec::with_capacity(self.tx_ttls.len());
+        for tx in &self.tx_ttls {
+            let (ack, rx) = oneshot::channel();
+            tx.send(TtlRequest::SnapshotBuild(ack))
+                .expect("ttl handler to always be running");
+            let snap = rx
+                .await
+                .expect("to always receive an answer from ttl handler");
+            ttls.push(snap);
+        }
+
+        let mut caches = Vec::with_capacity(self.tx_caches.len());
+        for tx in &self.tx_caches {
+            let (ack, rx) = oneshot::channel();
+            tx.send(CacheRequestHandler::SnapshotBuild(ack))
+                .expect("kv handler to always be running");
+            let snap = rx
+                .await
+                .expect("to always receive an answer from kv handler");
+            caches.push(snap);
+        }
+
+        #[cfg(feature = "dlock")]
+        let locks_bytes = {
+            let (ack, rx) = oneshot::channel();
+            self.tx_dlock
+                .send(LockRequest::SnapshotBuild(ack))
+                .expect("locks handler to always be running");
+            let locks = rx
+                .await
+                .expect("to always receive an answer from locks handler");
+            serialize(&locks).unwrap()
+        };
+        #[cfg(not(feature = "dlock"))]
+        let locks_bytes: Vec<u8> = Vec::default();
+
+        let now = Utc::now().timestamp();
+        let snapshot_id = if let Some(last) = data.last_applied_log_id {
+            format!("{}-{}-{}", now, last.leader_id, last.index)
+        } else {
+            format!("{now}--")
+        };
+
+        let meta = SnapshotMeta {
+            last_log_id: data.last_applied_log_id,
+            last_membership: data.last_membership.clone(),
+            snapshot_id,
+        };
+
+        let snap: SnapshotDataContent = (meta.clone(), caches, ttls, locks_bytes);
+        let snapshot_bytes =
+            serialize(&snap).map_err(|err| StorageIOError::write_state_machine(&err))?;
+
+        Ok((meta, snapshot_bytes))
+    }
+
+    /// Persists a serialized snapshot to `data_dir` and spawns cleanup of older snapshots.
+    /// Returns the path of the persisted snapshot file.
+    async fn persist_snapshot(
+        &self,
+        meta: &SnapshotMeta<NodeId, Node>,
+        snapshot_bytes: &[u8],
+    ) -> Result<String, StorageError<NodeId>> {
+        let path = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
+        let path_temp = format!("{path}.temp");
+        {
+            let mut file = fs::File::create_new(&path_temp)
+                .await
+                .map_err(|err| StorageIOError::write_state_machine(&err))?;
+            file.write_all(snapshot_bytes)
+                .await
+                .map_err(|err| StorageIOError::write_state_machine(&err))?;
+        }
+
+        fs::copy(&path_temp, &path)
+            .await
+            .map_err(|err| StorageIOError::write_state_machine(&err))?;
+
+        // cleanup task for old snapshots
+        let id = meta.snapshot_id.clone();
+        let dir = self.path_snapshots.clone();
+        task::spawn(async move {
+            let mut entries = fs::read_dir(&dir).await.unwrap();
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let fname = entry.file_name();
+                let name = fname.to_str().unwrap_or_default();
+                if !name.is_empty() && name != id {
+                    fs::remove_file(format!("{dir}/{name}")).await.unwrap();
+                }
+            }
+        });
+
+        Ok(path)
+    }
+
+    /// Deserializes a snapshot blob and applies it to the in-memory state.
+    async fn apply_snapshot_bytes(
+        &self,
+        meta: &SnapshotMeta<NodeId, Node>,
+        bytes: &[u8],
+    ) -> Result<(), StorageError<NodeId>> {
+        let (meta_snap, kvs, ttls, locks) = deserialize::<SnapshotDataContent>(bytes)
+            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+        debug_assert_eq!(meta.snapshot_id, meta_snap.snapshot_id);
+        debug_assert_eq!(meta.last_log_id, meta_snap.last_log_id);
+        debug_assert_eq!(meta.last_membership, meta_snap.last_membership);
+
+        self.update_state_machine((meta_snap, kvs, ttls, locks))
+            .await;
+
+        Ok(())
     }
 
     async fn update_state_machine(&self, content: SnapshotDataContent) {
@@ -692,6 +780,26 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         self.clone()
     }
 
+    #[cfg(not(feature = "in-memory-snapshots"))]
+    #[tracing::instrument(skip_all)]
+    async fn begin_receiving_snapshot(
+        &mut self,
+    ) -> Result<Box<SnapshotData>, StorageError<NodeId>> {
+        let path = format!("{}/temp", self.path_snapshots);
+        info!("Saving incoming snapshot to {}", path);
+
+        // clean up possible existing old data
+        let _ = fs::remove_file(&path).await;
+
+        match fs::File::create(path).await {
+            Ok(file) => Ok(Box::new(file)),
+            Err(err) => Err(StorageError::IO {
+                source: StorageIOError::write(&err),
+            }),
+        }
+    }
+
+    #[cfg(feature = "in-memory-snapshots")]
     #[tracing::instrument(skip_all)]
     async fn begin_receiving_snapshot(
         &mut self,
@@ -701,6 +809,34 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         Ok(Box::new(Cursor::new(Vec::new())))
     }
 
+    #[cfg(not(feature = "in-memory-snapshots"))]
+    #[tracing::instrument(skip_all)]
+    async fn install_snapshot(
+        &mut self,
+        meta: &SnapshotMeta<NodeId, Node>,
+        // the streamed data already lives in the temp file created by `begin_receiving_snapshot`
+        _snapshot: Box<SnapshotData>,
+    ) -> Result<(), StorageError<NodeId>> {
+        let src = format!("{}/temp", self.path_snapshots);
+        let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
+        fs::copy(&src, &dest)
+            .await
+            .map_err(|err| StorageError::IO {
+                source: StorageIOError::write(&err),
+            })?;
+
+        fs::remove_file(src).await.map_err(|err| StorageError::IO {
+            source: StorageIOError::write(&err),
+        })?;
+
+        let bytes = fs::read(dest)
+            .await
+            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+
+        self.apply_snapshot_bytes(meta, &bytes).await
+    }
+
+    #[cfg(feature = "in-memory-snapshots")]
     #[tracing::instrument(skip_all)]
     async fn install_snapshot(
         &mut self,
@@ -720,18 +856,31 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                 })?;
         }
 
-        let (meta_snap, kvs, ttls, locks) = deserialize::<SnapshotDataContent>(&bytes)
-            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
-        debug_assert_eq!(meta.snapshot_id, meta_snap.snapshot_id);
-        debug_assert_eq!(meta.last_log_id, meta_snap.last_log_id);
-        debug_assert_eq!(meta.last_membership, meta_snap.last_membership);
-
-        self.update_state_machine((meta_snap, kvs, ttls, locks))
-            .await;
-
-        Ok(())
+        self.apply_snapshot_bytes(meta, &bytes).await
     }
 
+    #[cfg(not(feature = "in-memory-snapshots"))]
+    async fn get_current_snapshot(
+        &mut self,
+    ) -> Result<Option<Snapshot<TypeConfigKV>>, StorageError<NodeId>> {
+        match self.read_current_snapshot().await? {
+            None => Ok(None),
+            Some((path, (meta, ..))) => {
+                let file = fs::File::open(path).await.map_err(|err| StorageError::IO {
+                    source: StorageIOError::read(&err),
+                })?;
+
+                let snapshot = Snapshot {
+                    meta,
+                    snapshot: Box::new(file),
+                };
+
+                Ok(Some(snapshot))
+            }
+        }
+    }
+
+    #[cfg(feature = "in-memory-snapshots")]
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfigKV>>, StorageError<NodeId>> {
@@ -761,7 +910,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "in-memory-snapshots"))]
 mod tests {
     use super::*;
     use crate::CacheVariants;

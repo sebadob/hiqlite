@@ -92,6 +92,7 @@ clippy:
     cargo clippy --no-default-features --features sqlite,auto-heal,backup -- -D warnings
 
     cargo clippy --no-default-features --features cache -- -D warnings
+    cargo clippy --no-default-features --features in-memory-snapshots -- -D warnings
     cargo clippy --no-default-features --features counters -- -D warnings
     cargo clippy --no-default-features --features dlock -- -D warnings
     cargo clippy --no-default-features --features listen_notify_local -- -D warnings

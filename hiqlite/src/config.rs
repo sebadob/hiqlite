@@ -30,9 +30,9 @@ pub struct NodeConfig {
     /// Listen address for the Raft Server
     pub listen_addr_raft: Cow<'static, str>,
     /// The directory where the replication log, database and snapshots should be stored.
-    /// It must exist and be writable, unless you run a pure cache-only node (no SQLite)
-    /// with `cache_storage_disk = false`: that mode keeps everything in-memory and never
-    /// touches `data_dir`.
+    /// It must exist and be writable, unless you build with the `in-memory-snapshots`
+    /// feature and run a pure cache-only node (no SQLite) with `cache_storage_disk = false`:
+    /// that combination keeps everything in-memory and never touches `data_dir`.
     pub data_dir: Cow<'static, str>,
     /// If the SQLite should be written to disk, provide a filename here.
     /// It is recommended to leave it set to None if your DB size fits fully into memory, and
@@ -72,9 +72,10 @@ pub struct NodeConfig {
     /// Keep in mind that the in-memory WAL storage is roughly 4 times faster than the one on disk,
     /// even with memory mapped WAL files (depending on your disk of course).
     ///
-    /// In a pure cache-only deployment (no SQLite), `false` additionally means that `data_dir`
-    /// is never used and does not need to exist, because Cache WAL + Snapshots are kept fully
-    /// in-memory.
+    /// With the opt-in `in-memory-snapshots` feature, a pure cache-only deployment (no SQLite)
+    /// using `false` additionally keeps Cache Snapshots in-memory, so `data_dir` is never used
+    /// and does not need to exist. Without that feature, Snapshots are still written to
+    /// `data_dir` (the default), which streams them efficiently but requires the directory.
     ///
     /// CAUTION: There is a known bug in the Raft that can lead to a Raft cluster lock up after
     /// a pure in-memory member (value set to `false`) crashes or is being force-killed, before it

@@ -37,6 +37,10 @@ dashboard = [
 dlock = ["cache"]
 cast_ints = []
 cast_ints_unchecked = []
+# Opt-in: keep Cache Snapshots in-memory instead of on disk. This lets a pure
+# cache-only node run without a `data_dir`, but doubles snapshot memory cost and
+# disables zero-copy snapshot streaming from file. Deliberately NOT part of `full`.
+in-memory-snapshots = ["cache"]
 full = [
     "auto-heal",
     "backup",
