@@ -41,6 +41,11 @@ listen_addr_api = "0.0.0.0"
 listen_addr_raft = "0.0.0.0"
 
 # The data dir hiqlite will store raft logs and state machine data in.
+# It must exist and be writable, unless hiqlite was built with the
+# `in-memory-snapshots` feature and runs a pure cache-only node (no SQLite)
+# with `cache_storage_disk = false`: that combination keeps everything
+# in-memory and never touches `data_dir`.
+# See also `cache_storage_disk`.
 #
 # default: data
 # overwritten by: HQL_DATA_DIR
@@ -141,6 +146,11 @@ wal_size = 2097152
 # all your cached data will be gone.
 # In-memory only hugegly increases the throughput though, so it
 # depends on your needs, what you should prefer.
+# With the `in-memory-snapshots` build feature, a pure cache-only deployment
+# (no SQLite) using `false` also keeps Snapshots in-memory, so `data_dir` is
+# never used and does not need to exist. Without that feature, Snapshots are
+# always written to `data_dir`.
+# See also `data_dir`.
 #
 # default: true
 # overwritten by: HQL_CACHE_STORAGE_DISK
