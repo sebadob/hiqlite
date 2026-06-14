@@ -11,7 +11,7 @@ pub async fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
     } else {
         args.config_file
     };
-    let mut config = NodeConfig::from_toml(&config_path, None, None).await?;
+    let mut config = NodeConfig::from_toml(&config_path, None, None, None).await?;
 
     if let Some(id) = args.node_id {
         config.node_id = id;

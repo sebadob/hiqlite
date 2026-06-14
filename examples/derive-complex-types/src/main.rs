@@ -225,7 +225,7 @@ async fn main() -> Result<(), Error> {
         .with_env_filter(EnvFilter::from("info"))
         .init();
 
-    let config = NodeConfig::from_toml("../../hiqlite.toml", None, None).await?;
+    let config = NodeConfig::from_toml("../../hiqlite.toml", None, None, None).await?;
     let client = hiqlite::start_node(config).await?;
 
     log("Apply our database migrations");

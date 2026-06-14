@@ -50,7 +50,7 @@ fn test_nodes() -> Vec<Node> {
 }
 
 async fn node_config(node_id: u64, nodes: Vec<Node>) -> NodeConfig {
-    let mut config = NodeConfig::from_toml("../../hiqlite.toml", None, None)
+    let mut config = NodeConfig::from_toml("../../hiqlite.toml", None, None, None)
         .await
         .unwrap();
     config.node_id = node_id;
