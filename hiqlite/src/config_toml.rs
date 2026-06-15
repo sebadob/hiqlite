@@ -85,11 +85,10 @@ impl NodeConfig {
         // Resolve the optional secrets source used by the `$SECRETS` sentinel. An explicitly
         // passed-in `secrets` table wins; otherwise a `secrets_file` path (or `HQL_SECRETS_FILE`)
         // is loaded, which must mirror the config structure (i.e. hold the same `[{t_name}]`
-        // table). Read up-front so the key is removed before the `check_empty` guard below.
-        let secrets_file = t_str(&mut map, t_name, "secrets_file", "HQL_SECRETS_FILE")?;
+        // table). The `secrets_file` value is only read when no `secrets` table was passed in.
         let secrets_owned = match secrets {
             Some(secrets) => Some(secrets),
-            None => match secrets_file {
+            None => match t_str(&mut map, t_name, "secrets_file", "HQL_SECRETS_FILE")? {
                 Some(path) => {
                     let content = fs::read_to_string(&path).await.map_err(|err| {
                         Error::config(format!("Cannot read secrets file from: {path}: {err}"))
