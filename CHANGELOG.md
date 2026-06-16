@@ -4,6 +4,20 @@
 
 - Added `NodeConfig::learner_only`, `learner_only`, and `HQL_LEARNER_ONLY` to let newly joining
   nodes stay learners during startup reconciliation instead of being promoted to voting members.
+- Added support for loading secret-bearing config values from a separate secrets source. Any of
+  `secret_raft`, `secret_api`, `s3_key`, `s3_secret`, `enc_keys`, `enc_key_active`, and
+  `password_dashboard` may be set to the case-sensitive sentinel `"$SECRETS"`, in which case the
+  real value is looked up by the same key in a secrets table. That table is provided either via the
+  new `secrets` argument of `NodeConfig::from_toml` / `NodeConfig::from_toml_table`, or, when that
+  is `None`, via a `secrets_file` config option (or `HQL_SECRETS_FILE`) pointing to a TOML file that
+  mirrors the config structure. This keeps the main config diffable and version-controllable while
+  secrets are managed separately (systemd `LoadCredential`, Docker / Kubernetes secrets, ...).
+
+### Breaking
+
+- `NodeConfig::from_toml` and `NodeConfig::from_toml_table` take a new
+  `secrets: Option<toml::Table>` argument (after `table` / `table_name`, before the optional
+  `enc_keys`). Existing callers can pass `None` to keep the previous behavior.
 
 ## hiqlite-v0.13.2
 

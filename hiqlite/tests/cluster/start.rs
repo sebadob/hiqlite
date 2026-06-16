@@ -61,7 +61,7 @@ pub async fn build_config_with_nodes(
         _ => unreachable!(),
     };
 
-    let mut config = NodeConfig::from_toml("../hiqlite.toml", None, None)
+    let mut config = NodeConfig::from_toml("../hiqlite.toml", None, None, None)
         .await
         .unwrap();
 

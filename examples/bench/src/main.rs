@@ -117,7 +117,7 @@ async fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
     // This value may be interesting when you are able to execute high amounts of batched writes.
     raft_config.max_payload_entries = 128;
 
-    let mut config = NodeConfig::from_toml("../../hiqlite.toml", None, None)
+    let mut config = NodeConfig::from_toml("../../hiqlite.toml", None, None, None)
         .await
         .unwrap();
 

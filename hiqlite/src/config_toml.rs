@@ -13,9 +13,23 @@ impl NodeConfig {
     ///
     /// You can overwrite most values from the file with ENV vars. If this is possible, it is
     /// mentioned in the documentation for each value.
+    ///
+    /// ## Secrets
+    ///
+    /// Secret-bearing values (`secret_raft`, `secret_api`, `s3_key`, `s3_secret`, `enc_keys`,
+    /// `enc_key_active`, `password_dashboard`) may be set to the case-sensitive sentinel
+    /// `"$SECRETS"`. In that case, the real value is looked up by the same key in a separate
+    /// secrets source. This keeps the main config diffable and version-controllable while the
+    /// secrets are managed separately (systemd `LoadCredential`, Docker / Kubernetes secrets, ...).
+    ///
+    /// The secrets source is, in order of precedence:
+    /// 1. the `secrets` table passed in here, if `Some`;
+    /// 2. otherwise a `secrets_file` config option (or the `HQL_SECRETS_FILE` env var) pointing to
+    ///    a TOML file that mirrors the config structure (i.e. holds the same `[{table}]` table).
     pub async fn from_toml(
         path: &str,
         table: Option<&str>,
+        secrets: Option<toml::Table>,
         #[cfg(any(feature = "s3", feature = "dashboard"))] enc_keys: Option<cryptr::EncKeys>,
     ) -> Result<Self, Error> {
         dotenvy::dotenv().ok();
@@ -40,6 +54,7 @@ impl NodeConfig {
         Self::from_toml_table(
             table,
             t_name,
+            secrets,
             #[cfg(any(feature = "s3", feature = "dashboard"))]
             enc_keys,
         )
@@ -52,15 +67,46 @@ impl NodeConfig {
     ///
     /// You can overwrite most values from the file with ENV vars. If this is possible, it is
     /// mentioned in the documentation for each value.
+    ///
+    /// See [`NodeConfig::from_toml`] for how the `secrets` table and the `"$SECRETS"` sentinel
+    /// work. If `secrets` is `None`, a `secrets_file` config option (or `HQL_SECRETS_FILE`) is
+    /// honored as a fallback.
     pub async fn from_toml_table(
         table: toml::Table,
         table_name: &str,
+        secrets: Option<toml::Table>,
         #[cfg(any(feature = "s3", feature = "dashboard"))] enc_keys: Option<cryptr::EncKeys>,
     ) -> Result<Self, Error> {
         dotenvy::dotenv().ok();
 
         let t_name = table_name;
         let mut map = table;
+
+        // Resolve the optional secrets source used by the `$SECRETS` sentinel. An explicitly
+        // passed-in `secrets` table wins; otherwise a `secrets_file` path (or `HQL_SECRETS_FILE`)
+        // is loaded, which must mirror the config structure (i.e. hold the same `[{t_name}]`
+        // table). The `secrets_file` value is only read when no `secrets` table was passed in.
+        let secrets_owned = match secrets {
+            Some(secrets) => Some(secrets),
+            None => match t_str(&mut map, t_name, "secrets_file", "HQL_SECRETS_FILE")? {
+                Some(path) => {
+                    let content = fs::read_to_string(&path).await.map_err(|err| {
+                        Error::config(format!("Cannot read secrets file from: {path}: {err}"))
+                    })?;
+                    let mut root = content.parse::<toml::Table>().map_err(|err| {
+                        Error::config(format!("Cannot parse secrets file {path}: {err}"))
+                    })?;
+                    let secrets = t_table(&mut root, t_name).map_err(|err| {
+                        Error::config(format!(
+                            "Cannot find table '{t_name}' in secrets file {path}: {err}"
+                        ))
+                    })?;
+                    Some(secrets)
+                }
+                None => None,
+            },
+        };
+        let secrets = secrets_owned.as_ref();
 
         let node_id = if let Some(v) = t_str(&mut map, t_name, "node_id_from", "HQL_NODE_ID_FROM")?
         {
@@ -176,12 +222,16 @@ impl NodeConfig {
             None
         };
 
-        let Some(secret_raft) = t_str(&mut map, t_name, "secret_raft", "HQL_SECRET_RAFT")? else {
+        let Some(secret_raft) =
+            t_str_secret(&mut map, t_name, "secret_raft", "HQL_SECRET_RAFT", secrets)?
+        else {
             return Err(Error::config(format!(
                 "{t_name}.secret_raft is a mandatory value"
             )));
         };
-        let Some(secret_api) = t_str(&mut map, t_name, "secret_api", "HQL_SECRET_API")? else {
+        let Some(secret_api) =
+            t_str_secret(&mut map, t_name, "secret_api", "HQL_SECRET_API", secrets)?
+        else {
             return Err(Error::config(format!(
                 "{t_name}.secret_api is a mandatory value"
             )));
@@ -229,12 +279,13 @@ impl NodeConfig {
             let path_style =
                 t_bool(&mut map, t_name, "s3_path_style", "HQL_S3_PATH_STYLE")?.unwrap_or(true);
 
-            let key = t_str(&mut map, t_name, "s3_key", "HQL_S3_KEY")?.ok_or(Error::config(
-                "Missing config variable `s3_key`".to_string(),
-            ))?;
-            let secret = t_str(&mut map, t_name, "s3_secret", "HQL_S3_SECRET")?.ok_or(
-                Error::config("Missing config variable `s3_secret`".to_string()),
+            let key = t_str_secret(&mut map, t_name, "s3_key", "HQL_S3_KEY", secrets)?.ok_or(
+                Error::config("Missing config variable `s3_key`".to_string()),
             )?;
+            let secret = t_str_secret(&mut map, t_name, "s3_secret", "HQL_S3_SECRET", secrets)?
+                .ok_or(Error::config(
+                    "Missing config variable `s3_secret`".to_string(),
+                ))?;
 
             let config = crate::s3::S3Config::new(&url, bucket, region, key, secret, path_style)
                 .map_err(|err| {
@@ -248,11 +299,12 @@ impl NodeConfig {
         };
 
         #[cfg(feature = "dashboard")]
-        let password_dashboard = match t_str(
+        let password_dashboard = match t_str_secret(
             &mut map,
             t_name,
             "password_dashboard",
             "HQL_PASSWORD_DASHBOARD",
+            secrets,
         )? {
             Some(password_dashboard_b64) => {
                 let password_dashboard_vec_u8 = cryptr::utils::b64_decode(&password_dashboard_b64)
@@ -275,13 +327,20 @@ impl NodeConfig {
         let enc_keys = if let Some(keys) = enc_keys {
             keys
         } else {
-            let enc_key_active = t_str(&mut map, t_name, "enc_key_active", "ENC_KEY_ACTIVE")?
+            let enc_key_active = t_str_secret(
+                &mut map,
+                t_name,
+                "enc_key_active",
+                "ENC_KEY_ACTIVE",
+                secrets,
+            )?
+            .ok_or(Error::config(format!(
+                "{t_name}.enc_key_active is a mandatory value"
+            )))?;
+            let enc_keys = t_str_vec_secret(&mut map, t_name, "enc_keys", "ENC_KEYS", secrets)?
                 .ok_or(Error::config(format!(
-                    "{t_name}.enc_key_active is a mandatory value"
+                    "{t_name}.enc_keys is a mandatory value"
                 )))?;
-            let enc_keys = t_str_vec(&mut map, t_name, "enc_keys", "ENC_KEYS")?.ok_or(
-                Error::config(format!("{t_name}.enc_keys is a mandatory value")),
-            )?;
             cryptr::EncKeys::try_parse(enc_key_active, enc_keys)?
         };
 
@@ -528,6 +587,115 @@ fn t_str_vec(
     Ok(Some(res))
 }
 
+/// Case-sensitive sentinel marking a config value whose real content lives in the
+/// separate secrets source (see `NodeConfig::from_toml`).
+const SECRETS_REF: &str = "$SECRETS";
+
+/// Like `t_str`, but resolves the `$SECRETS` sentinel against the optional `secrets` table,
+/// looking the real value up by the same `key`. Per-var error messages are preserved.
+fn t_str_secret(
+    map: &mut toml::Table,
+    parent: &str,
+    key: &str,
+    env_var: &str,
+    secrets: Option<&toml::Table>,
+) -> Result<Option<String>, Error> {
+    match t_str(map, parent, key, env_var)? {
+        Some(v) if v == SECRETS_REF => match secrets {
+            None => Err(Error::config(format!(
+                "{parent}.{key}: `{SECRETS_REF}` reference but no secrets file configured"
+            ))),
+            Some(secrets) => match secrets.get(key) {
+                Some(Value::String(s)) => Ok(Some(s.clone())),
+                Some(_) => Err(Error::config(err_t(key, parent, "String"))),
+                None => Err(Error::config(format!(
+                    "{parent}.{key}: `{SECRETS_REF}` set but `{key}` not found in secrets file"
+                ))),
+            },
+        },
+        other => Ok(other),
+    }
+}
+
+/// Like `t_str_vec`, but resolves the `$SECRETS` sentinel. The sentinel is written as a single
+/// string (e.g. `enc_keys = "$SECRETS"`); the real value is then looked up by the same `key` in
+/// the `secrets` table, where it must be an array of strings.
+#[cfg(any(feature = "s3", feature = "dashboard"))]
+fn t_str_vec_secret(
+    map: &mut toml::Table,
+    parent: &str,
+    key: &str,
+    env_var: &str,
+    secrets: Option<&toml::Table>,
+) -> Result<Option<Vec<String>>, Error> {
+    let value = map.remove(key);
+
+    if !env_var.is_empty()
+        && let Ok(arr) = env::var(env_var)
+    {
+        if arr == SECRETS_REF {
+            return secret_vec_lookup(parent, key, secrets);
+        }
+        return Ok(Some(
+            arr.lines()
+                .filter_map(|l| {
+                    let trimmed = l.trim().to_string();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                })
+                .collect(),
+        ));
+    }
+
+    match value {
+        Some(Value::String(s)) if s == SECRETS_REF => secret_vec_lookup(parent, key, secrets),
+        Some(Value::Array(arr)) => {
+            let mut res = Vec::with_capacity(arr.len());
+            for value in arr {
+                let Value::String(s) = value else {
+                    return Err(Error::config(err_t(key, parent, "String")));
+                };
+                res.push(s);
+            }
+            Ok(Some(res))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Looks up a string-array secret by `key` in the `secrets` table for the `$SECRETS` sentinel.
+#[cfg(any(feature = "s3", feature = "dashboard"))]
+fn secret_vec_lookup(
+    parent: &str,
+    key: &str,
+    secrets: Option<&toml::Table>,
+) -> Result<Option<Vec<String>>, Error> {
+    let Some(secrets) = secrets else {
+        return Err(Error::config(format!(
+            "{parent}.{key}: `{SECRETS_REF}` reference but no secrets file configured"
+        )));
+    };
+    match secrets.get(key) {
+        Some(Value::Array(arr)) => {
+            let mut res = Vec::with_capacity(arr.len());
+            for value in arr {
+                let Value::String(s) = value else {
+                    return Err(Error::config(err_t(key, parent, "String")));
+                };
+                res.push(s.clone());
+            }
+            Ok(Some(res))
+        }
+        Some(_) => Err(Error::config(err_t(key, parent, "String"))),
+        None => Err(Error::config(format!(
+            "{parent}.{key}: `{SECRETS_REF}` set but `{key}` not found in secrets file"
+        ))),
+    }
+}
+
 fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
     let value = map
         .remove(key)
@@ -540,4 +708,128 @@ fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
 fn err_t(key: &str, parent: &str, typ: &str) -> String {
     let sep = if parent.is_empty() { "" } else { "." };
     format!("Expected type `{typ}` for {parent}{sep}{key}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table(s: &str) -> toml::Table {
+        s.parse::<toml::Table>().unwrap()
+    }
+
+    #[test]
+    fn t_str_secret_passes_through_plain_value() {
+        let mut map = table(r#"secret_raft = "plain1234""#);
+        let out = t_str_secret(&mut map, "hiqlite", "secret_raft", "", None).unwrap();
+        assert_eq!(out, Some("plain1234".to_string()));
+    }
+
+    #[test]
+    fn t_str_secret_resolves_sentinel_from_table() {
+        let mut map = table(r#"secret_raft = "$SECRETS""#);
+        let secrets = table(r#"secret_raft = "real-raft-secret""#);
+        let out = t_str_secret(&mut map, "hiqlite", "secret_raft", "", Some(&secrets)).unwrap();
+        assert_eq!(out, Some("real-raft-secret".to_string()));
+    }
+
+    #[test]
+    fn t_str_secret_sentinel_without_secrets_errors() {
+        let mut map = table(r#"secret_raft = "$SECRETS""#);
+        let err = t_str_secret(&mut map, "hiqlite", "secret_raft", "", None).unwrap_err();
+        assert!(err.to_string().contains("no secrets file"));
+    }
+
+    #[test]
+    fn t_str_secret_sentinel_missing_key_errors() {
+        let mut map = table(r#"secret_raft = "$SECRETS""#);
+        let secrets = table(r#"secret_api = "other""#);
+        let err = t_str_secret(&mut map, "hiqlite", "secret_raft", "", Some(&secrets)).unwrap_err();
+        assert!(err.to_string().contains("not found in secrets file"));
+    }
+
+    #[test]
+    fn t_str_secret_sentinel_wrong_type_errors() {
+        let mut map = table(r#"secret_raft = "$SECRETS""#);
+        let secrets = table("secret_raft = 1234");
+        let err = t_str_secret(&mut map, "hiqlite", "secret_raft", "", Some(&secrets)).unwrap_err();
+        assert!(err.to_string().contains("Expected type `String`"));
+    }
+
+    #[cfg(any(feature = "s3", feature = "dashboard"))]
+    #[test]
+    fn t_str_vec_secret_passes_through_array() {
+        let mut map = table(r#"enc_keys = ["a", "b"]"#);
+        let out = t_str_vec_secret(&mut map, "hiqlite", "enc_keys", "", None).unwrap();
+        assert_eq!(out, Some(vec!["a".to_string(), "b".to_string()]));
+    }
+
+    #[cfg(any(feature = "s3", feature = "dashboard"))]
+    #[test]
+    fn t_str_vec_secret_resolves_sentinel_from_table() {
+        let mut map = table(r#"enc_keys = "$SECRETS""#);
+        let secrets = table(r#"enc_keys = ["key1/abc", "key2/def"]"#);
+        let out = t_str_vec_secret(&mut map, "hiqlite", "enc_keys", "", Some(&secrets)).unwrap();
+        assert_eq!(
+            out,
+            Some(vec!["key1/abc".to_string(), "key2/def".to_string()])
+        );
+    }
+
+    #[cfg(any(feature = "s3", feature = "dashboard"))]
+    #[test]
+    fn t_str_vec_secret_sentinel_without_secrets_errors() {
+        let mut map = table(r#"enc_keys = "$SECRETS""#);
+        let err = t_str_vec_secret(&mut map, "hiqlite", "enc_keys", "", None).unwrap_err();
+        assert!(err.to_string().contains("no secrets file"));
+    }
+
+    #[cfg(any(feature = "s3", feature = "dashboard"))]
+    #[test]
+    fn t_str_vec_secret_sentinel_missing_key_errors() {
+        let mut map = table(r#"enc_keys = "$SECRETS""#);
+        let secrets = table(r#"secret_raft = "x""#);
+        let err =
+            t_str_vec_secret(&mut map, "hiqlite", "enc_keys", "", Some(&secrets)).unwrap_err();
+        assert!(err.to_string().contains("not found in secrets file"));
+    }
+
+    // Integration: the `secrets_file` loading path runs before any secret parsing, so these
+    // error branches are deterministic regardless of ambient `HQL_*` env vars. The successful
+    // sentinel resolution itself is covered by the `t_str*_secret_*` tests above.
+    #[cfg(any(feature = "s3", feature = "dashboard"))]
+    #[tokio::test]
+    async fn from_toml_table_missing_secrets_file_errors() {
+        let table = "secrets_file = \"/nonexistent/hiqlite-secrets-does-not-exist.toml\"\n"
+            .parse::<toml::Table>()
+            .unwrap();
+        let err = NodeConfig::from_toml_table(table, "hiqlite", None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Cannot read secrets file"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(any(feature = "s3", feature = "dashboard"))]
+    #[tokio::test]
+    async fn from_toml_table_secrets_file_wrong_structure_errors() {
+        // The secrets file must mirror the config structure (a `[hiqlite]` table here).
+        let secrets_path = std::env::temp_dir().join("hiqlite_test_secrets_wrong_structure.toml");
+        tokio::fs::write(&secrets_path, "secret_raft = \"x\"\n")
+            .await
+            .unwrap();
+        let cfg = format!("secrets_file = \"{}\"\n", secrets_path.display());
+        let table = cfg.parse::<toml::Table>().unwrap();
+
+        let err = NodeConfig::from_toml_table(table, "hiqlite", None, None)
+            .await
+            .unwrap_err();
+        let _ = tokio::fs::remove_file(&secrets_path).await;
+        assert!(
+            err.to_string().contains("Cannot find table 'hiqlite'"),
+            "unexpected error: {err}"
+        );
+    }
 }
