@@ -14,7 +14,7 @@
     "@sveltejs/kit": "^2.52.2",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@swc/core": "^1.11.18",
-    "esbuild": "^0.28.0",
+    "esbuild": "^0.28.1",
     "rollup": "^4.60.4",
     "svelte": "^5.55.7",
     "svelte-check": "^4.0.5",
