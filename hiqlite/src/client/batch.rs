@@ -37,6 +37,8 @@ impl Client {
     where
         S: Into<Cow<'static, str>>,
     {
+        self.rate_limit_db().await?;
+
         let sql = sql.into();
         match self.batch_execute(sql.clone()).await {
             Ok(res) => Ok(res),

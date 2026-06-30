@@ -65,6 +65,8 @@ impl Client {
     where
         K: Into<Cow<'static, str>>,
     {
+        self.rate_limit_cache().await?;
+
         let key = key.into();
         let state = self
             .lock_req_retry(CacheRequest::Lock((key.clone(), None)), false)

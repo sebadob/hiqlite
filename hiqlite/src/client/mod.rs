@@ -1,9 +1,9 @@
 use crate::app_state::AppState;
-use crate::NodeId;
-use std::sync::atomic::AtomicUsize;
+use crate::{Error, NodeId};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicUsize};
 use stream::ClientStreamReq;
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{RwLock, oneshot, watch};
 
 #[cfg(feature = "backup")]
 mod backup;
@@ -24,6 +24,7 @@ mod mgmt;
 mod migrate;
 #[cfg(feature = "sqlite")]
 mod query;
+mod rate_limit;
 #[cfg(feature = "shutdown-handle")]
 mod shutdown_handle;
 pub mod stream;
@@ -62,4 +63,13 @@ pub(crate) struct DbClient {
     pub(crate) app_start: i64,
     #[cfg(feature = "listen_notify_local")]
     pub(crate) rx_notify: Option<flume::Receiver<(i64, Vec<u8>)>>,
+    #[cfg(feature = "cache")]
+    pub(crate) rate_limit_cache: Option<AtomicU32>,
+    #[cfg(feature = "cache")]
+    pub(crate) rate_limit_cache_await:
+        crossbeam::channel::Sender<oneshot::Sender<Result<(), Error>>>,
+    #[cfg(feature = "sqlite")]
+    pub(crate) rate_limit_db: Option<AtomicU32>,
+    #[cfg(feature = "sqlite")]
+    pub(crate) rate_limit_db_await: crossbeam::channel::Sender<oneshot::Sender<Result<(), Error>>>,
 }

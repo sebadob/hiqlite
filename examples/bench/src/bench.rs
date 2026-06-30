@@ -42,16 +42,20 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
         -> {per_second} inserts / s"
     ));
 
-    // The batch sizes here heavily influence the WebSocket buffers. If we send batches of ~10k
-    // queries at once, it is very fast, but the internal buffers will grow up to a size that can
-    // hold these big messages.
-    cleanup(&client).await?;
-    let elapsed = insert_concurrent(client.clone(), &options, data.clone(), true).await?;
-    let per_second = rows * 1000 / max(elapsed as usize, 1);
-    log(format!(
-        "{rows} transactional / batched INSERTs with concurrency {concurrency} \
-        took:\n{elapsed} ms -> {per_second} inserts / s"
-    ));
+    // We only want to run transactional inserts without rate-limiting. This impl is very naive, and
+    // it can easily crash everything for very high row counts.
+    if options.db_rps.is_none() {
+        // The batch sizes here heavily influence the WebSocket buffers. If we send batches of ~10k
+        // queries at once, it is very fast, but the internal buffers will grow up to a size that can
+        // hold these big messages.
+        cleanup(&client).await?;
+        let elapsed = insert_concurrent(client.clone(), &options, data.clone(), true).await?;
+        let per_second = rows * 1000 / max(elapsed as usize, 1);
+        log(format!(
+            "{rows} transactional / batched INSERTs with concurrency {concurrency} \
+            took:\n{elapsed} ms -> {per_second} inserts / s"
+        ));
+    }
 
     select_timings(client.clone(), remote).await?;
 
@@ -221,8 +225,9 @@ fn prepare_data(options: &Options) -> Vec<Vec<Entity>> {
     let mut sets = Vec::with_capacity(concurrency);
     let mut idx = 0;
     for _ in 1..=concurrency {
-        let mut data = Vec::with_capacity(rows);
-        for _ in 0..(rows / concurrency) {
+        let set_size = rows / concurrency;
+        let mut data = Vec::with_capacity(set_size);
+        for _ in 0..set_size {
             // let mut id = Uuid::now_v7().as_bytes().to_vec();
             // id.push(i as u8);
             data.push(Entity {

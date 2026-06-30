@@ -13,6 +13,21 @@ use crate::dashboard::DashboardState;
 
 pub use openraft::Config as RaftConfig;
 
+#[derive(Debug)]
+pub struct RateLimitConfig {
+    pub rps: u32,
+    pub burst: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            rps: 100_000,
+            burst: 200_000,
+        }
+    }
+}
+
 /// The main Node config.
 ///
 /// Most default values are good for internal, fast networks. If you have a slow or unstable
@@ -119,6 +134,14 @@ pub struct NodeConfig {
     /// If true, keep a newly joining node as a learner instead of promoting it to a voting member
     /// during startup reconciliation. This does not demote an existing voter.
     pub learner_only: bool,
+    /// To guarantee the stability of your Raft cluster no matter how high requests might spike,
+    /// you can set rate-limits.
+    #[cfg(feature = "cache")]
+    pub rate_limit_cache: Option<RateLimitConfig>,
+    /// To guarantee the stability of your Raft cluster no matter how high requests might spike,
+    /// you can set rate-limits.
+    #[cfg(feature = "sqlite")]
+    pub rate_limit_db: Option<RateLimitConfig>,
 }
 
 impl Default for NodeConfig {
@@ -156,8 +179,10 @@ impl Default for NodeConfig {
             insecure_cookie: false,
             health_check_delay_secs: 30,
             learner_only: false,
-            // #[cfg(feature = "dashboard")]
-            // insecure_cookie: false,
+            #[cfg(feature = "cache")]
+            rate_limit_cache: None,
+            #[cfg(feature = "sqlite")]
+            rate_limit_db: None,
         }
     }
 }
@@ -238,6 +263,45 @@ impl NodeConfig {
             .parse::<bool>()
             .expect("Cannot parse HQL_INSECURE_COOKIE as bool");
 
+        #[cfg(feature = "cache")]
+        let rate_limit_cache = {
+            if let Some(rps) = env::var("HQL_RL_CACHE_RPS").as_deref().ok().map(|v| {
+                v.parse::<u32>()
+                    .expect("Cannot parse HQL_RL_CACHE_RPS as u32")
+            }) {
+                let burst = env::var("HQL_RL_CACHE_BURST").as_deref().ok().map(|v| {
+                    v.parse::<u32>()
+                        .expect("Cannot parse HQL_RL_CACHE_BURST as u32")
+                });
+                Some(RateLimitConfig {
+                    rps,
+                    burst: burst.unwrap_or(rps),
+                })
+            } else {
+                None
+            }
+        };
+
+        #[cfg(feature = "sqlite")]
+        let rate_limit_db = {
+            if let Some(rps) = env::var("HQL_RL_DB_RPS")
+                .as_deref()
+                .ok()
+                .map(|v| v.parse::<u32>().expect("Cannot parse HQL_RL_DB_RPS as u32"))
+            {
+                let burst = env::var("HQL_RL_DB_BURST").as_deref().ok().map(|v| {
+                    v.parse::<u32>()
+                        .expect("Cannot parse HQL_RL_DB_BURST as u32")
+                });
+                Some(RateLimitConfig {
+                    rps,
+                    burst: burst.unwrap_or(rps),
+                })
+            } else {
+                None
+            }
+        };
+
         let slf = Self {
             node_id,
             nodes: Node::parse_from_env("HQL_NODES"),
@@ -287,6 +351,10 @@ impl NodeConfig {
                 .expect("Cannot parse HQL_LEARNER_ONLY as bool"),
             #[cfg(feature = "backup")]
             backup_keep_days_local,
+            #[cfg(feature = "cache")]
+            rate_limit_cache,
+            #[cfg(feature = "sqlite")]
+            rate_limit_db,
         };
 
         slf.is_valid()

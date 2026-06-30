@@ -66,6 +66,7 @@ and self-healing capabilities in case of any errors or problems.
 - listen / notify to send real-time messages through the Raft
 - `dlock` feature provides access to distributed locks
 - `counters` feature provides distributed counters
+- optional raft traffic rate-limiting to always guarantee stability
 - standalone binary with the `server` feature which can run as a single node, cluster, or proxy to an existing cluster
 - integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
   done
@@ -313,6 +314,16 @@ This feature will simply enable everything apart from the `server` feature:
 - toml
 - webpki-roots
 
+### `in-memory-snapshots`
+
+By default, even if you set `cache_storage_disk = false` to keep the WAL in-memory, Cache snapshots will still be
+written to disk into a temp file. This means the `data_dir` must be writable. Snapshots are only necessary if a new node
+joins the Raft cluster, and then only the leader needs to stream the latest snapshot to the new node. This means in most
+cases, you never need them. Writing them into a temp file is the most efficient solution. However, with this feature,
+you can opt-in to keep snapshots in-memory as well. This will not need any disk at all (as long as you don't enable
+`sqlite` of course). This is costly, though, because you effectively double your memory requirements for each single
+cache entry.
+
 ### `jemalloc`
 
 This feature enables the `jemallocator` instead of using the default glibc `malloc`. It is a lot more performant, solves
@@ -426,10 +437,9 @@ can re-use the same config for multiple nodes.
 
 Take a look at the [examples](https://github.com/sebadob/hiqlite/tree/main/examples) or the example
 [config](https://github.com/sebadob/hiqlite/blob/main/config) to get an idea about the possible config values. The
-`NodeConfig` can be created programmatically or fully created either `from_toml()` or `from_env()` vars.
-For newly joining read-only replicas that should not become voting Raft members automatically
-during startup, set `learner_only = true` or `HQL_LEARNER_ONLY=true`. This does not demote an
-existing voter.
+`NodeConfig` can be created programmatically or fully created either `from_toml()` or `from_env()` vars. For newly
+joining read-only replicas that should not become voting Raft members automatically during startup, set
+`learner_only = true` or `HQL_LEARNER_ONLY=true`. This does not demote an existing voter.
 
 ### Cluster inside Kubernetes
 

@@ -48,6 +48,7 @@ clap = { version = "4.1.11", features = ["derive", "env"] }
 console-subscriber = "0.5.0"
 crc = "3.3.0"
 cron = { version = "0.16" }
+crossbeam = "0.8.4"
 cryptr = { version = "0.10", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.13", features = ["rt_tokio_1"] }
@@ -109,7 +110,8 @@ spow = { version = "0.6", features = ["server"] }
 thiserror = "2"
 thread-priority = "3.0.0"
 tikv-jemallocator = "0.7.0"
-time = "0.3.47"
+# 0.3.52 introduced an invalid breaking change
+time = "=0.3.51"
 tokio = { version = "1.43.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.4", features = ["ring"] }
 toml = "1"

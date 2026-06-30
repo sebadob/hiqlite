@@ -17,6 +17,8 @@ impl Client {
     where
         C: CacheVariants,
     {
+        self.rate_limit_cache().await?;
+
         self.cache_req_retry(
             CacheRequest::Clear {
                 cache_idx: cache.hiqlite_cache_index(),
@@ -34,6 +36,8 @@ impl Client {
     where
         C: CacheVariants,
     {
+        self.rate_limit_cache().await?;
+
         self.cache_req_retry(
             CacheRequest::ClearCounters {
                 cache_idx: cache.hiqlite_cache_index(),
@@ -47,6 +51,8 @@ impl Client {
 
     /// Clears all available caches.
     pub async fn clear_cache_all(&self) -> Result<(), Error> {
+        self.rate_limit_cache().await?;
+
         self.cache_req_retry(CacheRequest::ClearAll, false).await?;
         Ok(())
     }
@@ -187,6 +193,8 @@ impl Client {
         K: Into<Cow<'static, str>>,
         V: Serialize,
     {
+        self.rate_limit_cache().await?;
+
         self.put_bytes(cache, key, serialize_network(value), ttl)
             .await?;
         Ok(())
@@ -204,6 +212,8 @@ impl Client {
         C: CacheVariants,
         K: Into<Cow<'static, str>>,
     {
+        self.rate_limit_cache().await?;
+
         self.cache_req_retry(
             CacheRequest::Put {
                 cache_idx: cache.hiqlite_cache_index(),
@@ -224,6 +234,8 @@ impl Client {
         C: CacheVariants,
         K: Into<Cow<'static, str>>,
     {
+        self.rate_limit_cache().await?;
+
         self.cache_req_retry(
             CacheRequest::Delete {
                 cache_idx: cache.hiqlite_cache_index(),
@@ -283,6 +295,8 @@ impl Client {
         C: CacheVariants,
         K: Into<Cow<'static, str>>,
     {
+        self.rate_limit_cache().await?;
+
         self.cache_req_retry(
             CacheRequest::CounterSet {
                 cache_idx: cache.hiqlite_cache_index(),
@@ -303,6 +317,8 @@ impl Client {
         C: CacheVariants,
         K: Into<Cow<'static, str>>,
     {
+        self.rate_limit_cache().await?;
+
         let resp = self
             .cache_req_retry(
                 CacheRequest::CounterAdd {
@@ -329,6 +345,8 @@ impl Client {
         C: CacheVariants,
         K: Into<Cow<'static, str>>,
     {
+        self.rate_limit_cache().await?;
+
         self.cache_req_retry(
             CacheRequest::CounterDel {
                 cache_idx: cache.hiqlite_cache_index(),

@@ -66,6 +66,7 @@ and self-healing capabilities in case of any errors or problems.
 - listen / notify to send real-time messages through the Raft
 - `dlock` feature provides access to distributed locks
 - `counters` feature provides distributed counters
+- optional raft traffic rate-limiting to always guarantee stability
 - standalone binary with the `server` feature which can run as a single node, cluster, or proxy to an existing cluster
 - integrated simple dashboard UI for debugging the database in production - pretty basic for now but it gets the job
   done

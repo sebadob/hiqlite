@@ -65,6 +65,8 @@ pub enum Error {
     #[error("RaftErrorFatal: {0}")]
     /// Internal Raft error
     RaftErrorFatal(Box<Fatal<u64>>),
+    #[error("RateLimit: {0}")]
+    RateLimit(Cow<'static, str>),
     #[error("Request: {0}")]
     Request(String),
     #[cfg(feature = "s3")]
@@ -152,6 +154,7 @@ impl IntoResponse for Error {
             Error::InitializeError(_) => StatusCode::BAD_REQUEST,
             Error::RaftError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::RaftErrorFatal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
             Error::Request(_) => StatusCode::BAD_REQUEST,
             #[cfg(feature = "s3")]
             Error::S3(_) => StatusCode::BAD_REQUEST,

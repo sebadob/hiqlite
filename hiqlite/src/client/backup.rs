@@ -34,6 +34,8 @@ impl Client {
     /// not be finished immediately when this function returns.
     #[cold]
     pub async fn backup(&self) -> Result<(), Error> {
+        self.rate_limit_db().await?;
+
         match self.backup_execute().await {
             Ok(res) => Ok(res),
             Err(err) => {

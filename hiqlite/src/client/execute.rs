@@ -22,6 +22,8 @@ impl Client {
     where
         S: Into<Cow<'static, str>>,
     {
+        self.rate_limit_db().await?;
+
         let sql = Query {
             sql: sql.into(),
             params,
@@ -89,6 +91,8 @@ impl Client {
         S: Into<Cow<'static, str>>,
         T: for<'a, 'r> From<&'a mut crate::Row<'r>> + Send + 'static,
     {
+        self.rate_limit_db().await?;
+
         let rows: Vec<Result<crate::Row, Error>> = self.execute_returning::<S>(sql, params).await?;
         let mut res: Vec<Result<T, Error>> = Vec::with_capacity(rows.len());
         for row in rows {
@@ -108,6 +112,8 @@ impl Client {
         S: Into<Cow<'static, str>>,
         T: for<'a, 'r> From<&'a mut crate::Row<'r>> + Send + 'static,
     {
+        self.rate_limit_db().await?;
+
         let mut rows = self.execute_returning_map::<S, T>(sql, params).await?;
         if rows.is_empty() {
             Err(Error::QueryReturnedNoRows("no rows returned".into()))
@@ -130,6 +136,8 @@ impl Client {
     where
         S: Into<Cow<'static, str>>,
     {
+        self.rate_limit_db().await?;
+
         let sql = Query {
             sql: sql.into(),
             params,
@@ -167,6 +175,8 @@ impl Client {
     where
         S: Into<Cow<'static, str>>,
     {
+        self.rate_limit_db().await?;
+
         let mut rows = self.execute_returning(sql, params).await?;
         if rows.is_empty() {
             Err(Error::QueryReturnedNoRows("no rows returned".into()))

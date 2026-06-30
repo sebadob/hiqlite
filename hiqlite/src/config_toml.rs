@@ -1,3 +1,4 @@
+use crate::config::RateLimitConfig;
 use crate::tls::{ServerTlsConfig, ServerTlsConfigCerts};
 use crate::{Error, Node, NodeConfig};
 use hiqlite_wal::LogSync;
@@ -344,6 +345,38 @@ impl NodeConfig {
             cryptr::EncKeys::try_parse(enc_key_active, enc_keys)?
         };
 
+        #[cfg(feature = "cache")]
+        let rate_limit_cache = {
+            if let Some(rps) = t_u32(&mut map, t_name, "rate_limit_cache_rps", "HQL_RL_CACHE_RPS")?
+            {
+                Some(RateLimitConfig {
+                    rps,
+                    burst: t_u32(
+                        &mut map,
+                        t_name,
+                        "rate_limit_cache_burst",
+                        "HQL_RL_CACHE_BURST",
+                    )?
+                    .unwrap_or(rps),
+                })
+            } else {
+                None
+            }
+        };
+
+        #[cfg(feature = "sqlite")]
+        let rate_limit_db = {
+            if let Some(rps) = t_u32(&mut map, t_name, "rate_limit_db_rps", "HQL_RL_DB_RPS")? {
+                Some(RateLimitConfig {
+                    rps,
+                    burst: t_u32(&mut map, t_name, "rate_limit_db_burst", "HQL_RL_DB_BURST")?
+                        .unwrap_or(rps),
+                })
+            } else {
+                None
+            }
+        };
+
         check_empty(map, table_name)?;
 
         Ok(NodeConfig {
@@ -379,6 +412,10 @@ impl NodeConfig {
             insecure_cookie,
             health_check_delay_secs,
             learner_only,
+            #[cfg(feature = "cache")]
+            rate_limit_cache,
+            #[cfg(feature = "sqlite")]
+            rate_limit_db,
         })
     }
 }
@@ -406,6 +443,10 @@ fn check_empty(table: toml::Table, tbl_name: &str) -> Result<(), Error> {
                 "insecure_cookie",
                 "enc_key_active",
                 "enc_keys",
+                "rate_limit_cache_rps",
+                "rate_limit_cache_burst",
+                "rate_limit_db_rps",
+                "rate_limit_db_burst",
             ]
             .contains(&key.as_str())
             {

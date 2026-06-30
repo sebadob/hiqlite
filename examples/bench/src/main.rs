@@ -1,6 +1,6 @@
 use clap::Parser;
 use hiqlite::macros::{embed::*, CacheVariants};
-use hiqlite::{start_node_with_cache, Client, Error, Node, NodeConfig};
+use hiqlite::{start_node_with_cache, Client, Error, Node, NodeConfig, RateLimitConfig};
 use std::fmt::{Debug, Display};
 use std::time::Duration;
 use tokio::time;
@@ -30,6 +30,22 @@ pub struct Options {
     #[clap(short, long)]
     pub concurrency: usize,
 
+    /// Limit the number of cache inflight requests per second
+    #[clap(long)]
+    pub cache_rps: Option<u32>,
+
+    /// Limit the number of cache inflight burst requests
+    #[clap(long)]
+    pub cache_burst: Option<u32>,
+
+    /// Limit the number of DB inflight requests per second
+    #[clap(long)]
+    pub db_rps: Option<u32>,
+
+    /// Limit the number of DB inflight burst requests
+    #[clap(long)]
+    pub db_burst: Option<u32>,
+
     /// How many rows should be generated and inserted
     #[clap(short, long)]
     pub rows: usize,
@@ -46,6 +62,22 @@ pub struct OptionsRemote {
     /// How many concurrent threads should be started for inserts
     #[clap(short, long)]
     pub concurrency: usize,
+
+    /// Limit the number of cache inflight requests per second
+    #[clap(long)]
+    pub cache_rps: Option<u32>,
+
+    /// Limit the number of cache inflight burst requests
+    #[clap(long)]
+    pub cache_burst: Option<u32>,
+
+    /// Limit the number of DB inflight requests per second
+    #[clap(long)]
+    pub db_rps: Option<u32>,
+
+    /// Limit the number of DB inflight burst requests
+    #[clap(long)]
+    pub db_burst: Option<u32>,
 
     /// How many rows should be generated and inserted
     #[clap(short, long)]
@@ -92,7 +124,7 @@ fn test_nodes() -> Vec<Node> {
     ]
 }
 
-async fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
+async fn node_config(nodes: Vec<Node>, options: &Options) -> NodeConfig {
     // If you are doing very write heavy stuff with many operations, you can do a lot with the
     // `raft_config.snapshot_policy` value. Each so many inserts, the Raft will actually do a
     // snapshot of the state machine and purge logs. The more often this is done, the less space
@@ -100,7 +132,7 @@ async fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
     // impact for very high write scenarios, because these snapshots and purging do take time and
     // compute.
     // By default, Hiqlite triggers a snapshot every 10k logs.
-    let mut raft_config = NodeConfig::default_raft_config(logs_until_snapshot);
+    let mut raft_config = NodeConfig::default_raft_config(options.logs_until_snapshot);
 
     // These 3 values have a quite big impact as well.
     // They decide how quickly a leader switch-over will happen, which means lower downtime in
@@ -126,6 +158,19 @@ async fn node_config(nodes: Vec<Node>, logs_until_snapshot: u64) -> NodeConfig {
     config.raft_config = raft_config;
     config.data_dir = format!("data/node_{}", 1).into();
     config.log_statements = false;
+
+    if let Some(rps) = options.cache_rps {
+        config.rate_limit_cache = Some(RateLimitConfig {
+            rps,
+            burst: options.cache_burst.unwrap_or(rps),
+        });
+    }
+    if let Some(rps) = options.db_rps {
+        config.rate_limit_db = Some(RateLimitConfig {
+            rps,
+            burst: options.db_burst.unwrap_or(rps),
+        });
+    }
 
     // Hiqlite Caches are (by default) disk-backed. This means they provide the consistency of Raft
     // and can rebuild their in-memory data after a restart and never lose it. With
@@ -191,12 +236,32 @@ async fn main() -> Result<(), Error> {
 
     if let Args::Remote(opts) = args {
         log(format!("Connecting to remote cluster: {:?}", opts.nodes));
+
+        let rate_limit_cache = if let Some(rps) = opts.cache_rps {
+            Some(RateLimitConfig {
+                rps,
+                burst: opts.cache_burst.unwrap_or(rps),
+            })
+        } else {
+            None
+        };
+        let rate_limit_db = if let Some(rps) = opts.db_rps {
+            Some(RateLimitConfig {
+                rps,
+                burst: opts.db_burst.unwrap_or(rps),
+            })
+        } else {
+            None
+        };
+
         let client = Client::remote(
             opts.nodes,
             opts.tls,
             opts.tls_no_verify,
             opts.api_secret,
             true,
+            rate_limit_cache,
+            rate_limit_db,
         )
         .await?;
 
@@ -205,6 +270,10 @@ async fn main() -> Result<(), Error> {
 
         let options = Options {
             concurrency: opts.concurrency,
+            cache_rps: opts.cache_rps,
+            cache_burst: opts.cache_burst,
+            db_rps: opts.db_rps,
+            db_burst: opts.db_burst,
             rows: opts.rows,
             logs_until_snapshot: 10_000,
         };
@@ -219,8 +288,7 @@ async fn main() -> Result<(), Error> {
             Args::Remote(_) => unreachable!(),
         };
 
-        let (client_1, client_2, _client_3) =
-            start_cluster(full_cluster, options.logs_until_snapshot).await?;
+        let (client_1, client_2, _client_3) = start_cluster(full_cluster, &options).await?;
 
         let leader = {
             let metrics = client_1.metrics_db().await?;
@@ -249,30 +317,30 @@ async fn main() -> Result<(), Error> {
 /// Start the local cluster and wait for all nodes to have joined and be healthy
 async fn start_cluster(
     full_cluster: bool,
-    logs_until_snapshot: u64,
+    options: &Options,
 ) -> Result<(Client, Option<Client>, Option<Client>), Error> {
     // make sure to clean up data from older runs
     let _ = fs::remove_dir_all("data").await;
 
-    let config = node_config(test_nodes(), logs_until_snapshot).await;
+    let config = node_config(test_nodes(), options).await;
     let client_1 = start_node_with_cache::<Cache>(config).await?;
     let mut client_2 = None;
     let mut client_3 = None;
 
     let expected_nodes = if full_cluster {
+        let mut config = node_config(test_nodes(), options).await;
+        config.node_id = 2;
+        config.data_dir = format!("data/node_{}", 2).into();
         client_2 = task::spawn(async move {
-            let mut config = node_config(test_nodes(), logs_until_snapshot).await;
-            config.node_id = 2;
-            config.data_dir = format!("data/node_{}", 2).into();
             let client = start_node_with_cache::<Cache>(config).await.unwrap();
             Some(client)
         })
         .await?;
 
+        let mut config = node_config(test_nodes(), options).await;
+        config.node_id = 3;
+        config.data_dir = format!("data/node_{}", 3).into();
         client_3 = task::spawn(async move {
-            let mut config = node_config(test_nodes(), logs_until_snapshot).await;
-            config.node_id = 3;
-            config.data_dir = format!("data/node_{}", 3).into();
             let client = start_node_with_cache::<Cache>(config).await.unwrap();
             Some(client)
         })
