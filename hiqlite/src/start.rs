@@ -295,6 +295,10 @@ where
         #[cfg(feature = "sqlite")]
         rx_client_stream,
         tx_shutdown,
+        #[cfg(feature = "cache")]
+        node_config.rate_limit_cache,
+        #[cfg(feature = "sqlite")]
+        node_config.rate_limit_db,
     )
     .await;
 

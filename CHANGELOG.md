@@ -1,17 +1,79 @@
 # Changelog
 
-## Unreleased
+## UNRELEASED
 
-- Added `NodeConfig::learner_only`, `learner_only`, and `HQL_LEARNER_ONLY` to let newly joining
-  nodes stay learners during startup reconciliation instead of being promoted to voting members.
-- Added support for loading secret-bearing config values from a separate secrets source. Any of
-  `secret_raft`, `secret_api`, `s3_key`, `s3_secret`, `enc_keys`, `enc_key_active`, and
-  `password_dashboard` may be set to the case-sensitive sentinel `"$SECRETS"`, in which case the
-  real value is looked up by the same key in a secrets table. That table is provided either via the
-  new `secrets` argument of `NodeConfig::from_toml` / `NodeConfig::from_toml_table`, or, when that
-  is `None`, via a `secrets_file` config option (or `HQL_SECRETS_FILE`) pointing to a TOML file that
-  mirrors the config structure. This keeps the main config diffable and version-controllable while
-  secrets are managed separately (systemd `LoadCredential`, Docker / Kubernetes secrets, ...).
+### Raft Rate-Limiting
+
+You can now rate-limit all Raft write actions. These are things like cache PUT or e.g. execute queries. This limit does
+not affect read actions, since they are local and do not travel through the network. With this rate-limiting, if tuned
+properly for your deployment, you can guarantee that you never saturate your disk, and therefore can never get in a
+situation where you overwhelm the cluster, no matter how high requests might spike.
+
+Just as a very rough guideline: When you only write tiny queries that `INSERT` 3 columns per row, and you limit the Raft
+to 50.000 requests / s, your disk already writes 350+ MB/s. How you want to tune this value depends a lot on how much
+your server can handle and how expensive your queries are. It's impossible to provide a reasonable default value here.
+
+Each client has its own rate-limiter. This is crucial. If the leader enforced it, all limited requests would need to
+travel through the network only for getting limited. This means if you have a traffic spike that your deployment cannot
+handle, it would still flood the network. Instead, each client enforces this locally BEFORE sending out any network
+requests. At the same time, this means if you limit to e.g. 100 RPS while having a 3-node cluster, it will effectively
+mean ~300 RPS for the whole cluster (assuming even load balancing).
+
+You have new config values:
+
+```toml
+# To guarantee the stabiliy of your Raft cluster, you can
+# rate-limit all write operations to the Raft (excluding
+# management overhead). This is in request per second. It
+# guarantees that the cluster can never be overwhelmed
+# because maybe the disks cannot keep up. Usually, when
+# this happens, you would see dropped or missing heartbeats
+# and errors that the leader is down, even when the cluster
+# is healthy.
+# The burst can usually be 2-2x the rps.
+#
+# default: not set
+# overwritten by: HQL_RL_CACHE_RPS
+rate_limit_cache_rps = 50000
+# overwritten by: HQL_RL_CACHE_BURST
+rate_limit_cache_burst = 100000
+# overwritten by: HQL_RL_DB_RPS
+rate_limit_db_rps = 100000
+# overwritten by: HQL_RL_DB_BURST
+rate_limit_db_burst = 200000
+```
+
+### Learner-Only mode
+
+Added `NodeConfig::learner_only`, `learner_only`, and `HQL_LEARNER_ONLY` to let newly joining nodes stay learners during
+startup reconciliation instead of being promoted to voting members. This makes it possible to add read-only cluster
+members.
+
+### New feature: `in-memory-snapshots`
+
+By default, even if you set `cache_storage_disk = false` to keep the WAL in-memory, Cache snapshots will still be
+written to disk into a temp file. This means the `data_dir` must be writable. Snapshots are only necessary if a new node
+joins the Raft cluster, and then only the leader needs to stream the latest snapshot to the new node. This means in most
+cases, you never need them. Writing them into a temp file is the most efficient solution. However, with this feature,
+you can opt-in to keep snapshots in-memory as well. This will not need any disk at all (as long as you don't enable
+`sqlite` of course). This is costly, though, because you effectively double your memory requirements for each single
+cache entry.
+
+### Improvements for stack sizes
+
+Quite a few tasks were pretty big and consumed a lot of space on the stack. Some even so much that `tokio` auto-boxed
+them. All of them were tuned to not throw warnings anymore. There are a few left inside `openraft`. To my knowledge, we
+cannot control these sizes indirectly with our trait impl's. This needs some further investigation.
+
+### Secrets from file
+
+Added support for loading secret-bearing config values from a separate secrets source. Any of `secret_raft`,
+`secret_api`, `s3_key`, `s3_secret`, `enc_keys`, `enc_key_active`, and `password_dashboard` may be set to the
+case-sensitive sentinel `"$SECRETS"`, in which case the real value is looked up by the same key in a secrets table. That
+table is provided either via the new `secrets` argument of `NodeConfig::from_toml` / `NodeConfig::from_toml_table`, or,
+when that is `None`, via a `secrets_file` config option (or `HQL_SECRETS_FILE`) pointing to a TOML file that mirrors the
+config structure. This keeps the main config diffable and version-controllable while secrets are managed separately
+(systemd `LoadCredential`, Docker / Kubernetes secrets, ...).
 
 ### Breaking
 
@@ -178,7 +240,7 @@ for separation.
 This type can be used inside the `params!()` macro directly, and it can be parsed from DB columns easily, since it's
 only a `String` behind the scenes until you actually need it to be a `Vec<_>`. The basic usage may look like this:
 
-```rust
+```rust,notest
 use hiqlite::VecText;
 
 let values = vec![

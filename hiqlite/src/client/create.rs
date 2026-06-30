@@ -1,9 +1,10 @@
 use crate::app_state::{AppState, RaftType};
 use crate::client::DbClient;
+use crate::config::RateLimitConfig;
 use crate::http_client::build_http_client;
 use crate::{Client, Error, tls};
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU32, AtomicUsize};
 use tokio::sync::{RwLock, watch};
 
 #[cfg(feature = "listen_notify")]
@@ -12,8 +13,11 @@ use crate::client::listen_notify::remote::RemoteListener;
 #[cfg(feature = "sqlite")]
 use crate::client::stream::ClientStreamReq;
 
+const RATE_LIMIT_AWAIT_SIZE: usize = 64;
+
 impl Client {
     /// Create a local client that skips network connections if not necessary
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn new_local(
         state: Arc<AppState>,
         tls_config: Option<Arc<rustls::ClientConfig>>,
@@ -21,6 +25,8 @@ impl Client {
         #[cfg(feature = "sqlite")] tx_client_db: flume::Sender<ClientStreamReq>,
         #[cfg(feature = "sqlite")] rx_client_db: flume::Receiver<ClientStreamReq>,
         tx_shutdown: watch::Sender<bool>,
+        #[cfg(feature = "cache")] rate_limit_cache: Option<RateLimitConfig>,
+        #[cfg(feature = "sqlite")] rate_limit_db: Option<RateLimitConfig>,
     ) -> Self {
         let leader_id = state.id;
         let leader_addr = state.addr_api.clone();
@@ -34,6 +40,12 @@ impl Client {
 
         #[cfg(feature = "cache")]
         let (tx_client_cache, rx_client_cache) = flume::bounded(1);
+
+        #[allow(unused_variables)]
+        let (rate_limit_cache_await, rx_cache_await) =
+            crossbeam::channel::bounded(RATE_LIMIT_AWAIT_SIZE);
+        #[allow(unused_variables)]
+        let (rate_limit_db_await, rx_db_await) = crossbeam::channel::bounded(RATE_LIMIT_AWAIT_SIZE);
 
         let db_client = DbClient {
             state: Some(state),
@@ -58,6 +70,14 @@ impl Client {
             app_start: chrono::Utc::now().timestamp_micros(),
             #[cfg(feature = "listen_notify_local")]
             rx_notify: None,
+            #[cfg(feature = "cache")]
+            rate_limit_cache: rate_limit_cache.as_ref().map(|c| AtomicU32::new(c.rps)),
+            #[cfg(feature = "cache")]
+            rate_limit_cache_await,
+            #[cfg(feature = "sqlite")]
+            rate_limit_db: rate_limit_db.as_ref().map(|c| AtomicU32::new(c.rps)),
+            #[cfg(feature = "sqlite")]
+            rate_limit_db_await,
         };
 
         let slf = Self {
@@ -81,6 +101,13 @@ impl Client {
             RaftType::Sqlite,
         );
 
+        #[cfg(all(feature = "cache", feature = "sqlite"))]
+        slf.spawn_rate_limit_ticker(rate_limit_cache, rate_limit_db, rx_cache_await, rx_db_await);
+        #[cfg(all(feature = "cache", not(feature = "sqlite")))]
+        slf.spawn_rate_limit_ticker(rate_limit_cache, None, rx_cache_await, rx_db_await);
+        #[cfg(all(not(feature = "cache"), feature = "sqlite"))]
+        slf.spawn_rate_limit_ticker(None, rate_limit_db, rx_cache_await, rx_db_await);
+
         slf
     }
 
@@ -96,12 +123,15 @@ impl Client {
     /// If your client will be unable to reach all nodes, you can run the Hiqlite Server in proxy
     /// mode like mentioned in the [README](https://github.com/sebadob/hiqlite/blob/main/README.md).
     /// In this case, only provide the proxy's IP in the `nodes: Vec<String>`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn remote(
         nodes: Vec<String>,
         tls: bool,
         tls_no_verify: bool,
         api_secret: String,
         with_proxy: bool,
+        #[cfg(feature = "cache")] rate_limit_cache: Option<RateLimitConfig>,
+        #[cfg(feature = "sqlite")] rate_limit_db: Option<RateLimitConfig>,
     ) -> Result<Self, Error> {
         if nodes.is_empty() {
             return Err(Error::Config(
@@ -139,6 +169,12 @@ impl Client {
         #[cfg(all(feature = "listen_notify_local", not(feature = "listen_notify")))]
         let rx_notify = None;
 
+        #[allow(unused_variables)]
+        let (rate_limit_cache_await, rx_cache_await) =
+            crossbeam::channel::bounded(RATE_LIMIT_AWAIT_SIZE);
+        #[allow(unused_variables)]
+        let (rate_limit_db_await, rx_db_await) = crossbeam::channel::bounded(RATE_LIMIT_AWAIT_SIZE);
+
         let api_secret_bytes = api_secret.as_bytes().to_vec();
 
         let db_client = DbClient {
@@ -163,6 +199,14 @@ impl Client {
             app_start: chrono::Utc::now().timestamp_micros(),
             #[cfg(feature = "listen_notify_local")]
             rx_notify,
+            #[cfg(feature = "cache")]
+            rate_limit_cache: rate_limit_cache.as_ref().map(|c| AtomicU32::new(c.rps)),
+            #[cfg(feature = "cache")]
+            rate_limit_cache_await,
+            #[cfg(feature = "sqlite")]
+            rate_limit_db: rate_limit_db.as_ref().map(|c| AtomicU32::new(c.rps)),
+            #[cfg(feature = "sqlite")]
+            rate_limit_db_await,
         };
 
         let slf = Self {
@@ -189,6 +233,13 @@ impl Client {
             rx_client_db,
             RaftType::Sqlite,
         );
+
+        #[cfg(all(feature = "cache", feature = "sqlite"))]
+        slf.spawn_rate_limit_ticker(rate_limit_cache, rate_limit_db, rx_cache_await, rx_db_await);
+        #[cfg(all(feature = "cache", not(feature = "sqlite")))]
+        slf.spawn_rate_limit_ticker(rate_limit_cache, None, rx_cache_await, rx_db_await);
+        #[cfg(all(not(feature = "cache"), feature = "sqlite"))]
+        slf.spawn_rate_limit_ticker(None, rate_limit_db, rx_cache_await, rx_db_await);
 
         Ok(slf)
     }

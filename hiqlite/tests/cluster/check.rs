@@ -17,13 +17,16 @@ pub async fn is_client_db_healthy(client: &Client, id: Option<u64>) -> Result<()
 
     log(format!("Checking Cache health {:?}", id));
     client.wait_until_healthy_cache().await;
+    log(format!("Cache {:?} is healthy", id));
     let metrics = client.metrics_cache().await?;
     let members = metrics.membership_config.nodes().count();
     assert_eq!(members, 3);
 
     // we will do the select 1 to catch leader switches that may have
     // happened in between and trigger a client stream switch that way
+    log("client batch");
     client.batch("SELECT 1;").await?;
+    log("client batch returned");
 
     // make sure our before inserted data exists
     let data: Result<Vec<TestData>, Error> = client

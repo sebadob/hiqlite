@@ -36,6 +36,8 @@ impl Client {
         Q: IntoIterator<Item = (C, Params)>,
         C: Into<Cow<'static, str>>,
     {
+        self.rate_limit_db().await?;
+
         let queries: Vec<Query> = sql
             .into_iter()
             .map(|(q, params)| Query {

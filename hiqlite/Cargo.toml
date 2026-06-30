@@ -37,10 +37,6 @@ dashboard = [
 dlock = ["cache"]
 cast_ints = []
 cast_ints_unchecked = []
-# Opt-in: keep Cache Snapshots in-memory instead of on disk. This lets a pure
-# cache-only node run without a `data_dir`, but doubles snapshot memory cost and
-# disables zero-copy snapshot streaming from file. Deliberately NOT part of `full`.
-in-memory-snapshots = ["cache"]
 full = [
     "auto-heal",
     "backup",
@@ -54,6 +50,10 @@ full = [
     "sqlite",
     "toml",
 ]
+# Opt-in: keep Cache Snapshots in-memory instead of on disk. This lets a pure
+# cache-only node run without a `data_dir`, but doubles snapshot memory cost and
+# disables zero-copy snapshot streaming from file. Deliberately NOT part of `full`.
+in-memory-snapshots = ["cache"]
 jemalloc = ["dep:tikv-jemallocator"]
 listen_notify = [
     "dep:eventsource-client",
@@ -103,6 +103,7 @@ chrono.workspace = true
 clap = { workspace = true, optional = true }
 console-subscriber = { workspace = true, optional = true }
 cron = { workspace = true, optional = true }
+crossbeam = { workspace = true }
 cryptr = { workspace = true }
 ctrlc = { workspace = true, optional = true }
 deadpool = { workspace = true, optional = true }

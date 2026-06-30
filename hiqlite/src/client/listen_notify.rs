@@ -167,6 +167,7 @@ impl Client {
     where
         P: Serialize,
     {
+        self.rate_limit_cache().await?;
         let now = Utc::now().timestamp_micros();
 
         match self

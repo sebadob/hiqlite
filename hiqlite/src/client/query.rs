@@ -26,6 +26,10 @@ impl Client {
     where
         S: Into<Cow<'static, str>>,
     {
+        // A consistent query it not a write operation, but it needs to travel to the leader,
+        // and the raft needs to be blocked.
+        self.rate_limit_db().await?;
+
         self.query_remote::<S>(stmt, params, true).await
     }
 
@@ -44,6 +48,8 @@ impl Client {
         T: for<'a, 'r> From<&'a mut crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
     {
+        self.rate_limit_db().await?;
+
         Ok(self
             .query_remote(stmt, params, true)
             .await?
@@ -263,7 +269,6 @@ impl Client {
     }
 
     /// Executes a query on remote host and returns raw rows.
-    /// This is mostly used internally and not directly.
     pub(crate) async fn query_remote<S>(
         &self,
         stmt: S,

@@ -293,6 +293,11 @@ impl WalFile {
             (self.data_end.unwrap() as usize + 1, false)
         };
 
+        // TODO this can panic if the cluster is overwhelmed -> why?
+        //  Saw this for very huge transactional inserts. Maybe when the queries are too big
+        //  to fit inside the WAL? We could also test with a simple `File` handle for the writer
+        //  and only mmap the readers. This would get rid of the size limit when it overflows, and
+        //  it would only grow the file to a size bigger than expected instead of maybe panicking.
         let mmap = self.mmap_mut.as_mut().unwrap();
 
         let crc = crc!(&data);
