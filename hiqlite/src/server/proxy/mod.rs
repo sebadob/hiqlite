@@ -33,6 +33,8 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
             .unwrap_or(false),
         config.secret_api.clone(),
         false,
+        None,
+        None,
     )
     .await?;
 
