@@ -111,7 +111,7 @@ thiserror = "2"
 thread-priority = "3.0.0"
 tikv-jemallocator = "0.7.0"
 # 0.3.52 introduced an invalid breaking change
-time = "~0.3.51"
+time = "=0.3.51"
 tokio = { version = "1.43.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.4", features = ["ring"] }
 toml = "1"
