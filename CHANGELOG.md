@@ -1,6 +1,6 @@
 # Changelog
 
-## UNRELEASED
+## v0.14.0
 
 ### Raft Rate-Limiting
 
