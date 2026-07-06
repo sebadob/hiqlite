@@ -88,10 +88,10 @@ webpki-roots = [
 __profiling = ["dep:console-subscriber"]
 
 [dependencies]
-hiqlite-derive = { version = "0.14", optional = true }
-#hiqlite-derive = { path = "../hiqlite-derive", optional = true }
-hiqlite-wal = { version = "0.14" }
-#hiqlite-wal = { path = "../hiqlite-wal" }
+#hiqlite-derive = { version = "0.14", optional = true }
+hiqlite-derive = { path = "../hiqlite-derive", optional = true }
+#hiqlite-wal = { version = "0.14" }
+hiqlite-wal = { path = "../hiqlite-wal" }
 
 argon2 = { workspace = true, optional = true }
 axum.workspace = true
