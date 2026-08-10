@@ -41,7 +41,7 @@ impl Client {
                 && let Some(lim) = slf.inner.rate_limit_cache.as_ref()
             {
                 lim.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    Some(min(current + config.rps, config.burst))
+                    Some(refill_bucket(current, config.rps, config.burst))
                 })
                 .ok();
 
@@ -57,7 +57,7 @@ impl Client {
                 && let Some(lim) = slf.inner.rate_limit_db.as_ref()
             {
                 lim.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    Some(min(current + config.rps, config.burst))
+                    Some(refill_bucket(current, config.rps, config.burst))
                 })
                 .ok();
 
@@ -122,5 +122,29 @@ impl Client {
                 }
             }
         }
+    }
+}
+
+/// Token bucket refill: add `rps` tokens every second, never exceeding `burst`.
+#[inline]
+fn refill_bucket(current: u32, rps: u32, burst: u32) -> u32 {
+    min(current.saturating_add(rps), burst)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refill_bucket_caps_at_burst() {
+        // refill from empty starts at rps
+        assert_eq!(refill_bucket(0, 10, 20), 10);
+        // normal refill below burst
+        assert_eq!(refill_bucket(5, 10, 20), 15);
+        // at burst: grows no further
+        assert_eq!(refill_bucket(20, 10, 20), 20);
+        // long idle time must never accumulate beyond burst
+        assert_eq!(refill_bucket(1000, 10, 20), 20);
+        assert_eq!(refill_bucket(u32::MAX, 10, 20), 20);
     }
 }
