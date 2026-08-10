@@ -307,15 +307,19 @@ fn run(
                     is_dirty = false;
                 }
 
+                // Persist `last_purged_log_id` BEFORE deleting any WAL files. If we crashed in
+                // between, we would end up with a `last_purged_log_id` pointing into already
+                // deleted files, which breaks recovery via `get_log_state()`. A too-low value on
+                // the other hand only keeps some extra files around, which is safe.
+                if last_log.is_some() {
+                    meta.write()?.last_purged_log_id = last_log;
+                    Metadata::write(meta.clone(), &wal.base_path)?;
+                }
+
                 buf.clear();
                 buf_logs.clear();
                 match wal.shift_delete_logs(from, until, wal_size, &mut buf, &mut buf_logs) {
                     Ok(_) => {
-                        // the last_log may be none if logs are truncated
-                        if last_log.is_some() {
-                            meta.write()?.last_purged_log_id = last_log;
-                            Metadata::write(meta.clone(), &wal.base_path)?;
-                        }
                         {
                             let mut lock = wal_locked.write().unwrap();
                             lock.active = wal.active;
