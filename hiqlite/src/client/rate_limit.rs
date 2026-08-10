@@ -1,6 +1,6 @@
 use crate::config::RateLimitConfig;
 use crate::{Client, Error};
-use std::cmp::max;
+use std::cmp::min;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -37,11 +37,11 @@ impl Client {
             interval.tick().await;
 
             #[cfg(feature = "cache")]
-            if let Some(config) = &config_cache {
-                let lim = slf.inner.rate_limit_cache.as_ref().unwrap();
-
+            if let Some(config) = &config_cache
+                && let Some(lim) = slf.inner.rate_limit_cache.as_ref()
+            {
                 lim.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    Some(max(current + config.rps, config.burst))
+                    Some(min(current + config.rps, config.burst))
                 })
                 .ok();
 
@@ -53,11 +53,11 @@ impl Client {
             }
 
             #[cfg(feature = "sqlite")]
-            if let Some(config) = &config_db {
-                let lim = slf.inner.rate_limit_db.as_ref().unwrap();
-
+            if let Some(config) = &config_db
+                && let Some(lim) = slf.inner.rate_limit_db.as_ref()
+            {
                 lim.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    Some(max(current + config.rps, config.burst))
+                    Some(min(current + config.rps, config.burst))
                 })
                 .ok();
 
