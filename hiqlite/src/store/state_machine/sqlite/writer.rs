@@ -1068,4 +1068,25 @@ mod tests {
         assert_eq!(id, 1);
         assert_eq!(ts, 42);
     }
+
+    #[test]
+    fn migration_validation_gap_returns_error() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_migrations_table(&conn).unwrap();
+        // mark migration 2 as applied, skipping 1 -> gap detection must error, not panic
+        conn.execute(
+            "INSERT INTO _migrations (id, name, ts, hash) VALUES (2, 'two', 0, 'h')",
+            (),
+        )
+        .unwrap();
+
+        let migrations = vec![Migration {
+            id: 1,
+            name: "one".to_string(),
+            hash: "h1".to_string(),
+            content: b"".to_vec(),
+        }];
+        let err = last_applied_migration(&conn, &migrations).unwrap_err();
+        assert!(err.to_string().contains("order mismatch"));
+    }
 }

@@ -896,3 +896,24 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forbidden_functions_return_errors_and_keep_connection_usable() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        StateMachineSqlite::overwrite_non_det_fns(&conn);
+
+        // non-deterministic functions must fail the statement ...
+        let err = conn
+            .query_row("SELECT now()", (), |row| row.get::<_, String>(0))
+            .unwrap_err();
+        assert!(err.to_string().contains("forbidden usage of `now()`"));
+
+        // ... and the connection must still work afterwards (no writer death)
+        let one: i64 = conn.query_row("SELECT 1", (), |row| row.get(0)).unwrap();
+        assert_eq!(one, 1);
+    }
+}
