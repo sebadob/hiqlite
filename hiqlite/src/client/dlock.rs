@@ -68,35 +68,41 @@ impl Client {
         self.rate_limit_cache().await?;
 
         let key = key.into();
-        let state = self
-            .lock_req_retry(CacheRequest::Lock((key.clone(), None)), false)
-            .await?;
-        match state {
-            LockState::Locked(id) => Ok(Lock {
-                id,
-                key,
-                client: self.clone(),
-            }),
-            LockState::Queued(id) => {
-                let res = self.lock_await(key.clone(), id).await?;
-                match res {
-                    LockState::Released => {
-                        let state = self
-                            .lock_req_retry(CacheRequest::Lock((key.clone(), Some(id))), false)
-                            .await?;
-                        match state {
-                            LockState::Locked(id) => Ok(Lock {
+        // `ticket` keeps our queue ticket across re-claims. Reusing the same ticket is important:
+        // a new first-try `Lock` would mint a fresh ticket and leave the old one orphaned in the
+        // handler queue, where it could block the lock until its lease expires.
+        let mut ticket: Option<u64> = None;
+        loop {
+            let state = self
+                .lock_req_retry(CacheRequest::Lock((key.clone(), ticket)), false)
+                .await?;
+            match state {
+                LockState::Locked(id) => {
+                    return Ok(Lock {
+                        id,
+                        key,
+                        client: self.clone(),
+                    });
+                }
+                LockState::Queued(id) => {
+                    // Wait for our position. The lock may be granted directly while waiting if
+                    // the previous holder's lease expired.
+                    match self.lock_await(key.clone(), id).await? {
+                        LockState::Locked(id) => {
+                            return Ok(Lock {
                                 id,
                                 key,
                                 client: self.clone(),
-                            }),
-                            s => unreachable!("{:?}", s),
+                            });
                         }
+                        // Released: the handler promoted our ticket. Re-request with the same
+                        // ticket to claim it.
+                        LockState::Released => ticket = Some(id),
+                        s => unreachable!("{:?}", s),
                     }
-                    _ => unreachable!(),
                 }
+                s => unreachable!("{:?}", s),
             }
-            _ => unreachable!(),
         }
     }
 
@@ -194,6 +200,10 @@ impl Client {
                 ApiStreamResponsePayload::Lock(LockState::Released) => {
                     assert!(is_remote_await);
                     Ok(LockState::Released)
+                }
+                ApiStreamResponsePayload::Lock(LockState::Locked(id)) => {
+                    assert!(is_remote_await);
+                    Ok(LockState::Locked(id))
                 }
                 #[cfg(any(feature = "sqlite", feature = "dlock"))]
                 _ => unreachable!(),
