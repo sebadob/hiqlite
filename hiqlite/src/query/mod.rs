@@ -56,7 +56,7 @@ where
         let mut idx = 1;
         #[allow(clippy::explicit_counter_loop)]
         for param in params {
-            stmt.raw_bind_parameter(idx, param.into_sql())?;
+            stmt.raw_bind_parameter(idx, param.into_sql()?)?;
             idx += 1;
         }
 
@@ -103,7 +103,7 @@ where
         let mut idx = 1;
         #[allow(clippy::explicit_counter_loop)]
         for param in params {
-            stmt.raw_bind_parameter(idx, param.into_sql())?;
+            stmt.raw_bind_parameter(idx, param.into_sql()?)?;
             idx += 1;
         }
 
@@ -186,7 +186,7 @@ where
         let mut idx = 1;
         #[allow(clippy::explicit_counter_loop)]
         for param in params {
-            stmt.raw_bind_parameter(idx, param.into_sql())?;
+            stmt.raw_bind_parameter(idx, param.into_sql()?)?;
             idx += 1;
         }
 

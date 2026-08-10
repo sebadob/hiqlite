@@ -32,7 +32,7 @@ pub enum Param {
 }
 
 impl Param {
-    pub(crate) fn into_sql<'a>(self) -> ToSqlOutput<'a> {
+    pub(crate) fn into_sql<'a>(self) -> Result<ToSqlOutput<'a>, Error> {
         let value = match self {
             Param::Null => Value::Null,
             Param::Integer(i) => Value::Integer(i),
@@ -40,10 +40,15 @@ impl Param {
             Param::Text(t) => Value::Text(t),
             Param::Blob(b) => Value::Blob(b),
             Param::StmtOutputNamed(..) | Param::StmtOutputIndexed(..) => {
-                panic!("Param::StmtOutput is only valid inside transactions")
+                // StmtOutput is resolved inside transactions only. If it reaches the writer
+                // thread via a plain execute/execute_returning, panicking would kill the writer
+                // and with it the whole database -> return a regular error instead.
+                return Err(Error::QueryParams(
+                    "Param::StmtOutput is only valid inside transactions".into(),
+                ));
             }
         };
-        ToSqlOutput::Owned(value)
+        Ok(ToSqlOutput::Owned(value))
     }
 
     pub(crate) fn into_sql_txn_ctx<'a>(
@@ -294,6 +299,17 @@ impl From<StmtColumn<String>> for Param {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stmt_output_param_errors_outside_transactions() {
+        let err = Param::StmtOutputNamed(0, "col".into())
+            .into_sql()
+            .unwrap_err();
+        assert!(err.to_string().contains("only valid inside transactions"));
+
+        let err = Param::StmtOutputIndexed(0, 0).into_sql().unwrap_err();
+        assert!(err.to_string().contains("only valid inside transactions"));
+    }
     use crate::query::rows::ValueOwned;
     use uuid::{NoContext, Timestamp};
 

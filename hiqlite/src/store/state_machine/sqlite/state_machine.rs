@@ -403,116 +403,91 @@ impl StateMachineSqlite {
     }
 
     fn overwrite_non_det_fns(conn: &rusqlite::Connection) {
+        // Non-deterministic functions must never be used for writing connections in a Raft
+        // cluster: every node has to apply the exact same statement to stay consistent. Instead
+        // of panicking (which would kill the single writer thread and with it the whole state
+        // machine), they return a regular error so only the offending statement fails.
         conn.create_scalar_function(
             "date",
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| -> rusqlite::Result<String> {
-                panic!(
-                    "forbidden usage of `date()` - non-deterministic functions must never be \
-                    used for writing connections in a Raft cluster"
-                )
-            },
-        );
+            |_| Self::forbidden_non_det_fn("date"),
+        )
+        .expect("Cannot register forbidden function 'date'");
         conn.create_scalar_function(
             "datetime",
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| -> rusqlite::Result<String> {
-                panic!(
-                    "forbidden usage of `datetime()` - non-deterministic functions must never be \
-                    used for writing connections in a Raft cluster"
-                )
-            },
-        );
+            |_| Self::forbidden_non_det_fn("datetime"),
+        )
+        .expect("Cannot register forbidden function 'datetime'");
         conn.create_scalar_function(
             "julianday",
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| -> rusqlite::Result<String> {
-                panic!(
-                    "forbidden usage of `julianday()` - non-deterministic functions must never be \
-                    used for writing connections in a Raft cluster"
-                );
-            },
-        );
+            |_| Self::forbidden_non_det_fn("julianday"),
+        )
+        .expect("Cannot register forbidden function 'julianday'");
         conn.create_scalar_function(
             "now",
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| -> rusqlite::Result<String> {
-                panic!(
-                    "forbidden usage of `now()` - non-deterministic functions must never be \
-                    used for writing connections in a Raft cluster"
-                )
-            },
-        );
+            |_| Self::forbidden_non_det_fn("now"),
+        )
+        .expect("Cannot register forbidden function 'now'");
         conn.create_scalar_function(
             "random",
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| -> rusqlite::Result<String> {
-                panic!(
-                    "forbidden usage of `random()` - non-deterministic functions must never be \
-                    used for writing connections in a Raft cluster"
-                )
-            },
-        );
+            |_| Self::forbidden_non_det_fn("random"),
+        )
+        .expect("Cannot register forbidden function 'random'");
         conn.create_scalar_function(
             "randomblob",
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| -> rusqlite::Result<String> {
-                panic!(
-                    "forbidden usage of `randomblob()` - non-deterministic functions must never be \
-                    used for writing connections in a Raft cluster"
-                )
-            },
-        );
+            |_| Self::forbidden_non_det_fn("randomblob"),
+        )
+        .expect("Cannot register forbidden function 'randomblob'");
         conn.create_scalar_function(
             "strftime",
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| -> rusqlite::Result<String> {
-                panic!(
-                    "forbidden usage of `strftime()` - non-deterministic functions must never be \
-                    used for writing connections in a Raft cluster"
-                )
-            },
-        );
+            |_| Self::forbidden_non_det_fn("strftime"),
+        )
+        .expect("Cannot register forbidden function 'strftime'");
         conn.create_scalar_function(
             "time",
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| -> rusqlite::Result<String> {
-                panic!(
-                    "forbidden usage of `time()` - non-deterministic functions must never be \
-                    used for writing connections in a Raft cluster"
-                )
-            },
-        );
+            |_| Self::forbidden_non_det_fn("time"),
+        )
+        .expect("Cannot register forbidden function 'time'");
         conn.create_scalar_function(
             "timediff",
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| -> rusqlite::Result<String> {
-                panic!(
-                    "forbidden usage of `timediff()` - non-deterministic functions must never be \
-                    used for writing connections in a Raft cluster"
-                )
-            },
-        );
+            |_| Self::forbidden_non_det_fn("timediff"),
+        )
+        .expect("Cannot register forbidden function 'timediff'");
         conn.create_scalar_function(
             "unixepoch",
             -1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| -> rusqlite::Result<String> {
-                panic!(
-                    "forbidden usage of `unixepoch()` - non-deterministic functions must never be \
-                    used for writing connections in a Raft cluster"
-                )
-            },
-        );
+            |_| Self::forbidden_non_det_fn("unixepoch"),
+        )
+        .expect("Cannot register forbidden function 'unixepoch'");
+    }
+
+    fn forbidden_non_det_fn(name: &str) -> rusqlite::Result<String> {
+        Err(rusqlite::Error::UserFunctionError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "forbidden usage of `{name}()` - non-deterministic functions must never be                     used for writing connections in a Raft cluster"
+                ),
+            ),
+        )))
     }
 
     async fn update_state_machine_(
@@ -525,7 +500,11 @@ impl StateMachineSqlite {
             .await
             .expect("SQLite Writer rx to always be listening");
 
-        rx.await.expect("Snapshot installation to succeed");
+        rx.await
+            .expect("Snapshot installation to succeed")
+            .map_err(|err| StorageError::IO {
+                source: StorageIOError::write(&err),
+            })?;
 
         Ok(())
     }

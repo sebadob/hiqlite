@@ -34,7 +34,7 @@ pub enum WriterRequest {
     Query(Query),
     Migrate(Migrate),
     Snapshot(SnapshotRequest),
-    SnapshotApply((String, oneshot::Sender<()>)),
+    SnapshotApply((String, oneshot::Sender<Result<(), Error>>)),
     MetadataRead(oneshot::Sender<StateMachineData>),
     MetadataMembership(MetaMembershipRequest),
     Backup(BackupRequest),
@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                                 Err(err) => {
                                     error!("Preparing cached query {}: {:?}", q.sql, err);
                                     q.tx.send(Err(Error::PrepareStatement(err.to_string().into())))
-                                        .expect("oneshot tx to never be dropped");
+                                        .ok();
                                     continue;
                                 }
                             };
@@ -202,7 +202,18 @@ CREATE TABLE IF NOT EXISTS _metadata
                             let mut idx = 1;
                             #[allow(clippy::explicit_counter_loop)]
                             for param in q.params {
-                                if let Err(err) = stmt.raw_bind_parameter(idx, param.into_sql()) {
+                                let sql_param = match param.into_sql() {
+                                    Ok(p) => p,
+                                    Err(err) => {
+                                        error!(
+                                            "Error converting param on position {} for query {}: {:?}",
+                                            idx, q.sql, err
+                                        );
+                                        params_err = Some(err);
+                                        break;
+                                    }
+                                };
+                                if let Err(err) = stmt.raw_bind_parameter(idx, sql_param) {
                                     error!(
                                         "Error binding param on position {} to query {}: {:?}",
                                         idx, q.sql, err
@@ -215,14 +226,14 @@ CREATE TABLE IF NOT EXISTS _metadata
                             }
 
                             if let Some(err) = params_err {
-                                q.tx.send(Err(err)).expect("oneshot tx to never be dropped");
+                                q.tx.send(Err(err)).ok();
                                 continue;
                             }
 
                             stmt.raw_execute().map_err(Error::from)
                         };
 
-                        q.tx.send(res).expect("oneshot tx to never be dropped");
+                        q.tx.send(res).ok();
                     }
 
                     Query::ExecuteReturning(q) => {
@@ -238,7 +249,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                                 Err(err) => {
                                     error!("Preparing cached query {}: {:?}", q.sql, err);
                                     q.tx.send(Err(Error::PrepareStatement(err.to_string().into())))
-                                        .expect("oneshot tx to never be dropped");
+                                        .ok();
                                     continue;
                                 }
                             };
@@ -251,7 +262,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                                 Ok(c) => c,
                                 Err(err) => {
                                     q.tx.send(Err(Error::PrepareStatement(err.to_string().into())))
-                                        .expect("oneshot tx to never be dropped");
+                                        .ok();
                                     continue;
                                 }
                             };
@@ -261,7 +272,18 @@ CREATE TABLE IF NOT EXISTS _metadata
                             let mut idx = 1;
                             #[allow(clippy::explicit_counter_loop)]
                             for param in q.params {
-                                if let Err(err) = stmt.raw_bind_parameter(idx, param.into_sql()) {
+                                let sql_param = match param.into_sql() {
+                                    Ok(p) => p,
+                                    Err(err) => {
+                                        error!(
+                                            "Error converting param on position {} for query {}: {:?}",
+                                            idx, q.sql, err
+                                        );
+                                        params_err = Some(err);
+                                        break;
+                                    }
+                                };
+                                if let Err(err) = stmt.raw_bind_parameter(idx, sql_param) {
                                     error!(
                                         "Error binding param on position {} to query {}: {:?}",
                                         idx, q.sql, err
@@ -274,7 +296,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             }
 
                             if let Some(err) = params_err {
-                                q.tx.send(Err(err)).expect("oneshot tx to never be dropped");
+                                q.tx.send(Err(err)).ok();
                                 continue;
                             }
 
@@ -297,7 +319,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             Ok(res)
                         };
 
-                        q.tx.send(res).expect("oneshot tx to never be dropped");
+                        q.tx.send(res).ok();
                     }
 
                     Query::Transaction(req) => {
@@ -309,7 +331,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                                 error!("Opening database transaction: {err:?}");
                                 req.tx
                                     .send(Err(Error::Transaction(err.to_string().into())))
-                                    .expect("oneshot tx to never be dropped");
+                                    .ok();
                                 continue;
                             }
                         };
@@ -378,7 +400,18 @@ CREATE TABLE IF NOT EXISTS _metadata
                                         let mut first_row: Vec<Value> =
                                             Vec::with_capacity(column_count);
                                         for col_index in 0..column_count {
-                                            first_row.push(row.get(col_index).unwrap());
+                                            match row.get(col_index) {
+                                                Ok(v) => first_row.push(v),
+                                                Err(err) => {
+                                                    query_err = Some(Error::QueryParams(
+                                                        format!(
+                                                            "Cannot read output column {col_index}: {err}"
+                                                        )
+                                                        .into(),
+                                                    ));
+                                                    break 'outer;
+                                                }
+                                            }
                                         }
 
                                         'remaining_rows: loop {
@@ -430,20 +463,16 @@ CREATE TABLE IF NOT EXISTS _metadata
                             if let Err(e) = txn.rollback() {
                                 error!("Error during txn rollback: {:?}", e);
                             }
-                            req.tx
-                                .send(Err(err))
-                                .expect("oneshot tx to never be dropped");
+                            req.tx.send(Err(err)).ok();
                         } else {
                             match txn.commit() {
                                 Ok(()) => {
-                                    req.tx
-                                        .send(Ok(results))
-                                        .expect("oneshot tx to never be dropped");
+                                    req.tx.send(Ok(results)).ok();
                                 }
                                 Err(err) => {
                                     req.tx
                                         .send(Err(Error::Transaction(err.to_string().into())))
-                                        .expect("oneshot tx to never be dropped");
+                                        .ok();
                                 }
                             }
                         }
@@ -476,13 +505,9 @@ CREATE TABLE IF NOT EXISTS _metadata
                         }
 
                         if let Some(err) = err {
-                            req.tx
-                                .send(Err(err))
-                                .expect("oneshot tx to never be dropped");
+                            req.tx.send(Err(err)).ok();
                         } else {
-                            req.tx
-                                .send(Ok(res))
-                                .expect("oneshot tx to never be dropped");
+                            req.tx.send(Ok(res)).ok();
                         }
                     }
                 },
@@ -497,7 +522,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                         error!("Error during 'PRAGMA optimize': {}", err);
                     }
 
-                    req.tx.send(res).unwrap();
+                    req.tx.send(res).ok();
                 }
 
                 WriterRequest::Snapshot(SnapshotRequest {
@@ -538,14 +563,18 @@ CREATE TABLE IF NOT EXISTS _metadata
                 WriterRequest::SnapshotApply((path, ack)) => {
                     let start = Instant::now();
                     info!("Starting snapshot restore from {}", path);
-                    conn.restore(
+                    let restore_res = conn.restore(
                         "main",
                         path,
                         Some(|p: Progress| {
                             println!("Database restore remaining: {}", p.remaining);
                         }),
-                    )
-                    .expect("SnapshotApply to always succeed in sql writer");
+                    );
+                    if let Err(err) = restore_res {
+                        error!("Error during snapshot restore: {:?}", err);
+                        ack.send(Err(Error::Sqlite(err.to_string().into()))).ok();
+                        continue;
+                    }
 
                     if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
@@ -556,16 +585,33 @@ CREATE TABLE IF NOT EXISTS _metadata
                         start.elapsed().as_millis()
                     );
 
-                    sm_data = conn
-                        .query_row("SELECT data FROM _metadata WHERE key = 'meta'", (), |row| {
-                            let meta_bytes: Vec<u8> = row.get(0)?;
-                            let metadata: StateMachineData =
-                                deserialize(&meta_bytes).expect("Metadata to deserialize ok");
-                            Ok(metadata)
-                        })
-                        .expect("Metadata query to always succeed");
+                    match conn.query_row(
+                        "SELECT data FROM _metadata WHERE key = 'meta'",
+                        (),
+                        |row| row.get::<_, Vec<u8>>(0),
+                    ) {
+                        Ok(meta_bytes) => match deserialize(&meta_bytes) {
+                            Ok(metadata) => sm_data = metadata,
+                            Err(err) => {
+                                error!(
+                                    "Error deserializing metadata after snapshot restore: {:?}",
+                                    err
+                                );
+                                ack.send(Err(Error::Sqlite(
+                                    format!("Error deserializing metadata: {err}").into(),
+                                )))
+                                .ok();
+                                continue;
+                            }
+                        },
+                        Err(err) => {
+                            error!("Error reading metadata after snapshot restore: {:?}", err);
+                            ack.send(Err(Error::Sqlite(err.to_string().into()))).ok();
+                            continue;
+                        }
+                    }
 
-                    ack.send(()).unwrap()
+                    ack.send(Ok(())).ok();
                 }
 
                 WriterRequest::MetadataRead(ack) => {
@@ -578,22 +624,27 @@ CREATE TABLE IF NOT EXISTS _metadata
                             let bytes: Vec<u8> = row.get(0)?;
                             Ok(bytes)
                         }) {
-                            Ok(bytes) => {
-                                sm_data = deserialize(&bytes).unwrap();
-                            }
+                            Ok(bytes) => match deserialize(&bytes) {
+                                Ok(metadata) => sm_data = metadata,
+                                Err(err) => {
+                                    // same treatment as missing metadata: the log store will
+                                    // re-apply entries from the beginning
+                                    error!("Error deserializing metadata from DB: {err:?}");
+                                }
+                            },
                             Err(err) => {
                                 warn!("No metadata exists inside the DB yet");
                             }
                         }
                     }
 
-                    ack.send(sm_data.clone()).unwrap();
+                    ack.send(sm_data.clone()).ok();
                 }
 
                 WriterRequest::MetadataMembership(req) => {
                     sm_data.last_membership = req.last_membership;
                     sm_data.last_applied_log_id = req.last_applied_log_id;
-                    req.ack.send(()).unwrap();
+                    req.ack.send(()).ok();
                 }
 
                 WriterRequest::Backup(req) => {
@@ -666,7 +717,7 @@ CREATE TABLE IF NOT EXISTS _metadata
 
                 WriterRequest::RTT(req) => {
                     sm_data.last_applied_log_id = req.last_applied_log_id;
-                    req.ack.send(()).unwrap();
+                    req.ack.send(()).ok();
                 }
 
                 WriterRequest::Shutdown(ack) => {
@@ -814,10 +865,13 @@ fn migrate(
 
     for migration in migrations {
         if migration.id != last_applied + 1 {
-            panic!(
-                "Migration index has a gap between {} and {}",
-                last_applied, migration.id
-            );
+            return Err(Error::Error(
+                format!(
+                    "Migration index has a gap between {} and {}",
+                    last_applied, migration.id
+                )
+                .into(),
+            ));
         }
         last_applied = migration.id;
 
@@ -871,10 +925,13 @@ fn last_applied_migration(
             Ok(count)
         })?;
         if count < first_id - 1 {
-            panic!(
-                "Received optimized migrations starting at id '{first_id}' but found only \
-                {count} already applied"
-            );
+            return Err(Error::Error(
+                format!(
+                    "Received optimized migrations starting at id '{first_id}' but found only \
+                    {count} already applied"
+                )
+                .into(),
+            ));
         }
     }
 
@@ -897,36 +954,52 @@ fn last_applied_migration(
     let mut last_applied = first_id - 1;
     for applied in already_applied {
         if last_applied + 1 != applied.id {
-            panic!(
-                "Applied migrations order mismatch: expected {}, got {}",
-                last_applied + 1,
-                applied.id
-            );
+            return Err(Error::Error(
+                format!(
+                    "Applied migrations order mismatch: expected {}, got {}",
+                    last_applied + 1,
+                    applied.id
+                )
+                .into(),
+            ));
         }
         last_applied = applied.id;
 
         match migrations.get(last_applied as usize - 1 - applied_offset) {
-            None => panic!("Missing migration with id {last_applied}"),
+            None => {
+                return Err(Error::Error(
+                    format!("Missing migration with id {last_applied}").into(),
+                ));
+            }
             Some(migration) => {
                 if applied.id != migration.id {
-                    panic!(
-                        "Migration id mismatch: applied {}, given {}\n{migrations:?}",
-                        applied.id, migration.id
-                    );
+                    return Err(Error::Error(
+                        format!(
+                            "Migration id mismatch: applied {}, given {}\n{migrations:?}",
+                            applied.id, migration.id
+                        )
+                        .into(),
+                    ));
                 }
 
                 if applied.name != migration.name {
-                    panic!(
-                        "Name for migration {} has changed: applied {}, given {}\n{migrations:?}",
-                        migration.id, applied.name, migration.name
-                    );
+                    return Err(Error::Error(
+                        format!(
+                            "Name for migration {} has changed: applied {}, given {}\n{migrations:?}",
+                            migration.id, applied.name, migration.name
+                        )
+                        .into(),
+                    ));
                 }
 
                 if applied.hash != migration.hash {
-                    panic!(
-                        "Hash for migration {} has changed: applied {}, given {}\n{migrations:?}",
-                        migration.id, applied.hash, migration.hash
-                    );
+                    return Err(Error::Error(
+                        format!(
+                            "Hash for migration {} has changed: applied {}, given {}\n{migrations:?}",
+                            migration.id, applied.hash, migration.hash
+                        )
+                        .into(),
+                    ));
                 }
             }
         }
