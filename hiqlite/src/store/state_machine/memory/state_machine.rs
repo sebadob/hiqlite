@@ -600,6 +600,14 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 .unwrap()
                                 .send(TtlRequest::Ttl((exp, key.to_string())))
                                 .expect("cache ttl handler to always be running");
+                        } else {
+                            // the value was re-put without a TTL: drop any previously registered
+                            // expiry so it cannot delete the fresh value
+                            self.tx_ttls
+                                .get(cache_idx)
+                                .unwrap()
+                                .send(TtlRequest::Clear(key.to_string()))
+                                .expect("cache ttl handler to always be running");
                         }
 
                         self.tx_caches
