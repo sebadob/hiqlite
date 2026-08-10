@@ -40,7 +40,7 @@ pub struct LockAwaitPayload {
     pub ack: oneshot::Sender<LockState>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LockState {
     Locked(u64),
     Queued(u64),
@@ -259,4 +259,129 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
     }
 
     debug!("DLock handler exiting");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::borrow::Cow;
+    use tokio::sync::oneshot;
+
+    fn send(tx: &flume::Sender<LockRequest>, req: LockRequest) {
+        tx.send(req).expect("handler to be running");
+    }
+
+    async fn lock(tx: &flume::Sender<LockRequest>, key: &str, log_id: u64) -> LockState {
+        let (ack, rx) = oneshot::channel();
+        send(
+            tx,
+            LockRequest::Lock(LockRequestPayload {
+                key: Cow::Owned(key.to_string()),
+                log_id,
+                ack,
+            }),
+        );
+        rx.await.unwrap()
+    }
+
+    async fn acquire(tx: &flume::Sender<LockRequest>, key: &str, log_id: u64) -> LockState {
+        let (ack, rx) = oneshot::channel();
+        send(
+            tx,
+            LockRequest::Acquire(LockRequestPayload {
+                key: Cow::Owned(key.to_string()),
+                log_id,
+                ack,
+            }),
+        );
+        rx.await.unwrap()
+    }
+
+    async fn await_lock(tx: &flume::Sender<LockRequest>, key: &str, id: u64) -> LockState {
+        let (ack, rx) = oneshot::channel();
+        send(
+            tx,
+            LockRequest::Await(LockAwaitPayload {
+                key: Cow::Owned(key.to_string()),
+                id,
+                ack,
+            }),
+        );
+        rx.await.unwrap()
+    }
+
+    fn release(tx: &flume::Sender<LockRequest>, key: &str, id: u64) {
+        send(
+            tx,
+            LockRequest::Release(LockReleasePayload {
+                key: Cow::Owned(key.to_string()),
+                id,
+            }),
+        );
+    }
+
+    #[tokio::test]
+    async fn lock_release_roundtrip() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        assert_eq!(lock(&tx, "k", 2).await, LockState::Queued(2));
+        release(&tx, "k", 1);
+        // no current holder anymore: the queued ticket is granted directly while waiting
+        assert_eq!(await_lock(&tx, "k", 2).await, LockState::Locked(2));
+        release(&tx, "k", 2);
+    }
+
+    #[tokio::test]
+    async fn duplicate_release_is_ignored() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        release(&tx, "k", 1);
+        // second release of the same ticket must not panic the handler
+        release(&tx, "k", 1);
+        // handler is still alive
+        assert_eq!(lock(&tx, "k", 2).await, LockState::Locked(2));
+    }
+
+    #[tokio::test]
+    async fn release_after_lock_was_removed_is_ignored() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        release(&tx, "k", 1); // no waiters -> lock removed entirely
+        release(&tx, "k", 1); // stale release must be a no-op
+        assert_eq!(lock(&tx, "k", 2).await, LockState::Locked(2));
+    }
+
+    #[tokio::test]
+    async fn acquire_after_lock_was_removed_grants_fresh() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        release(&tx, "k", 1); // removed
+        // a client re-claiming with an old ticket must not hang or panic
+        assert_eq!(acquire(&tx, "k", 1).await, LockState::Locked(1));
+        release(&tx, "k", 1);
+    }
+
+    #[tokio::test]
+    async fn await_when_lock_was_removed_returns_released() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        release(&tx, "k", 1); // removed
+        // an in-flight await must be answered, not hang
+        assert_eq!(await_lock(&tx, "k", 1).await, LockState::Released);
+        assert_eq!(acquire(&tx, "k", 1).await, LockState::Locked(1));
+    }
+
+    #[tokio::test]
+    async fn late_release_after_takeover_is_ignored() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        release(&tx, "k", 1);
+        // lock is free again, ticket 2 takes it
+        assert_eq!(lock(&tx, "k", 2).await, LockState::Locked(2));
+        // the old holder (ticket 1) releases late -> must be ignored, not panic
+        release(&tx, "k", 1);
+        // ticket 2 still holds the lock and can release it normally
+        release(&tx, "k", 2);
+        assert_eq!(lock(&tx, "k", 3).await, LockState::Locked(3));
+    }
 }
