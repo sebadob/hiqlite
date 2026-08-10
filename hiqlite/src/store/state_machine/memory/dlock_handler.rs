@@ -69,6 +69,24 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
             LockRequest::Lock(LockRequestPayload { key, log_id, ack }) => {
                 let now = Utc::now().timestamp();
                 if let Some(lock) = locks.get_mut(key.as_ref()) {
+                    // If the lease of the current holder has expired, the holder is considered
+                    // dead. Any ticket at the front of the queue that had a full lease window to
+                    // reclaim the lock but did not is dead as well: drop it (and wake its client,
+                    // if it is still waiting) so it can never block the lock forever.
+                    if lock.exp < now {
+                        while let Some(&ticket) = lock.queue.front()
+                            && ticket != log_id
+                        {
+                            lock.queue.pop_front();
+                            if let Some(acks) = queues.get_mut(key.as_ref())
+                                && let Some(pos) = acks.iter().position(|(i, _)| *i == ticket)
+                            {
+                                let (_, ack) = acks.swap_remove(pos);
+                                let _ = ack.send(LockState::Released);
+                            }
+                        }
+                    }
+
                     if lock.exp < now || lock.current_ticket.is_none() {
                         let front = lock.queue.front();
                         if let Some(ticket) = front {
@@ -82,7 +100,6 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
                                 ack.send(LockState::Queued(log_id)).unwrap();
                             }
                         } else {
-                            lock.queue.pop_front();
                             lock.current_ticket = Some(log_id);
                             lock.exp = now + LOCK_VALID_SECONDS;
                             ack.send(LockState::Locked(log_id)).unwrap();
@@ -106,24 +123,40 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
 
             LockRequest::Acquire(LockRequestPayload { key, log_id, ack }) => {
                 if let Some(lock) = locks.get_mut(key.as_ref()) {
-                    debug_assert!(lock.current_ticket.is_none());
-                    debug_assert!(lock.queue.front().is_some());
-
-                    let first = lock
-                        .queue
-                        .pop_front()
-                        .expect("First entry to always exist for LockRequest::Acquire");
-                    debug_assert!(
-                        first == log_id,
-                        "first ({first}) and log_id ({log_id}) to always match when \
-                        LockRequest::Acquire"
-                    );
-
-                    lock.current_ticket = Some(first);
-                    lock.exp = Utc::now().timestamp() + LOCK_VALID_SECONDS;
-                    ack.send(LockState::Locked(log_id)).unwrap();
+                    if lock.current_ticket.is_some() {
+                        // Someone else holds the lock (e.g. our lease expired and the lock was
+                        // re-granted). Re-queue and report back so the client can wait again.
+                        lock.queue.push_back(log_id);
+                        ack.send(LockState::Queued(log_id)).unwrap();
+                    } else if let Some(first) = lock.queue.front() {
+                        if *first == log_id {
+                            lock.queue.pop_front();
+                            lock.current_ticket = Some(log_id);
+                            lock.exp = Utc::now().timestamp() + LOCK_VALID_SECONDS;
+                            ack.send(LockState::Locked(log_id)).unwrap();
+                        } else {
+                            // Our ticket is not the promoted one anymore -> re-queue.
+                            lock.queue.push_back(log_id);
+                            ack.send(LockState::Queued(log_id)).unwrap();
+                        }
+                    } else {
+                        // Nobody is queued and nobody holds the lock -> take it directly.
+                        lock.current_ticket = Some(log_id);
+                        lock.exp = Utc::now().timestamp() + LOCK_VALID_SECONDS;
+                        ack.send(LockState::Locked(log_id)).unwrap();
+                    }
                 } else {
-                    panic!("The lock should always exist when LockRequest::Acquire");
+                    // The lock was fully removed while this request was in flight. Grant a fresh
+                    // one so the client never hangs.
+                    locks.insert(
+                        key.to_string(),
+                        LockQueue {
+                            current_ticket: Some(log_id),
+                            exp: Utc::now().timestamp() + LOCK_VALID_SECONDS,
+                            queue: Default::default(),
+                        },
+                    );
+                    ack.send(LockState::Locked(log_id)).unwrap();
                 }
             }
 
@@ -141,7 +174,8 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
                                     && let Err(err) =
                                         acks.swap_remove(pos).1.send(LockState::Released)
                                 {
-                                    panic!(
+                                    // The client may have disconnected - this is not fatal.
+                                    warn!(
                                         "Error sending lock await response for lock {key}: {err:?}"
                                     );
                                 }
@@ -150,8 +184,14 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
                             full_remove = true;
                         }
                     } else {
-                        // TODO can this ever happen?
-                        panic!("Lock for {key} / {id} as been released already: {lock:?}");
+                        // The lease expired and the lock was granted to another ticket, or this
+                        // is a duplicate release. Releasing an already released / re-granted lock
+                        // is safe to ignore. Panicking here would kill the whole dlock handler.
+                        warn!(
+                            "Ignoring release for lock {key} / {id}: current holder is not this \
+                            ticket (current_ticket: {:?})",
+                            lock.current_ticket
+                        );
                     }
                 }
 
@@ -164,6 +204,21 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
                 let now = Utc::now().timestamp();
 
                 if let Some(lock) = locks.get_mut(key.as_ref()) {
+                    // Same dead-ticket handling as in LockRequest::Lock.
+                    if lock.exp < now {
+                        while let Some(&ticket) = lock.queue.front()
+                            && ticket != id
+                        {
+                            lock.queue.pop_front();
+                            if let Some(acks) = queues.get_mut(key.as_ref())
+                                && let Some(pos) = acks.iter().position(|(i, _)| *i == ticket)
+                            {
+                                let (_, ack) = acks.swap_remove(pos);
+                                let _ = ack.send(LockState::Released);
+                            }
+                        }
+                    }
+
                     if lock.exp < now || lock.current_ticket.is_none() {
                         let front = lock.queue.front();
                         if let Some(ticket) = front {
@@ -178,10 +233,9 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
                                 queues.insert(key.to_string(), vec![(id, ack)]);
                             }
                         } else {
-                            panic!(
-                                "for a LockAwait there must always be at least 1 element in \
-                                the queue when the current_ticket is None"
-                            );
+                            // Nothing to wait for: no current holder and no queued ticket. Let the
+                            // client re-request, it will get a fresh grant.
+                            ack.send(LockState::Released).unwrap();
                         }
                     } else if let Some(queue) = queues.get_mut(key.as_ref()) {
                         queue.push((id, ack));
@@ -189,7 +243,9 @@ async fn handler(rx: flume::Receiver<LockRequest>) {
                         queues.insert(key.to_string(), vec![(id, ack)]);
                     }
                 } else {
-                    panic!("The lock should always exist when we receive an await");
+                    // The lock was released and fully removed while this await was in flight.
+                    // Let the client re-request, it will get a fresh grant.
+                    ack.send(LockState::Released).unwrap();
                 }
             }
 
