@@ -360,15 +360,20 @@ impl StateMachineMemory {
         let path = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
         let path_temp = format!("{path}.temp");
         {
-            let mut file = fs::File::create_new(&path_temp)
+            // truncate any leftover temp from a crashed previous run
+            let mut file = fs::File::create(&path_temp)
                 .await
                 .map_err(|err| StorageIOError::write_state_machine(&err))?;
             file.write_all(snapshot_bytes)
                 .await
                 .map_err(|err| StorageIOError::write_state_machine(&err))?;
+            file.sync_all()
+                .await
+                .map_err(|err| StorageIOError::write_state_machine(&err))?;
         }
 
-        fs::copy(&path_temp, &path)
+        // atomic move: a crash can never leave a partially written snapshot at the final path
+        fs::rename(&path_temp, &path)
             .await
             .map_err(|err| StorageIOError::write_state_machine(&err))?;
 
@@ -376,12 +381,18 @@ impl StateMachineMemory {
         let id = meta.snapshot_id.clone();
         let dir = self.path_snapshots.clone();
         task::spawn(async move {
-            let mut entries = fs::read_dir(&dir).await.unwrap();
+            let Ok(mut entries) = fs::read_dir(&dir).await else {
+                warn!("Cannot read snapshots dir for cleanup: {dir}");
+                return;
+            };
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let fname = entry.file_name();
                 let name = fname.to_str().unwrap_or_default();
-                if !name.is_empty() && name != id {
-                    fs::remove_file(format!("{dir}/{name}")).await.unwrap();
+                if !name.is_empty()
+                    && name != id
+                    && let Err(err) = fs::remove_file(format!("{dir}/{name}")).await
+                {
+                    warn!("Error removing old snapshot {name}: {err:?}");
                 }
             }
         });
@@ -956,7 +967,10 @@ mod tests {
         );
 
         // building a snapshot keeps it in memory and still must not write to disk
-        let built = sm.build_snapshot().await.expect("snapshot build to succeed");
+        let built = sm
+            .build_snapshot()
+            .await
+            .expect("snapshot build to succeed");
         assert!(
             !base_dir.exists(),
             "building a snapshot must not create the data_dir in memory-only mode"
