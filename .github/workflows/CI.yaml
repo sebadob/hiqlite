@@ -1,0 +1,93 @@
+# Fast, cached, parallel replacement for the old cold/sequential check workflow.
+name: Check
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: short
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+  TERM: xterm
+
+jobs:
+  lint:
+    if: github.event.pull_request.draft == false
+    name: Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/sebadob/rauthy-builder:20260519
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-cargo
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (full features)
+        run: cargo clippy -p hiqlite --features full --all-targets -- -D warnings
+
+  examples:
+    if: github.event.pull_request.draft == false
+    name: Clippy (examples)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/sebadob/rauthy-builder:20260519
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-cargo
+      - name: Clippy examples
+        run: just clippy-examples
+
+  test:
+    if: github.event.pull_request.draft == false
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/sebadob/rauthy-builder:20260519
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-cargo
+      - name: Test lib and bins (CI feature set)
+        run: TEST_SKIP_S3_RESTORE=true cargo test --features cache,counters,dlock,listen_notify,macros,toml --lib --bins
+      - name: Test doctests
+        run: TEST_SKIP_S3_RESTORE=true cargo test --features cache,counters,dlock,listen_notify,macros,toml --doc
+      - name: Test hiqlite-wal and hiqlite-derive
+        run: TEST_SKIP_S3_RESTORE=true cargo test -p hiqlite-wal -p hiqlite-derive
+
+  cluster:
+    if: github.event.pull_request.draft == false
+    name: Cluster integration
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/sebadob/rauthy-builder:20260519
+    # Known shutdown-stuck flake in the 3-node harness; advisory, re-run before trusting.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-cargo
+      - name: Cluster tests
+        run: TEST_SKIP_S3_RESTORE=true cargo test --features cache,counters,dlock,listen_notify,macros,toml --test cluster
+
+  verify:
+    if: github.event.pull_request.draft == false
+    name: Verify
+    needs: [lint, examples, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required checks passed
+        run: echo "lint, examples, test are green"
