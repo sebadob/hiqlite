@@ -25,7 +25,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use thread_priority::ThreadPriority;
 use tokio::sync::oneshot;
-use tokio::{fs, runtime, task};
+use tokio::{fs, runtime, task, time};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -795,12 +795,30 @@ fn create_backup(
         rt.spawn(async move {
             info!("Background task for database encryption and S3 backup task has been started");
 
-            match s3.push(&path_full, &file).await {
-                Ok(_) => {
-                    info!("Push backup to S3 has been finished");
-                }
-                Err(err) => {
-                    error!("Error pushing Backup to S3: {}", err);
+            // The backup request has already been acked Ok, so a failed upload would otherwise
+            // only appear as a single log line. Retry a few times before giving up, and make the
+            // final failure loud - the backup exists locally but not offsite.
+            let mut attempt = 0;
+            loop {
+                attempt += 1;
+                match s3.push(&path_full, &file).await {
+                    Ok(_) => {
+                        info!("Push backup to S3 has been finished");
+                        break;
+                    }
+                    Err(err) if attempt < 3 => {
+                        error!(
+                            "Error pushing Backup to S3 (attempt {attempt}/3): {err} - retrying"
+                        );
+                        time::sleep(Duration::from_secs(5 * attempt)).await;
+                    }
+                    Err(err) => {
+                        error!(
+                            "Error pushing Backup to S3 after {attempt} attempts: {err} - \
+                            the backup exists locally but not offsite"
+                        );
+                        break;
+                    }
                 }
             }
         });
