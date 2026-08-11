@@ -15,9 +15,11 @@
         width?: string,
     } = $props();
 
-    if (tabs.length > 0 && selected === '') {
-        selected = tabs[0];
-    }
+    $effect(() => {
+        if (tabs.length > 0 && selected === '') {
+            selected = tabs[0];
+        }
+    });
 </script>
 
 <div

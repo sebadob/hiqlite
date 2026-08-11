@@ -49,10 +49,19 @@
     });
 
     let refOptions: undefined | HTMLElement = $state();
-    let usePopover = $state(fallbackOptions ? false : asPopover);
+    let usePopover = $state<boolean | undefined>(false);
     let close: undefined | (() => void) = $state();
 
-    let selected = $state(withSearch ? -1 : 0);
+    let selected = $state(0);
+    // initial selection depends on `withSearch`; applied once on mount so the prop is
+    // not captured as the initial value of the state
+    let selectedInitialised = $state(false);
+    $effect(() => {
+        if (!selectedInitialised) {
+            selected = withSearch ? -1 : 0;
+            selectedInitialised = true;
+        }
+    });
     let focusSearch: undefined | ((options?: FocusOptions) => void) = $state();
 
     let searchValue = $state('');
