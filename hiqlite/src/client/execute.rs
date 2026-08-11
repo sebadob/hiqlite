@@ -70,7 +70,7 @@ impl Client {
                 .map_err(|err| Error::Error(err.to_string().into()))?;
             let res = rx
                 .await
-                .expect("To always receive an answer from Client Stream Manager")?;
+                .map_err(|_| Error::Error("Client stream manager closed".into()))??;
             match res {
                 ApiStreamResponsePayload::Execute(res) => res,
                 _ => unreachable!(),
@@ -218,7 +218,7 @@ impl Client {
                 .map_err(|err| Error::Error(err.to_string().into()))?;
             let res = rx
                 .await
-                .expect("To always receive an answer from Client Stream Manager")?;
+                .map_err(|_| Error::Error("Client stream manager closed".into()))??;
             match res {
                 ApiStreamResponsePayload::ExecuteReturning(res) => res,
                 _ => unreachable!(),

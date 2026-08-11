@@ -414,7 +414,7 @@ impl Client {
                 .map_err(|err| Error::Error(err.to_string().into()))?;
             let res = rx
                 .await
-                .expect("To always receive an answer from Client Stream Manager")?;
+                .map_err(|_| Error::Error("Client stream manager closed".into()))??;
             match res {
                 ApiStreamResponsePayload::KV(res) => res,
                 #[cfg(any(feature = "sqlite", feature = "dlock", feature = "listen_notify_local"))]
