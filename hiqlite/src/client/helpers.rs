@@ -246,10 +246,12 @@ impl Client {
                 }
             }
 
-            if was_leader_error {
-                tx.send_async(ClientStreamReq::LeaderChange((id, Some(node.clone()))))
+            if was_leader_error
+                && let Err(err) = tx
+                    .send_async(ClientStreamReq::LeaderChange((id, Some(node.clone()))))
                     .await
-                    .expect("the Client API WebSocket Manager to always be running");
+            {
+                error!("Error sending LeaderChange to Client API WebSocket Manager: {err:?}");
             }
         }
 
