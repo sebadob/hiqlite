@@ -13,7 +13,7 @@
     let lockUntil = $state(0);
     let locked = $derived(Date.now() < lockUntil);
 
-    async function onSubmit(form: FormData, params: URLSearchParams) {
+    async function onSubmit(form: HTMLFormElement, params: URLSearchParams) {
         if (locked) return;
         error = '';
         isLoading = true;
