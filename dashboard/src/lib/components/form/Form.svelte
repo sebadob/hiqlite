@@ -11,7 +11,7 @@
         children,
     }: {
         action: string,
-        method?: string,
+        method?: 'GET' | 'POST' | 'DIALOG' | 'get' | 'post' | 'dialog',
         isError?: boolean,
         onSubmit?: (form: HTMLFormElement, params: URLSearchParams) => void,
         onResponse?: (res: Response) => void,

@@ -1,5 +1,6 @@
 <script lang="ts">
     import {slide} from "svelte/transition";
+    import type {FullAutoFill} from 'svelte/elements';
 
     let {
         type = 'text',
@@ -23,7 +24,7 @@
         name: string,
         value?: string,
         label?: string,
-        autocomplete?: string,
+        autocomplete?: FullAutoFill,
         placeholder: string,
         title: string,
         disabled?: boolean | null | undefined,

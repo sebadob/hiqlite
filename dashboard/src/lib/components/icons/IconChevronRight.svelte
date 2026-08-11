@@ -1,6 +1,6 @@
 <script lang="ts">
     export let opacity = 0.9;
-    export let width = "1.5rem";
+    export let width: string | number = "1.5rem";
 </script>
 
 <svg
