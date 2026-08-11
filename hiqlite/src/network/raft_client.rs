@@ -413,7 +413,15 @@ impl NetworkStreaming {
                 OpCode::Text => {}
                 OpCode::Binary => {
                     let bytes = frame.payload.deref();
-                    let payload = deserialize::<RaftStreamResponse>(bytes).unwrap();
+                    let payload = match deserialize::<RaftStreamResponse>(bytes) {
+                        Ok(payload) => payload,
+                        Err(err) => {
+                            // corrupt frame from a cluster member: drop the connection instead
+                            // of panicking the raft client task
+                            error!("Error deserializing raft response from member: {err:?}");
+                            break;
+                        }
+                    };
                     if let Err(err) = tx.send_async(RaftRequest::StreamResponse(payload)).await {
                         error!(
                             "Error sending Response to Raft client stream manager: {:?}",

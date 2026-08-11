@@ -239,19 +239,10 @@ pub async fn handle_socket(
                 }
 
                 ApiStreamRequestPayload::LockAwait(cache_req) => {
-                    match client.lock_req_retry(cache_req, true).await {
-                        Ok(res) => ApiStreamResponse {
-                            request_id,
-                            result: ApiStreamResponsePayload::Lock(res),
-                        },
-                        Err(_) => {
-                            todo!(
-                                "how should be handle await errors? wrap state inside inner result just for the proxy or retry endlessly?"
-                            )
-                        } // Err(err) => ApiStreamResponse {
-                          //     request_id,
-                          //     result: ApiStreamResponsePayload::Lock(Err(err)),
-                          // },
+                    let res = client.lock_req_retry(cache_req, true).await;
+                    ApiStreamResponse {
+                        request_id,
+                        result: ApiStreamResponsePayload::Lock(res),
                     }
                 }
 
@@ -275,7 +266,9 @@ pub async fn handle_socket(
     let _ = tx_write.send_async(WsWriteMsg::Break).await;
     drop(tx_write);
 
-    handle_write.await.unwrap();
+    if let Err(err) = handle_write.await {
+        error!("Error joining proxy writer task: {err:?}");
+    }
 
     Ok(())
 }

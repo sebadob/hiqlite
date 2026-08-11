@@ -6,9 +6,26 @@ use std::clone::Clone;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, oneshot};
 use tokio::time;
 use tracing::{debug, error, warn};
+
+/// Timeout applied to every client request waiting for a response from the stream manager or a
+/// local handler. A stalled leader (GC pause, blocked writer, network partition without a
+/// disconnect) must not hang the caller forever. Keep it generous: slow transactions and
+/// backups legitimately take a while. A timed-out request must be treated as at-least-once: the
+/// operation may still have been applied server-side.
+const STREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Waits for a response channel to resolve, surfacing a stall or a dead handler as an error
+/// instead of hanging or panicking the calling task.
+pub(crate) async fn await_channel_response<T>(rx: oneshot::Receiver<T>) -> Result<T, Error> {
+    match time::timeout(STREAM_REQUEST_TIMEOUT, rx).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_)) => Err(Error::Error("response channel closed".into())),
+        Err(_) => Err(Error::Connect("request timed out".into())),
+    }
+}
 
 impl Client {
     #[inline(always)]
@@ -246,13 +263,43 @@ impl Client {
                 }
             }
 
-            if was_leader_error {
-                tx.send_async(ClientStreamReq::LeaderChange((id, Some(node.clone()))))
+            if was_leader_error
+                && let Err(err) = tx
+                    .send_async(ClientStreamReq::LeaderChange((id, Some(node.clone()))))
                     .await
-                    .expect("the Client API WebSocket Manager to always be running");
+            {
+                error!("Error sending LeaderChange to Client API WebSocket Manager: {err:?}");
             }
         }
 
         was_leader_error
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn await_channel_response_returns_value() {
+        let (tx, rx) = oneshot::channel();
+        tx.send(42i32).unwrap();
+        assert_eq!(await_channel_response(rx).await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn await_channel_response_errors_when_closed() {
+        let (tx, rx) = oneshot::channel::<i32>();
+        drop(tx);
+        let err = await_channel_response(rx).await.unwrap_err();
+        assert!(err.to_string().contains("channel closed"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn await_channel_response_times_out() {
+        let (_tx, rx) = oneshot::channel::<i32>();
+        tokio::time::advance(STREAM_REQUEST_TIMEOUT + Duration::from_secs(1)).await;
+        let err = await_channel_response(rx).await.unwrap_err();
+        assert!(err.to_string().contains("timed out"));
     }
 }

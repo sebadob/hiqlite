@@ -1,3 +1,4 @@
+use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::memory::dlock_handler::{
@@ -68,35 +69,41 @@ impl Client {
         self.rate_limit_cache().await?;
 
         let key = key.into();
-        let state = self
-            .lock_req_retry(CacheRequest::Lock((key.clone(), None)), false)
-            .await?;
-        match state {
-            LockState::Locked(id) => Ok(Lock {
-                id,
-                key,
-                client: self.clone(),
-            }),
-            LockState::Queued(id) => {
-                let res = self.lock_await(key.clone(), id).await?;
-                match res {
-                    LockState::Released => {
-                        let state = self
-                            .lock_req_retry(CacheRequest::Lock((key.clone(), Some(id))), false)
-                            .await?;
-                        match state {
-                            LockState::Locked(id) => Ok(Lock {
+        // `ticket` keeps our queue ticket across re-claims. Reusing the same ticket is important:
+        // a new first-try `Lock` would mint a fresh ticket and leave the old one orphaned in the
+        // handler queue, where it could block the lock until its lease expires.
+        let mut ticket: Option<u64> = None;
+        loop {
+            let state = self
+                .lock_req_retry(CacheRequest::Lock((key.clone(), ticket)), false)
+                .await?;
+            match state {
+                LockState::Locked(id) => {
+                    return Ok(Lock {
+                        id,
+                        key,
+                        client: self.clone(),
+                    });
+                }
+                LockState::Queued(id) => {
+                    // Wait for our position. The lock may be granted directly while waiting if
+                    // the previous holder's lease expired.
+                    match self.lock_await(key.clone(), id).await? {
+                        LockState::Locked(id) => {
+                            return Ok(Lock {
                                 id,
                                 key,
                                 client: self.clone(),
-                            }),
-                            s => unreachable!("{:?}", s),
+                            });
                         }
+                        // Released: the handler promoted our ticket. Re-request with the same
+                        // ticket to claim it.
+                        LockState::Released => ticket = Some(id),
+                        s => unreachable!("{:?}", s),
                     }
-                    _ => unreachable!(),
                 }
+                s => unreachable!("{:?}", s),
             }
-            _ => unreachable!(),
         }
     }
 
@@ -112,9 +119,7 @@ impl Client {
                 .tx_dlock
                 .send(LockRequest::Await(LockAwaitPayload { key, id, ack }))
                 .expect("kv handler to always be running");
-            let state = rx
-                .await
-                .expect("to always get an answer from the kv handler");
+            let state = await_channel_response(rx).await?;
             Ok(state)
         } else {
             self.lock_req_retry(CacheRequest::LockAwait((key.clone(), id)), true)
@@ -180,9 +185,7 @@ impl Client {
                 .send_async(payload)
                 .await
                 .map_err(|err| Error::Error(err.to_string().into()))?;
-            let res = rx
-                .await
-                .expect("To always receive an answer from Client Stream Manager")?;
+            let res = await_channel_response(rx).await??;
             match res {
                 ApiStreamResponsePayload::KV(res) => match res? {
                     CacheResponse::Lock(state) => {
@@ -191,10 +194,15 @@ impl Client {
                     }
                     _ => unreachable!(),
                 },
-                ApiStreamResponsePayload::Lock(LockState::Released) => {
+                ApiStreamResponsePayload::Lock(Ok(LockState::Released)) => {
                     assert!(is_remote_await);
                     Ok(LockState::Released)
                 }
+                ApiStreamResponsePayload::Lock(Ok(LockState::Locked(id))) => {
+                    assert!(is_remote_await);
+                    Ok(LockState::Locked(id))
+                }
+                ApiStreamResponsePayload::Lock(Err(err)) => Err(err),
                 #[cfg(any(feature = "sqlite", feature = "dlock"))]
                 _ => unreachable!(),
             }

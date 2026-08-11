@@ -1,3 +1,4 @@
+use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientMigratePayload, ClientStreamReq};
 use crate::migration::{Migration, Migrations};
 use crate::network::api::ApiStreamResponsePayload;
@@ -107,9 +108,7 @@ impl Client {
                 }))
                 .await
                 .map_err(|err| Error::Error(err.to_string().into()))?;
-            let res = rx
-                .await
-                .expect("To always receive an answer from Client Stream Manager")?;
+            let res = await_channel_response(rx).await??;
             match res {
                 ApiStreamResponsePayload::Migrate(res) => res,
                 _ => unreachable!(),

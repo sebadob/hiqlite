@@ -676,7 +676,15 @@ async fn stream_reader(
             OpCode::Text => {}
             OpCode::Binary => {
                 let bytes = frame.payload.deref();
-                let payload = deserialize::<ApiStreamResponse>(bytes).unwrap();
+                let payload = match deserialize::<ApiStreamResponse>(bytes) {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        // corrupt frame from the server: do not panic the reader task, just
+                        // drop the connection so the client can reconnect
+                        error!("Error deserializing response from server: {err:?}");
+                        break;
+                    }
+                };
                 if let Err(err) = tx
                     .send_async(ClientStreamReq::StreamResponse(payload))
                     .await
