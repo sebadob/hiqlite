@@ -769,7 +769,17 @@ fn create_backup(
     let path_full = format!("{target_folder}/{file}");
     info!("Creating database backup into {path_full}");
 
-    conn.execute(&format!("VACUUM main INTO '{path_full}'"), ())?;
+    // vacuum into a temp file and move it into place, so a crash mid-backup can never leave
+    // a partial file under the final backup name (restore would pick it up as valid)
+    let path_temp = format!("{path_full}.temp");
+    if let Err(err) = conn.execute(&format!("VACUUM main INTO '{path_temp}'"), ()) {
+        let _ = std::fs::remove_file(&path_temp);
+        return Err(err.into());
+    }
+    if let Err(err) = std::fs::rename(&path_temp, &path_full) {
+        let _ = std::fs::remove_file(&path_temp);
+        return Err(Error::Sqlite(err.to_string().into()));
+    }
 
     // connect to the backup and reset metadata
     // make sure connection is dropped before starting encrypt + push
