@@ -61,6 +61,13 @@ pub fn spawn() -> flume::Sender<LockRequest> {
 }
 
 async fn handler(rx: flume::Receiver<LockRequest>) {
+    // Lease timing (`exp`) intentionally uses this node's wall clock. All lock decisions are made
+    // by the Raft leader's handler, so they are always consistent with the leader's clock. The
+    // per-node `exp` copies in the state machine diverge by clock skew, but that is benign: Raft
+    // never verifies state machine equality, and the new leader evaluates leases with its own
+    // clock. A deterministic timestamp inside the raft entry would require changing the entry
+    // format, which would break log compatibility for rolling upgrades. Keep the clocks within
+    // ~1s of each other so a 10s lease survives failover comfortably.
     let mut locks: HashMap<String, LockQueue> = HashMap::new();
     let mut queues: HashMap<String, Vec<(u64, oneshot::Sender<LockState>)>> = HashMap::new();
 
