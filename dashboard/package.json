@@ -6,7 +6,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check": "svelte-kit sync && svelte-check --tsgo --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test:smoke": "playwright test"
   },
@@ -16,6 +16,7 @@
     "@sveltejs/kit": "2.70.2",
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "@swc/core": "^1.15.47",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "esbuild": "^0.28.1",
     "rollup": "^4.62.4",
     "svelte": "5.56.8",
