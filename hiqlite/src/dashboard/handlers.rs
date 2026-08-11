@@ -30,16 +30,7 @@ pub async fn get_session(s: Session) -> Result<Json<Session>, Error> {
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     password: String,
-    // TODO the dashboard can only load the WASM to calculate the pow in a secure context.
-    // This means we need to ship with self-signed TLS certificates, and the possibility to load
-    // own ones.
-    // Another solution would be to simply build our own ones at startup. This would pull in an
-    // additional dependency, but is more flexible and straight forward to use.
-    // But, there is a catch. If we do this, the client aPI will always use TLS as well, which
-    // may not be desired, if the application is maybe running inside a separate physical network,
-    // or in a service mesh which uses mTLS by default anyway.
-    // We could make the PoW an optional config option as well. Currently, it is not used at all.
-    #[allow(dead_code)]
+    // PoW proof against the per-node secret initialized in `dashboard::init`.
     pow: String,
 }
 
@@ -49,9 +40,8 @@ pub async fn post_session(
     headers: HeaderMap,
     Form(login): Form<LoginRequest>,
 ) -> Result<Response, Error> {
-    // TODO currently, svelte 5 preview produces an error when loading the WASM in production.
-    // Request PoW again when this is resolved in the future -> check
-    // Pow::validate(&login.pow).map_err(|err| Error::Unauthorized(err.to_string().into()))?;
+    // Reject a missing or invalid PoW before spending any password work.
+    Pow::validate(&login.pow).map_err(|err| Error::Unauthorized(err.to_string().into()))?;
     session::set_session_verify(&state, Method::POST, &headers, login.password).await
 }
 
@@ -112,4 +102,28 @@ pub async fn post_query(
 pub async fn get_metrics(state: AppStateExt, _: Session) -> Json<RaftMetrics<u64, Node>> {
     let metrics = state.raft_db.raft.metrics().borrow().clone();
     Json(metrics)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pow_challenge_work_validate_roundtrip() {
+        // The per-node spow secret is initialized at startup from the active encryption key;
+        // a fixed one is fine for this unit test (and an already-set secret stays consistent
+        // because the challenge and validation share it).
+        Pow::init_bytes(b"test-secret-key-for-pow-0123456789ab");
+
+        let pow = Pow::with_difficulty(10, 5).expect("challenge generation");
+        let challenge = pow.to_string();
+        let solution = Pow::work(&challenge).expect("client-side solve");
+
+        assert!(solution.starts_with(&challenge));
+        assert_eq!(
+            Pow::validate(&solution).expect("server-side validate"),
+            pow.challenge.as_str(),
+        );
+        assert!(Pow::validate("bogus").is_err());
+    }
 }

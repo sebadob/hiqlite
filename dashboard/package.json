@@ -10,16 +10,16 @@
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
   },
   "devDependencies": {
-    "@sveltejs/adapter-static": "^3.0.2",
-    "@sveltejs/kit": "^2.52.2",
+    "@sveltejs/adapter-static": "3.0.10",
+    "@sveltejs/kit": "2.70.2",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@swc/core": "^1.11.18",
     "esbuild": "^0.28.1",
     "rollup": "^4.60.4",
-    "svelte": "^5.55.7",
+    "svelte": "5.56.8",
     "svelte-check": "^4.0.5",
     "typescript": "^6.0.3",
-    "vite": "^8.0.16",
+    "vite": "8.2.0",
     "vite-plugin-top-level-await": "^1.6.0",
     "vite-plugin-wasm": "^3.6.0"
   },
