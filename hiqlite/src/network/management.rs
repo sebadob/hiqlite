@@ -171,11 +171,11 @@ async fn are_we_leader(state: &AppStateExt, raft_type: &RaftType) -> Result<(), 
             Ok(())
         } else {
             let metrics = helpers::get_raft_metrics(state, raft_type).await;
-            let leader = metrics
-                .membership_config
-                .membership()
-                .get_node(&leader_id)
-                .expect("Leader ID to always exist in membership config");
+            let Some(leader) = metrics.membership_config.membership().get_node(&leader_id) else {
+                return Err(Error::Error(
+                    format!("Leader {leader_id} not found in membership config").into(),
+                ));
+            };
 
             let err = RaftError::APIError(CheckIsLeaderError::ForwardToLeader(ForwardToLeader {
                 leader_id: Some(leader_id),
