@@ -13,6 +13,9 @@ repository = "https://github.com/sebadob/hiqlite"
 [features]
 auto-heal = []
 migration = []
+# Oversized raft entries panic the writer by default (a non-recoverable setup issue).
+# Enable this to fail the append with `Error::WalSizeExceeded` and keep the writer alive.
+oversized-entry-error = []
 
 [lib]
 doctest = false
