@@ -275,7 +275,9 @@ pub async fn handle_socket(
     let _ = tx_write.send_async(WsWriteMsg::Break).await;
     drop(tx_write);
 
-    handle_write.await.unwrap();
+    if let Err(err) = handle_write.await {
+        error!("Error joining proxy writer task: {err:?}");
+    }
 
     Ok(())
 }
