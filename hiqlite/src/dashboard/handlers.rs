@@ -40,8 +40,13 @@ pub async fn post_session(
     headers: HeaderMap,
     Form(login): Form<LoginRequest>,
 ) -> Result<Response, Error> {
-    // Reject a missing or invalid PoW before spending any password work.
-    Pow::validate(&login.pow).map_err(|err| Error::Unauthorized(err.to_string().into()))?;
+    // Require a PoW proof only when the dashboard is served over TLS (auto-TLS via
+    // `tls_api` / `tls_auto_certificates`); over plain HTTP the WASM client cannot run
+    // in a secure context, so the proof is ignored there. The browser mirrors this
+    // check via `window.isSecureContext`.
+    if crate::dashboard::api_tls_enabled() {
+        Pow::validate(&login.pow).map_err(|err| Error::Unauthorized(err.to_string().into()))?;
+    }
     session::set_session_verify(&state, Method::POST, &headers, login.password).await
 }
 

@@ -18,23 +18,28 @@
         error = '';
         isLoading = true;
 
-        let resPow = await fetchGet('/pow');
-        if (resPow.status !== 200) {
-            let resp = await resPow.json();
-            error = Object.values(resp)[0] as string;
-            isLoading = false;
-            return;
-        }
+        // The PoW WASM only runs in a secure context; over plain HTTP the proof is
+        // skipped, and the server ignores it there as well (it only validates when
+        // serving via TLS).
+        if (window.isSecureContext) {
+            let resPow = await fetchGet('/pow');
+            if (resPow.status !== 200) {
+                let resp = await resPow.json();
+                error = Object.values(resp)[0] as string;
+                isLoading = false;
+                return;
+            }
 
-        let challenge = await resPow.text();
-        let pow = await pow_work_wasm(challenge);
+            let challenge = await resPow.text();
+            let pow = await pow_work_wasm(challenge);
 
-        if (!pow) {
-            error = 'Error calculating pow';
-            isLoading = false;
-            return;
+            if (!pow) {
+                error = 'Error calculating pow';
+                isLoading = false;
+                return;
+            }
+            params.append('pow', pow);
         }
-        params.append('pow', pow);
 
         const res = await fetch(action, {
             method: 'POST',

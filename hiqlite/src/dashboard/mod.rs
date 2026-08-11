@@ -4,7 +4,22 @@ use cryptr::EncKeys;
 use spow::pow::Pow;
 use std::env;
 use std::fmt::Debug;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::warn;
+
+/// Whether the API server (which serves the dashboard) listens on TLS. Set at startup
+/// from `NodeConfig::tls_api`; the login proof-of-work is required only in that case,
+/// because the WASM client needs a secure context. The browser mirrors this via
+/// `window.isSecureContext`.
+static API_TLS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_api_tls(enabled: bool) {
+    API_TLS_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn api_tls_enabled() -> bool {
+    API_TLS_ENABLED.load(Ordering::Relaxed)
+}
 
 pub mod handlers;
 pub mod middleware;
