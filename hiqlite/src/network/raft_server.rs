@@ -48,20 +48,6 @@ pub enum RaftStreamRequest {
     RemoveMembershipCache(u64),
 }
 
-impl From<&[u8]> for RaftStreamRequest {
-    #[inline]
-    fn from(value: &[u8]) -> Self {
-        deserialize(value).unwrap()
-    }
-}
-
-impl From<Vec<u8>> for RaftStreamRequest {
-    #[inline]
-    fn from(value: Vec<u8>) -> Self {
-        deserialize(&value).unwrap()
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RaftStreamResponse {
     pub request_id: usize,
@@ -90,13 +76,6 @@ pub enum RaftStreamResponsePayload {
 pub(crate) enum WsWriteMsg {
     Payload(Vec<u8>),
     Break,
-}
-
-impl From<Vec<u8>> for RaftStreamResponse {
-    #[inline]
-    fn from(value: Vec<u8>) -> Self {
-        deserialize(&value).unwrap()
-    }
 }
 
 pub async fn stream_cache(
