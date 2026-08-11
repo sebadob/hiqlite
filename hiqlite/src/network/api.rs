@@ -466,7 +466,7 @@ pub(crate) enum ApiStreamResponsePayload {
     KV(Result<CacheResponse, Error>),
 
     #[cfg(feature = "dlock")]
-    Lock(LockState),
+    Lock(Result<LockState, Error>),
 
     #[cfg(feature = "listen_notify_local")]
     Notify(Result<(), Error>),
@@ -817,7 +817,7 @@ async fn handle_socket_concurrent(
 
                     ApiStreamResponse {
                         request_id,
-                        result: ApiStreamResponsePayload::Lock(lock_state),
+                        result: ApiStreamResponsePayload::Lock(Ok(lock_state)),
                     }
                 }
 

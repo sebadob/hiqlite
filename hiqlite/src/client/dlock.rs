@@ -197,14 +197,15 @@ impl Client {
                     }
                     _ => unreachable!(),
                 },
-                ApiStreamResponsePayload::Lock(LockState::Released) => {
+                ApiStreamResponsePayload::Lock(Ok(LockState::Released)) => {
                     assert!(is_remote_await);
                     Ok(LockState::Released)
                 }
-                ApiStreamResponsePayload::Lock(LockState::Locked(id)) => {
+                ApiStreamResponsePayload::Lock(Ok(LockState::Locked(id))) => {
                     assert!(is_remote_await);
                     Ok(LockState::Locked(id))
                 }
+                ApiStreamResponsePayload::Lock(Err(err)) => Err(err),
                 #[cfg(any(feature = "sqlite", feature = "dlock"))]
                 _ => unreachable!(),
             }
