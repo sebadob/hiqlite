@@ -10,8 +10,11 @@
 
     let error = $state('');
     let isLoading = $state(false);
+    let lockUntil = $state(0);
+    let locked = $derived(Date.now() < lockUntil);
 
     async function onSubmit(form: FormData, params: URLSearchParams) {
+        if (locked) return;
         error = '';
         isLoading = true;
 
@@ -53,6 +56,13 @@
             storeSession.set(resp);
         } else {
             error = Object.values(resp)[0] as string;
+            // Lock the form for the global login cooldown after a 429.
+            if (res.status === 429) {
+                lockUntil = Date.now() + 5000;
+                setTimeout(() => {
+                    lockUntil = 0;
+                }, 5000);
+            }
         }
 
         isLoading = false;
@@ -85,7 +95,7 @@
                     title="Valid Dashboard Password"
                     required
             />
-            <Button type="submit" level={1} {isLoading}>
+            <Button type="submit" level={1} {isLoading} isDisabled={locked}>
                 Login
             </Button>
 

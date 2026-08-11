@@ -14,6 +14,8 @@ use cryptr::utils::{b64_decode, b64_encode};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::LazyLock;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tracing::debug;
 
 const COOKIE_NAME: &str = "__Host-Hiqlite-Session";
@@ -26,6 +28,29 @@ pub static INSECURE_COOKIES: LazyLock<bool> = LazyLock::new(|| {
         .parse::<bool>()
         .expect("Cannot parse HQL_INSECURE_COOKIE as bool")
 });
+
+/// Global login cooldown after a failed attempt, independent of any client identity:
+/// the dashboard is an ops surface with no need for concurrent logins, so after a
+/// failure the next login is rejected for a few seconds. There is no per-client state
+/// to spoof or exhaust, and the single-flight lock in `password::verify_password`
+/// still serializes the actual hashing.
+const LOGIN_COOLDOWN: Duration = Duration::from_secs(5);
+static NEXT_LOGIN_ALLOWED: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn login_locked() -> bool {
+    let guard = NEXT_LOGIN_ALLOWED.lock().unwrap_or_else(|e| e.into_inner());
+    guard.is_some_and(|t| Instant::now() < t)
+}
+
+fn lock_logins() {
+    let mut guard = NEXT_LOGIN_ALLOWED.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(Instant::now() + LOGIN_COOLDOWN);
+}
+
+fn unlock_logins() {
+    let mut guard = NEXT_LOGIN_ALLOWED.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Session {
@@ -125,14 +150,39 @@ pub async fn set_session_verify(
     password: String,
 ) -> Result<Response, Error> {
     check_csrf(&method, headers).await?;
+    // Reject login attempts during the global cooldown before any password work.
+    if login_locked() {
+        return Err(Error::RateLimit(
+            "too many failed login attempts, try again in a few seconds".into(),
+        ));
+    }
     if let Some(pwd) = state.dashboard.password_dashboard.clone() {
-        password::verify_password(password, pwd).await?;
+        if let Err(err) = password::verify_password(password, pwd).await {
+            lock_logins();
+            return Err(err);
+        }
+        unlock_logins();
 
         let session = Session::new();
         let cookie = session.as_cookie()?;
         Ok(([(SET_COOKIE, cookie)], Json(session)).into_response())
     } else {
         Err(Error::Unauthorized("unauthorized".into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cooldown_locks_and_unlocks() {
+        unlock_logins();
+        assert!(!login_locked());
+        lock_logins();
+        assert!(login_locked());
+        unlock_logins();
+        assert!(!login_locked());
     }
 }
 
