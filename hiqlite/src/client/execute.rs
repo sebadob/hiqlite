@@ -1,3 +1,4 @@
+use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientExecutePayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::RowOwned;
@@ -68,9 +69,7 @@ impl Client {
                 }))
                 .await
                 .map_err(|err| Error::Error(err.to_string().into()))?;
-            let res = rx
-                .await
-                .map_err(|_| Error::Error("Client stream manager closed".into()))??;
+            let res = await_channel_response(rx).await??;
             match res {
                 ApiStreamResponsePayload::Execute(res) => res,
                 _ => unreachable!(),
@@ -216,9 +215,7 @@ impl Client {
                 }))
                 .await
                 .map_err(|err| Error::Error(err.to_string().into()))?;
-            let res = rx
-                .await
-                .map_err(|_| Error::Error("Client stream manager closed".into()))??;
+            let res = await_channel_response(rx).await??;
             match res {
                 ApiStreamResponsePayload::ExecuteReturning(res) => res,
                 _ => unreachable!(),

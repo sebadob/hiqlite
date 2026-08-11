@@ -1,3 +1,4 @@
+use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientQueryPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::RowOwned;
@@ -329,9 +330,7 @@ impl Client {
             .send_async(payload)
             .await
             .map_err(|err| Error::Error(err.to_string().into()))?;
-        let res = rx
-            .await
-            .map_err(|_| Error::Error("Client stream manager closed".into()))??;
+        let res = await_channel_response(rx).await??;
         match res {
             ApiStreamResponsePayload::Query(res) => {
                 assert!(!consistent);

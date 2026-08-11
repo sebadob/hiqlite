@@ -1,3 +1,4 @@
+use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
 use crate::helpers::deserialize;
 use crate::network::api::ApiStreamResponsePayload;
@@ -208,9 +209,7 @@ impl Client {
                 }))
                 .await
                 .map_err(|err| Error::Error(err.to_string().into()))?;
-            let res = rx
-                .await
-                .map_err(|_| Error::Error("Client stream manager closed".into()))??;
+            let res = await_channel_response(rx).await??;
             match res {
                 ApiStreamResponsePayload::Notify(res) => res,
                 _ => unreachable!(),

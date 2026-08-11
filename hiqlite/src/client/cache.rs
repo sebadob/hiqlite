@@ -1,3 +1,4 @@
+use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
 use crate::helpers::deserialize;
 use crate::network::api::ApiStreamResponsePayload;
@@ -108,9 +109,7 @@ impl Client {
                 .unwrap()
                 .send(CacheRequestHandler::Get((key.into(), ack)))
                 .expect("kv handler to always be running");
-            let value = rx
-                .await
-                .expect("to always get an answer from the kv handler");
+            let value = await_channel_response(rx).await?;
             Ok(value)
         } else {
             let res = self
@@ -148,9 +147,7 @@ impl Client {
                 .unwrap()
                 .send(CacheRequestHandler::SnapshotBuildCacheOnly(ack))
                 .expect("kv handler to always be running");
-            let snapshot = rx
-                .await
-                .expect("to always get an answer from the kv handler");
+            let snapshot = await_channel_response(rx).await?;
 
             let mut res = BTreeMap::new();
             for (k, v) in snapshot {
@@ -267,9 +264,7 @@ impl Client {
                     ack,
                 )))
                 .expect("kv handler to always be running");
-            let value = rx
-                .await
-                .expect("to always get an answer from the kv handler");
+            let value = await_channel_response(rx).await?;
             Ok(value)
         } else {
             let res = self
@@ -412,9 +407,7 @@ impl Client {
                 .send_async(payload)
                 .await
                 .map_err(|err| Error::Error(err.to_string().into()))?;
-            let res = rx
-                .await
-                .map_err(|_| Error::Error("Client stream manager closed".into()))??;
+            let res = await_channel_response(rx).await??;
             match res {
                 ApiStreamResponsePayload::KV(res) => res,
                 #[cfg(any(feature = "sqlite", feature = "dlock", feature = "listen_notify_local"))]

@@ -1,3 +1,4 @@
+use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::memory::dlock_handler::{
@@ -118,9 +119,7 @@ impl Client {
                 .tx_dlock
                 .send(LockRequest::Await(LockAwaitPayload { key, id, ack }))
                 .expect("kv handler to always be running");
-            let state = rx
-                .await
-                .expect("to always get an answer from the kv handler");
+            let state = await_channel_response(rx).await?;
             Ok(state)
         } else {
             self.lock_req_retry(CacheRequest::LockAwait((key.clone(), id)), true)
@@ -186,9 +185,7 @@ impl Client {
                 .send_async(payload)
                 .await
                 .map_err(|err| Error::Error(err.to_string().into()))?;
-            let res = rx
-                .await
-                .map_err(|_| Error::Error("Client stream manager closed".into()))??;
+            let res = await_channel_response(rx).await??;
             match res {
                 ApiStreamResponsePayload::KV(res) => match res? {
                     CacheResponse::Lock(state) => {

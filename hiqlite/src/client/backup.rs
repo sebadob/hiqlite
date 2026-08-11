@@ -1,3 +1,4 @@
+use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientBackupPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::sqlite::state_machine::QueryWrite;
@@ -94,9 +95,7 @@ impl Client {
                 }))
                 .await
                 .map_err(|err| Error::Error(err.to_string().into()))?;
-            let res = rx
-                .await
-                .map_err(|_| Error::Error("Client stream manager closed".into()))??;
+            let res = await_channel_response(rx).await??;
             match res {
                 ApiStreamResponsePayload::Backup(res) => res,
                 _ => unreachable!(),
