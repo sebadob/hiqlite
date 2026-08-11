@@ -2,7 +2,7 @@ use proc_macro2::{Literal, TokenStream, TokenTree};
 use quote::quote;
 use syn::{Attribute, Data, DeriveInput, Meta, MetaList, Type};
 
-pub fn impl_from_row(input: DeriveInput) -> proc_macro::TokenStream {
+pub fn impl_from_row(input: DeriveInput) -> proc_macro2::TokenStream {
     let name = input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
@@ -28,25 +28,21 @@ pub fn impl_from_row(input: DeriveInput) -> proc_macro::TokenStream {
                         quote! {#id: ::std::convert::TryFrom::try_from(&mut *row).unwrap(),}
                     }
                     ColumnAttr::FromI32 => {
+                        // out-of-range values must fail loudly instead of being silently
+                        // clamped to a wrong value
+                        let convert = quote! {
+                            <i32 as ::std::convert::TryFrom<i64>>::try_from(i)
+                                .expect("column value does not fit into i32")
+                                .into()
+                        };
                         if is_opt {
                             quote! {
-                                #id: row.get::<Option<i64>>(#name)
-                                    .map(|i| {
-                                        if i > 0 {
-                                            (::std::cmp::min(i, i32::MAX as i64) as i32).into()
-                                        } else {
-                                            (::std::cmp::max(i, i32::MIN as i64) as i32).into()
-                                        }
-                                    }),
+                                #id: row.get::<Option<i64>>(#name).map(|i| #convert),
                             }
                         } else {
                             quote! {#id: {
                                 let i = row.get::<i64>(#name);
-                                if i > 0 {
-                                    (::std::cmp::min(i, i32::MAX as i64) as i32).into()
-                                } else {
-                                    (::std::cmp::max(i, i32::MIN as i64) as i32).into()
-                                }
+                                #convert
                             },}
                         }
                     }
@@ -102,7 +98,7 @@ pub fn impl_from_row(input: DeriveInput) -> proc_macro::TokenStream {
                 }
             }
         }
-    }.into()
+    }
 }
 
 #[inline]
@@ -255,5 +251,54 @@ Invalid syntax for '#[column]' - '{idx}' attribute, expected one of:
         }
 
         Self { rename, attr }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::ToTokens;
+
+    fn generate(src: &str) -> String {
+        let input: DeriveInput = syn::parse_str(src).unwrap();
+        impl_from_row(input).into_token_stream().to_string()
+    }
+
+    #[test]
+    fn from_i32_uses_try_from_and_never_clamps() {
+        let out = generate(
+            r#"struct Test { #[column(from_i32)] a: i32, #[column(from_i32)] b: Option<i32> }"#,
+        );
+        // token streams render with spaces around `::`
+        let compact = out.replace(' ', "");
+        assert!(
+            compact.contains("TryFrom<i64>>::try_from"),
+            "missing try_from: {out}"
+        );
+        assert!(
+            !compact.contains("cmp::min"),
+            "silent clamp still present: {out}"
+        );
+        assert!(
+            !compact.contains("cmp::max"),
+            "silent clamp still present: {out}"
+        );
+        assert!(
+            out.contains("does not fit into i32"),
+            "no panic message: {out}"
+        );
+    }
+
+    #[test]
+    fn basic_mapping_uses_row_get_by_column_name() {
+        let out = generate(
+            r#"struct Test { #[column(rename = "name_db")] name: String, skip_me: bool }"#,
+        );
+        let compact = out.replace(' ', "");
+        assert!(
+            compact.contains("From<&mut::hiqlite::Row"),
+            "no From impl: {out}"
+        );
+        assert!(out.contains("name_db"), "rename not honored: {out}");
     }
 }
