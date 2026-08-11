@@ -539,7 +539,15 @@ impl StateMachineSqlite {
             })?;
 
         let mut snapshot_id: Option<Uuid> = None;
-        while let Ok(Some(entry)) = list.next_entry().await {
+        loop {
+            let entry = match list.next_entry().await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("Error reading directory entries: {err:?}");
+                    break;
+                }
+            };
             let file_name = entry.file_name();
             let name = file_name.to_str().unwrap_or("UNKNOWN");
             let id = match Uuid::parse_str(name) {

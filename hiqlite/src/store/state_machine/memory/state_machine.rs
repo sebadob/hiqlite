@@ -377,7 +377,15 @@ impl StateMachineMemory {
         let dir = self.path_snapshots.clone();
         task::spawn(async move {
             let mut entries = fs::read_dir(&dir).await.unwrap();
-            while let Ok(Some(entry)) = entries.next_entry().await {
+            loop {
+                let entry = match entries.next_entry().await {
+                    Ok(Some(entry)) => entry,
+                    Ok(None) => break,
+                    Err(err) => {
+                        warn!("Error reading directory entries: {err:?}");
+                        break;
+                    }
+                };
                 let fname = entry.file_name();
                 let name = fname.to_str().unwrap_or_default();
                 if !name.is_empty() && name != id {
@@ -461,7 +469,15 @@ impl StateMachineMemory {
 
         let mut latest_ts: Option<i64> = None;
         let mut latest_file_name = None;
-        while let Ok(Some(entry)) = list.next_entry().await {
+        loop {
+            let entry = match list.next_entry().await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("Error reading directory entries: {err:?}");
+                    break;
+                }
+            };
             let file_name = entry.file_name();
             let name = file_name.to_str().unwrap_or_default();
             if name.ends_with(".temp") {
@@ -956,7 +972,10 @@ mod tests {
         );
 
         // building a snapshot keeps it in memory and still must not write to disk
-        let built = sm.build_snapshot().await.expect("snapshot build to succeed");
+        let built = sm
+            .build_snapshot()
+            .await
+            .expect("snapshot build to succeed");
         assert!(
             !base_dir.exists(),
             "building a snapshot must not create the data_dir in memory-only mode"

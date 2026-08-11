@@ -101,11 +101,13 @@ pub fn start_cron(
         loop {
             let dur = {
                 let now = chrono::Local::now();
-                let next = backup_config
-                    .cron_schedule
-                    .upcoming(chrono::Local)
-                    .next()
-                    .expect("No next cron task found");
+                let Some(next) = backup_config.cron_schedule.upcoming(chrono::Local).next() else {
+                    // e.g. a cron with an impossible date like Feb 30: no upcoming event.
+                    // Keep the task alive instead of panicking and silently losing backups.
+                    warn!("Cron schedule has no upcoming event - retrying in 1 hour");
+                    time::sleep(Duration::from_secs(3600)).await;
+                    continue;
+                };
                 if next <= now {
                     // don't set it to 0 to not go crazy in case of a bad config or timing
                     Duration::from_secs(1)
@@ -201,7 +203,18 @@ pub(crate) async fn backup_local_cleanup(backup_path: String, keep_days: u16) ->
     let path = Path::new(&backup_path);
     let mut dir_entries = tokio::fs::read_dir(path).await?;
 
-    while let Ok(Some(entry)) = dir_entries.next_entry().await {
+    loop {
+        let entry = match dir_entries.next_entry().await {
+            Ok(Some(entry)) => entry,
+
+            Ok(None) => break,
+
+            Err(err) => {
+                warn!("Error reading directory entries: {err:?}");
+
+                break;
+            }
+        };
         if entry.metadata().await?.is_dir() {
             continue;
         }
@@ -446,13 +459,12 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
     }
 
     debug!("Taking snapshot now");
-    state
-        .raft_db
-        .raft
-        .trigger()
-        .snapshot()
-        .await
-        .expect("Snapshot trigger to always succeed at this point");
+    if let Err(err) = state.raft_db.raft.trigger().snapshot().await {
+        // e.g. the raft is shutting down: do not panic the task, just bail out - the
+        // wait-for-snapshot loop below would never finish anyway
+        error!("Error triggering snapshot: {err}");
+        return;
+    }
 
     // while let Err(_err) = state.raft_db.raft.trigger().snapshot().await {
     //     debug_assert!("")
