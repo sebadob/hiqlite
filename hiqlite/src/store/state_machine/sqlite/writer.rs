@@ -739,8 +739,16 @@ Got:      {}
 
 #[inline]
 fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), rusqlite::Error> {
-    let q = format!("VACUUM main INTO '{path}'");
-    conn.execute(&q, ())?;
+    // vacuum into a temp file and move it into place, so a crash can never leave a
+    // partially written snapshot at the final path
+    let path_temp = format!("{path}.temp");
+    let q = format!("VACUUM main INTO '{path_temp}'");
+    if let Err(err) = conn.execute(&q, ()) {
+        let _ = std::fs::remove_file(&path_temp);
+        return Err(err);
+    }
+    std::fs::rename(&path_temp, &path)
+        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
     Ok(())
 }
 

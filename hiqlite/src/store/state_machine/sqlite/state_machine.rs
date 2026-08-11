@@ -869,15 +869,12 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     ) -> Result<(), StorageError<NodeId>> {
         let src = format!("{}/temp", self.path_snapshots);
         let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
-        fs::copy(&src, &dest)
+        // atomic move: a crash can never leave a partially copied snapshot at the final path
+        fs::rename(&src, &dest)
             .await
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write(&err),
             })?;
-
-        fs::remove_file(src).await.map_err(|err| StorageError::IO {
-            source: StorageIOError::write(&err),
-        })?;
 
         self.update_state_machine_(dest).await?;
 
