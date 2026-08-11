@@ -19,12 +19,25 @@ pub enum TtlRequest {
 }
 
 pub fn spawn(tx_kv: flume::Sender<CacheRequestHandler>) -> flume::Sender<TtlRequest> {
+    spawn_with_clock(tx_kv, || Utc::now().timestamp())
+}
+
+/// `now` returns the current unix timestamp; tests inject a controllable clock so expiry
+/// behaviour can be asserted deterministically without real-time sleeps.
+fn spawn_with_clock(
+    tx_kv: flume::Sender<CacheRequestHandler>,
+    now: impl Fn() -> i64 + Send + Sync + 'static,
+) -> flume::Sender<TtlRequest> {
     let (tx, rx) = flume::unbounded();
-    task::spawn(ttl_handler(tx_kv, rx));
+    task::spawn(ttl_handler(tx_kv, rx, now));
     tx
 }
 
-async fn ttl_handler(tx_kv: flume::Sender<CacheRequestHandler>, rx: flume::Receiver<TtlRequest>) {
+async fn ttl_handler(
+    tx_kv: flume::Sender<CacheRequestHandler>,
+    rx: flume::Receiver<TtlRequest>,
+    now: impl Fn() -> i64 + Send + Sync + 'static,
+) {
     // expiry timestamp -> keys expiring at that time. A `Vec` is used because multiple keys can
     // expire in the same second. A map keyed by expiry alone would silently drop all but one of
     // them, so the remaining ones would never be expired.
@@ -37,7 +50,7 @@ async fn ttl_handler(tx_kv: flume::Sender<CacheRequestHandler>, rx: flume::Recei
         let sleep_exp = {
             let first_exp = data
                 .first_entry()
-                .map(|e| *e.key() - Utc::now().timestamp());
+                .map(|e| *e.key() - now());
 
             if let Some(exp) = first_exp {
                 if exp < 1 {
@@ -127,78 +140,94 @@ async fn ttl_handler(tx_kv: flume::Sender<CacheRequestHandler>, rx: flume::Recei
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-    use tokio::time;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    /// Controllable clock + sync point. `sync` awaits a SnapshotBuild ack, which the handler
+    /// only sends after it has processed the next expiry batch for the current clock value, so
+    /// expiry behaviour is asserted deterministically without any real-time sleeps.
+    fn harness(
+    ) -> (
+        flume::Sender<TtlRequest>,
+        flume::Receiver<CacheRequestHandler>,
+        Arc<AtomicI64>,
+    ) {
+        let (tx_kv, rx_kv) = flume::unbounded();
+        let clock = Arc::new(AtomicI64::new(1000));
+        let c = clock.clone();
+        let tx = spawn_with_clock(tx_kv, move || c.load(Ordering::Relaxed));
+        (tx, rx_kv, clock)
+    }
+
+    async fn sync(tx: &flume::Sender<TtlRequest>) {
+        let (ack, rx) = oneshot::channel();
+        tx.send(TtlRequest::SnapshotBuild(ack)).unwrap();
+        rx.await.unwrap();
+    }
 
     #[tokio::test]
     async fn same_second_expiry_deletes_all_keys() {
-        let (tx_kv, rx_kv) = flume::unbounded();
-        let tx = spawn(tx_kv);
-        let past = Utc::now().timestamp() - 1;
+        let (tx, rx_kv, _) = harness();
+        tx.send(TtlRequest::Ttl((999, "k1".to_string()))).unwrap();
+        tx.send(TtlRequest::Ttl((999, "k2".to_string()))).unwrap();
+        sync(&tx).await;
 
-        tx.send(TtlRequest::Ttl((past, "k1".to_string()))).unwrap();
-        tx.send(TtlRequest::Ttl((past, "k2".to_string()))).unwrap();
-
-        let d1 = tokio::time::timeout(Duration::from_secs(5), rx_kv.recv_async())
-            .await
-            .expect("first delete timeout");
-        let d2 = tokio::time::timeout(Duration::from_secs(5), rx_kv.recv_async())
-            .await
-            .expect("second delete timeout");
-        match (d1, d2) {
-            (Ok(CacheRequestHandler::Delete(a)), Ok(CacheRequestHandler::Delete(b))) => {
-                let mut got = [a, b];
-                got.sort();
-                assert_eq!(got, ["k1".to_string(), "k2".to_string()]);
-            }
-            other => panic!("expected Delete messages, got {other:?}"),
+        let mut got = vec![];
+        while let Ok(CacheRequestHandler::Delete(k)) = rx_kv.try_recv() {
+            got.push(k);
         }
+        got.sort();
+        assert_eq!(got, ["k1".to_string(), "k2".to_string()]);
     }
 
     #[tokio::test]
     async fn refreshed_key_is_not_deleted_at_old_expiry() {
-        let (tx_kv, rx_kv) = flume::unbounded();
-        let tx = spawn(tx_kv);
-        let now = Utc::now().timestamp();
-        // the old expiry fires after ~1s, the refresh moves it to ~2s
-        let old = now + 1;
-        let new_exp = now + 2;
-
-        tx.send(TtlRequest::Ttl((old, "k".to_string()))).unwrap();
-        tx.send(TtlRequest::Ttl((new_exp, "k".to_string())))
-            .unwrap();
-
-        // wait past the old expiry: the refreshed key must not be deleted early
-        time::sleep(Duration::from_millis(1600)).await;
+        let (tx, rx_kv, clock) = harness();
+        tx.send(TtlRequest::Ttl((1001, "k".to_string()))).unwrap();
+        tx.send(TtlRequest::Ttl((1060, "k".to_string()))).unwrap();
+        sync(&tx).await; // both requests processed at clock=1000
+        clock.store(1002, Ordering::Relaxed); // past the old expiry
+        sync(&tx).await;
         assert!(rx_kv.is_empty());
     }
 
     #[tokio::test]
+    async fn refreshed_key_expires_at_new_expiry() {
+        let (tx, rx_kv, clock) = harness();
+        tx.send(TtlRequest::Ttl((1001, "k".to_string()))).unwrap();
+        tx.send(TtlRequest::Ttl((1060, "k".to_string()))).unwrap();
+        sync(&tx).await; // both requests processed at clock=1000
+        clock.store(1002, Ordering::Relaxed);
+        sync(&tx).await;
+        assert!(rx_kv.is_empty()); // not deleted at the old expiry
+
+        clock.store(1061, Ordering::Relaxed);
+        sync(&tx).await;
+        match rx_kv.try_recv() {
+            Ok(CacheRequestHandler::Delete(k)) => assert_eq!(k, "k".to_string()),
+            other => panic!("expected Delete, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn clear_removes_pending_expiry() {
-        let (tx_kv, rx_kv) = flume::unbounded();
-        let tx = spawn(tx_kv);
-        let exp = Utc::now().timestamp() + 1;
-
-        tx.send(TtlRequest::Ttl((exp, "k".to_string()))).unwrap();
+        let (tx, rx_kv, clock) = harness();
+        tx.send(TtlRequest::Ttl((1001, "k".to_string()))).unwrap();
         tx.send(TtlRequest::Clear("k".to_string())).unwrap();
-
-        // the expiry must never fire after Clear
-        time::sleep(Duration::from_millis(1600)).await;
+        sync(&tx).await; // both requests processed at clock=1000
+        clock.store(1002, Ordering::Relaxed);
+        sync(&tx).await;
         assert!(rx_kv.is_empty());
     }
 
     #[tokio::test]
     async fn snapshot_roundtrip_preserves_expiries() {
-        let (tx_kv, rx_kv) = flume::unbounded();
-        let tx = spawn(tx_kv);
-        let future = Utc::now().timestamp() + 3600;
-
-        tx.send(TtlRequest::Ttl((future, "k".to_string()))).unwrap();
+        let (tx, rx_kv, _) = harness();
+        tx.send(TtlRequest::Ttl((3600, "k".to_string()))).unwrap();
 
         let (ack, rx) = oneshot::channel();
         tx.send(TtlRequest::SnapshotBuild(ack)).unwrap();
         let snap = rx.await.unwrap();
-        assert_eq!(snap.get(&future), Some(&"k".to_string()));
+        assert_eq!(snap.get(&3600), Some(&"k".to_string()));
 
         let (ack, rx) = oneshot::channel();
         tx.send(TtlRequest::SnapshotInstall((snap.clone(), ack)))
