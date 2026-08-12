@@ -32,6 +32,8 @@ pub enum Error {
     Locked(&'static str),
     #[error("ParseError: {0}")]
     Parse(&'static str),
+    #[error("WalSizeExceeded: {0}")]
+    WalSizeExceeded(Cow<'static, str>),
 }
 
 impl From<task::JoinError> for Error {
