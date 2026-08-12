@@ -13,7 +13,12 @@
     let locked = $derived(Date.now() < lockUntil);
 
     async function onSubmit(form: HTMLFormElement, params: URLSearchParams) {
-        if (locked) return;
+        if (locked) {
+            // the button is disabled, but Enter can still submit; tell the user why
+            const remaining = Math.max(1, Math.ceil((lockUntil - Date.now()) / 1000));
+            error = `Too many failed login attempts, try again in ${remaining}s`;
+            return;
+        }
         error = '';
         isLoading = true;
 
@@ -56,12 +61,14 @@
             storeSession.set(resp);
         } else {
             error = Object.values(resp)[0] as string;
-            // Lock the form for the global login cooldown after a 429.
+            // Lock the form for the global login cooldown after a 429; the duration
+            // comes from the `Retry-After` header so the UI never hardcodes it.
             if (res.status === 429) {
-                lockUntil = Date.now() + 5000;
+                const retryAfter = Number(res.headers.get('Retry-After')) || 5;
+                lockUntil = Date.now() + retryAfter * 1000;
                 setTimeout(() => {
                     lockUntil = 0;
-                }, 5000);
+                }, retryAfter * 1000);
             }
         }
 

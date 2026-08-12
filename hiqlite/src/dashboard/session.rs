@@ -4,7 +4,8 @@ use crate::helpers::deserialize;
 use crate::network::{AppStateExt, serialize_network};
 use axum::Json;
 use axum::extract::FromRequestParts;
-use axum::http::header::SET_COOKIE;
+use axum::http::header::{RETRY_AFTER, SET_COOKIE};
+use axum::http::StatusCode;
 use axum::http::{HeaderMap, Method, request};
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
@@ -152,9 +153,17 @@ pub async fn set_session_verify(
     check_csrf(&method, headers).await?;
     // Reject login attempts during the global cooldown before any password work.
     if login_locked() {
-        return Err(Error::RateLimit(
+        let seconds = LOGIN_COOLDOWN.as_secs();
+        let err = Error::RateLimit(
             "too many failed login attempts, try again in a few seconds".into(),
-        ));
+        );
+        // 429 with `Retry-After` so the UI never has to hardcode the cooldown duration
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            [(RETRY_AFTER, seconds.to_string())],
+            Json(err),
+        )
+            .into_response());
     }
     if let Some(pwd) = state.dashboard.password_dashboard.clone() {
         if let Err(err) = password::verify_password(password, pwd).await {
