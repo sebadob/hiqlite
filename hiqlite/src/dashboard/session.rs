@@ -53,15 +53,21 @@ fn unlock_logins() {
     *guard = None;
 }
 
-/// 429 with `Retry-After` so the UI never has to hardcode the cooldown duration.
+/// 429 with `Retry-After` so the UI never has to hardcode the cooldown duration. The
+/// header carries the remaining wait, falling back to the full cooldown if unknown.
 fn cooldown_response() -> Response {
-    let seconds = LOGIN_COOLDOWN.as_secs();
+    let remaining = NEXT_LOGIN_ALLOWED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .map(|t| t.saturating_duration_since(Instant::now()).as_secs())
+        .unwrap_or(LOGIN_COOLDOWN.as_secs())
+        .max(1);
     let err = Error::RateLimit(
         "too many failed login attempts, try again in a few seconds".into(),
     );
     (
         StatusCode::TOO_MANY_REQUESTS,
-        [(RETRY_AFTER, seconds.to_string())],
+        [(RETRY_AFTER, remaining.to_string())],
         Json(err),
     )
         .into_response()
@@ -206,8 +212,22 @@ mod tests {
             resp.headers()
                 .get(RETRY_AFTER)
                 .and_then(|v| v.to_str().ok()),
-            Some("5")
+            Some(LOGIN_COOLDOWN.as_secs().to_string()).as_deref()
         );
+    }
+
+    #[test]
+    fn cooldown_response_reports_remaining_wait() {
+        lock_logins();
+        let retry_after = cooldown_response()
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert!((1..=LOGIN_COOLDOWN.as_secs()).contains(&retry_after));
+        unlock_logins();
     }
 }
 

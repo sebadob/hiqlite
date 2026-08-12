@@ -30,7 +30,10 @@ pub async fn get_session(s: Session) -> Result<Json<Session>, Error> {
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     password: String,
-    // PoW proof against the per-node secret initialized in `dashboard::init`.
+    // PoW proof against the per-node secret initialized in `dashboard::init`. Optional
+    // (`#[serde(default)]`): the login form only sends it in a secure context, so plain
+    // HTTP submissions carry no `pow` field and must not fail deserialization.
+    #[serde(default)]
     pow: String,
 }
 
@@ -138,6 +141,16 @@ mod tests {
             pow.challenge.as_str(),
         );
         assert!(Pow::validate("bogus").is_err());
+    }
+
+    #[test]
+    fn login_request_pow_defaults_when_missing() {
+        // plain-HTTP submissions carry no `pow` field; it must default to empty
+        let req: LoginRequest = serde_json::from_str(r#"{"password":"secret"}"#).unwrap();
+        assert_eq!(req.pow, "");
+        let req: LoginRequest =
+            serde_json::from_str(r#"{"password":"secret","pow":"abc"}"#).unwrap();
+        assert_eq!(req.pow, "abc");
     }
 
     #[test]
