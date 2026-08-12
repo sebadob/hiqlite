@@ -4,7 +4,6 @@
     import InputPassword from "$lib/components/form/InputPassword.svelte";
     import {API_PREFIX, fetchGet} from "$lib/utils/fetch";
     import {storeSession} from "$lib/stores/session";
-    import {pow_work_wasm} from "../../spow/spow-wasm";
 
     const action = `${API_PREFIX}/session`;
 
@@ -20,8 +19,11 @@
 
         // The PoW WASM only runs in a secure context; over plain HTTP the proof is
         // skipped, and the server ignores it there as well (it only validates when
-        // serving via TLS).
+        // serving via TLS). The module is imported dynamically so it is never evaluated
+        // on a plain-HTTP page (a static import would try to instantiate the WASM at
+        // module load and crash the runtime outside a secure context).
         if (window.isSecureContext) {
+            const {pow_work_wasm} = await import("../../spow/spow-wasm");
             let resPow = await fetchGet('/pow');
             if (resPow.status !== 200) {
                 let resp = await resPow.json();
