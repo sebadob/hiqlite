@@ -44,10 +44,18 @@ pub async fn post_session(
     // `tls_api` / `tls_auto_certificates`); over plain HTTP the WASM client cannot run
     // in a secure context, so the proof is ignored there. The browser mirrors this
     // check via `window.isSecureContext`.
-    if crate::dashboard::is_api_tls_enabled() {
-        Pow::validate(&login.pow).map_err(|err| Error::Unauthorized(err.to_string().into()))?;
-    }
+    validate_pow_if_tls(&login.pow, crate::dashboard::is_api_tls_enabled())?;
     session::set_session_verify(&state, Method::POST, &headers, login.password).await
+}
+
+/// Reject a missing or invalid PoW proof only when the dashboard is served over TLS
+/// (auto-TLS via `tls_api` / `tls_auto_certificates`); over plain HTTP the proof is
+/// ignored, mirroring the browser's `window.isSecureContext` check.
+fn validate_pow_if_tls(pow: &str, is_tls: bool) -> Result<(), Error> {
+    if is_tls {
+        Pow::validate(pow).map_err(|err| Error::Unauthorized(err.to_string().into()))?;
+    }
+    Ok(())
 }
 
 #[tracing::instrument(skip_all)]
@@ -130,5 +138,18 @@ mod tests {
             pow.challenge.as_str(),
         );
         assert!(Pow::validate("bogus").is_err());
+    }
+
+    #[test]
+    fn pow_validated_only_when_tls_enabled() {
+        // no TLS: any proof is accepted (plain HTTP ignores the proof)
+        assert!(validate_pow_if_tls("bogus", false).is_ok());
+
+        Pow::init_bytes(b"test-secret-key-for-pow-0123456789ab");
+        let pow = Pow::with_difficulty(10, 5).expect("challenge generation");
+        let solution = Pow::work(&pow.to_string()).expect("client-side solve");
+        // TLS: a valid proof passes, an invalid one is rejected
+        assert!(validate_pow_if_tls(&solution, true).is_ok());
+        assert!(validate_pow_if_tls("bogus", true).is_err());
     }
 }

@@ -53,6 +53,20 @@ fn unlock_logins() {
     *guard = None;
 }
 
+/// 429 with `Retry-After` so the UI never has to hardcode the cooldown duration.
+fn cooldown_response() -> Response {
+    let seconds = LOGIN_COOLDOWN.as_secs();
+    let err = Error::RateLimit(
+        "too many failed login attempts, try again in a few seconds".into(),
+    );
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(RETRY_AFTER, seconds.to_string())],
+        Json(err),
+    )
+        .into_response()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Session {
     created: i64,
@@ -153,17 +167,7 @@ pub async fn set_session_verify(
     check_csrf(&method, headers).await?;
     // Reject login attempts during the global cooldown before any password work.
     if is_login_locked() {
-        let seconds = LOGIN_COOLDOWN.as_secs();
-        let err = Error::RateLimit(
-            "too many failed login attempts, try again in a few seconds".into(),
-        );
-        // 429 with `Retry-After` so the UI never has to hardcode the cooldown duration
-        return Ok((
-            StatusCode::TOO_MANY_REQUESTS,
-            [(RETRY_AFTER, seconds.to_string())],
-            Json(err),
-        )
-            .into_response());
+        return Ok(cooldown_response());
     }
     if let Some(pwd) = state.dashboard.password_dashboard.clone() {
         if let Err(err) = password::verify_password(password, pwd).await {
@@ -192,6 +196,18 @@ mod tests {
         assert!(is_login_locked());
         unlock_logins();
         assert!(!is_login_locked());
+    }
+
+    #[test]
+    fn cooldown_response_is_429_with_retry_after() {
+        let resp = cooldown_response();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            resp.headers()
+                .get(RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("5")
+        );
     }
 }
 
