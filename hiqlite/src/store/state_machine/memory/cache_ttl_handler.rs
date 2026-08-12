@@ -61,7 +61,10 @@ async fn ttl_handler(tx_kv: flume::Sender<CacheRequestHandler>, rx: flume::Recei
             }
         };
 
+        // Process pending requests before expiring buckets: a same-instant refresh must not
+        // let a stale Delete hit the freshly re-put value.
         tokio::select! {
+            biased;
             req = rx.recv_async() => {
                 if let Ok(req) = req {
                     match req {
@@ -90,10 +93,8 @@ async fn ttl_handler(tx_kv: flume::Sender<CacheRequestHandler>, rx: flume::Recei
                             exp_of.remove(&key);
                         }
                         TtlRequest::SnapshotBuild(ack) => {
-                            // The snapshot format stores a single key per expiry timestamp. If
-                            // two keys expire in the same second, only one of them survives a
-                            // snapshot restore. This is a rare edge case and preferable to
-                            // dropping TTLs during live operation.
+                            // Snapshot format: one key per expiry second; same-second keys
+                            // collide on restore (rare; accepted over dropping TTLs live).
                             let snap = exp_of
                                 .iter()
                                 .map(|(key, exp)| (*exp, key.clone()))
