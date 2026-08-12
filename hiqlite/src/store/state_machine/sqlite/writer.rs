@@ -738,17 +738,17 @@ Got:      {}
 }
 
 #[inline]
-fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), rusqlite::Error> {
+fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), Error> {
     // vacuum into a temp file and move it into place, so a crash can never leave a
     // partially written snapshot at the final path
     let path_temp = format!("{path}.temp");
     let q = format!("VACUUM main INTO '{path_temp}'");
     if let Err(err) = conn.execute(&q, ()) {
         let _ = std::fs::remove_file(&path_temp);
-        return Err(err);
+        return Err(Error::Sqlite(err.to_string().into()));
     }
     std::fs::rename(&path_temp, &path)
-        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+        .map_err(|err| Error::Error(format!("rename snapshot into place: {err}").into()))?;
     Ok(())
 }
 
@@ -778,7 +778,9 @@ fn create_backup(
     }
     if let Err(err) = std::fs::rename(&path_temp, &path_full) {
         let _ = std::fs::remove_file(&path_temp);
-        return Err(Error::Sqlite(err.to_string().into()));
+        return Err(Error::Error(
+            format!("rename backup into place: {err}").into(),
+        ));
     }
 
     // connect to the backup and reset metadata
