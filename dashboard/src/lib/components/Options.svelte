@@ -3,6 +3,7 @@
     import Button from "$lib/components/Button.svelte";
     import SearchBar from "$lib/components/SearchBar.svelte";
     import IconChevronRight from "$lib/components/icons/IconChevronRight.svelte";
+    import {untrack} from 'svelte';
 
     let {
         ref = $bindable(),
@@ -49,19 +50,10 @@
     });
 
     let refOptions: undefined | HTMLElement = $state();
-    let usePopover = $state<boolean | undefined>(false);
+    let usePopover = $state(untrack(() => fallbackOptions ? false : asPopover));
     let close: undefined | (() => void) = $state();
 
-    let selected = $state(0);
-    // initial selection depends on `withSearch`; applied once on mount so the prop is
-    // not captured as the initial value of the state
-    let selectedInitialised = $state(false);
-    $effect(() => {
-        if (!selectedInitialised) {
-            selected = withSearch ? -1 : 0;
-            selectedInitialised = true;
-        }
-    });
+    let selected = $state(untrack(() => withSearch ? -1 : 0));
     let focusSearch: undefined | ((options?: FocusOptions) => void) = $state();
 
     let searchValue = $state('');

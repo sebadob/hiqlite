@@ -1,5 +1,6 @@
 <script lang="ts">
     import Button from "$lib/components/Button.svelte";
+    import {untrack} from 'svelte';
 
     let {
         tabs,
@@ -15,7 +16,7 @@
         width?: string,
     } = $props();
 
-    $effect(() => {
+    untrack(() => {
         if (tabs.length > 0 && selected === '') {
             selected = tabs[0];
         }

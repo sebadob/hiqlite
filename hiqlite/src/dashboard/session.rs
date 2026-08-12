@@ -38,7 +38,7 @@ pub static INSECURE_COOKIES: LazyLock<bool> = LazyLock::new(|| {
 const LOGIN_COOLDOWN: Duration = Duration::from_secs(5);
 static NEXT_LOGIN_ALLOWED: Mutex<Option<Instant>> = Mutex::new(None);
 
-fn login_locked() -> bool {
+fn is_login_locked() -> bool {
     let guard = NEXT_LOGIN_ALLOWED.lock().unwrap_or_else(|e| e.into_inner());
     guard.is_some_and(|t| Instant::now() < t)
 }
@@ -152,7 +152,7 @@ pub async fn set_session_verify(
 ) -> Result<Response, Error> {
     check_csrf(&method, headers).await?;
     // Reject login attempts during the global cooldown before any password work.
-    if login_locked() {
+    if is_login_locked() {
         let seconds = LOGIN_COOLDOWN.as_secs();
         let err = Error::RateLimit(
             "too many failed login attempts, try again in a few seconds".into(),
@@ -187,11 +187,11 @@ mod tests {
     #[test]
     fn cooldown_locks_and_unlocks() {
         unlock_logins();
-        assert!(!login_locked());
+        assert!(!is_login_locked());
         lock_logins();
-        assert!(login_locked());
+        assert!(is_login_locked());
         unlock_logins();
-        assert!(!login_locked());
+        assert!(!is_login_locked());
     }
 }
 
