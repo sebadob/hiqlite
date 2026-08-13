@@ -84,9 +84,7 @@ impl Metadata {
         file.sync_all()?;
         drop(file);
 
-        // atomic replace on the same filesystem: readers and crash recovery never observe a
-        // truncated or half-written metadata file (the old remove + create_new approach could
-        // leave the file missing entirely if we crashed in between)
+        // atomic replace: readers/crash recovery never see a torn or missing meta file
         #[cfg(not(unix))]
         let _ = fs::remove_file(&path);
         fs::rename(&tmp_path, &path)?;

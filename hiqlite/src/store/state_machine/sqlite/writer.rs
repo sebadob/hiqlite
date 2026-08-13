@@ -797,9 +797,7 @@ fn create_backup(
         rt.spawn(async move {
             info!("Background task for database encryption and S3 backup task has been started");
 
-            // The backup request has already been acked Ok, so a failed upload would otherwise
-            // only appear as a single log line. Retry a few times before giving up, and make the
-            // final failure loud - the backup exists locally but not offsite.
+            // The backup was already acked; retry the upload so a failure is not just a log line.
             let mut attempt = 0;
             loop {
                 attempt += 1;
