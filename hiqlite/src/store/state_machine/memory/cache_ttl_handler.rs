@@ -11,8 +11,7 @@ use tracing::{debug, warn};
 #[derive(Debug)]
 pub enum TtlRequest {
     Ttl((i64, String)),
-    /// Removes a previously registered expiry for a key, e.g. when the value was re-put without
-    /// a TTL. Without this, the old expiry would still fire and delete the fresh value early.
+    /// Removes a key's pending expiry, e.g. after a re-put without a TTL.
     Clear(String),
     SnapshotBuild(oneshot::Sender<BTreeMap<i64, String>>),
     SnapshotInstall((BTreeMap<i64, String>, oneshot::Sender<()>)),
@@ -38,12 +37,11 @@ async fn ttl_handler(
     rx: flume::Receiver<TtlRequest>,
     now: impl Fn() -> i64 + Send + Sync + 'static,
 ) {
-    // expiry timestamp -> keys expiring at that time. A `Vec` is used because multiple keys can
-    // expire in the same second. A map keyed by expiry alone would silently drop all but one of
-    // them, so the remaining ones would never be expired.
+    // expiry timestamp -> keys expiring then. A `Vec` per timestamp: several keys may share a
+    // second, and a single-key map would silently drop all but one of them.
     let mut data: BTreeMap<i64, Vec<String>> = BTreeMap::new();
-    // key -> currently registered expiry. Needed to remove an old expiry in O(1) when a value is
-    // refreshed, so a stale expiry can never delete a freshly updated value early.
+    // key -> current expiry, so a refresh can remove the old one in O(1) and a stale expiry
+    // can never delete the freshly updated value.
     let mut exp_of: HashMap<String, i64> = HashMap::new();
 
     loop {
