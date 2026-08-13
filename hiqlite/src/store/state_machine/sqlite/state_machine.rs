@@ -403,10 +403,8 @@ impl StateMachineSqlite {
     }
 
     fn overwrite_non_det_fns(conn: &rusqlite::Connection) {
-        // Non-deterministic functions must never be used for writing connections in a Raft
-        // cluster: every node has to apply the exact same statement to stay consistent. Instead
-        // of panicking (which would kill the single writer thread and with it the whole state
-        // machine), they return a regular error so only the offending statement fails.
+        // Non-deterministic functions are forbidden on raft write connections (nodes must
+        // apply identical statements); return an error instead of panicking the writer.
         conn.create_scalar_function(
             "date",
             -1,
