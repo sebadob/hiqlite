@@ -307,10 +307,8 @@ fn run(
                     is_dirty = false;
                 }
 
-                // Persist `last_purged_log_id` BEFORE deleting any WAL files. If we crashed in
-                // between, we would end up with a `last_purged_log_id` pointing into already
-                // deleted files, which breaks recovery via `get_log_state()`. A too-low value on
-                // the other hand only keeps some extra files around, which is safe.
+                // Persist `last_purged_log_id` before deleting WAL files: a stale (too high)
+                // value would point into deleted files; a too-low one keeps extra files (safe).
                 if last_log.is_some() {
                     meta.write()?.last_purged_log_id = last_log;
                     Metadata::write(meta.clone(), &wal.base_path)?;
