@@ -39,6 +39,22 @@ pub type SqlitePool = deadpool::unmanaged::Pool<rusqlite::Connection>;
 
 pub type Params = Vec<Param>;
 
+/// Non-deterministic SQLite functions that are forbidden on raft write connections,
+/// where every node must apply the identical statement. The dashboard pre-scans
+/// manual queries against this list to return a proper error instead of the panic.
+pub(crate) const FORBIDDEN_NON_DET_FNS: &[&str] = &[
+    "date",
+    "datetime",
+    "julianday",
+    "now",
+    "random",
+    "randomblob",
+    "strftime",
+    "time",
+    "timediff",
+    "unixepoch",
+];
+
 pub struct PathDb(pub String);
 pub struct PathBackups(pub String);
 pub struct PathSnapshots(pub String);
@@ -403,89 +419,24 @@ impl StateMachineSqlite {
     }
 
     fn overwrite_non_det_fns(conn: &rusqlite::Connection) {
-        // Non-deterministic functions are forbidden on raft write connections (nodes must
-        // apply identical statements); return an error instead of panicking the writer.
-        conn.create_scalar_function(
-            "date",
-            -1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| Self::forbidden_non_det_fn("date"),
-        )
-        .expect("Cannot register forbidden function 'date'");
-        conn.create_scalar_function(
-            "datetime",
-            -1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| Self::forbidden_non_det_fn("datetime"),
-        )
-        .expect("Cannot register forbidden function 'datetime'");
-        conn.create_scalar_function(
-            "julianday",
-            -1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| Self::forbidden_non_det_fn("julianday"),
-        )
-        .expect("Cannot register forbidden function 'julianday'");
-        conn.create_scalar_function(
-            "now",
-            -1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| Self::forbidden_non_det_fn("now"),
-        )
-        .expect("Cannot register forbidden function 'now'");
-        conn.create_scalar_function(
-            "random",
-            -1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| Self::forbidden_non_det_fn("random"),
-        )
-        .expect("Cannot register forbidden function 'random'");
-        conn.create_scalar_function(
-            "randomblob",
-            -1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| Self::forbidden_non_det_fn("randomblob"),
-        )
-        .expect("Cannot register forbidden function 'randomblob'");
-        conn.create_scalar_function(
-            "strftime",
-            -1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| Self::forbidden_non_det_fn("strftime"),
-        )
-        .expect("Cannot register forbidden function 'strftime'");
-        conn.create_scalar_function(
-            "time",
-            -1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| Self::forbidden_non_det_fn("time"),
-        )
-        .expect("Cannot register forbidden function 'time'");
-        conn.create_scalar_function(
-            "timediff",
-            -1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| Self::forbidden_non_det_fn("timediff"),
-        )
-        .expect("Cannot register forbidden function 'timediff'");
-        conn.create_scalar_function(
-            "unixepoch",
-            -1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |_| Self::forbidden_non_det_fn("unixepoch"),
-        )
-        .expect("Cannot register forbidden function 'unixepoch'");
-    }
-
-    fn forbidden_non_det_fn(name: &str) -> rusqlite::Result<String> {
-        Err(rusqlite::Error::UserFunctionError(Box::new(
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "forbidden usage of `{name}()` - non-deterministic functions must never be                     used for writing connections in a Raft cluster"
-                ),
-            ),
-        )))
+        // Overwrite the non-deterministic functions with a panicking guard: using one on
+        // the write path would diverge the cluster, so it fails loudly.
+        // No query-string scan: the guard only runs when a statement actually calls the
+        // function, so queries that never use them pay nothing.
+        for &name in FORBIDDEN_NON_DET_FNS {
+            conn.create_scalar_function(
+                name,
+                -1,
+                FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+                move |_| -> rusqlite::Result<String> {
+                    panic!(
+                        "forbidden usage of `{name}()` - non-deterministic functions must never be \
+                        used for writing connections in a Raft cluster"
+                    )
+                },
+            )
+            .expect("Cannot register forbidden function");
+        }
     }
 
     async fn update_state_machine_(
@@ -900,18 +851,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn forbidden_functions_return_errors_and_keep_connection_usable() {
+    fn forbidden_functions_panic_on_purpose_and_fail_the_statement() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         StateMachineSqlite::overwrite_non_det_fns(&conn);
 
-        // non-deterministic functions must fail the statement ...
+        // The registered closures `panic!` on purpose; rusqlite turns that into a
+        // statement error at the FFI boundary, so the query fails.
         let err = conn
             .query_row("SELECT now()", (), |row| row.get::<_, String>(0))
             .unwrap_err();
-        assert!(err.to_string().contains("forbidden usage of `now()`"));
+        assert!(err.to_string().contains("unwinding panic"));
 
-        // ... and the connection must still work afterwards (no writer death)
+        // the connection stays usable afterwards
         let one: i64 = conn.query_row("SELECT 1", (), |row| row.get(0)).unwrap();
         assert_eq!(one, 1);
+
+        // every registered function panics, not just `now()` - "unwinding panic" proves
+        // the call reached our closure, not a missing function
+        for name in FORBIDDEN_NON_DET_FNS {
+            let err = conn
+                .query_row(&format!("SELECT {name}()"), (), |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("unwinding panic"),
+                "{name} did not panic: {err}"
+            );
+        }
     }
 }
