@@ -46,10 +46,8 @@ impl Client {
                 }
                 Some(to_migrate) => {
                     if to_migrate.id != migration.id {
-                        // Migrations are read from files which are embedded at compile time, so a
-                        // mismatch with what is already applied means the DB is in an inconsistent
-                        // state. Running on an inconsistent DB is worse than crashing, so this
-                        // must panic instead of silently continuing.
+                        // Migrations are compile-time embedded; a mismatch means an inconsistent
+                        // DB that must never run, so panic instead of silently continuing.
                         panic!(
                             "ID mismatch for '{}' between given and already applied migration: {} != {}",
                             to_migrate.name, to_migrate.id, migration.id

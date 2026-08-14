@@ -796,10 +796,8 @@ fn migrate(
     mut migrations: Vec<Migration>,
     last_applied_log_id: Option<LogId<NodeId>>,
 ) -> Result<(), Error> {
-    // The `ts` written to `_migrations` must be identical on every node, because the migration
-    // entry is applied by the Raft state machine on all members. Using the wall clock here would
-    // make the nodes diverge, which is exactly what the non-deterministic function overrides in
-    // `overwrite_non_det_fns` are meant to prevent. The Raft log id is deterministic and unique.
+    // The migration `ts` must be identical on all nodes: the wall clock would diverge, the
+    // raft log id is deterministic.
     let migration_ts = last_applied_log_id.map(|l| l.index as i64).unwrap_or(0);
 
     info!("Applying database migrations");
@@ -988,8 +986,7 @@ mod tests {
         let txn = conn.transaction().unwrap();
         apply_migration(txn, migration, 42).unwrap();
 
-        // the ts must be the raft log id passed in, not the wall clock, so that all
-        // cluster members store the exact same value
+        // ts must equal the raft log id, not the wall clock
         let (id, ts): (u32, i64) = conn
             .query_row("SELECT id, ts FROM _migrations WHERE id = 1", (), |row| {
                 Ok((row.get(0)?, row.get(1)?))

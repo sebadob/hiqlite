@@ -113,10 +113,7 @@ where
             match rows.next() {
                 Ok(Some(row)) => res.push(T::from(&mut rows::Row::Borrowed(row))),
                 Ok(None) => break,
-                Err(err) => {
-                    // never silently return a truncated result
-                    return Err(Error::Sqlite(err.to_string().into()));
-                }
+                Err(err) => return Err(Error::Sqlite(err.to_string().into())),
             }
         }
         Ok::<Vec<T>, Error>(res)
@@ -198,10 +195,7 @@ where
         loop {
             match rows.next() {
                 Some(Ok(ty)) => res.push(ty),
-                Some(Err(err)) => {
-                    // never silently return a truncated result
-                    return Err(Error::Sqlite(err.to_string().into()));
-                }
+                Some(Err(err)) => return Err(Error::Sqlite(err.to_string().into())),
                 None => break,
             }
         }

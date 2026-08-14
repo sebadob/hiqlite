@@ -38,9 +38,7 @@ impl Client {
 
             #[cfg(feature = "cache")]
             if let Some(config) = &config_cache {
-                // If the config is `Some`, the limiter must be set as well. If the `unwrap()`
-                // ever triggers, it is a logic bug during client initialization that must be
-                // caught loudly instead of silently disabling the rate limit.
+                // config and limiter are set together; a missing limiter is an init bug
                 let lim = slf.inner.rate_limit_cache.as_ref().unwrap();
 
                 lim.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
@@ -140,11 +138,8 @@ mod tests {
 
     #[test]
     fn refill_bucket_caps_at_burst() {
-        // refill from empty starts at rps
         assert_eq!(refill_bucket(0, 10, 20), 10);
-        // normal refill below burst
         assert_eq!(refill_bucket(5, 10, 20), 15);
-        // at burst: grows no further
         assert_eq!(refill_bucket(20, 10, 20), 20);
         // long idle time must never accumulate beyond burst
         assert_eq!(refill_bucket(1000, 10, 20), 20);

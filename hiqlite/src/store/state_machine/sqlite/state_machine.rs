@@ -382,9 +382,8 @@ impl StateMachineSqlite {
         conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
         conn.pragma_update(None, "optimize", "0x10002")?;
 
-        // Backups/snapshot restores hold an exclusive lock; the busy timeout stops concurrent
-        // reads from failing with `SQLITE_BUSY` during those windows. 30s gives even bigger
-        // databases enough time to finish a backup before concurrent reads give up.
+        // backups/snapshot restores hold an exclusive lock; 30s busy timeout stops
+        // concurrent reads failing with `SQLITE_BUSY` during those windows
         conn.busy_timeout(Duration::from_secs(30))?;
 
         // note:

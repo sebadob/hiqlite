@@ -307,10 +307,8 @@ fn run(
                     is_dirty = false;
                 }
 
-                // Persist `last_purged_log_id` before deleting WAL files: a stale (too low)
-                // value would point into deleted files; a too-high one keeps extra files (safe).
-                // If the deletion fails, the metadata is reverted again below, so it never
-                // claims logs as purged that are still present on disk.
+                // Persist the purge frontier before deleting (too low = hole into deleted files;
+                // too high = extra files). Revert it again if the deletion fails below.
                 let previous_purged = meta.read()?.last_purged_log_id.clone();
                 let persist_purged = last_log.is_some();
                 if persist_purged {
@@ -331,12 +329,9 @@ fn run(
                     }
                     Err(err) => {
                         if persist_purged {
-                            // revert the persisted frontier: the logs were not deleted, so the
-                            // metadata must not claim them as purged. Even if the revert write
-                            // fails, the original deletion error is still reported to the caller.
+                            // deletion failed: revert the frontier, but still report the error
                             let revert_res = {
-                                // release the write lock before persisting, since
-                                // `Metadata::write` acquires a read lock on the same meta
+                                // `Metadata::write` re-locks the meta, so release the guard first
                                 let mut m = match meta.write() {
                                     Ok(m) => m,
                                     Err(poisoned) => poisoned.into_inner(),
