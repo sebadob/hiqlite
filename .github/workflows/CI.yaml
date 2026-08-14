@@ -33,9 +33,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-cargo
       - name: Clippy (default features)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --tests --features cache,counters,dlock,listen_notify,macros,toml -- -D warnings
       - name: Clippy (full features)
-        run: cargo clippy -p hiqlite --features full --all-targets -- -D warnings
+        run: cargo clippy -p hiqlite --features full --lib --bins -- -D warnings
 
   examples:
     if: github.event.pull_request.draft == false

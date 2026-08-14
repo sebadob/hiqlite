@@ -156,6 +156,7 @@ rustls-webpki.workspace = true
 tikv-jemallocator = { workspace = true, optional = true }
 
 [dev-dependencies]
+rusqlite = { version = "0.40", features = ["serde_json"] }
 tokio = { workspace = true, features = ["full", "test-util", "tracing"] }
 tokio-test = "0.4.4"
 tracing-subscriber.workspace = true

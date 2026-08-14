@@ -1099,7 +1099,7 @@ mod tests {
         wal_disk.read_logs(1, 3, &mut memo, &mut logs)?;
         assert_eq!(logs.len(), 3);
 
-        let (id, data) = logs.get(0).unwrap();
+        let (id, data) = logs.first().unwrap();
         assert_eq!(id, &1);
         assert_eq!(data, d1);
         let (id, data) = logs.get(1).unwrap();
@@ -1113,7 +1113,7 @@ mod tests {
         logs.clear();
         wal_disk.read_logs(2, 3, &mut memo, &mut logs)?;
         assert_eq!(logs.len(), 2);
-        let (id, data) = logs.get(0).unwrap();
+        let (id, data) = logs.first().unwrap();
         assert_eq!(id, &2);
         assert_eq!(data, d2);
         let (id, data) = logs.get(1).unwrap();
@@ -1124,7 +1124,7 @@ mod tests {
         logs.clear();
         wal_disk.read_logs(2, 2, &mut memo, &mut logs)?;
         assert_eq!(logs.len(), 1);
-        let (id, data) = logs.get(0).unwrap();
+        let (id, data) = logs.first().unwrap();
         assert_eq!(id, &2);
         assert_eq!(data, d2);
 
@@ -1177,12 +1177,12 @@ mod tests {
         };
         buf.clear();
         set.add_file(MB2, &mut buf).unwrap();
-        assert_eq!(fs::exists(&path_h1)?, true);
-        assert_eq!(fs::exists(&path_h2)?, false);
+        assert!(fs::exists(&path_h1)?);
+        assert!(!fs::exists(&path_h2)?);
 
         buf.clear();
         set.add_file(MB2, &mut buf).unwrap();
-        assert_eq!(fs::exists(&path_h2)?, true);
+        assert!(fs::exists(&path_h2)?);
 
         Ok(())
     }
