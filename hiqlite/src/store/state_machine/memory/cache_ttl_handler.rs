@@ -18,11 +18,11 @@ pub enum TtlRequest {
 }
 
 pub fn spawn(tx_kv: flume::Sender<CacheRequestHandler>) -> flume::Sender<TtlRequest> {
-    spawn_with_clock(tx_kv, || Utc::now().timestamp())
+    spawn_with_clock(tx_kv, || Utc::now().timestamp_micros())
 }
 
-/// `now` returns the current unix timestamp; tests inject a controllable clock so expiry
-/// behaviour can be asserted deterministically without real-time sleeps.
+/// `now` returns the current unix time in microseconds; tests inject a controllable clock so
+/// expiry behaviour is asserted deterministically without real-time sleeps.
 fn spawn_with_clock(
     tx_kv: flume::Sender<CacheRequestHandler>,
     now: impl Fn() -> i64 + Send + Sync + 'static,
@@ -32,15 +32,26 @@ fn spawn_with_clock(
     tx
 }
 
+/// Older snapshots stored second-precision expiries (~1.7e9); micros values are ~1.7e15.
+const SECONDS_THRESHOLD: i64 = 1_000_000_000_000;
+
+/// Maps a possibly old second-precision expiry to micros.
+fn normalize(exp: i64) -> i64 {
+    if exp < SECONDS_THRESHOLD {
+        exp * 1_000_000
+    } else {
+        exp
+    }
+}
+
 async fn ttl_handler(
     tx_kv: flume::Sender<CacheRequestHandler>,
     rx: flume::Receiver<TtlRequest>,
     now: impl Fn() -> i64 + Send + Sync + 'static,
 ) {
-    // expiry timestamp -> keys expiring then. A `Vec` per timestamp: several keys may share a
-    // second, and a single-key map would silently drop all but one of them.
-    let mut data: BTreeMap<i64, Vec<String>> = BTreeMap::new();
-    // key -> current expiry, so a refresh can remove the old one in O(1) and a stale expiry
+    // expiry (micros) -> key. One key per expiry: `Ttl` bumps collisions by 1 microsecond.
+    let mut data: BTreeMap<i64, String> = BTreeMap::new();
+    // key -> current expiry, so a refresh can drop the old one in O(1) and a stale expiry
     // can never delete the freshly updated value.
     let mut exp_of: HashMap<String, i64> = HashMap::new();
 
@@ -48,76 +59,62 @@ async fn ttl_handler(
         let sleep_exp = {
             let first_exp = data
                 .first_entry()
-                .map(|e| *e.key() - now());
+                .map(|e| normalize(*e.key()) - now());
 
             if let Some(exp) = first_exp {
                 if exp < 1 {
-                    // `exp` is a relative delta; the bucket key is the absolute expiry.
-                    let (exp, keys) = data.pop_first().unwrap();
-                    for key in keys {
-                        // only delete if this expiry is still the current one for the key
-                        if exp_of.get(&key) == Some(&exp) {
-                            exp_of.remove(&key);
-                            tx_kv
-                                .send(CacheRequestHandler::Delete(key))
-                                .expect("kv handler to always be running");
-                        }
+                    let (exp, key) = data.pop_first().unwrap();
+                    // only delete if this expiry is still the current one for the key
+                    if exp_of.get(&key) == Some(&exp) {
+                        exp_of.remove(&key);
+                        tx_kv
+                            .send(CacheRequestHandler::Delete(key))
+                            .expect("kv handler to always be running");
                     }
                     continue;
                 } else {
-                    Duration::from_secs(exp as u64)
+                    Duration::from_micros(exp as u64)
                 }
             } else {
                 Duration::from_secs(u64::MAX)
             }
         };
 
-        // Process pending requests before expiring buckets: a same-instant refresh must not
+        // Process pending requests before expiring entries: a same-instant refresh must not
         // let a stale Delete hit the freshly re-put value.
         tokio::select! {
             biased;
             req = rx.recv_async() => {
                 if let Ok(req) = req {
                     match req {
-                        TtlRequest::Ttl((ttl, key)) => {
-                            // remove a possibly existing earlier expiry for this key
-                            if let Some(&old) = exp_of.get(&key)
-                                && let Some(keys) = data.get_mut(&old)
-                            {
-                                keys.retain(|k| k != &key);
-                                if keys.is_empty() {
-                                    data.remove(&old);
-                                }
+                        TtlRequest::Ttl((mut ttl, key)) => {
+                            // drop the key's previous expiry, then resolve same-micros
+                            // collisions by bumping to the next free slot
+                            if let Some(&old) = exp_of.get(&key) {
+                                data.remove(&old);
+                            }
+                            while data.contains_key(&ttl) {
+                                ttl += 1;
                             }
                             exp_of.insert(key.clone(), ttl);
-                            data.entry(ttl).or_default().push(key);
+                            data.insert(ttl, key);
                         }
                         TtlRequest::Clear(key) => {
-                            if let Some(&old) = exp_of.get(&key)
-                                && let Some(keys) = data.get_mut(&old)
-                            {
-                                keys.retain(|k| k != &key);
-                                if keys.is_empty() {
-                                    data.remove(&old);
-                                }
+                            if let Some(&old) = exp_of.get(&key) {
+                                data.remove(&old);
                             }
                             exp_of.remove(&key);
                         }
                         TtlRequest::SnapshotBuild(ack) => {
-                            // Snapshot format: one key per expiry second; same-second keys
-                            // collide on restore (rare; accepted over dropping TTLs live).
-                            let snap = exp_of
-                                .iter()
-                                .map(|(key, exp)| (*exp, key.clone()))
-                                .collect::<BTreeMap<i64, String>>();
-                            ack.send(snap).unwrap();
+                            ack.send(data.clone()).unwrap();
                         }
                         TtlRequest::SnapshotInstall((snap, ack)) => {
                             data.clear();
                             exp_of.clear();
                             for (exp, key) in snap {
+                                let exp = normalize(exp);
                                 exp_of.insert(key.clone(), exp);
-                                data.entry(exp).or_default().push(key);
+                                data.insert(exp, key);
                             }
                             ack.send(()).unwrap();
                         }
@@ -140,9 +137,11 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicI64, Ordering};
 
-    /// Controllable clock + sync point. `sync` awaits a SnapshotBuild ack, which the handler
-    /// only sends after it has processed the next expiry batch for the current clock value, so
-    /// expiry behaviour is asserted deterministically without any real-time sleeps.
+    /// Clock base: a plausible 2026 unix timestamp in microseconds.
+    const T0: i64 = 1_786_000_000_000_000;
+
+    /// Controllable clock + sync point: `sync` awaits a SnapshotBuild ack, so the handler has
+    /// processed the current clock value before the assertions run.
     fn harness(
     ) -> (
         flume::Sender<TtlRequest>,
@@ -150,7 +149,7 @@ mod tests {
         Arc<AtomicI64>,
     ) {
         let (tx_kv, rx_kv) = flume::unbounded();
-        let clock = Arc::new(AtomicI64::new(1000));
+        let clock = Arc::new(AtomicI64::new(T0));
         let c = clock.clone();
         let tx = spawn_with_clock(tx_kv, move || c.load(Ordering::Relaxed));
         (tx, rx_kv, clock)
@@ -163,10 +162,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_second_expiry_deletes_all_keys() {
+    async fn collision_bump_keeps_both_keys() {
         let (tx, rx_kv, _) = harness();
-        tx.send(TtlRequest::Ttl((999, "k1".to_string()))).unwrap();
-        tx.send(TtlRequest::Ttl((999, "k2".to_string()))).unwrap();
+        // same expiry micros: the second key is bumped by 1us, so both expire
+        tx.send(TtlRequest::Ttl((T0 - 1, "k1".to_string()))).unwrap();
+        tx.send(TtlRequest::Ttl((T0 - 1, "k2".to_string()))).unwrap();
         sync(&tx).await;
 
         let mut got = vec![];
@@ -180,10 +180,10 @@ mod tests {
     #[tokio::test]
     async fn refreshed_key_is_not_deleted_at_old_expiry() {
         let (tx, rx_kv, clock) = harness();
-        tx.send(TtlRequest::Ttl((1001, "k".to_string()))).unwrap();
-        tx.send(TtlRequest::Ttl((1060, "k".to_string()))).unwrap();
-        sync(&tx).await; // both requests processed at clock=1000
-        clock.store(1002, Ordering::Relaxed); // past the old expiry
+        tx.send(TtlRequest::Ttl((T0 + 1, "k".to_string()))).unwrap();
+        tx.send(TtlRequest::Ttl((T0 + 60, "k".to_string()))).unwrap();
+        sync(&tx).await; // both requests processed at clock=T0
+        clock.store(T0 + 2, Ordering::Relaxed); // past the old expiry
         sync(&tx).await;
         assert!(rx_kv.is_empty());
     }
@@ -191,14 +191,14 @@ mod tests {
     #[tokio::test]
     async fn refreshed_key_expires_at_new_expiry() {
         let (tx, rx_kv, clock) = harness();
-        tx.send(TtlRequest::Ttl((1001, "k".to_string()))).unwrap();
-        tx.send(TtlRequest::Ttl((1060, "k".to_string()))).unwrap();
-        sync(&tx).await; // both requests processed at clock=1000
-        clock.store(1002, Ordering::Relaxed);
+        tx.send(TtlRequest::Ttl((T0 + 1, "k".to_string()))).unwrap();
+        tx.send(TtlRequest::Ttl((T0 + 60, "k".to_string()))).unwrap();
+        sync(&tx).await; // both requests processed at clock=T0
+        clock.store(T0 + 2, Ordering::Relaxed);
         sync(&tx).await;
         assert!(rx_kv.is_empty()); // not deleted at the old expiry
 
-        clock.store(1061, Ordering::Relaxed);
+        clock.store(T0 + 61, Ordering::Relaxed);
         sync(&tx).await;
         match rx_kv.try_recv() {
             Ok(CacheRequestHandler::Delete(k)) => assert_eq!(k, "k".to_string()),
@@ -209,10 +209,10 @@ mod tests {
     #[tokio::test]
     async fn clear_removes_pending_expiry() {
         let (tx, rx_kv, clock) = harness();
-        tx.send(TtlRequest::Ttl((1001, "k".to_string()))).unwrap();
+        tx.send(TtlRequest::Ttl((T0 + 1, "k".to_string()))).unwrap();
         tx.send(TtlRequest::Clear("k".to_string())).unwrap();
-        sync(&tx).await; // both requests processed at clock=1000
-        clock.store(1002, Ordering::Relaxed);
+        sync(&tx).await; // both requests processed at clock=T0
+        clock.store(T0 + 2, Ordering::Relaxed);
         sync(&tx).await;
         assert!(rx_kv.is_empty());
     }
@@ -220,12 +220,12 @@ mod tests {
     #[tokio::test]
     async fn snapshot_roundtrip_preserves_expiries() {
         let (tx, rx_kv, _) = harness();
-        tx.send(TtlRequest::Ttl((3600, "k".to_string()))).unwrap();
+        tx.send(TtlRequest::Ttl((T0 + 3600, "k".to_string()))).unwrap();
 
         let (ack, rx) = oneshot::channel();
         tx.send(TtlRequest::SnapshotBuild(ack)).unwrap();
         let snap = rx.await.unwrap();
-        assert_eq!(snap.get(&3600), Some(&"k".to_string()));
+        assert_eq!(snap.get(&(T0 + 3600)), Some(&"k".to_string()));
 
         let (ack, rx) = oneshot::channel();
         tx.send(TtlRequest::SnapshotInstall((snap.clone(), ack)))
@@ -236,5 +236,23 @@ mod tests {
         tx.send(TtlRequest::SnapshotBuild(ack)).unwrap();
         assert_eq!(rx.await.unwrap(), snap);
         drop(rx_kv);
+    }
+
+    #[tokio::test]
+    async fn old_seconds_expiries_are_normalized_on_install() {
+        let (tx, rx_kv, clock) = harness();
+        // an old-format snapshot with a second-precision expiry (2026 + 1s)
+        let snap = BTreeMap::from([(T0 / 1_000_000 + 1, "k".to_string())]);
+        let (ack, rx) = oneshot::channel();
+        tx.send(TtlRequest::SnapshotInstall((snap, ack))).unwrap();
+        rx.await.unwrap();
+
+        // the seconds value is normalized to micros, so it still fires on time (1s later)
+        clock.store(T0 + 1_000_001, Ordering::Relaxed);
+        sync(&tx).await;
+        match rx_kv.try_recv() {
+            Ok(CacheRequestHandler::Delete(k)) => assert_eq!(k, "k".to_string()),
+            other => panic!("expected Delete, got {other:?}"),
+        }
     }
 }
