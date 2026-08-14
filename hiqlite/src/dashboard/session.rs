@@ -4,7 +4,8 @@ use crate::helpers::deserialize;
 use crate::network::{AppStateExt, serialize_network};
 use axum::Json;
 use axum::extract::FromRequestParts;
-use axum::http::header::SET_COOKIE;
+use axum::http::header::{RETRY_AFTER, SET_COOKIE};
+use axum::http::StatusCode;
 use axum::http::{HeaderMap, Method, request};
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
@@ -14,6 +15,8 @@ use cryptr::utils::{b64_decode, b64_encode};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::LazyLock;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tracing::debug;
 
 const COOKIE_NAME: &str = "__Host-Hiqlite-Session";
@@ -26,6 +29,49 @@ pub static INSECURE_COOKIES: LazyLock<bool> = LazyLock::new(|| {
         .parse::<bool>()
         .expect("Cannot parse HQL_INSECURE_COOKIE as bool")
 });
+
+/// Global login cooldown after a failed attempt, independent of any client identity:
+/// the dashboard is an ops surface with no need for concurrent logins, so after a
+/// failure the next login is rejected for a few seconds. There is no per-client state
+/// to spoof or exhaust, and the single-flight lock in `password::verify_password`
+/// still serializes the actual hashing.
+const LOGIN_COOLDOWN: Duration = Duration::from_secs(5);
+static NEXT_LOGIN_ALLOWED: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn is_login_locked() -> bool {
+    let guard = NEXT_LOGIN_ALLOWED.lock().unwrap_or_else(|e| e.into_inner());
+    guard.is_some_and(|t| Instant::now() < t)
+}
+
+fn lock_logins() {
+    let mut guard = NEXT_LOGIN_ALLOWED.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(Instant::now() + LOGIN_COOLDOWN);
+}
+
+fn unlock_logins() {
+    let mut guard = NEXT_LOGIN_ALLOWED.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
+}
+
+/// 429 with `Retry-After` so the UI never has to hardcode the cooldown duration. The
+/// header carries the remaining wait, falling back to the full cooldown if unknown.
+fn cooldown_response() -> Response {
+    let remaining = NEXT_LOGIN_ALLOWED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .map(|t| t.saturating_duration_since(Instant::now()).as_secs())
+        .unwrap_or(LOGIN_COOLDOWN.as_secs())
+        .max(1);
+    let err = Error::RateLimit(
+        "too many failed login attempts, try again in a few seconds".into(),
+    );
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(RETRY_AFTER, remaining.to_string())],
+        Json(err),
+    )
+        .into_response()
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Session {
@@ -125,14 +171,63 @@ pub async fn set_session_verify(
     password: String,
 ) -> Result<Response, Error> {
     check_csrf(&method, headers).await?;
+    // Reject login attempts during the global cooldown before any password work.
+    if is_login_locked() {
+        return Ok(cooldown_response());
+    }
     if let Some(pwd) = state.dashboard.password_dashboard.clone() {
-        password::verify_password(password, pwd).await?;
+        if let Err(err) = password::verify_password(password, pwd).await {
+            lock_logins();
+            return Err(err);
+        }
+        unlock_logins();
 
         let session = Session::new();
         let cookie = session.as_cookie()?;
         Ok(([(SET_COOKIE, cookie)], Json(session)).into_response())
     } else {
         Err(Error::Unauthorized("unauthorized".into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cooldown_locks_and_unlocks() {
+        unlock_logins();
+        assert!(!is_login_locked());
+        lock_logins();
+        assert!(is_login_locked());
+        unlock_logins();
+        assert!(!is_login_locked());
+    }
+
+    #[test]
+    fn cooldown_response_is_429_with_retry_after() {
+        let resp = cooldown_response();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            resp.headers()
+                .get(RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some(LOGIN_COOLDOWN.as_secs().to_string()).as_deref()
+        );
+    }
+
+    #[test]
+    fn cooldown_response_reports_remaining_wait() {
+        lock_logins();
+        let retry_after = cooldown_response()
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert!((1..=LOGIN_COOLDOWN.as_secs()).contains(&retry_after));
+        unlock_logins();
     }
 }
 

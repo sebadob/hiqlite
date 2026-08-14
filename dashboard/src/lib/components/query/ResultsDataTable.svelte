@@ -54,13 +54,13 @@
     }
 
     function sqlInnerValue(value: SqlValue) {
-        if (value.hasOwnProperty('Integer')) {
+        if ('Integer' in value) {
             return value.Integer;
-        } else if (value.hasOwnProperty('Real')) {
+        } else if ('Real' in value) {
             return value.Real;
-        } else if (value.hasOwnProperty('Text')) {
+        } else if ('Text' in value) {
             return value.Text;
-        } else if (value.hasOwnProperty('Blob')) {
+        } else if ('Blob' in value) {
             return `x'${buf2hex(value.Blob)}'`;
         }
 

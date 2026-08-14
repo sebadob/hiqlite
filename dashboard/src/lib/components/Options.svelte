@@ -3,6 +3,7 @@
     import Button from "$lib/components/Button.svelte";
     import SearchBar from "$lib/components/SearchBar.svelte";
     import IconChevronRight from "$lib/components/icons/IconChevronRight.svelte";
+    import {untrack} from 'svelte';
 
     let {
         ref = $bindable(),
@@ -49,10 +50,10 @@
     });
 
     let refOptions: undefined | HTMLElement = $state();
-    let usePopover = $state(fallbackOptions ? false : asPopover);
+    let usePopover = $state(untrack(() => fallbackOptions ? false : asPopover));
     let close: undefined | (() => void) = $state();
 
-    let selected = $state(withSearch ? -1 : 0);
+    let selected = $state(untrack(() => withSearch ? -1 : 0));
     let focusSearch: undefined | ((options?: FocusOptions) => void) = $state();
 
     let searchValue = $state('');

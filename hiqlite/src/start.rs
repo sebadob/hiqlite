@@ -218,6 +218,9 @@ where
         default_routes.with_state(state.clone())
     };
 
+    #[cfg(feature = "dashboard")]
+    dashboard::set_api_tls(node_config.tls_api.is_some());
+
     info!("api external listening on {api_addr}");
     if let Some(config) = &node_config.tls_api {
         let config = config.server_config(&node_config.listen_addr_api).await;

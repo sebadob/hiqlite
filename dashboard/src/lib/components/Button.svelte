@@ -70,7 +70,8 @@
                 return 'l1';
         }
     });
-    let showText = $state(!isLoading);
+    // initial value only; the $effect below drives the text/spinner switch
+    let showText = $state(true);
     let disabled = $derived(isDisabled || isLoading);
 
     $effect(() => {

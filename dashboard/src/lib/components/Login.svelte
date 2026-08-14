@@ -4,41 +4,49 @@
     import InputPassword from "$lib/components/form/InputPassword.svelte";
     import {API_PREFIX, fetchGet} from "$lib/utils/fetch";
     import {storeSession} from "$lib/stores/session";
-    // import {pow_work_wasm} from "../../spow/spow-wasm";
 
     const action = `${API_PREFIX}/session`;
 
     let error = $state('');
     let isLoading = $state(false);
+    let lockUntil = $state(0);
+    let locked = $derived(Date.now() < lockUntil);
 
-    async function onSubmit(form: FormData, params: URLSearchParams) {
+    async function onSubmit(form: HTMLFormElement, params: URLSearchParams) {
+        if (locked) {
+            // the button is disabled, but Enter can still submit; tell the user why
+            const remaining = Math.max(1, Math.ceil((lockUntil - Date.now()) / 1000));
+            error = `Too many failed login attempts, try again in ${remaining}s`;
+            return;
+        }
         error = '';
         isLoading = true;
 
-        // TODO the PoW WASM produces an error when built into html right now:
-        // Node.appendChild: Cannot add children to a Comment
-        // As soon as we get rid of the `pow_work_wasm` import, the error goes away.
-        // Probably a bug with the svelte 5 preview release right now.
-        // -> check in the future if it's resolved and use a PoW again
+        // The PoW WASM only runs in a secure context; over plain HTTP the proof is
+        // skipped, and the server ignores it there as well (it only validates when
+        // serving via TLS). The module is imported dynamically so it is never evaluated
+        // on a plain-HTTP page (a static import would try to instantiate the WASM at
+        // module load and crash the runtime outside a secure context).
+        if (window.isSecureContext) {
+            const {pow_work_wasm} = await import("../../spow/spow-wasm");
+            let resPow = await fetchGet('/pow');
+            if (resPow.status !== 200) {
+                let resp = await resPow.json();
+                error = Object.values(resp)[0] as string;
+                isLoading = false;
+                return;
+            }
 
-        // let resPow = await fetchGet('/pow');
-        // if (resPow.status !== 200) {
-        //     let resp = await resPow.json();
-        //     error = Object.values(resp)[0] as string;
-        //     isLoading = false;
-        //     return;
-        // }
-        //
-        // let challenge = await resPow.text();
-        // console.log('pow challenge: ' + challenge);
-        // let pow = await pow_work_wasm(challenge);
-        //
-        // if (!pow) {
-        //     error = 'Error calculating pow';
-        //     isLoading = false;
-        //     return;
-        // }
-        params.append('pow', "NoPowUntilSvelte5ErrorFixed");
+            let challenge = await resPow.text();
+            let pow = await pow_work_wasm(challenge);
+
+            if (!pow) {
+                error = 'Error calculating pow';
+                isLoading = false;
+                return;
+            }
+            params.append('pow', pow);
+        }
 
         const res = await fetch(action, {
             method: 'POST',
@@ -53,6 +61,15 @@
             storeSession.set(resp);
         } else {
             error = Object.values(resp)[0] as string;
+            // Lock the form for the global login cooldown after a 429; the duration
+            // comes from the `Retry-After` header so the UI never hardcodes it.
+            if (res.status === 429) {
+                const retryAfter = Number(res.headers.get('Retry-After')) || 5;
+                lockUntil = Date.now() + retryAfter * 1000;
+                setTimeout(() => {
+                    lockUntil = 0;
+                }, retryAfter * 1000);
+            }
         }
 
         isLoading = false;
@@ -85,7 +102,7 @@
                     title="Valid Dashboard Password"
                     required
             />
-            <Button type="submit" level={1} {isLoading}>
+            <Button type="submit" level={1} {isLoading} isDisabled={locked}>
                 Login
             </Button>
 

@@ -77,6 +77,7 @@ pub async fn test_execute_query(
     assert_eq!(rows_affected, 1);
 
     log("Making sure clients 2 and 3 can read the same data");
+    time::sleep(Duration::from_millis(500)).await;
 
     let res: TestData = client_1
         .query_as_one("SELECT * FROM test WHERE id = $1", params!(2))
@@ -106,6 +107,7 @@ pub async fn test_execute_query(
     assert_eq!(rows_affected, 1);
 
     log("Making sure clients 2 and 3 can read the same data");
+    time::sleep(Duration::from_millis(500)).await;
 
     let res: TestData = client_1
         .query_as_one("SELECT * FROM test WHERE id = $1", params!(3))
@@ -137,6 +139,9 @@ pub async fn test_execute_query(
         .execute("DELETE FROM test WHERE id = $1", params!(1))
         .await?;
     assert_eq!(rows_affected, 1);
+
+    // wait for the delete to apply on the local replica before asserting it is gone
+    time::sleep(Duration::from_millis(500)).await;
 
     let res: Result<TestData, Error> = client_1
         .query_as_one("SELECT * FROM test WHERE id = $1", params!(1))
