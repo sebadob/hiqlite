@@ -37,9 +37,12 @@ impl Client {
             interval.tick().await;
 
             #[cfg(feature = "cache")]
-            if let Some(config) = &config_cache
-                && let Some(lim) = slf.inner.rate_limit_cache.as_ref()
-            {
+            if let Some(config) = &config_cache {
+                // If the config is `Some`, the limiter must be set as well. If the `unwrap()`
+                // ever triggers, it is a logic bug during client initialization that must be
+                // caught loudly instead of silently disabling the rate limit.
+                let lim = slf.inner.rate_limit_cache.as_ref().unwrap();
+
                 lim.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                     Some(refill_bucket(current, config.rps, config.burst))
                 })
@@ -53,9 +56,9 @@ impl Client {
             }
 
             #[cfg(feature = "sqlite")]
-            if let Some(config) = &config_db
-                && let Some(lim) = slf.inner.rate_limit_db.as_ref()
-            {
+            if let Some(config) = &config_db {
+                let lim = slf.inner.rate_limit_db.as_ref().unwrap();
+
                 lim.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                     Some(refill_bucket(current, config.rps, config.burst))
                 })

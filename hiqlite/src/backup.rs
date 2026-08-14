@@ -206,12 +206,9 @@ pub(crate) async fn backup_local_cleanup(backup_path: String, keep_days: u16) ->
     loop {
         let entry = match dir_entries.next_entry().await {
             Ok(Some(entry)) => entry,
-
             Ok(None) => break,
-
             Err(err) => {
                 warn!("Error reading directory entries: {err:?}");
-
                 break;
             }
         };

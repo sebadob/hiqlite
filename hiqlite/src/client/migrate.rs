@@ -46,25 +46,21 @@ impl Client {
                 }
                 Some(to_migrate) => {
                     if to_migrate.id != migration.id {
-                        // this is a runtime condition depending on the server DB state, so it
-                        // must be an error, not a panic in the caller's task
-                        return Err(Error::Error(
-                            format!(
-                                "ID mismatch for '{}' between given and already applied migration: {} != {}",
-                                to_migrate.name, to_migrate.id, migration.id
-                            )
-                            .into(),
-                        ));
+                        // Migrations are read from files which are embedded at compile time, so a
+                        // mismatch with what is already applied means the DB is in an inconsistent
+                        // state. Running on an inconsistent DB is worse than crashing, so this
+                        // must panic instead of silently continuing.
+                        panic!(
+                            "ID mismatch for '{}' between given and already applied migration: {} != {}",
+                            to_migrate.name, to_migrate.id, migration.id
+                        );
                     }
 
                     if to_migrate.hash != migration.hash {
-                        return Err(Error::Error(
-                            format!(
-                                "HASH mismatch for '{}' between given and already applied migration: {} != {}",
-                                to_migrate.name, to_migrate.hash, migration.hash
-                            )
-                            .into(),
-                        ));
+                        panic!(
+                            "HASH mismatch for '{}' between given and already applied migration: {} != {}",
+                            to_migrate.name, to_migrate.hash, migration.hash
+                        );
                     }
                 }
             }

@@ -383,8 +383,9 @@ impl StateMachineSqlite {
         conn.pragma_update(None, "optimize", "0x10002")?;
 
         // Backups/snapshot restores hold an exclusive lock; the busy timeout stops concurrent
-        // reads from failing with `SQLITE_BUSY` during those windows.
-        conn.busy_timeout(Duration::from_secs(5))?;
+        // reads from failing with `SQLITE_BUSY` during those windows. 30s gives even bigger
+        // databases enough time to finish a backup before concurrent reads give up.
+        conn.busy_timeout(Duration::from_secs(30))?;
 
         // note:
         // in tests, `mmap_size` did not show any performance benefit with the settings above
