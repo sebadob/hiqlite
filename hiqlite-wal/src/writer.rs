@@ -307,8 +307,8 @@ fn run(
                     is_dirty = false;
                 }
 
-                // Persist `last_purged_log_id` before deleting WAL files: a stale (too high)
-                // value would point into deleted files; a too-low one keeps extra files (safe).
+                // Persist `last_purged_log_id` before deleting WAL files: a stale (too low)
+                // value would point into deleted files; a too-high one keeps extra files (safe).
                 // If the deletion fails, the metadata is reverted again below, so it never
                 // claims logs as purged that are still present on disk.
                 let previous_purged = meta.read()?.last_purged_log_id.clone();
