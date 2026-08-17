@@ -382,6 +382,10 @@ impl StateMachineSqlite {
         conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
         conn.pragma_update(None, "optimize", "0x10002")?;
 
+        // backups/snapshot restores hold an exclusive lock; 30s busy timeout stops
+        // concurrent reads failing with `SQLITE_BUSY` during those windows
+        conn.busy_timeout(Duration::from_secs(30))?;
+
         // note:
         // in tests, `mmap_size` did not show any performance benefit with the settings above
 
@@ -534,7 +538,15 @@ impl StateMachineSqlite {
             })?;
 
         let mut snapshot_id: Option<Uuid> = None;
-        while let Ok(Some(entry)) = list.next_entry().await {
+        loop {
+            let entry = match list.next_entry().await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("Error reading directory entries: {err:?}");
+                    break;
+                }
+            };
             let file_name = entry.file_name();
             let name = file_name.to_str().unwrap_or("UNKNOWN");
             let id = match Uuid::parse_str(name) {

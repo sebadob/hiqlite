@@ -4,7 +4,6 @@ use rusqlite::types::{FromSqlResult, ValueRef};
 use std::fmt::{Debug, Display, Write};
 use std::iter::Map;
 use std::str::Split;
-use tracing::error;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VecText<const S: char>(String);
@@ -27,8 +26,8 @@ impl<const S: char> rusqlite::types::FromSql for VecText<S> {
             ValueRef::Null => Self(String::default()),
             ValueRef::Text(v) => Self(String::from_utf8_lossy(v).to_string()),
             _ => {
-                error!("Can only parse VecLf from a TEXT column");
-                Self(String::default())
+                // a non-text column mapped to VecText must error, not silently become empty
+                return Err(rusqlite::types::FromSqlError::InvalidType);
             }
         };
         Ok(slf)
@@ -43,8 +42,10 @@ impl<const S: char> TryFrom<ValueOwned> for VecText<S> {
             ValueOwned::Null => Self(String::default()),
             ValueOwned::Text(v) => Self(v),
             _ => {
-                error!("Can only parse VecLf from a TEXT column");
-                Self(String::default())
+                // a non-text column mapped to VecText must error, not silently become empty
+                return Err(Error::QueryParams(
+                    "Can only parse VecText from a TEXT column".into(),
+                ));
             }
         };
         Ok(slf)

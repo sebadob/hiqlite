@@ -36,8 +36,15 @@ pub(crate) async fn dashboard_query_dynamic(
 
             let mut rows = stmt.raw_query();
             let mut rows_owned = Vec::new();
-            while let Ok(Some(row)) = rows.next() {
-                rows_owned.push(RowOwned::from_row_column(row, &columns));
+            loop {
+                match rows.next() {
+                    Ok(Some(row)) => rows_owned.push(RowOwned::from_row_column(row, &columns)),
+                    Ok(None) => break,
+                    Err(err) => {
+                        // never silently show a truncated result in the dashboard
+                        return Err(Error::Sqlite(err.to_string().into()));
+                    }
+                }
             }
 
             Ok::<Vec<RowOwned>, Error>(rows_owned)

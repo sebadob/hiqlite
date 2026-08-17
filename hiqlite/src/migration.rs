@@ -51,7 +51,11 @@ impl Migrations {
 
             let len = res.len();
             if len > 0 && migration.id != (res[len - 1].id + 1) {
-                panic!("");
+                panic!(
+                    "Migration index has a gap: {} does not follow {}",
+                    migration.id,
+                    res[len - 1].id
+                );
             }
 
             res.push(migration);

@@ -1,6 +1,6 @@
 use crate::config::RateLimitConfig;
 use crate::{Client, Error};
-use std::cmp::max;
+use std::cmp::min;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -38,10 +38,11 @@ impl Client {
 
             #[cfg(feature = "cache")]
             if let Some(config) = &config_cache {
+                // config and limiter are set together; a missing limiter is an init bug
                 let lim = slf.inner.rate_limit_cache.as_ref().unwrap();
 
                 lim.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    Some(max(current + config.rps, config.burst))
+                    Some(refill_bucket(current, config.rps, config.burst))
                 })
                 .ok();
 
@@ -57,7 +58,7 @@ impl Client {
                 let lim = slf.inner.rate_limit_db.as_ref().unwrap();
 
                 lim.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    Some(max(current + config.rps, config.burst))
+                    Some(refill_bucket(current, config.rps, config.burst))
                 })
                 .ok();
 
@@ -122,5 +123,26 @@ impl Client {
                 }
             }
         }
+    }
+}
+
+/// Token bucket refill: add `rps` tokens every second, never exceeding `burst`.
+#[inline]
+fn refill_bucket(current: u32, rps: u32, burst: u32) -> u32 {
+    min(current.saturating_add(rps), burst)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refill_bucket_caps_at_burst() {
+        assert_eq!(refill_bucket(0, 10, 20), 10);
+        assert_eq!(refill_bucket(5, 10, 20), 15);
+        assert_eq!(refill_bucket(20, 10, 20), 20);
+        // long idle time must never accumulate beyond burst
+        assert_eq!(refill_bucket(1000, 10, 20), 20);
+        assert_eq!(refill_bucket(u32::MAX, 10, 20), 20);
     }
 }

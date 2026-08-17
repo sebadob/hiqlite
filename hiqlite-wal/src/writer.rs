@@ -307,15 +307,19 @@ fn run(
                     is_dirty = false;
                 }
 
+                // Persist the purge frontier before deleting (too low = hole into deleted files;
+                // too high = extra files). Revert it again if the deletion fails below.
+                let previous_purged = meta.read()?.last_purged_log_id.clone();
+                let persist_purged = last_log.is_some();
+                if persist_purged {
+                    meta.write()?.last_purged_log_id = last_log;
+                    Metadata::write(meta.clone(), &wal.base_path)?;
+                }
+
                 buf.clear();
                 buf_logs.clear();
                 match wal.shift_delete_logs(from, until, wal_size, &mut buf, &mut buf_logs) {
                     Ok(_) => {
-                        // the last_log may be none if logs are truncated
-                        if last_log.is_some() {
-                            meta.write()?.last_purged_log_id = last_log;
-                            Metadata::write(meta.clone(), &wal.base_path)?;
-                        }
                         {
                             let mut lock = wal_locked.write().unwrap();
                             lock.active = wal.active;
@@ -323,7 +327,27 @@ fn run(
                         }
                         ack.send(Ok(())).unwrap();
                     }
-                    Err(err) => ack.send(Err(err)).unwrap(),
+                    Err(err) => {
+                        if persist_purged {
+                            // deletion failed: revert the frontier, but still report the error
+                            let revert_res = {
+                                // `Metadata::write` re-locks the meta, so release the guard first
+                                let mut m = match meta.write() {
+                                    Ok(m) => m,
+                                    Err(poisoned) => poisoned.into_inner(),
+                                };
+                                m.last_purged_log_id = previous_purged;
+                                drop(m);
+                                Metadata::write(meta.clone(), &wal.base_path)
+                            };
+                            if let Err(revert_err) = revert_res {
+                                error!(
+                                    "Failed to revert last_purged_log_id after log deletion failure: {revert_err}"
+                                );
+                            }
+                        }
+                        ack.send(Err(err)).unwrap();
+                    }
                 }
             }
             Action::Vote { value, ack } => {

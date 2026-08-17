@@ -491,7 +491,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                     sm_data.last_applied_log_id = req.last_applied_log_id;
 
                     // TODO should be maybe always panic if migrations throw an error?
-                    let res = migrate(&mut conn, req.migrations);
+                    let res = migrate(&mut conn, req.migrations, req.last_applied_log_id);
 
                     if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
@@ -791,7 +791,15 @@ fn create_backup(
     Ok(())
 }
 
-fn migrate(conn: &mut rusqlite::Connection, mut migrations: Vec<Migration>) -> Result<(), Error> {
+fn migrate(
+    conn: &mut rusqlite::Connection,
+    mut migrations: Vec<Migration>,
+    last_applied_log_id: Option<LogId<NodeId>>,
+) -> Result<(), Error> {
+    // The migration `ts` must be identical on all nodes: the wall clock would diverge, the
+    // raft log id is deterministic.
+    let migration_ts = last_applied_log_id.map(|l| l.index as i64).unwrap_or(0);
+
     info!("Applying database migrations");
 
     create_migrations_table(conn)?;
@@ -814,7 +822,7 @@ fn migrate(conn: &mut rusqlite::Connection, mut migrations: Vec<Migration>) -> R
         last_applied = migration.id;
 
         let txn = conn.transaction()?;
-        apply_migration(txn, migration)?;
+        apply_migration(txn, migration, migration_ts)?;
     }
 
     Ok(())
@@ -928,7 +936,11 @@ fn last_applied_migration(
 }
 
 #[inline]
-fn apply_migration(txn: rusqlite::Transaction, migration: Migration) -> Result<(), Error> {
+fn apply_migration(
+    txn: rusqlite::Transaction,
+    migration: Migration,
+    migration_ts: i64,
+) -> Result<(), Error> {
     info!(
         "Applying database migration {} {}",
         migration.id, migration.name
@@ -948,14 +960,39 @@ fn apply_migration(txn: rusqlite::Transaction, migration: Migration) -> Result<(
         VALUES ($1, $2, $3, $4)
         "#,
         )?;
-        stmt.execute((
-            migration.id,
-            migration.name,
-            Utc::now().timestamp(),
-            migration.hash,
-        ))?;
+        stmt.execute((migration.id, migration.name, migration_ts, migration.hash))?;
     }
 
     txn.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_ts_is_deterministic() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_migrations_table(&conn).unwrap();
+
+        let migration = Migration {
+            id: 1,
+            name: "test".to_string(),
+            hash: "abc123".to_string(),
+            content: b"CREATE TABLE test (id INTEGER NOT NULL PRIMARY KEY);".to_vec(),
+        };
+
+        let txn = conn.transaction().unwrap();
+        apply_migration(txn, migration, 42).unwrap();
+
+        // ts must equal the raft log id, not the wall clock
+        let (id, ts): (u32, i64) = conn
+            .query_row("SELECT id, ts FROM _migrations WHERE id = 1", (), |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(id, 1);
+        assert_eq!(ts, 42);
+    }
 }
