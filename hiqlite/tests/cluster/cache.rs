@@ -211,6 +211,24 @@ pub async fn test_cache(
     let v: Option<String> = client_1.get(Cache::One, KEY).await?;
     assert!(v.is_none());
 
+    log("Test get_remove leaves no stale expiry behind a re-put");
+    client_1
+        .put(Cache::One, KEY, &VALUE.to_string(), Some(1))
+        .await?;
+    let v: String = client_1.get_remove(Cache::One, KEY).await?.unwrap();
+    assert_eq!(&v, VALUE);
+    // the removed value's expiry must not kill a re-put under the same key
+    client_1
+        .put(Cache::One, KEY, &VALUE_2.to_string(), Some(3))
+        .await?;
+    time::sleep(Duration::from_millis(1500)).await;
+    let v: String = client_1.get(Cache::One, KEY).await?.unwrap();
+    assert_eq!(&v, VALUE_2);
+    time::sleep(Duration::from_millis(2500)).await;
+    let v: Option<String> = client_1.get(Cache::One, KEY).await?;
+    assert!(v.is_none());
+    client_1.delete(Cache::One, KEY).await?;
+
     // restore the value the later health checks expect in `Cache::One`
     insert_test_value_cache(client_1).await?;
 
