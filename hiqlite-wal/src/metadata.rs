@@ -70,7 +70,7 @@ impl Metadata {
     #[inline]
     fn write_unchecked(bytes: &[u8], base_path: &str) -> Result<(), Error> {
         let path = format!("{base_path}/meta.hql");
-        let tmp_path = format!("{path}.tmp");
+        let tmp_path = format!("{path}~");
 
         let mut file = File::create(&tmp_path)?;
 
@@ -84,9 +84,8 @@ impl Metadata {
         file.sync_all()?;
         drop(file);
 
-        // atomic replace: readers/crash recovery never see a torn or missing meta file
-        #[cfg(not(unix))]
-        let _ = fs::remove_file(&path);
+        // atomic replace: the rename alone publishes the new file, so readers/crash
+        // recovery never see a torn or missing meta file
         fs::rename(&tmp_path, &path)?;
 
         // best-effort: make the rename itself durable across power loss
@@ -126,8 +125,8 @@ mod tests {
     }
 
     #[test]
-    fn metadata_overwrite_is_atomic() -> Result<(), Error> {
-        let base_path = format!("{}/metadata_overwrite_is_atomic", PATH);
+    fn metadata_overwrite_replaces_existing() -> Result<(), Error> {
+        let base_path = format!("{}/metadata_overwrite_replaces_existing", PATH);
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
 
@@ -145,7 +144,7 @@ mod tests {
 
         let meta_back = Metadata::read_or_create(&base_path)?;
         assert_eq!(meta_back.last_purged_log_id, Some(vec![9]));
-        assert!(!fs::exists(format!("{base_path}/meta.hql.tmp")).unwrap_or(true));
+        assert!(!fs::exists(format!("{base_path}/meta.hql~")).unwrap_or(true));
 
         Ok(())
     }
