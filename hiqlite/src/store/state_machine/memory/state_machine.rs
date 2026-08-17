@@ -358,7 +358,7 @@ impl StateMachineMemory {
         snapshot_bytes: &[u8],
     ) -> Result<String, StorageError<NodeId>> {
         let path = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
-        let path_temp = format!("{path}.temp");
+        let path_temp = format!("{path}~");
         {
             // truncate any leftover temp from a crashed previous run
             let mut file = fs::File::create(&path_temp)
@@ -367,7 +367,7 @@ impl StateMachineMemory {
             file.write_all(snapshot_bytes)
                 .await
                 .map_err(|err| StorageIOError::write_state_machine(&err))?;
-            file.sync_all()
+            file.sync_data()
                 .await
                 .map_err(|err| StorageIOError::write_state_machine(&err))?;
         }
@@ -381,10 +381,7 @@ impl StateMachineMemory {
         let id = meta.snapshot_id.clone();
         let dir = self.path_snapshots.clone();
         task::spawn(async move {
-            let Ok(mut entries) = fs::read_dir(&dir).await else {
-                warn!("Cannot read snapshots dir for cleanup: {dir}");
-                return;
-            };
+            let mut entries = fs::read_dir(&dir).await.unwrap();
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let fname = entry.file_name();
                 let name = fname.to_str().unwrap_or_default();
@@ -475,8 +472,9 @@ impl StateMachineMemory {
         while let Ok(Some(entry)) = list.next_entry().await {
             let file_name = entry.file_name();
             let name = file_name.to_str().unwrap_or_default();
-            if name.ends_with(".temp") {
-                // unfinished snapshots during creation will have `.temp` in the end
+            if name.ends_with('~') || name.ends_with(".temp") {
+                // unfinished snapshots during creation get a trailing `~`;
+                // also keep skipping the legacy `.temp` suffix from older versions
                 continue;
             }
 
@@ -983,6 +981,50 @@ mod tests {
             .expect("get_current_snapshot to succeed")
             .expect("an in-memory snapshot to be present after building one");
         assert_eq!(current.meta.snapshot_id, built.meta.snapshot_id);
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// A leftover unfinished snapshot (a newer `~` temp or a legacy `.temp` from an
+    /// older version) must never be picked as the latest snapshot on restore.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_current_snapshot_skips_temp_files() {
+        let base_dir = std::env::temp_dir().join("hiqlite_restore_skips_temp_test");
+        let _ = std::fs::remove_dir_all(&base_dir);
+        let base = base_dir.to_str().unwrap();
+
+        let sm = Arc::new(
+            StateMachineMemory::new::<TestCache>(base, false)
+                .await
+                .expect("state machine to start"),
+        );
+
+        // a valid snapshot, then two unfinished ones that would sort as newer
+        let (meta, bytes) = sm
+            .build_snapshot_data()
+            .await
+            .expect("snapshot build to succeed");
+        let valid = format!("{}/{}", sm.path_snapshots, meta.snapshot_id);
+        std::fs::write(&valid, &bytes).unwrap();
+
+        let ts = meta
+            .snapshot_id
+            .split_once('-')
+            .unwrap()
+            .0
+            .parse::<i64>()
+            .unwrap();
+        let legacy = format!("{}/{}--.temp", sm.path_snapshots, ts + 1);
+        let current = format!("{}/{}--~", sm.path_snapshots, ts + 2);
+        std::fs::write(&legacy, b"partial snapshot").unwrap();
+        std::fs::write(&current, b"partial snapshot").unwrap();
+
+        let restored = sm
+            .read_current_snapshot()
+            .await
+            .expect("restore must not fail on leftover temp files")
+            .expect("the valid snapshot to be restored");
+        assert_eq!(restored.0, valid);
 
         let _ = std::fs::remove_dir_all(&base_dir);
     }
