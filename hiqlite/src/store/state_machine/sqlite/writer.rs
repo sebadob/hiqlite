@@ -741,7 +741,7 @@ Got:      {}
 fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), Error> {
     // vacuum into a temp file and move it into place, so a crash can never leave a
     // partially written snapshot at the final path
-    let path_temp = format!("{path}.temp");
+    let path_temp = format!("{path}~");
     let q = format!("VACUUM main INTO '{path_temp}'");
     if let Err(err) = conn.execute(&q, ()) {
         let _ = std::fs::remove_file(&path_temp);
@@ -751,6 +751,9 @@ fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), Erro
         .map_err(|err| Error::Error(format!("rename snapshot into place: {err}").into()))?;
     Ok(())
 }
+
+#[cfg(feature = "s3")]
+const S3_MAX_RETRIES: u64 = 10;
 
 fn create_backup(
     conn: &rusqlite::Connection,
@@ -771,7 +774,7 @@ fn create_backup(
 
     // vacuum into a temp file and move it into place, so a crash mid-backup can never leave
     // a partial file under the final backup name (restore would pick it up as valid)
-    let path_temp = format!("{path_full}.temp");
+    let path_temp = format!("{path_full}~");
     if let Err(err) = conn.execute(&format!("VACUUM main INTO '{path_temp}'"), ()) {
         let _ = std::fs::remove_file(&path_temp);
         return Err(err.into());
@@ -806,9 +809,9 @@ fn create_backup(
                         info!("Push backup to S3 has been finished");
                         break;
                     }
-                    Err(err) if attempt < 3 => {
+                    Err(err) if attempt < S3_MAX_RETRIES => {
                         error!(
-                            "Error pushing Backup to S3 (attempt {attempt}/3): {err} - retrying"
+                            "Error pushing Backup to S3 (attempt {attempt}/{S3_MAX_RETRIES}): {err} - retrying"
                         );
                         time::sleep(Duration::from_secs(5 * attempt)).await;
                     }
