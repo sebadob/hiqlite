@@ -16,7 +16,9 @@ use tracing::{debug, error, info, warn};
 #[allow(clippy::type_complexity)]
 pub enum CacheRequestHandler {
     Get((String, oneshot::Sender<Option<Vec<u8>>>)),
+    GetRemove((String, oneshot::Sender<Option<Vec<u8>>>)),
     Put((String, Vec<u8>)),
+    Replace((String, Vec<u8>, oneshot::Sender<Option<Vec<u8>>>)),
     Delete(String),
     Clear,
     #[cfg(feature = "counters")]
@@ -65,8 +67,18 @@ async fn kv_handler(cache_name: &'static str, rx: flume::Receiver<CacheRequestHa
                     error!("Error sending back Cache GET request: channel closed");
                 }
             }
+            CacheRequestHandler::GetRemove((key, ack)) => {
+                if ack.send(data.remove(&key)).is_err() {
+                    error!("Error sending back Cache GET_REMOVE request: channel closed");
+                }
+            }
             CacheRequestHandler::Put((key, value)) => {
                 data.insert(key, value);
+            }
+            CacheRequestHandler::Replace((key, value, ack)) => {
+                if ack.send(data.insert(key, value)).is_err() {
+                    error!("Error sending back Cache REPLACE request: channel closed");
+                }
             }
             CacheRequestHandler::Delete(key) => {
                 data.remove(&key);
@@ -138,4 +150,50 @@ async fn kv_handler(cache_name: &'static str, rx: flume::Receiver<CacheRequestHa
     }
 
     debug!("cache::kv_handler for {cache_name} exiting");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    enum Op {
+        Get(&'static str),
+        GetRemove(&'static str),
+        Replace(&'static str, Vec<u8>),
+    }
+
+    async fn call(tx: &flume::Sender<CacheRequestHandler>, op: Op) -> Option<Vec<u8>> {
+        let (ack, rx) = oneshot::channel();
+        let req = match op {
+            Op::Get(k) => CacheRequestHandler::Get((k.to_string(), ack)),
+            Op::GetRemove(k) => CacheRequestHandler::GetRemove((k.to_string(), ack)),
+            Op::Replace(k, v) => CacheRequestHandler::Replace((k.to_string(), v, ack)),
+        };
+        tx.send(req).expect("kv handler to be running");
+        rx.await.expect("kv handler to always answer")
+    }
+
+    #[tokio::test]
+    async fn get_remove_and_replace_are_atomic_per_key() {
+        let tx = spawn("test");
+
+        // get_remove on a missing key -> None
+        assert_eq!(call(&tx, Op::GetRemove("missing")).await, None);
+
+        // replace on a missing key -> None, value is stored
+        assert_eq!(call(&tx, Op::Replace("k", b"v1".to_vec())).await, None);
+
+        // get_remove returns the value and removes it
+        assert_eq!(call(&tx, Op::GetRemove("k")).await, Some(b"v1".to_vec()));
+        assert_eq!(call(&tx, Op::GetRemove("k")).await, None);
+
+        // replace returns the previous value and stores the new one
+        tx.send(CacheRequestHandler::Put(("k".into(), b"v2".to_vec())))
+            .expect("kv handler to be running");
+        assert_eq!(
+            call(&tx, Op::Replace("k", b"v3".to_vec())).await,
+            Some(b"v2".to_vec())
+        );
+        assert_eq!(call(&tx, Op::Get("k")).await, Some(b"v3".to_vec()));
+    }
 }

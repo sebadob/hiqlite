@@ -161,6 +161,59 @@ pub async fn test_cache(
     let v = client_1.counter_add(Cache::One, key, -3).await?;
     assert_eq!(v, -1);
 
+    log("Test get_remove");
+    client_1
+        .put(Cache::One, KEY, &VALUE.to_string(), None)
+        .await?;
+    let v: String = client_1.get_remove(Cache::One, KEY).await?.unwrap();
+    assert_eq!(&v, VALUE);
+    let v: Option<String> = client_1.get_remove(Cache::One, KEY).await?;
+    assert!(v.is_none());
+    // two raft writes happened above; give replication enough time before cross-node reads
+    time::sleep(Duration::from_millis(200)).await;
+    let v: Option<String> = client_2.get(Cache::One, KEY).await?;
+    assert!(v.is_none());
+    let v: Option<String> = client_3.get(Cache::One, KEY).await?;
+    assert!(v.is_none());
+
+    log("Test replace");
+    let v: Option<String> = client_1.replace(Cache::One, KEY, &VALUE.to_string(), None).await?;
+    assert!(v.is_none());
+    let v: Option<String> = client_1
+        .replace(Cache::One, KEY, &VALUE_2.to_string(), None)
+        .await?;
+    assert_eq!(v.as_deref(), Some(VALUE));
+    time::sleep(Duration::from_millis(200)).await;
+    let v: String = client_2.get(Cache::One, KEY).await?.unwrap();
+    assert_eq!(&v, VALUE_2);
+    let v: String = client_3.get(Cache::One, KEY).await?.unwrap();
+    assert_eq!(&v, VALUE_2);
+    client_1.delete(Cache::One, KEY).await?;
+
+    log("Test replace TTL: a replace without TTL must drop a previously registered expiry");
+    client_1
+        .put(Cache::One, KEY, &VALUE.to_string(), Some(1))
+        .await?;
+    let v: Option<String> = client_1.replace(Cache::One, KEY, &VALUE_2.to_string(), None).await?;
+    assert_eq!(v.as_deref(), Some(VALUE));
+    time::sleep(Duration::from_millis(1500)).await;
+    let v: String = client_1.get(Cache::One, KEY).await?.unwrap();
+    assert_eq!(&v, VALUE_2);
+    client_1.delete(Cache::One, KEY).await?;
+
+    log("Test replace TTL: a replace with a TTL must expire the new value");
+    client_1
+        .put(Cache::One, KEY, &VALUE.to_string(), None)
+        .await?;
+    let v: Option<String> = client_1.replace(Cache::One, KEY, &VALUE_2.to_string(), Some(1)).await?;
+    assert_eq!(v.as_deref(), Some(VALUE));
+    time::sleep(Duration::from_millis(1500)).await;
+    let v: Option<String> = client_1.get(Cache::One, KEY).await?;
+    assert!(v.is_none());
+
+    // restore the value the later health checks expect in `Cache::One`
+    insert_test_value_cache(client_1).await?;
+
     Ok(())
 }
 

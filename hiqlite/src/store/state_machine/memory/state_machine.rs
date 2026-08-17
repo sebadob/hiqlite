@@ -67,6 +67,16 @@ pub enum CacheRequest {
         value: Vec<u8>,
         expires: Option<i64>,
     },
+    GetRemove {
+        cache_idx: usize,
+        key: Cow<'static, str>,
+    },
+    Replace {
+        cache_idx: usize,
+        key: Cow<'static, str>,
+        value: Vec<u8>,
+        expires: Option<i64>,
+    },
     Delete {
         cache_idx: usize,
         key: Cow<'static, str>,
@@ -642,6 +652,51 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             .expect("cache ttl handler to always be running");
 
                         CacheResponse::Ok
+                    }
+
+                    CacheRequest::GetRemove { cache_idx, key } => {
+                        let (ack, rx) = oneshot::channel();
+                        self.tx_caches
+                            .get(cache_idx)
+                            .unwrap()
+                            .send(CacheRequestHandler::GetRemove((key.to_string(), ack)))
+                            .expect("kv handler to always be running");
+
+                        // The kv handler runs on its own thread per cache and never takes the
+                        // state-machine lock, so awaiting its answer while `data` is held is
+                        // deadlock-free. The removal is a raft log entry, applied on all nodes.
+                        CacheResponse::Value(rx.await.expect("kv handler to always answer"))
+                    }
+
+                    CacheRequest::Replace {
+                        cache_idx,
+                        key,
+                        value,
+                        expires,
+                    } => {
+                        if let Some(exp) = expires {
+                            self.tx_ttls
+                                .get(cache_idx)
+                                .unwrap()
+                                .send(TtlRequest::Ttl((exp, key.to_string())))
+                                .expect("cache ttl handler to always be running");
+                        } else {
+                            // mirrors `Put`: a re-put without a TTL drops any registered expiry
+                            self.tx_ttls
+                                .get(cache_idx)
+                                .unwrap()
+                                .send(TtlRequest::Clear(key.to_string()))
+                                .expect("cache ttl handler to always be running");
+                        }
+
+                        let (ack, rx) = oneshot::channel();
+                        self.tx_caches
+                            .get(cache_idx)
+                            .unwrap()
+                            .send(CacheRequestHandler::Replace((key.to_string(), value, ack)))
+                            .expect("kv handler to always be running");
+
+                        CacheResponse::Value(rx.await.expect("kv handler to always answer"))
                     }
 
                     CacheRequest::Delete { cache_idx, key } => {
