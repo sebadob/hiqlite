@@ -1,0 +1,3 @@
+# Migration hashes are computed from the embedded file bytes (rust_embed);
+# keep checkouts byte-identical across OSes.
+*.sql text eol=lf

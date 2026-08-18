@@ -1001,8 +1001,8 @@ mod tests {
         tokio::fs::write(&secrets_path, "secret_raft = \"x\"\n")
             .await
             .unwrap();
-        let cfg = format!("secrets_file = \"{}\"\n", secrets_path.display());
-        let table = cfg.parse::<toml::Table>().unwrap();
+        let mut table = toml::Table::new();
+        table.insert("secrets_file".into(), secrets_path.to_str().unwrap().into());
 
         let err = NodeConfig::from_toml_table(table, "hiqlite", None, None)
             .await
