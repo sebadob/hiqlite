@@ -4,7 +4,6 @@ use super::{
     transaction_env::{TransactionEnv, TransactionParamContext},
     transaction_variable::StmtColumn,
 };
-use crate::Error;
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rusqlite::types::{ToSqlOutput, Value};
 use serde::{Deserialize, Serialize};
@@ -40,6 +39,8 @@ impl Param {
             Param::Text(t) => Value::Text(t),
             Param::Blob(b) => Value::Blob(b),
             Param::StmtOutputNamed(..) | Param::StmtOutputIndexed(..) => {
+                // `StmtOutput` is resolved in `into_sql_txn_ctx`, inside transactions only.
+                // Reaching a plain execute is a caller bug - panic rather than hide it.
                 panic!("Param::StmtOutput is only valid inside transactions")
             }
         };
@@ -294,6 +295,32 @@ impl From<StmtColumn<String>> for Param {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stmt_output_param_panics_outside_transactions() {
+        // StmtOutput outside a transaction is a caller bug - into_sql panics, not errors.
+        let named = std::panic::catch_unwind(|| {
+            let _ = Param::StmtOutputNamed(0, "col".into()).into_sql();
+        })
+        .unwrap_err();
+        let msg = named
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| named.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(msg.contains("only valid inside transactions"));
+
+        let indexed = std::panic::catch_unwind(|| {
+            let _ = Param::StmtOutputIndexed(0, 0).into_sql();
+        })
+        .unwrap_err();
+        let msg = indexed
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| indexed.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(msg.contains("only valid inside transactions"));
+    }
     use crate::query::rows::ValueOwned;
     use uuid::{NoContext, Timestamp};
 

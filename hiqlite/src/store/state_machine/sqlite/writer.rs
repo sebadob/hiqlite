@@ -34,7 +34,7 @@ pub enum WriterRequest {
     Query(Query),
     Migrate(Migrate),
     Snapshot(SnapshotRequest),
-    SnapshotApply((String, oneshot::Sender<()>)),
+    SnapshotApply((String, oneshot::Sender<Result<(), Error>>)),
     MetadataRead(oneshot::Sender<StateMachineData>),
     MetadataMembership(MetaMembershipRequest),
     Backup(BackupRequest),
@@ -378,7 +378,18 @@ CREATE TABLE IF NOT EXISTS _metadata
                                         let mut first_row: Vec<Value> =
                                             Vec::with_capacity(column_count);
                                         for col_index in 0..column_count {
-                                            first_row.push(row.get(col_index).unwrap());
+                                            match row.get(col_index) {
+                                                Ok(v) => first_row.push(v),
+                                                Err(err) => {
+                                                    query_err = Some(Error::QueryParams(
+                                                        format!(
+                                                            "Cannot read output column {col_index}: {err}"
+                                                        )
+                                                        .into(),
+                                                    ));
+                                                    break 'outer;
+                                                }
+                                            }
                                         }
 
                                         'remaining_rows: loop {
@@ -430,9 +441,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             if let Err(e) = txn.rollback() {
                                 error!("Error during txn rollback: {:?}", e);
                             }
-                            req.tx
-                                .send(Err(err))
-                                .expect("oneshot tx to never be dropped");
+                            req.tx.send(Err(err)).expect("oneshot tx to never be dropped");
                         } else {
                             match txn.commit() {
                                 Ok(()) => {
@@ -476,13 +485,9 @@ CREATE TABLE IF NOT EXISTS _metadata
                         }
 
                         if let Some(err) = err {
-                            req.tx
-                                .send(Err(err))
-                                .expect("oneshot tx to never be dropped");
+                            req.tx.send(Err(err)).expect("oneshot tx to never be dropped");
                         } else {
-                            req.tx
-                                .send(Ok(res))
-                                .expect("oneshot tx to never be dropped");
+                            req.tx.send(Ok(res)).expect("oneshot tx to never be dropped");
                         }
                     }
                 },
@@ -490,14 +495,15 @@ CREATE TABLE IF NOT EXISTS _metadata
                 WriterRequest::Migrate(req) => {
                     sm_data.last_applied_log_id = req.last_applied_log_id;
 
-                    // TODO should be maybe always panic if migrations throw an error?
+                    // `migrate` panics on validation failures (inconsistent DB); only
+                    // DB-level errors, e.g. a busy database, come back as a `Result` error
                     let res = migrate(&mut conn, req.migrations, req.last_applied_log_id);
 
                     if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
                     }
 
-                    req.tx.send(res).unwrap();
+                    req.tx.send(res).expect("oneshot tx to never be dropped");
                 }
 
                 WriterRequest::Snapshot(SnapshotRequest {
@@ -538,14 +544,19 @@ CREATE TABLE IF NOT EXISTS _metadata
                 WriterRequest::SnapshotApply((path, ack)) => {
                     let start = Instant::now();
                     info!("Starting snapshot restore from {}", path);
-                    conn.restore(
+                    let restore_res = conn.restore(
                         "main",
                         path,
                         Some(|p: Progress| {
                             println!("Database restore remaining: {}", p.remaining);
                         }),
-                    )
-                    .expect("SnapshotApply to always succeed in sql writer");
+                    );
+                    if let Err(err) = restore_res {
+                        error!("Error during snapshot restore: {:?}", err);
+                        ack.send(Err(Error::Sqlite(err.to_string().into())))
+                            .expect("snapshot install listener to always exist");
+                        continue;
+                    }
 
                     if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
@@ -556,6 +567,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                         start.elapsed().as_millis()
                     );
 
+                    // A successful restore must yield readable metadata - otherwise the
+                    // snapshot is corrupt and there is no consistent state to continue from.
                     sm_data = conn
                         .query_row("SELECT data FROM _metadata WHERE key = 'meta'", (), |row| {
                             let meta_bytes: Vec<u8> = row.get(0)?;
@@ -565,7 +578,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                         })
                         .expect("Metadata query to always succeed");
 
-                    ack.send(()).unwrap()
+                    ack.send(Ok(())).expect("snapshot install listener to always exist");
                 }
 
                 WriterRequest::MetadataRead(ack) => {
@@ -578,8 +591,11 @@ CREATE TABLE IF NOT EXISTS _metadata
                             let bytes: Vec<u8> = row.get(0)?;
                             Ok(bytes)
                         }) {
+                            // a present but corrupt metadata row leaves no known log
+                            // position - fail hard rather than guess
                             Ok(bytes) => {
-                                sm_data = deserialize(&bytes).unwrap();
+                                sm_data =
+                                    deserialize(&bytes).expect("Metadata to deserialize ok");
                             }
                             Err(err) => {
                                 warn!("No metadata exists inside the DB yet");
@@ -587,13 +603,13 @@ CREATE TABLE IF NOT EXISTS _metadata
                         }
                     }
 
-                    ack.send(sm_data.clone()).unwrap();
+                    ack.send(sm_data.clone()).expect("metadata read listener to always exist");
                 }
 
                 WriterRequest::MetadataMembership(req) => {
                     sm_data.last_membership = req.last_membership;
                     sm_data.last_applied_log_id = req.last_applied_log_id;
-                    req.ack.send(()).unwrap();
+                    req.ack.send(()).expect("membership ack listener to always exist");
                 }
 
                 WriterRequest::Backup(req) => {
@@ -666,7 +682,7 @@ CREATE TABLE IF NOT EXISTS _metadata
 
                 WriterRequest::RTT(req) => {
                     sm_data.last_applied_log_id = req.last_applied_log_id;
-                    req.ack.send(()).unwrap();
+                    req.ack.send(()).expect("rtt ack listener to always exist");
                 }
 
                 WriterRequest::Shutdown(ack) => {
@@ -853,6 +869,7 @@ fn migrate(
 
     for migration in migrations {
         if migration.id != last_applied + 1 {
+            // Migrations are compile-time; a gap in the applied ids means a broken deployment.
             panic!(
                 "Migration index has a gap between {} and {}",
                 last_applied, migration.id
@@ -936,6 +953,8 @@ fn last_applied_migration(
     let mut last_applied = first_id - 1;
     for applied in already_applied {
         if last_applied + 1 != applied.id {
+            // Applied migrations must match the embedded ones exactly - anything else
+            // means an inconsistent DB that must not keep running.
             panic!(
                 "Applied migrations order mismatch: expected {}, got {}",
                 last_applied + 1,
@@ -1033,5 +1052,35 @@ mod tests {
             .unwrap();
         assert_eq!(id, 1);
         assert_eq!(ts, 42);
+    }
+
+    #[test]
+    fn migration_validation_gap_panics() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_migrations_table(&conn).unwrap();
+        // mark migration 2 as applied, skipping 1 -> a gap means an inconsistent DB,
+        // so this must panic, not return an error
+        conn.execute(
+            "INSERT INTO _migrations (id, name, ts, hash) VALUES (2, 'two', 0, 'h')",
+            (),
+        )
+        .unwrap();
+
+        let migrations = vec![Migration {
+            id: 1,
+            name: "one".to_string(),
+            hash: "h1".to_string(),
+            content: b"".to_vec(),
+        }];
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = last_applied_migration(&conn, &migrations);
+        }))
+        .unwrap_err();
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(msg.contains("order mismatch"));
     }
 }
