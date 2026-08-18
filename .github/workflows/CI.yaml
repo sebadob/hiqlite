@@ -79,6 +79,8 @@ jobs:
       - name: Install Rust toolchain (non-Linux)
         if: runner.os != 'Linux'
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: stable
       - uses: ./.github/actions/setup-cargo
       - name: Test lib and bins (CI feature set)
         run: TEST_SKIP_S3_RESTORE=true cargo test --features cache,counters,dlock,listen_notify,macros,toml --lib --bins
@@ -113,6 +115,8 @@ jobs:
       - name: Install Rust toolchain (non-Linux)
         if: runner.os != 'Linux'
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: stable
       - uses: ./.github/actions/setup-cargo
       - name: Cluster tests
         run: TEST_SKIP_S3_RESTORE=true cargo test --features cache,counters,dlock,listen_notify,macros,toml --test cluster
