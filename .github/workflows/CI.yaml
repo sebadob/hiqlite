@@ -53,12 +53,32 @@ jobs:
   test:
     if: github.event.pull_request.draft == false
     name: Unit tests
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            container: ghcr.io/sebadob/rauthy-builder:20260519
+            continue-on-error: false
+          - os: macos-latest
+            container: ''
+            continue-on-error: false
+          # Advisory until Windows is proven; flip to false when green.
+          - os: windows-latest
+            container: ''
+            continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.continue-on-error }}
     timeout-minutes: 30
-    container:
-      image: ghcr.io/sebadob/rauthy-builder:20260519
+    container: ${{ matrix.container }}
+    # TEST_SKIP_S3_RESTORE=true needs a POSIX shell (Git Bash on Windows).
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain (non-Linux)
+        if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
       - uses: ./.github/actions/setup-cargo
       - name: Test lib and bins (CI feature set)
         run: TEST_SKIP_S3_RESTORE=true cargo test --features cache,counters,dlock,listen_notify,macros,toml --lib --bins
@@ -71,14 +91,28 @@ jobs:
     if: github.event.pull_request.draft == false
     name: Cluster integration
     needs: test
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            container: ghcr.io/sebadob/rauthy-builder:20260519
+          - os: macos-latest
+            container: ''
+          - os: windows-latest
+            container: ''
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    container:
-      image: ghcr.io/sebadob/rauthy-builder:20260519
+    container: ${{ matrix.container }}
     # Known shutdown-stuck flake in the 3-node harness; advisory, re-run before trusting.
     continue-on-error: true
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain (non-Linux)
+        if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
       - uses: ./.github/actions/setup-cargo
       - name: Cluster tests
         run: TEST_SKIP_S3_RESTORE=true cargo test --features cache,counters,dlock,listen_notify,macros,toml --test cluster
