@@ -70,23 +70,29 @@ impl Metadata {
     #[inline]
     fn write_unchecked(bytes: &[u8], base_path: &str) -> Result<(), Error> {
         let path = format!("{base_path}/meta.hql");
+        let tmp_path = format!("{path}~");
 
-        let _ = fs::remove_file(&path);
-        let mut file = File::create_new(&path)?;
-        // TODO overwriting the file when we started with .seek() did not work when the
-        // new meta was smaller than the old one, and therefore the CRC would not match.
-        // let mut file = OpenOptions::new()
-        //     .read(true)
-        //     .write(true)
-        //     .create(true)
-        //     .open(&path)?;
+        let mut file = File::create(&tmp_path)?;
 
         debug_assert_eq!(MAGIC_NO_META.len(), 7);
         file.write_all(MAGIC_NO_META)?;
         file.write_all(&[1u8])?;
         file.write_all(crc!(bytes).as_slice())?;
         file.write_all(bytes)?;
-        file.flush()?;
+        // make the data durable *before* the rename, so the rename cannot publish a
+        // partially flushed file
+        file.sync_all()?;
+        drop(file);
+
+        // atomic replace: the rename alone publishes the new file, so readers/crash
+        // recovery never see a torn or missing meta file
+        fs::rename(&tmp_path, &path)?;
+
+        // best-effort: make the rename itself durable across power loss
+        #[cfg(unix)]
+        if let Ok(dir) = File::open(base_path) {
+            let _ = dir.sync_all();
+        }
 
         Ok(())
     }
@@ -114,6 +120,31 @@ mod tests {
         let lock = meta.read()?;
         assert_eq!(lock.last_purged_log_id, meta_back.last_purged_log_id);
         assert_eq!(lock.vote, meta_back.vote);
+
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_overwrite_replaces_existing() -> Result<(), Error> {
+        let base_path = format!("{}/metadata_overwrite_replaces_existing", PATH);
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+
+        let meta = Arc::new(RwLock::new(Metadata {
+            last_purged_log_id: Some(vec![1, 2, 3]),
+            vote: None,
+        }));
+        Metadata::write(meta.clone(), &base_path)?;
+
+        // overwrite with a smaller payload (this is where the old in-place approach broke)
+        let mut lock = meta.write()?;
+        lock.last_purged_log_id = Some(vec![9]);
+        drop(lock);
+        Metadata::write(meta.clone(), &base_path)?;
+
+        let meta_back = Metadata::read_or_create(&base_path)?;
+        assert_eq!(meta_back.last_purged_log_id, Some(vec![9]));
+        assert!(!fs::exists(format!("{base_path}/meta.hql~")).unwrap_or(true));
 
         Ok(())
     }

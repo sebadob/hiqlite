@@ -25,7 +25,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use thread_priority::ThreadPriority;
 use tokio::sync::oneshot;
-use tokio::{fs, runtime, task};
+use tokio::{fs, runtime, task, time};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -738,11 +738,22 @@ Got:      {}
 }
 
 #[inline]
-fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), rusqlite::Error> {
-    let q = format!("VACUUM main INTO '{path}'");
-    conn.execute(&q, ())?;
+fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), Error> {
+    // vacuum into a temp file and move it into place, so a crash can never leave a
+    // partially written snapshot at the final path
+    let path_temp = format!("{path}~");
+    let q = format!("VACUUM main INTO '{path_temp}'");
+    if let Err(err) = conn.execute(&q, ()) {
+        let _ = std::fs::remove_file(&path_temp);
+        return Err(Error::Sqlite(err.to_string().into()));
+    }
+    std::fs::rename(&path_temp, &path)
+        .map_err(|err| Error::Error(format!("rename snapshot into place: {err}").into()))?;
     Ok(())
 }
+
+#[cfg(feature = "s3")]
+const S3_MAX_RETRIES: u64 = 10;
 
 fn create_backup(
     conn: &rusqlite::Connection,
@@ -761,7 +772,19 @@ fn create_backup(
     let path_full = format!("{target_folder}/{file}");
     info!("Creating database backup into {path_full}");
 
-    conn.execute(&format!("VACUUM main INTO '{path_full}'"), ())?;
+    // vacuum into a temp file and move it into place, so a crash mid-backup can never leave
+    // a partial file under the final backup name (restore would pick it up as valid)
+    let path_temp = format!("{path_full}~");
+    if let Err(err) = conn.execute(&format!("VACUUM main INTO '{path_temp}'"), ()) {
+        let _ = std::fs::remove_file(&path_temp);
+        return Err(err.into());
+    }
+    if let Err(err) = std::fs::rename(&path_temp, &path_full) {
+        let _ = std::fs::remove_file(&path_temp);
+        return Err(Error::Error(
+            format!("rename backup into place: {err}").into(),
+        ));
+    }
 
     // connect to the backup and reset metadata
     // make sure connection is dropped before starting encrypt + push
@@ -777,12 +800,28 @@ fn create_backup(
         rt.spawn(async move {
             info!("Background task for database encryption and S3 backup task has been started");
 
-            match s3.push(&path_full, &file).await {
-                Ok(_) => {
-                    info!("Push backup to S3 has been finished");
-                }
-                Err(err) => {
-                    error!("Error pushing Backup to S3: {}", err);
+            // The backup was already acked; retry the upload so a failure is not just a log line.
+            let mut attempt = 0;
+            loop {
+                attempt += 1;
+                match s3.push(&path_full, &file).await {
+                    Ok(_) => {
+                        info!("Push backup to S3 has been finished");
+                        break;
+                    }
+                    Err(err) if attempt < S3_MAX_RETRIES => {
+                        error!(
+                            "Error pushing Backup to S3 (attempt {attempt}/{S3_MAX_RETRIES}): {err} - retrying"
+                        );
+                        time::sleep(Duration::from_secs(5 * attempt)).await;
+                    }
+                    Err(err) => {
+                        error!(
+                            "Error pushing Backup to S3 after {attempt} attempts: {err} - \
+                            the backup exists locally but not offsite"
+                        );
+                        break;
+                    }
                 }
             }
         });
