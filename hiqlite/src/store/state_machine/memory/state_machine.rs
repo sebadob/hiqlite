@@ -55,6 +55,10 @@ type SnapshotDataContent = (
 #[cfg(feature = "in-memory-snapshots")]
 type MemSnapshot = (SnapshotMeta<NodeId, Node>, Vec<u8>);
 
+// The variant order is part of the raft log format and must stay stable and
+// feature-independent: adding variants changes the serialized indices of
+// everything after them, which silently corrupts logs written with a different
+// feature set. New variants therefore go at the end of the enum.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CacheRequest {
     Get {
@@ -84,37 +88,37 @@ pub enum CacheRequest {
     Clear {
         cache_idx: usize,
     },
-    #[cfg(feature = "counters")]
+    #[allow(dead_code)] // only constructed with the `counters` feature
     ClearCounters {
         cache_idx: usize,
     },
     ClearAll,
-    #[cfg(feature = "listen_notify_local")]
+    #[allow(dead_code)] // only constructed with the `listen_notify_local` feature
     Notify((i64, Vec<u8>)),
-    #[cfg(feature = "dlock")]
+    #[allow(dead_code)] // only constructed with the `dlock` feature
     Lock((Cow<'static, str>, Option<u64>)),
-    #[cfg(feature = "dlock")]
+    #[allow(dead_code)] // only constructed with the `dlock` feature
     LockAwait((Cow<'static, str>, u64)),
-    #[cfg(feature = "dlock")]
+    #[allow(dead_code)] // only constructed with the `dlock` feature
     LockRelease((Cow<'static, str>, u64)),
-    #[cfg(feature = "counters")]
+    #[allow(dead_code)] // only constructed with the `counters` feature
     CounterGet {
         cache_idx: usize,
         key: Cow<'static, str>,
     },
-    #[cfg(feature = "counters")]
+    #[allow(dead_code)] // only constructed with the `counters` feature
     CounterSet {
         cache_idx: usize,
         key: Cow<'static, str>,
         value: i64,
     },
-    #[cfg(feature = "counters")]
+    #[allow(dead_code)] // only constructed with the `counters` feature
     CounterAdd {
         cache_idx: usize,
         key: Cow<'static, str>,
         value: i64,
     },
-    #[cfg(feature = "counters")]
+    #[allow(dead_code)] // only constructed with the `counters` feature
     CounterDel {
         cache_idx: usize,
         key: Cow<'static, str>,
@@ -719,15 +723,19 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         CacheResponse::Ok
                     }
 
-                    #[cfg(feature = "counters")]
                     CacheRequest::ClearCounters { cache_idx } => {
-                        self.tx_caches
-                            .get(cache_idx)
-                            .unwrap()
-                            .send(CacheRequestHandler::ClearCounters)
-                            .expect("cache ttl handler to always be running");
+                        #[cfg(feature = "counters")]
+                        {
+                            self.tx_caches
+                                .get(cache_idx)
+                                .unwrap()
+                                .send(CacheRequestHandler::ClearCounters)
+                                .expect("cache ttl handler to always be running");
 
-                        CacheResponse::Ok
+                            CacheResponse::Ok
+                        }
+                        #[cfg(not(feature = "counters"))]
+                        unreachable!("ClearCounters requires the `counters` feature")
                     }
 
                     CacheRequest::ClearAll => {
@@ -742,111 +750,137 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         CacheResponse::Ok
                     }
 
-                    #[cfg(feature = "listen_notify_local")]
                     CacheRequest::Notify(payload) => {
-                        self.tx_notify
-                            .send(NotifyRequest::Notify(payload))
-                            // this channel can never be closed - we have both sides
-                            .unwrap();
-                        CacheResponse::Ok
-                    }
-
-                    #[cfg(feature = "dlock")]
-                    CacheRequest::Lock((key, id)) => {
-                        let (ack, rx) = oneshot::channel();
-
-                        // the id will be Some(_) in case this request is coming in after awaiting a queue
-                        if let Some(log_id) = id {
-                            self.tx_dlock
-                                .send(LockRequest::Acquire(LockRequestPayload {
-                                    key,
-                                    log_id,
-                                    ack,
-                                }))
+                        #[cfg(feature = "listen_notify_local")]
+                        {
+                            self.tx_notify
+                                .send(NotifyRequest::Notify(payload))
                                 // this channel can never be closed - we have both sides
                                 .unwrap();
-                        } else {
-                            let log_id = id.unwrap_or(last_applied_log_id.unwrap().index);
-                            self.tx_dlock
-                                .send(LockRequest::Lock(LockRequestPayload { key, log_id, ack }))
-                                // this channel can never be closed - we have both sides
-                                .unwrap();
+                            CacheResponse::Ok
                         }
-
-                        let state = rx
-                            .await
-                            .expect("To always get a response from dlock handler");
-
-                        CacheResponse::Lock(state)
+                        #[cfg(not(feature = "listen_notify_local"))]
+                        unreachable!("Notify requires the `listen_notify_local` feature")
                     }
 
-                    #[cfg(feature = "dlock")]
+                    CacheRequest::Lock((key, id)) => {
+                        #[cfg(feature = "dlock")]
+                        {
+                            let (ack, rx) = oneshot::channel();
+
+                            // the id will be Some(_) in case this request is coming in after awaiting a queue
+                            if let Some(log_id) = id {
+                                self.tx_dlock
+                                    .send(LockRequest::Acquire(LockRequestPayload {
+                                        key,
+                                        log_id,
+                                        ack,
+                                    }))
+                                    // this channel can never be closed - we have both sides
+                                    .unwrap();
+                            } else {
+                                let log_id = id.unwrap_or(last_applied_log_id.unwrap().index);
+                                self.tx_dlock
+                                    .send(LockRequest::Lock(LockRequestPayload {
+                                        key,
+                                        log_id,
+                                        ack,
+                                    }))
+                                    // this channel can never be closed - we have both sides
+                                    .unwrap();
+                            }
+
+                            let state = rx
+                                .await
+                                .expect("To always get a response from dlock handler");
+
+                            CacheResponse::Lock(state)
+                        }
+                        #[cfg(not(feature = "dlock"))]
+                        unreachable!("Lock requires the `dlock` feature")
+                    }
+
                     CacheRequest::LockAwait(..) => {
                         unreachable!("Lock Awaits should never come through the Raft")
                     }
 
-                    #[cfg(feature = "dlock")]
                     CacheRequest::LockRelease((key, id)) => {
-                        self.tx_dlock
-                            .send(LockRequest::Release(LockReleasePayload { key, id }))
-                            // this channel can never be closed - we have both sides
-                            .unwrap();
+                        #[cfg(feature = "dlock")]
+                        {
+                            self.tx_dlock
+                                .send(LockRequest::Release(LockReleasePayload { key, id }))
+                                // this channel can never be closed - we have both sides
+                                .unwrap();
 
-                        // we can return early without waiting for answer, release should never fail anyway
-                        CacheResponse::Lock(LockState::Released)
+                            // we can return early without waiting for answer, release should never fail anyway
+                            CacheResponse::Lock(LockState::Released)
+                        }
+                        #[cfg(not(feature = "dlock"))]
+                        unreachable!("LockRelease requires the `dlock` feature")
                     }
 
-                    #[cfg(feature = "counters")]
                     CacheRequest::CounterGet { .. } => {
                         unreachable!("a CacheRequest::Get should never come through the Raft")
                     }
 
-                    #[cfg(feature = "counters")]
                     CacheRequest::CounterSet {
                         cache_idx,
                         key,
                         value,
                     } => {
-                        self.tx_caches
-                            .get(cache_idx)
-                            .unwrap()
-                            .send(CacheRequestHandler::CounterSet((key.to_string(), value)))
-                            .expect("cache ttl handler to always be running");
+                        #[cfg(feature = "counters")]
+                        {
+                            self.tx_caches
+                                .get(cache_idx)
+                                .unwrap()
+                                .send(CacheRequestHandler::CounterSet((key.to_string(), value)))
+                                .expect("cache ttl handler to always be running");
 
-                        CacheResponse::Ok
+                            CacheResponse::Ok
+                        }
+                        #[cfg(not(feature = "counters"))]
+                        unreachable!("CounterSet requires the `counters` feature")
                     }
 
-                    #[cfg(feature = "counters")]
                     CacheRequest::CounterAdd {
                         cache_idx,
                         key,
                         value,
                     } => {
-                        let (ack, rx) = oneshot::channel();
+                        #[cfg(feature = "counters")]
+                        {
+                            let (ack, rx) = oneshot::channel();
 
-                        self.tx_caches
-                            .get(cache_idx)
-                            .unwrap()
-                            .send(CacheRequestHandler::CounterAdd((
-                                key.to_string(),
-                                value,
-                                ack,
-                            )))
-                            .expect("cache ttl handler to always be running");
+                            self.tx_caches
+                                .get(cache_idx)
+                                .unwrap()
+                                .send(CacheRequestHandler::CounterAdd((
+                                    key.to_string(),
+                                    value,
+                                    ack,
+                                )))
+                                .expect("cache ttl handler to always be running");
 
-                        let v = rx.await.unwrap();
-                        CacheResponse::CounterValue(Some(v))
+                            let v = rx.await.unwrap();
+                            CacheResponse::CounterValue(Some(v))
+                        }
+                        #[cfg(not(feature = "counters"))]
+                        unreachable!("CounterAdd requires the `counters` feature")
                     }
 
-                    #[cfg(feature = "counters")]
                     CacheRequest::CounterDel { cache_idx, key } => {
-                        self.tx_caches
-                            .get(cache_idx)
-                            .unwrap()
-                            .send(CacheRequestHandler::CounterDel(key.to_string()))
-                            .expect("cache ttl handler to always be running");
+                        #[cfg(feature = "counters")]
+                        {
+                            self.tx_caches
+                                .get(cache_idx)
+                                .unwrap()
+                                .send(CacheRequestHandler::CounterDel(key.to_string()))
+                                .expect("cache ttl handler to always be running");
 
-                        CacheResponse::Ok
+                            CacheResponse::Ok
+                        }
+                        #[cfg(not(feature = "counters"))]
+                        unreachable!("CounterDel requires the `counters` feature")
                     }
                 },
 
@@ -1106,5 +1140,96 @@ mod tests {
         assert_eq!(restored.0, valid);
 
         let _ = std::fs::remove_dir_all(&base_dir);
+    }
+}
+
+#[cfg(test)]
+mod serialized_enum_order {
+    use super::*;
+
+    /// The serialized variant index is part of the raft log format: a reorder
+    /// would silently corrupt logs written by older builds with a different
+    /// feature set. Pin the current order so a reorder fails this test instead.
+    #[test]
+    fn cache_request_variant_order_is_stable() {
+        let idx = |req: &CacheRequest| crate::helpers::serialize(req).unwrap()[0];
+        let key = || Cow::Owned(String::new());
+
+        assert_eq!(
+            idx(&CacheRequest::Get {
+                cache_idx: 0,
+                key: String::new()
+            }),
+            0
+        );
+        assert_eq!(
+            idx(&CacheRequest::Put {
+                cache_idx: 0,
+                key: key(),
+                value: vec![],
+                expires: None
+            }),
+            1
+        );
+        assert_eq!(
+            idx(&CacheRequest::GetRemove {
+                cache_idx: 0,
+                key: key()
+            }),
+            2
+        );
+        assert_eq!(
+            idx(&CacheRequest::Replace {
+                cache_idx: 0,
+                key: key(),
+                value: vec![],
+                expires: None
+            }),
+            3
+        );
+        assert_eq!(
+            idx(&CacheRequest::Delete {
+                cache_idx: 0,
+                key: key()
+            }),
+            4
+        );
+        assert_eq!(idx(&CacheRequest::Clear { cache_idx: 0 }), 5);
+        assert_eq!(idx(&CacheRequest::ClearCounters { cache_idx: 0 }), 6);
+        assert_eq!(idx(&CacheRequest::ClearAll), 7);
+        assert_eq!(idx(&CacheRequest::Notify((0, vec![]))), 8);
+        assert_eq!(idx(&CacheRequest::Lock((key(), None))), 9);
+        assert_eq!(idx(&CacheRequest::LockAwait((key(), 0))), 10);
+        assert_eq!(idx(&CacheRequest::LockRelease((key(), 0))), 11);
+        assert_eq!(
+            idx(&CacheRequest::CounterGet {
+                cache_idx: 0,
+                key: key()
+            }),
+            12
+        );
+        assert_eq!(
+            idx(&CacheRequest::CounterSet {
+                cache_idx: 0,
+                key: key(),
+                value: 0
+            }),
+            13
+        );
+        assert_eq!(
+            idx(&CacheRequest::CounterAdd {
+                cache_idx: 0,
+                key: key(),
+                value: 0
+            }),
+            14
+        );
+        assert_eq!(
+            idx(&CacheRequest::CounterDel {
+                cache_idx: 0,
+                key: key()
+            }),
+            15
+        );
     }
 }

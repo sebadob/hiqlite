@@ -60,6 +60,8 @@ pub struct PathBackups(pub String);
 pub struct PathSnapshots(pub String);
 pub struct PathLockFile(pub String);
 
+// The variant order is part of the raft log format and must stay stable and
+// feature-independent (see `CacheRequest` for details).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueryWrite {
     Execute(Query),
@@ -67,7 +69,7 @@ pub enum QueryWrite {
     Transaction(Vec<Query>),
     Batch(Cow<'static, str>),
     Migration(Vec<Migration>),
-    #[cfg(feature = "backup")]
+    #[allow(dead_code)] // only constructed with the `backup` feature
     Backup((NodeId, i64)),
     RTT,
 }
@@ -694,26 +696,30 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                     Response::Batch(ResponseBatch { result })
                 }
 
-                #[cfg(feature = "backup")]
                 EntryPayload::Normal(QueryWrite::Backup((node_id, ts))) => {
-                    let (ack, rx) = oneshot::channel();
-                    let req = WriterRequest::Backup(writer::BackupRequest {
-                        node_id,
-                        target_folder: self.path_backups.clone(),
-                        ts,
-                        #[cfg(feature = "s3")]
-                        s3_config: self.s3_config.clone(),
-                        last_applied_log_id,
-                        ack,
-                    });
+                    #[cfg(feature = "backup")]
+                    {
+                        let (ack, rx) = oneshot::channel();
+                        let req = WriterRequest::Backup(writer::BackupRequest {
+                            node_id,
+                            target_folder: self.path_backups.clone(),
+                            ts,
+                            #[cfg(feature = "s3")]
+                            s3_config: self.s3_config.clone(),
+                            last_applied_log_id,
+                            ack,
+                        });
 
-                    self.write_tx
-                        .send_async(req)
-                        .await
-                        .expect("sql writer to always be listening");
+                        self.write_tx
+                            .send_async(req)
+                            .await
+                            .expect("sql writer to always be listening");
 
-                    let result = rx.await.expect("to always get a response from sql writer");
-                    Response::Backup(result)
+                        let result = rx.await.expect("to always get a response from sql writer");
+                        Response::Backup(result)
+                    }
+                    #[cfg(not(feature = "backup"))]
+                    unreachable!("Backup requires the `backup` feature")
                 }
 
                 EntryPayload::Normal(QueryWrite::Migration(migrations)) => {
@@ -876,5 +882,30 @@ mod tests {
                 "{name} did not panic: {err}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod serialized_enum_order {
+    use super::*;
+
+    /// The serialized variant index is part of the raft log format: a reorder
+    /// would silently corrupt logs written by older builds with a different
+    /// feature set. Pin the current order so a reorder fails this test instead.
+    #[test]
+    fn query_write_variant_order_is_stable() {
+        let idx = |req: &QueryWrite| crate::helpers::serialize(req).unwrap()[0];
+        let query = || Query {
+            sql: Cow::Owned(String::new()),
+            params: vec![],
+        };
+
+        assert_eq!(idx(&QueryWrite::Execute(query())), 0);
+        assert_eq!(idx(&QueryWrite::ExecuteReturning(query())), 1);
+        assert_eq!(idx(&QueryWrite::Transaction(vec![])), 2);
+        assert_eq!(idx(&QueryWrite::Batch(Cow::Owned(String::new()))), 3);
+        assert_eq!(idx(&QueryWrite::Migration(vec![])), 4);
+        assert_eq!(idx(&QueryWrite::Backup((0, 0))), 5);
+        assert_eq!(idx(&QueryWrite::RTT), 6);
     }
 }
