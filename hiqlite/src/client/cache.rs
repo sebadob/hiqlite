@@ -306,8 +306,7 @@ impl Client {
         K: Into<Cow<'static, str>>,
         V: Serialize + for<'a> Deserialize<'a>,
     {
-        self.rate_limit_cache().await?;
-
+        // `replace_bytes` below applies the cache rate limit itself
         match self
             .replace_bytes(cache, key, serialize_network(value), ttl)
             .await
