@@ -245,6 +245,118 @@ impl Client {
         Ok(())
     }
 
+    /// GET and REMOVE a value from the cache in one atomic step.
+    ///
+    /// Of several concurrent `get_remove` calls for the same key, exactly one
+    /// returns the value; all others get `None`.
+    pub async fn get_remove<C, K, V>(&self, cache: C, key: K) -> Result<Option<V>, Error>
+    where
+        C: CacheVariants,
+        K: Into<Cow<'static, str>>,
+        V: for<'a> Deserialize<'a>,
+    {
+        match self.get_remove_bytes(cache, key).await {
+            Ok(value) => {
+                if let Some(v) = value {
+                    Ok(Some(deserialize(&v)?))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// GET and REMOVE a raw bytes value from the cache in one atomic step.
+    ///
+    /// Works in the same way as `.get_remove()` without any value mapping.
+    pub async fn get_remove_bytes<C, K>(&self, cache: C, key: K) -> Result<Option<Vec<u8>>, Error>
+    where
+        C: CacheVariants,
+        K: Into<Cow<'static, str>>,
+    {
+        self.rate_limit_cache().await?;
+
+        let res = self
+            .cache_req_retry(
+                CacheRequest::GetRemove {
+                    cache_idx: cache.hiqlite_cache_index(),
+                    key: key.into(),
+                },
+                false,
+            )
+            .await?;
+        match res {
+            CacheResponse::Value(opt) => Ok(opt),
+            _ => unreachable!(),
+        }
+    }
+
+    /// REPLACE a value in the cache and return the previous value (if the key existed).
+    /// The optional `ttl` is the lifetime of the value in seconds from *now* on.
+    pub async fn replace<C, K, V>(
+        &self,
+        cache: C,
+        key: K,
+        value: &V,
+        ttl: Option<i64>,
+    ) -> Result<Option<V>, Error>
+    where
+        C: CacheVariants,
+        K: Into<Cow<'static, str>>,
+        V: Serialize + for<'a> Deserialize<'a>,
+    {
+        // `replace_bytes` below applies the cache rate limit itself
+        match self
+            .replace_bytes(cache, key, serialize_network(value), ttl)
+            .await
+        {
+            Ok(value) => {
+                if let Some(v) = value {
+                    Ok(Some(deserialize(&v)?))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// REPLACE a raw bytes value in the cache and return the previous value.
+    pub async fn replace_bytes<C, K>(
+        &self,
+        cache: C,
+        key: K,
+        value: Vec<u8>,
+        ttl: Option<i64>,
+    ) -> Result<Option<Vec<u8>>, Error>
+    where
+        C: CacheVariants,
+        K: Into<Cow<'static, str>>,
+    {
+        self.rate_limit_cache().await?;
+
+        let res = self
+            .cache_req_retry(
+                CacheRequest::Replace {
+                    cache_idx: cache.hiqlite_cache_index(),
+                    key: key.into(),
+                    value,
+                    expires: ttl.map(|seconds| {
+                        Utc::now()
+                            .timestamp_micros()
+                            .saturating_add(seconds.saturating_mul(1_000_000))
+                    }),
+                },
+                false,
+            )
+            .await?;
+        match res {
+            CacheResponse::Value(opt) => Ok(opt),
+            _ => unreachable!(),
+        }
+    }
+
     /// Get the current counter value for the Cache + Key
     #[cfg(feature = "counters")]
     pub async fn counter_get<C, K>(&self, cache: C, key: K) -> Result<Option<i64>, Error>

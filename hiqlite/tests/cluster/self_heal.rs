@@ -112,6 +112,18 @@ async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Resul
         .put(Cache::One, key, &value, Some(ttl as i64))
         .await?;
 
+    // a `get_remove` entry after the snapshot point must be replayed on recovery
+    let key_claimed = "purge_key_claimed";
+    let value_claimed = "claimed before restart";
+    client
+        .put(Cache::One, key_claimed, &value_claimed, None)
+        .await?;
+    let v: String = client
+        .get_remove(Cache::One, key_claimed)
+        .await?
+        .expect("value to be present before the restart");
+    assert_eq!(v, value_claimed);
+
     log(format!("Shutting down client {}", node_id));
     client.shutdown().await?;
 
@@ -128,6 +140,12 @@ async fn modify_cache_restart_after_purge(client: Client, node_id: u64) -> Resul
     // using the instant later one
     check::is_client_db_healthy(&client, Some(node_id)).await?;
     // panic!("############### client id {}", node_id);
+
+    let v: Option<String> = client.get(Cache::One, key_claimed).await?;
+    assert!(
+        v.is_none(),
+        "get_remove must be replayed after snapshot recovery"
+    );
 
     let millis = inserted.elapsed().as_millis() as u64;
     assert!(millis < ttl * 1000);

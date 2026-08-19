@@ -52,6 +52,71 @@ pub async fn test_remote_only_client() -> Result<(), Error> {
     let res = client_2.listen::<TestData>().await?;
     assert_eq!(res, msg);
 
+    test_get_remove_atomicity(&client_1).await?;
+    test_mixed_claim_atomicity(&client_1).await?;
+
+    Ok(())
+}
+
+/// A non-atomic `get` + `delete` implementation would let two concurrent
+/// `get_remove` calls both observe the value (the delete of the first lands
+/// after the get of the second). On a remote client every step is a network
+/// round trip, so the race window is wide and this probe fails reliably on
+/// such an implementation.
+async fn test_get_remove_atomicity(client: &Client) -> Result<(), Error> {
+    log("Test get_remove atomicity from a remote client");
+    let key = "atomic get_remove";
+    for _ in 0..25 {
+        client
+            .put(Cache::One, key, &"atomic".to_string(), None)
+            .await?;
+
+        let (a, b) = tokio::join!(
+            client.get_remove::<_, _, String>(Cache::One, key),
+            client.get_remove::<_, _, String>(Cache::One, key),
+        );
+
+        let wins = [a?, b?].into_iter().filter(Option::is_some).count();
+        assert_eq!(wins, 1, "exactly one concurrent get_remove must win");
+    }
+
+    Ok(())
+}
+
+/// A non-atomic implementation would let a `get_remove` and a `replace` both
+/// observe the original value. The original value may be claimed at most once,
+/// and it must never survive the round.
+async fn test_mixed_claim_atomicity(client: &Client) -> Result<(), Error> {
+    log("Test mixed get_remove / replace claims from a remote client");
+    let key = "mixed claim";
+    for _ in 0..25 {
+        client
+            .put(Cache::One, key, &"atomic".to_string(), None)
+            .await?;
+
+        let new_value = "replaced".to_string();
+        let (a, b, r) = tokio::join!(
+            client.get_remove::<_, _, String>(Cache::One, key),
+            client.get_remove::<_, _, String>(Cache::One, key),
+            client.replace::<_, _, String>(Cache::One, key, &new_value, None),
+        );
+
+        let claims = [a?, b?]
+            .into_iter()
+            .filter(|v| v.as_deref() == Some("atomic"))
+            .count()
+            + usize::from(r?.as_deref() == Some("atomic"));
+        assert!(claims <= 1, "the original value must be claimed at most once");
+
+        let v: Option<String> = client.get(Cache::One, key).await?;
+        assert!(
+            v.as_deref() != Some("atomic"),
+            "the original value must not survive any claim"
+        );
+    }
+
+    client.delete(Cache::One, key).await?;
+
     Ok(())
 }
 
