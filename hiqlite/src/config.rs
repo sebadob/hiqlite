@@ -77,10 +77,10 @@ pub struct NodeConfig {
     ///
     /// - `Immediate` fsyncs the WAL before openraft is told the append finished, so an
     ///   acknowledged write is on disk.
-    /// - `ImmediateAsync` (default) tells openraft the append finished after an
-    ///   `msync(MS_ASYNC)`, which on Linux starts no writeback at all. The entries stay in the
-    ///   page cache until the kernel writes them back on its own schedule, 30s by default via
-    ///   `dirty_expire_centisecs`.
+    /// - `ImmediateAsync` (default) tells openraft the append finished after starting the
+    ///   writeback without waiting for it (`sync_file_range` on Linux, `msync(MS_ASYNC)`
+    ///   elsewhere). Entries are typically on disk within milliseconds, but there is no hard
+    ///   bound, because the device write cache is not flushed.
     /// - `IntervalMillis(ms)` acknowledges the same way and flushes the WAL from a ticker every
     ///   `ms` milliseconds.
     ///

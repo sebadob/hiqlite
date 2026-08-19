@@ -144,8 +144,8 @@ pub fn spawn(
 
 /// Flush the active WAL file so that everything written to it is on disk.
 ///
-/// `flush_async` only starts the msync and returns, so a WAL flushed that way is
-/// not known to be on disk. Only a flush that returns may clear `is_dirty`.
+/// `flush_async` only starts the writeback and returns, so a WAL flushed that way
+/// is not known to be on disk. Only a flush that returns may clear `is_dirty`.
 fn flush_blocking(
     wal: &mut WalFileSet,
     buf: &mut Vec<u8>,
@@ -281,14 +281,16 @@ fn run(
 
                 // The WAL now holds bytes that are not known to be on disk, and only a
                 // blocking flush can clear that state again. `flush_async` merely starts the
-                // msync, which is why `Action::Remove` and `Action::Vote` below still flush.
+                // writeback, which is why `Action::Remove` and `Action::Vote` below still flush.
                 is_dirty = true;
                 if sync == LogSync::Immediate {
                     flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
                 } else if sync == LogSync::ImmediateAsync {
                     wal.active().flush_async()?;
                 }
-                // TODO with the next big openraft release, we can do async callbacks
+                // openraft takes this callback as "these entries are on disk" and commits on
+                // a quorum of such acks. Only `Immediate` upholds that here: the async levels
+                // deliberately ack first and trade the writeback window for throughput.
                 callback();
 
                 // Roll WAL pre-emptively if only very few space is left at this point, because
@@ -322,9 +324,9 @@ fn run(
                 // middle of removing logs, we could end up with a hole between Snapshot and latest
                 // existing Raft Log, which must never happen.
                 //
-                // The flush has to block. `flush_async` only starts the msync and returns, so a
-                // crash during the removal below can still land after the deletions and before
-                // the header reaches disk, which is the hole this guards against.
+                // The flush has to block. `flush_async` only starts the writeback and returns,
+                // so a crash during the removal below can still land after the deletions and
+                // before the header reaches disk, which is the hole this guards against.
                 flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
 
                 // Persist the purge frontier before deleting (too low = hole into deleted files;

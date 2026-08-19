@@ -42,6 +42,10 @@ pub struct WalFile {
     len_max: u32,
     mmap: Option<Mmap>,
     mmap_mut: Option<MmapMut>,
+    // Kept while `mmap_mut` exists: `sync_file_range` in `flush_async` needs an fd,
+    // which the mmap alone does not provide.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    file: Option<File>,
 }
 
 impl Drop for WalFile {
@@ -345,6 +349,7 @@ impl WalFile {
             len_max: self.len_max,
             mmap: None,
             mmap_mut: None,
+            file: None,
         }
     }
 
@@ -496,10 +501,32 @@ impl WalFile {
         Ok(())
     }
 
+    /// Starts writeback of all dirty pages without waiting for completion.
+    ///
+    /// On Linux this uses `sync_file_range(SYNC_FILE_RANGE_WRITE)`, because
+    /// `msync(MS_ASYNC)` starts no writeback there at all. This is not a durability
+    /// barrier: neither the device write cache nor the extent allocations of the
+    /// sparse WAL file are flushed, so data flushed this way must not be treated as
+    /// on disk and `is_dirty` must stay set.
     #[inline]
     pub fn flush_async(&mut self) -> Result<(), Error> {
         debug_assert!(self.mmap_mut.is_some());
+
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+
+            let file = self.file.as_ref().expect("file kept while mmap_mut");
+            let res = unsafe {
+                libc::sync_file_range(file.as_raw_fd(), 0, 0, libc::SYNC_FILE_RANGE_WRITE)
+            };
+            if res != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
         self.mmap_mut.as_mut().unwrap().flush_async()?;
+
         Ok(())
     }
 
@@ -562,6 +589,7 @@ impl WalFile {
         mmap.advise(memmap2::Advice::Sequential)?;
 
         self.mmap_mut = Some(mmap);
+        self.file = Some(file);
 
         Ok(())
     }
@@ -596,6 +624,7 @@ impl WalFile {
             len_max: wal_size,
             mmap: None,
             mmap_mut: None,
+            file: None,
         })
     }
 
@@ -667,6 +696,7 @@ impl WalFile {
             len_max: len_max as u32,
             mmap: None,
             mmap_mut: None,
+            file: None,
         })
     }
 
@@ -936,8 +966,12 @@ impl WalFileSet {
         let last_id = {
             let active = self.active();
             active.update_header(buf)?;
-            active.flush_async()?;
+            // The seal must flush blocking: entries appended since the last flush would
+            // otherwise be acknowledged while only the new, empty file is flushed later.
+            // This costs one fsync per WAL file, and a sealed file is never dirty again.
+            active.flush()?;
             active.mmap_mut = None;
+            active.file = None;
             active.id_until
         };
 
@@ -1207,6 +1241,7 @@ mod tests {
             len_max: MB2,
             mmap: None,
             mmap_mut: None,
+            file: None,
         });
         files.push_back(WalFile {
             version: 1,
@@ -1220,6 +1255,7 @@ mod tests {
             len_max: MB2,
             mmap: None,
             mmap_mut: None,
+            file: None,
         });
         files.push_back(WalFile {
             version: 1,
@@ -1233,6 +1269,7 @@ mod tests {
             len_max: MB2,
             mmap: None,
             mmap_mut: None,
+            file: None,
         });
         let mut set = WalFileSet {
             active: Some(2),
@@ -1261,6 +1298,7 @@ mod tests {
             len_max: MB2,
             mmap: None,
             mmap_mut: None,
+            file: None,
         });
         files.push_back(WalFile {
             version: 1,
@@ -1274,6 +1312,7 @@ mod tests {
             len_max: MB2,
             mmap: None,
             mmap_mut: None,
+            file: None,
         });
         let mut set = WalFileSet {
             active: Some(1),
@@ -1295,6 +1334,7 @@ mod tests {
             len_max: MB2,
             mmap: None,
             mmap_mut: None,
+            file: None,
         });
         files.push_back(WalFile {
             version: 1,
@@ -1308,6 +1348,7 @@ mod tests {
             len_max: MB2,
             mmap: None,
             mmap_mut: None,
+            file: None,
         });
         files.push_back(WalFile {
             version: 1,
@@ -1321,6 +1362,7 @@ mod tests {
             len_max: MB2,
             mmap: None,
             mmap_mut: None,
+            file: None,
         });
         let mut set = WalFileSet {
             active: Some(2),
@@ -1342,6 +1384,7 @@ mod tests {
             len_max: MB2,
             mmap: None,
             mmap_mut: None,
+            file: None,
         });
         files.push_back(WalFile {
             version: 1,
@@ -1355,6 +1398,7 @@ mod tests {
             len_max: MB2,
             mmap: None,
             mmap_mut: None,
+            file: None,
         });
         files.push_back(WalFile {
             version: 1,
@@ -1368,6 +1412,7 @@ mod tests {
             len_max: MB2,
             mmap: None,
             mmap_mut: None,
+            file: None,
         });
         let mut set = WalFileSet {
             active: Some(2),
