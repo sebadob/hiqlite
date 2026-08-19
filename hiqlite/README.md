@@ -101,7 +101,7 @@ considering that SQLite only allows a single writer at the same time.
 
 Test command (`-c` adjusted each time for different concurrency):
 
-```
+```sh
 cargo run --release -- cluster -c 4 -r 100000
 ```
 
@@ -396,27 +396,27 @@ Even though it is recommended to embed `hiqlite` into your application, you can 
 
 The easiest way would be to install the binary with
 
-```
+```sh
 cargo install hiqlite --features server
 ```
 
 and then just execute it:
 
-```
+```sh
 hiqlite -h
 ```
 
 The current implementation is still a bit basic, but it will help you to get it up and running. I suggest to start with
 generating a template config file with
 
-```
+```sh
 hiqlite generate-config -h
 ```
 
 If you want to just test it without TLS, add the `--insecure-cookie` option, and you may generate a testing password
 with `-p`. Once you have you config, you can start a node with
 
-```
+```sh
 hiqlite serve -h
 ```
 
@@ -440,7 +440,7 @@ There is no Helm chart or anything like that yet, but starting the Hiqlite serve
 
 Let's run it inside a new namespace called `hiqlite`:
 
-```
+```sh
 kubectl create ns hiqlite
 ```
 

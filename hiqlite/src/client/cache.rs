@@ -60,7 +60,7 @@ impl Client {
 
     /// GET a value from the cache.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// let key = "my key 1";
     /// let value = Value {
     ///     id: "some id".to_string(),
@@ -164,7 +164,7 @@ impl Client {
     /// `Put` a value into the cache.
     /// The optional `ttl` is the lifetime of the value in seconds from *now* on.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// let key = "my key 1";
     /// let value = Value {
     ///     id: "some id".to_string(),

@@ -121,7 +121,7 @@ async fn test_mixed_claim_atomicity(client: &Client) -> Result<(), Error> {
 }
 
 async fn check_client(client: &Client, id: u64) -> Result<(), Error> {
-    check::is_client_db_healthy(&client, Some(id)).await?;
+    check::is_client_db_healthy(client, Some(id)).await?;
 
     log(format!("Test remote client {} database", id));
 

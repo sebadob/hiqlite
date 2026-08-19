@@ -51,7 +51,7 @@ pub async fn test_self_healing(
         &client_2
     };
     client_healed.wait_until_healthy_db().await;
-    check::is_client_db_healthy(&client_healed, None).await?;
+    check::is_client_db_healthy(client_healed, None).await?;
     check::is_client_db_healthy(&client_1, Some(1)).await?;
     check::is_client_db_healthy(&client_2, Some(2)).await?;
     check::is_client_db_healthy(&client_3, Some(3)).await?;

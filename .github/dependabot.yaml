@@ -1,0 +1,83 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories:
+      - /
+      - examples/*
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    cooldown: # applies only to version-updates (security-updates are suggested immediately)
+      default-days: 10
+      semver-minor-days: 14 # wait 14 days before applying minor updates
+      semver-major-days: 28
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    commit-message:
+      prefix: "chore(deps): "
+    labels:
+      - dependencies
+    groups:
+      rust-dependencies:
+        patterns:
+          - "*"
+    ignore:
+      # bincode is unmaintained (RUSTSEC-2025-0141); 3.0.0 is a compile_error placeholder.
+      # Stay on 2.x or migrate to a fork (bincode-next / wincode / oxicode).
+      - dependency-name: bincode
+        versions:
+          - "3.x"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    cooldown:
+      default-days: 10
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(docker): "
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    cooldown:
+      default-days: 10
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(ci): "
+    labels:
+      - dependencies
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: npm
+    directory: dashboard
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    cooldown:
+      default-days: 10
+      semver-minor-days: 14
+      semver-major-days: 28
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    commit-message:
+      prefix: "chore(dashboard): "
+    labels:
+      - dependencies

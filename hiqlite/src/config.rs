@@ -530,7 +530,7 @@ mod tests {
         );
         assert_eq!(c.data_dir, "data");
         assert_eq!(c.filename_db, "hiqlite.db");
-        assert_eq!(c.log_statements, true);
+        assert!(c.log_statements);
 
         assert_eq!(c.secret_raft, "SuperSecureSecret1337");
         assert_eq!(c.secret_api, "SuperSecureSecret1337");

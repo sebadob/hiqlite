@@ -11,7 +11,7 @@ impl Client {
     /// Execute any modifying / non-read-only query on the database.
     /// Returns the affected rows on success.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// client
     ///     .execute(
     ///         "INSERT INTO test (id, num, description) VALUES ($1, $2, $3)",

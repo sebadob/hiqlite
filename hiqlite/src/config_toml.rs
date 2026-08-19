@@ -861,7 +861,11 @@ mod tests {
         tokio::fs::write(&secrets_path, "secret_raft = \"x\"\n")
             .await
             .unwrap();
-        let cfg = format!("secrets_file = \"{}\"\n", secrets_path.display());
+        // Windows temp paths contain backslashes, which are invalid TOML escapes.
+        let cfg = format!(
+            "secrets_file = \"{}\"\n",
+            secrets_path.display().to_string().replace('\\', "/")
+        );
         let table = cfg.parse::<toml::Table>().unwrap();
 
         let err = NodeConfig::from_toml_table(table, "hiqlite", None, None)
