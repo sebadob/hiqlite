@@ -73,7 +73,26 @@ pub struct NodeConfig {
     ///
     /// default: 4
     pub read_pool_size: usize,
-    /// When Raft logs should by synced to disk.
+    /// When Raft logs should be synced to disk.
+    ///
+    /// - `Immediate` fsyncs the WAL before openraft is told the append finished, so an
+    ///   acknowledged write is on disk.
+    /// - `ImmediateAsync` (default) tells openraft the append finished after starting the
+    ///   writeback without waiting for it (`sync_file_range` on Linux, `msync(MS_ASYNC)`
+    ///   elsewhere). Entries are typically on disk within milliseconds, but there is no hard
+    ///   bound, because the device write cache is not flushed.
+    /// - `IntervalMillis(ms)` acknowledges the same way and flushes the WAL from a ticker every
+    ///   `ms` milliseconds.
+    ///
+    /// The two async levels trade durability for throughput: a power loss or a kernel panic can
+    /// drop entries the cluster already acknowledged, and that loss is not confined to the node
+    /// that crashed. If a leader and one follower hold an entry in the page cache, the leader
+    /// commits it and answers the client, and the leader then power-cycles without it, a third
+    /// node whose log ends before that entry can win the next election and truncate it from the
+    /// follower. The acknowledged write is gone cluster-wide, and no member can re-sync it.
+    /// Pick `Immediate` when acknowledged writes have to survive a power loss.
+    ///
+    /// default: `ImmediateAsync`
     pub wal_sync: hiqlite_wal::LogSync,
     /// Maximum WAL size in bytes.
     pub wal_size: u32,

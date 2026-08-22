@@ -142,6 +142,28 @@ pub fn spawn(
     Ok((tx, wal_locked))
 }
 
+/// Flush the active WAL file so that everything written to it is on disk.
+///
+/// `flush_async` only starts the writeback and returns, so a WAL flushed that way
+/// is not known to be on disk. Only a flush that returns may clear `is_dirty`.
+fn flush_blocking(
+    wal: &mut WalFileSet,
+    buf: &mut Vec<u8>,
+    is_dirty: &mut bool,
+) -> Result<(), Error> {
+    if !*is_dirty {
+        return Ok(());
+    }
+
+    let active = wal.active();
+    buf.clear();
+    active.update_header(buf)?;
+    active.flush()?;
+    *is_dirty = false;
+
+    Ok(())
+}
+
 fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
     task::spawn(async move {
         loop {
@@ -257,14 +279,18 @@ fn run(
                     error!("error sending back ack after logs append: {err:?}");
                 }
 
+                // The WAL now holds bytes that are not known to be on disk, and only a
+                // blocking flush can clear that state again. `flush_async` merely starts the
+                // writeback, which is why `Action::Remove` and `Action::Vote` below still flush.
+                is_dirty = true;
                 if sync == LogSync::Immediate {
-                    wal.active().flush()?;
+                    flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
                 } else if sync == LogSync::ImmediateAsync {
                     wal.active().flush_async()?;
-                } else {
-                    is_dirty = true;
                 }
-                // TODO with the next big openraft release, we can do async callbacks
+                // openraft takes this callback as "these entries are on disk" and commits on
+                // a quorum of such acks. Only `Immediate` upholds that here: the async levels
+                // deliberately ack first and trade the writeback window for throughput.
                 callback();
 
                 // Roll WAL pre-emptively if only very few space is left at this point, because
@@ -297,15 +323,11 @@ fn run(
                 // at least headers and metadata are not up to date, and a crash happens in the
                 // middle of removing logs, we could end up with a hole between Snapshot and latest
                 // existing Raft Log, which must never happen.
-                let active = wal.active();
-                if is_dirty {
-                    buf.clear();
-                    active.update_header(&mut buf)?;
-                    // async is fine, as long as we trigger it before starting log removal.
-                    // If the flush fails, so would the log removal, and we would not have a hole.
-                    active.flush_async()?;
-                    is_dirty = false;
-                }
+                //
+                // The flush has to block. `flush_async` only starts the writeback and returns,
+                // so a crash during the removal below can still land after the deletions and
+                // before the header reaches disk, which is the hole this guards against.
+                flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
 
                 // Persist the purge frontier before deleting (too low = hole into deleted files;
                 // too high = extra files). Revert it again if the deletion fails below.
@@ -353,9 +375,9 @@ fn run(
             Action::Vote { value, ack } => {
                 debug!("WAL Writer - Action::Vote");
 
-                buf.clear();
-                wal.active().flush_async()?;
-                is_dirty = false;
+                // Blocking on purpose: clearing `is_dirty` while an msync is still in flight
+                // would make the interval ticker skip a WAL that never reached disk.
+                flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
 
                 meta.write()?.vote = Some(value);
                 let res = Metadata::write(meta.clone(), &wal.base_path);
@@ -363,13 +385,9 @@ fn run(
                 ack.send(res).unwrap();
             }
             Action::Sync => {
-                if is_dirty {
-                    let active = wal.active();
-                    buf.clear();
-                    active.update_header(&mut buf)?;
-                    active.flush_async()?;
-                    is_dirty = false;
-                }
+                // The ticker is the only flush in `IntervalMillis` mode and no append waits on
+                // it, so it blocks: `msync(MS_ASYNC)` starts no writeback on Linux at all.
+                flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
             }
             Action::Shutdown(ack) => {
                 debug!("Raft logs store writer is being shut down");
