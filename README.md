@@ -359,7 +359,7 @@ configured `s3` bucket.
 ### `server`
 
 This feature only exists to make it possible to run Hiqlite as a standalone DB / Cluster, if you really want this. It
-will build a binary which spins up a cluster with the given configuration, or you you can use it to install Hiqlite to
+will build a binary which spins up a cluster with the given configuration, or you can use it to install Hiqlite to
 spin up instances easily with
 
 `cargo install hiqlite --features server`
