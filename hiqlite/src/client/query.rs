@@ -63,7 +63,7 @@ impl Client {
     ///
     /// The `struct` must implement `impl From<&mut hiqlite::Row<'_>>` for this to work:
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// #[derive(Debug)]
     /// struct MyStruct {
     ///     pub id: String,
@@ -86,7 +86,7 @@ impl Client {
     /// you the most amount of flexibility to achieve more complicated or optimized mapping.
     /// If you want a more comfortable and easier way, take a look at `.query_as()`.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// let res: Vec<MyStruct> = client
     ///     .query_map("SELECT * FROM test", params!())
     ///     .await?;
@@ -112,7 +112,7 @@ impl Client {
     ///
     /// Errors if not exactly a single row has been returned.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// let res: MyStruct = client
     ///     .query_map_one("SELECT * FROM test WHERE id = $1", params!("id1"))
     ///     .await?;
@@ -166,7 +166,7 @@ impl Client {
     /// This is the easiest and most straight forward way of getting data. This is most often the
     /// fasted way of mapping values while needing a little bit more memory.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// let res: Vec<Entity> = client
     ///     .query_as("SELECT * FROM test", params!())
     ///     .await?;

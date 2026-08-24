@@ -13,7 +13,7 @@ impl Client {
     ///
     /// To make this work, you currently need to add `rust-embed` to your `Cargo.toml`.
     /// Then embed the Migrations into your binary to be able to execute them in a typüe-safe way:
-    /// ```rust, notest
+    /// ```rust, ignore
     /// #[derive(rust_embed::Embed)]
     /// #[folder = "migrations"]
     /// struct Migrations;

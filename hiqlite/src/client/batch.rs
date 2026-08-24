@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 impl Client {
     /// Takes an arbitrary SQL String with multiple queries and executes all of them as a batch.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// let mut results = client
     ///      .batch(
     ///          r#"

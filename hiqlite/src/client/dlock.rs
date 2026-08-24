@@ -45,7 +45,7 @@ impl Client {
 
     /// Get a lock for the given key.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// // In some cases, you need to make sure you get some lock for either longer running actions
     /// // or ones that need retrieving data, manipulating it and then sending it back to the DB.
     /// // In these cases you might not be able to do all at once in a SQL query.

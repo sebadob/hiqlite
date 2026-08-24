@@ -1,4 +1,4 @@
-FROM rust:1.89.0-bookworm AS builder
+FROM rust:1.97.1-trixie AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -15,7 +15,7 @@ RUN apt update && apt install -y clang
 RUN cargo build --features server --release
 
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
 
 WORKDIR /app
 
