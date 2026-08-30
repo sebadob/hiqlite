@@ -320,10 +320,22 @@ impl StateMachineSqlite {
     ) -> Result<rusqlite::Connection, Error> {
         task::spawn_blocking(move || {
             let path_full = format!("{path}/{filename_db}");
-            let conn = rusqlite::Connection::open(path_full)?;
+            let conn = if read_only {
+                rusqlite::Connection::open_with_flags(
+                    path_full,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )?
+            } else {
+                rusqlite::Connection::open(path_full)?
+            };
 
-            Self::apply_pragmas(&conn, read_only, prepared_statement_cache_capacity)?;
-            if !read_only {
+            if read_only {
+                conn.pragma_update(None, "query_only", true)?;
+                conn.busy_timeout(Duration::from_secs(30))?;
+                conn.set_prepared_statement_cache_capacity(prepared_statement_cache_capacity);
+            } else {
+                Self::apply_pragmas(&conn, false, prepared_statement_cache_capacity)?;
                 Self::overwrite_non_det_fns(&conn);
             }
 
@@ -332,7 +344,7 @@ impl StateMachineSqlite {
         .await?
     }
 
-    async fn connect_read_pool(
+    pub(crate) async fn connect_read_pool(
         path: &str,
         filename_db: &str,
         prepared_statement_cache_capacity: usize,

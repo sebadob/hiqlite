@@ -544,13 +544,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                 WriterRequest::SnapshotApply((path, ack)) => {
                     let start = Instant::now();
                     info!("Starting snapshot restore from {}", path);
-                    let restore_res = conn.restore(
-                        "main",
-                        path,
-                        Some(|p: Progress| {
-                            println!("Database restore remaining: {}", p.remaining);
-                        }),
-                    );
+                    let restore_res = restore_snapshot(&mut conn, &path);
                     if let Err(err) = restore_res {
                         error!("Error during snapshot restore: {:?}", err);
                         ack.send(Err(Error::Sqlite(err.to_string().into())))
@@ -766,6 +760,19 @@ fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), Erro
     std::fs::rename(&path_temp, &path)
         .map_err(|err| Error::Error(format!("rename snapshot into place: {err}").into()))?;
     Ok(())
+}
+
+pub(crate) fn restore_snapshot(
+    conn: &mut rusqlite::Connection,
+    path: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.restore(
+        "main",
+        path,
+        Some(|p: Progress| {
+            debug!("Database restore pages remaining: {}", p.remaining);
+        }),
+    )
 }
 
 #[cfg(feature = "s3")]

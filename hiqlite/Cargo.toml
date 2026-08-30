@@ -16,7 +16,7 @@ doctest = false
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["full"]
+features = ["full", "external-state-machine"]
 
 [features]
 default = ["auto-heal", "backup", "sqlite", "toml"]
@@ -37,6 +37,10 @@ dashboard = [
 dlock = ["cache"]
 cast_ints = []
 cast_ints_unchecked = []
+# Opt-in state-machine engine for applications that already own consensus.
+# This reuses the SQLite connection, read-pool, restore, and single-writer
+# machinery without starting a Hiqlite Raft group.
+external-state-machine = ["sqlite", "dep:fs4", "rusqlite/hooks"]
 full = [
     "auto-heal",
     "backup",
@@ -111,6 +115,7 @@ dotenvy.workspace = true
 eventsource-client = { workspace = true, optional = true }
 fastwebsockets.workspace = true
 flume.workspace = true
+fs4 = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 getrandom.workspace = true
 hex.workspace = true

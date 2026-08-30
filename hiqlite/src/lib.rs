@@ -42,6 +42,12 @@ pub use client::dlock::Lock;
 #[cfg(feature = "sqlite")]
 pub use migration::AppliedMigration;
 
+/// SQLite state-machine machinery for applications that already own consensus.
+///
+/// This module does not start a Hiqlite Raft group or network service.
+#[cfg(feature = "external-state-machine")]
+pub mod external_state_machine;
+
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 mod app_state;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
