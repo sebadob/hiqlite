@@ -298,9 +298,26 @@ In the current version, a distributed lock is only valid for max 10 seconds, to 
 or crashed nodes while they were holding some locks. If a lock is older than 10 seconds, it will be considered being
 "dead" in the current implementation to get rid of never-ending locks.
 
+### `external-state-machine`
+
+This opt-in feature is for applications that already own a trusted consensus log. It exposes a single-writer SQLite
+engine with true read-only pooled connections, bounded retry receipts, and validated page-image snapshots. It does not
+start a Hiqlite Raft group, network service, membership store, or raw-SQL replication protocol.
+
+The caller submits a dense monotonic sequence, an opaque exact native coordinate, a canonical command digest, and a
+typed `DeterministicSqliteOperation`. Every global entry must be represented by either an applied operation or an
+explicit advance-only entry. Exact retained retries recover the persisted typed response without re-executing.
+
+`synchronous=FULL` is the default; `NORMAL` and rebuildable `ReplayableOff` are explicit. External mode never invokes
+`auto-heal` or implicitly deletes its database. It also makes no atomicity claim between SQLite, the caller's consensus
+log, or another storage engine. See the `external_state_machine` module documentation for the recovery, snapshot, and
+format contracts.
+
+This feature is deliberately excluded from both `default` and `full`; enable it only for the alternate ownership model.
+
 ### `full`
 
-This feature will simply enable everything apart from the `server` feature:
+This feature enables the regular Hiqlite cluster features apart from the `server` feature:
 
 - auto-heal
 - backup
