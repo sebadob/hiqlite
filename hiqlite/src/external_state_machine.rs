@@ -55,8 +55,9 @@
 //! so it captures one exact external frontier and blocks later writes for the
 //! copy duration while read-only pooled reads can continue. Online Backup is
 //! used instead of `VACUUM INTO` because VACUUM may renumber implicit ROWIDs.
-//! A temporary file is renamed only after a complete copy, then the file and
-//! parent directory are synced on Unix before acknowledgement. Evidence binds
+//! A temporary file is published without replacement only after a complete
+//! copy, then the file and parent directory are synced on Unix before
+//! acknowledgement. Evidence binds
 //! format, page size, application/schema/frontier/receipts, byte length, and
 //! SHA-256, and contains no membership. The caller owns retention of every
 //! completed path returned by
@@ -2438,6 +2439,19 @@ mod tests {
                     .map_err(|err| TestOperationError::Sqlite(err.to_string())),
             }
         }
+
+        fn encode_receipt(output: &Self::Output) -> Result<Vec<u8>, String> {
+            let mut bytes = b"test-receipt-v1\0".to_vec();
+            bytes.extend(serialize(output).map_err(|err| err.to_string())?);
+            Ok(bytes)
+        }
+
+        fn decode_receipt(bytes: &[u8]) -> Result<Self::Output, String> {
+            let bytes = bytes
+                .strip_prefix(b"test-receipt-v1\0")
+                .ok_or_else(|| "invalid test receipt prefix".to_string())?;
+            deserialize_exact(bytes, "test receipt").map_err(|err| err.to_string())
+        }
     }
 
     type TestEngine = ExternalSqlite<Coordinate, TestOperation>;
@@ -2850,12 +2864,18 @@ mod tests {
 
     #[test]
     fn external_codec_rejects_trailing_bytes() {
-        let mut bytes = serialize(&TestReceipt::Created).unwrap();
+        let mut bytes = TestOperation::encode_receipt(&TestReceipt::Created).unwrap();
+        assert_eq!(
+            TestOperation::decode_receipt(&bytes).unwrap(),
+            TestReceipt::Created
+        );
         bytes.push(0);
-        assert!(matches!(
-            deserialize_exact::<TestReceipt>(&bytes, "test receipt").unwrap_err(),
-            ExternalError::InvalidMetadata(message) if message.contains("trailing bytes")
-        ));
+        assert!(
+            TestOperation::decode_receipt(&bytes)
+                .unwrap_err()
+                .contains("trailing bytes")
+        );
+        assert!(TestOperation::decode_receipt(b"wrong-prefix").is_err());
     }
 
     #[tokio::test]
