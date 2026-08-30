@@ -26,8 +26,10 @@
 //! without running the operation again. Older retries return
 //! [`ExternalError::ReceiptUnavailable`](crate::external_state_machine::ExternalError::ReceiptUnavailable).
 //!
-//! Coordinates and operation outputs use Hiqlite's bincode legacy encoding on
-//! disk. `C`, `O::Output`, and
+//! Coordinates use Hiqlite's bincode legacy encoding on disk. Operation
+//! outputs use that encoding by default, while protocol owners may override
+//! [`DeterministicSqliteOperation::encode_receipt`](crate::external_state_machine::DeterministicSqliteOperation::encode_receipt)
+//! and its decoder. `C`, the selected output codec, and
 //! [`DeterministicSqliteOperation::RECEIPT_CODEC`](crate::external_state_machine::DeterministicSqliteOperation::RECEIPT_CODEC)
 //! must remain backward-decodable for every retained receipt and snapshot.
 //! `receipt_schema` is identity evidence for the caller; this first version
@@ -242,6 +244,25 @@ pub trait DeterministicSqliteOperation: Send + 'static {
     const RECEIPT_CODEC: &'static str;
 
     fn apply(self, transaction: &Transaction<'_>) -> Result<Self::Output, Self::Error>;
+
+    /// Encodes the durable lost-response receipt.
+    ///
+    /// The default retains Hiqlite's legacy bincode representation. Protocol
+    /// owners may override both codec methods to own a stable canonical format.
+    fn encode_receipt(output: &Self::Output) -> Result<Vec<u8>, String> {
+        serialize(output).map_err(|err| err.to_string())
+    }
+
+    /// Decodes one durable lost-response receipt.
+    fn decode_receipt(bytes: &[u8]) -> Result<Self::Output, String> {
+        let (output, consumed) =
+            bincode::serde::decode_from_slice::<Self::Output, _>(bytes, bincode::config::legacy())
+                .map_err(|err| err.to_string())?;
+        if consumed != bytes.len() {
+            return Err("receipt contains trailing bytes".to_string());
+        }
+        Ok(output)
+    }
 }
 
 /// Result of a new application or an exact retained retry.
@@ -1233,7 +1254,8 @@ where
         O::RECEIPT_CODEC,
     )? {
         CommitClass::Retry(receipt) => {
-            let output = deserialize_exact(&receipt.receipt, "operation receipt")?;
+            let output =
+                O::decode_receipt(&receipt.receipt).map_err(ExternalError::Serialization)?;
             return Ok(ApplyOutcome::Recovered(output));
         }
         CommitClass::New => {}
@@ -1250,8 +1272,7 @@ where
         .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .map_err(ExternalError::from)?;
     let output = operation_result.map_err(ExternalApplyError::Operation)?;
-    let receipt =
-        serialize(&output).map_err(|err| ExternalError::Serialization(err.to_string()))?;
+    let receipt = O::encode_receipt(&output).map_err(ExternalError::Serialization)?;
     if receipt.len() > state.max_receipt_bytes {
         return Err(ExternalError::ReceiptTooLarge {
             actual: receipt.len(),
@@ -1935,10 +1956,11 @@ where
                 }
                 match receipt.kind {
                     ExternalEntryKind::Operation => {
-                        deserialize_exact::<O::Output>(
-                            &receipt.receipt,
-                            &format!("operation receipt at sequence {actual}"),
-                        )?;
+                        O::decode_receipt(&receipt.receipt).map_err(|err| {
+                            ExternalError::InvalidMetadata(format!(
+                                "operation receipt at sequence {actual} is not decodable: {err}"
+                            ))
+                        })?;
                     }
                     ExternalEntryKind::Advance => {
                         let canonical = serialize(&())
