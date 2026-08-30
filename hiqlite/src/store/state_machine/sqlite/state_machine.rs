@@ -335,10 +335,26 @@ impl StateMachineSqlite {
                 conn.busy_timeout(Duration::from_secs(30))?;
                 conn.set_prepared_statement_cache_capacity(prepared_statement_cache_capacity);
             } else {
-                Self::apply_pragmas(&conn, false, prepared_statement_cache_capacity)?;
+                Self::apply_write_pragmas(&conn, "OFF", prepared_statement_cache_capacity)?;
                 Self::overwrite_non_det_fns(&conn);
             }
 
+            Ok(conn)
+        })
+        .await?
+    }
+
+    pub(crate) async fn connect_external(
+        path: String,
+        filename_db: String,
+        synchronous: &'static str,
+        prepared_statement_cache_capacity: usize,
+    ) -> Result<rusqlite::Connection, Error> {
+        task::spawn_blocking(move || {
+            let path_full = format!("{path}/{filename_db}");
+            let conn = rusqlite::Connection::open(path_full)?;
+            Self::apply_write_pragmas(&conn, synchronous, prepared_statement_cache_capacity)?;
+            Self::overwrite_non_det_fns(&conn);
             Ok(conn)
         })
         .await?
@@ -388,18 +404,49 @@ impl StateMachineSqlite {
         Ok(pool)
     }
 
-    fn apply_pragmas(
+    pub(crate) async fn connect_read_pool_once(
+        path: &str,
+        filename_db: &str,
+        prepared_statement_cache_capacity: usize,
+        pool_size: usize,
+    ) -> Result<SqlitePool, Error> {
+        let mut conns = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            conns.push(
+                Self::connect(
+                    path.to_string(),
+                    filename_db.to_string(),
+                    true,
+                    prepared_statement_cache_capacity,
+                )
+                .await?,
+            );
+        }
+
+        let pool = deadpool::unmanaged::Pool::from(conns);
+        let conn = pool.get().await?;
+        task::spawn_blocking(move || {
+            conn.query_row("SELECT 1", (), |row| row.get::<_, i64>(0))?;
+            Ok::<(), Error>(())
+        })
+        .await??;
+        Ok(pool)
+    }
+
+    fn apply_write_pragmas(
         conn: &rusqlite::Connection,
-        read_only: bool,
+        synchronous: &str,
         prepared_statement_cache_capacity: usize,
     ) -> Result<(), rusqlite::Error> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        // synchronous set to OFF is not an issue in our case.
+        // OFF is safe for the clustered state machine because its Raft log is
+        // authoritative. External callers pass their explicit durability mode
+        // here and must never transiently inherit this clustered default.
         // If the OS crashes before it could flush any buffers to disk, we will rebuild the DB
         // anyway from the logs store just to be 100% sure that all cluster members are in a
         // consistent state. Setting it to OFF here gives us an ~18% boost compared to NORMAL while
         // not having any disadvantage with the Raft setup.
-        conn.pragma_update(None, "synchronous", "OFF")?;
+        conn.pragma_update(None, "synchronous", synchronous)?;
 
         conn.pragma_update(None, "page_size", 4096)?;
         conn.pragma_update(None, "journal_size_limit", 16384)?;
@@ -419,12 +466,7 @@ impl StateMachineSqlite {
         // note:
         // in tests, `mmap_size` did not show any performance benefit with the settings above
 
-        // only allow select statements
-        if read_only {
-            conn.pragma_update(None, "query_only", true)?;
-        } else {
-            // conn.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
-        }
+        // conn.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
 
         // TODO make configurable
         conn.set_prepared_statement_cache_capacity(prepared_statement_cache_capacity);

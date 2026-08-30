@@ -313,6 +313,10 @@ explicit advance-only entry. Exact retained retries recover the persisted typed 
 log, or another storage engine. See the `external_state_machine` module documentation for the recovery, snapshot, and
 format contracts.
 
+`build_snapshot_into` publishes without replacing an existing caller-owned path, and restore closes and recreates the
+read pool so no pre-restore handle survives. Migrating a quiescent legacy database requires the explicit
+`adopt_existing_projection` constructor; the caller must prove that database is the agreed initial state.
+
 This feature is deliberately excluded from both `default` and `full`; enable it only for the alternate ownership model.
 
 ### `full`

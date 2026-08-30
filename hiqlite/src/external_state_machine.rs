@@ -67,7 +67,7 @@
 //! engine and leaves a rebuild-required marker. Backup/S3 orchestration from
 //! Hiqlite's Raft API is intentionally outside this feature.
 
-use crate::helpers::{deserialize, serialize, set_path_access};
+use crate::helpers::{serialize, set_path_access};
 use crate::store::state_machine::sqlite::state_machine::{SqlitePool, StateMachineSqlite};
 use crate::store::state_machine::sqlite::writer::restore_snapshot;
 use deadpool::unmanaged::PoolError;
@@ -88,7 +88,7 @@ use std::thread;
 use std::time::Duration;
 use thiserror::Error;
 use thread_priority::ThreadPriority;
-use tokio::sync::oneshot;
+use tokio::sync::{RwLock, oneshot};
 use tokio::{fs, task};
 use tracing::warn;
 use uuid::Uuid;
@@ -337,6 +337,11 @@ impl ExternalSqliteOptions {
     }
 
     fn validate(&self) -> Result<(), ExternalError> {
+        if self.data_dir.to_str().is_none() {
+            return Err(ExternalError::InvalidOptions(
+                "data_dir must be valid UTF-8 for hiqlite 0.14 path handling".to_string(),
+            ));
+        }
         if self.application_id.is_empty() || self.application_id.len() > 256 {
             return Err(ExternalError::InvalidOptions(
                 "application_id must contain 1..=256 bytes".to_string(),
@@ -425,6 +430,8 @@ pub enum ExternalError {
     RebuildRequired(PathBuf),
     #[error("external projection does not require a rebuild: {0}")]
     RebuildNotRequired(PathBuf),
+    #[error("existing projection cannot be adopted: {0}")]
+    AdoptionNotAllowed(String),
     #[error("external state-machine options are invalid: {0}")]
     InvalidOptions(String),
     #[error("external state-machine metadata is missing")]
@@ -473,6 +480,8 @@ pub enum ExternalError {
     WriterPoisoned(String),
     #[error("snapshot evidence does not match its SQLite file: {0}")]
     SnapshotMismatch(String),
+    #[error("snapshot destination already exists: {0}")]
+    SnapshotDestinationExists(PathBuf),
     #[error("snapshot checkpoint is older than the live checkpoint")]
     StaleSnapshot,
 }
@@ -537,11 +546,11 @@ enum WriterRequest<C> {
     State(oneshot::Sender<StoredState<C>>),
     Snapshot {
         snapshot_id: String,
-        path: String,
+        path: PathBuf,
         ack: oneshot::Sender<Result<StoredState<C>, ExternalError>>,
     },
     Restore {
-        path: String,
+        path: PathBuf,
         evidence: Box<ExternalSnapshotEvidence<C>>,
         ack: oneshot::Sender<Result<ExternalSnapshotEvidence<C>, ExternalError>>,
     },
@@ -571,10 +580,18 @@ impl Drop for InitLock {
 
 /// Single-writer SQLite state machine driven by an existing consensus layer.
 pub struct ExternalSqlite<C, O> {
-    read_pool: SqlitePool,
+    read_pool: RwLock<Option<SqlitePool>>,
+    read_pool_config: ExternalReadPoolConfig,
     write_tx: flume::Sender<WriterRequest<C>>,
     snapshots_dir: PathBuf,
     _operation: PhantomData<fn(O)>,
+}
+
+struct ExternalReadPoolConfig {
+    db_dir: String,
+    filename: String,
+    prepared_statement_cache_capacity: usize,
+    size: usize,
 }
 
 impl<C, O> ExternalSqlite<C, O>
@@ -587,7 +604,7 @@ where
     /// A held OS owner lock fails closed. A dirty OFF/restore marker requires
     /// explicit rebuild. This never invokes Hiqlite's Raft auto-heal behavior.
     pub async fn open(options: ExternalSqliteOptions) -> Result<Self, ExternalError> {
-        Self::open_inner(options, false).await
+        Self::open_inner(options, false, false).await
     }
 
     /// Explicitly deletes a projection for which [`Self::open`] returned
@@ -595,12 +612,26 @@ where
     /// caller can install a validated snapshot/replay. Completed snapshot
     /// files are preserved. This is never called by [`Self::open`].
     pub async fn rebuild_projection(options: ExternalSqliteOptions) -> Result<Self, ExternalError> {
-        Self::open_inner(options, true).await
+        Self::open_inner(options, true, false).await
+    }
+
+    /// Explicitly adopts a quiescent existing SQLite projection.
+    ///
+    /// The database must already exist at the managed path, contain no
+    /// external-state-machine metadata, pass `quick_check`, and have no dirty
+    /// marker from an earlier external owner. This operation records an empty
+    /// external frontier; the caller is responsible for proving that the
+    /// adopted application state is the agreed initial state.
+    pub async fn adopt_existing_projection(
+        options: ExternalSqliteOptions,
+    ) -> Result<Self, ExternalError> {
+        Self::open_inner(options, false, true).await
     }
 
     async fn open_inner(
         options: ExternalSqliteOptions,
         rebuild_projection: bool,
+        adopt_existing: bool,
     ) -> Result<Self, ExternalError> {
         options.validate()?;
 
@@ -637,6 +668,11 @@ where
 
         let dirty_path = base_dir.join("dirty");
         let dirty_existed = std::fs::exists(&dirty_path)?;
+        if adopt_existing && dirty_existed {
+            return Err(ExternalError::AdoptionNotAllowed(
+                "an external dirty marker already exists".to_string(),
+            ));
+        }
         let rebuild_required = if dirty_existed {
             !matches!(
                 std::fs::read(&dirty_path)?.as_slice(),
@@ -662,6 +698,11 @@ where
         write_dirty_marker(&dirty_path, active_marker)?;
 
         let db_existed = fs::metadata(db_dir.join(&options.filename)).await.is_ok();
+        if adopt_existing && !db_existed {
+            return Err(ExternalError::AdoptionNotAllowed(
+                "the managed SQLite database does not exist".to_string(),
+            ));
+        }
         if db_existed {
             let preflight_result = (|| {
                 let preflight = Connection::open_with_flags(
@@ -669,10 +710,25 @@ where
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
                         | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
                 )?;
-                require_metadata_table(&preflight)?;
-                let state = load_state::<C>(&preflight)?;
-                validate_configuration(&state, &options, O::RECEIPT_CODEC)?;
-                validate_receipts::<C, O>(&preflight, &state)?;
+                if adopt_existing {
+                    if metadata_table_exists(&preflight)? {
+                        return Err(ExternalError::AdoptionNotAllowed(
+                            "external metadata already exists".to_string(),
+                        ));
+                    }
+                    let quick_check: String =
+                        preflight.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+                    if quick_check != "ok" {
+                        return Err(ExternalError::AdoptionNotAllowed(format!(
+                            "SQLite quick_check returned {quick_check}"
+                        )));
+                    }
+                } else {
+                    require_metadata_table(&preflight)?;
+                    let state = load_state::<C>(&preflight)?;
+                    validate_configuration(&state, &options, O::RECEIPT_CODEC)?;
+                    validate_receipts::<C, O>(&preflight, &state)?;
+                }
                 Ok::<(), ExternalError>(())
             })();
             if let Err(err) = preflight_result {
@@ -684,15 +740,15 @@ where
             }
         }
 
-        let conn = StateMachineSqlite::connect(
-            db_dir.to_string_lossy().into_owned(),
+        let db_dir_text = db_dir.to_string_lossy().into_owned();
+        let conn = StateMachineSqlite::connect_external(
+            db_dir_text.clone(),
             options.filename.clone(),
-            false,
+            options.durability.pragma_value(),
             options.prepared_statement_cache_capacity,
         )
         .await
         .map_err(|err| ExternalError::Setup(err.to_string()))?;
-        conn.pragma_update(None, "synchronous", options.durability.pragma_value())?;
         let actual_sync: i64 = conn.pragma_query_value(None, "synchronous", |row| row.get(0))?;
         if actual_sync != options.durability.expected_pragma_value() {
             return Err(ExternalError::ConfigurationMismatch(format!(
@@ -701,7 +757,7 @@ where
             )));
         }
 
-        if db_existed {
+        if db_existed && !adopt_existing {
             require_metadata_table(&conn)?;
         } else {
             create_metadata_tables(&conn, &options, O::RECEIPT_CODEC)?;
@@ -710,8 +766,8 @@ where
         validate_configuration(&state, &options, O::RECEIPT_CODEC)?;
         validate_receipts::<C, O>(&conn, &state)?;
 
-        let read_pool = StateMachineSqlite::connect_read_pool(
-            db_dir.to_string_lossy().as_ref(),
+        let read_pool = StateMachineSqlite::connect_read_pool_once(
+            &db_dir_text,
             &options.filename,
             options.prepared_statement_cache_capacity,
             options.read_pool_size,
@@ -731,7 +787,13 @@ where
         init_lock.disarm();
 
         Ok(Self {
-            read_pool,
+            read_pool: RwLock::new(Some(read_pool)),
+            read_pool_config: ExternalReadPoolConfig {
+                db_dir: db_dir_text,
+                filename: options.filename,
+                prepared_statement_cache_capacity: options.prepared_statement_cache_capacity,
+                size: options.read_pool_size,
+            },
             write_tx,
             snapshots_dir,
             _operation: PhantomData,
@@ -808,7 +870,11 @@ where
         T: Send + 'static,
         F: FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
     {
-        let conn = self.read_pool.get().await?;
+        let read_pool = self.read_pool.read().await;
+        let pool = read_pool.as_ref().ok_or_else(|| {
+            ExternalError::Pool("read pool is unavailable after snapshot restore".to_string())
+        })?;
+        let conn = pool.get().await?;
         task::spawn_blocking(move || read(&conn))
             .await?
             .map_err(ExternalError::from)
@@ -823,11 +889,38 @@ where
     pub async fn build_snapshot(&self) -> Result<ExternalSnapshot<C>, ExternalError> {
         let snapshot_id = Uuid::now_v7().to_string();
         let path = self.snapshots_dir.join(&snapshot_id);
+        self.build_snapshot_at(snapshot_id, path).await
+    }
+
+    /// Builds a complete snapshot at a caller-owned final path.
+    ///
+    /// The destination must not exist and its parent must already exist. The
+    /// final name is published without replacement only after the SQLite copy
+    /// and staging file are durable. This lets an outer snapshot builder own
+    /// staging and retention without granting it a raw database handle.
+    pub async fn build_snapshot_into(
+        &self,
+        path: impl Into<PathBuf>,
+    ) -> Result<ExternalSnapshot<C>, ExternalError> {
+        self.build_snapshot_at(Uuid::now_v7().to_string(), path.into())
+            .await
+    }
+
+    async fn build_snapshot_at(
+        &self,
+        snapshot_id: String,
+        path: PathBuf,
+    ) -> Result<ExternalSnapshot<C>, ExternalError> {
+        match fs::symlink_metadata(&path).await {
+            Ok(_) => return Err(ExternalError::SnapshotDestinationExists(path)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
         let (ack, rx) = oneshot::channel();
         self.write_tx
             .send_async(WriterRequest::Snapshot {
                 snapshot_id: snapshot_id.clone(),
-                path: path.to_string_lossy().into_owned(),
+                path: path.clone(),
                 ack,
             })
             .await
@@ -873,16 +966,46 @@ where
             }
         }
 
+        // Prevent an old read transaction or prepared handle from spanning the
+        // restore. Dropping the complete pool also makes every post-restore
+        // read open against the restored SQLite generation.
+        let mut read_pool = self.read_pool.write().await;
+        let old_read_pool = read_pool.take();
+        drop(old_read_pool);
+
         let (ack, rx) = oneshot::channel();
-        self.write_tx
+        let restore = match self
+            .write_tx
             .send_async(WriterRequest::Restore {
-                path: destination.to_string_lossy().into_owned(),
+                path: destination,
                 evidence: Box::new(snapshot.evidence),
                 ack,
             })
             .await
-            .map_err(|_| ExternalError::WriterClosed)?;
-        rx.await.map_err(|_| ExternalError::WriterStopped)?
+        {
+            Ok(()) => rx.await.map_err(|_| ExternalError::WriterStopped)?,
+            Err(_) => Err(ExternalError::WriterClosed),
+        };
+
+        let writer_can_serve_reads = !matches!(
+            restore,
+            Err(ExternalError::WriterClosed)
+                | Err(ExternalError::WriterStopped)
+                | Err(ExternalError::WriterPoisoned(_))
+        );
+        if writer_can_serve_reads {
+            *read_pool = Some(
+                StateMachineSqlite::connect_read_pool_once(
+                    &self.read_pool_config.db_dir,
+                    &self.read_pool_config.filename,
+                    self.read_pool_config.prepared_statement_cache_capacity,
+                    self.read_pool_config.size,
+                )
+                .await
+                .map_err(|err| ExternalError::Pool(err.to_string()))?,
+            );
+        }
+        restore
     }
 
     /// Gracefully checkpoints/closes the writer, removes the dirty marker, and
@@ -891,10 +1014,11 @@ where
         let Self {
             write_tx,
             read_pool,
+            read_pool_config: _,
             snapshots_dir: _,
             _operation: _,
         } = self;
-        drop(read_pool);
+        drop(read_pool.into_inner());
         let (ack, rx) = oneshot::channel();
         write_tx
             .send_async(WriterRequest::Shutdown(ack))
@@ -990,7 +1114,7 @@ where
                     let result = (|| {
                         persist_snapshot_id(&conn, &snapshot_id)?;
                         state.snapshot_id = Some(snapshot_id);
-                        create_external_snapshot(&conn, Path::new(&path))?;
+                        create_external_snapshot(&conn, &path)?;
                         Ok(state.clone())
                     })();
                     let _ = ack.send(result);
@@ -1006,7 +1130,7 @@ where
                             state.last_applied.as_ref(),
                             evidence.checkpoint.as_ref(),
                         )?;
-                        validate_snapshot_file::<C, O>(Path::new(&path), &evidence)?;
+                        validate_snapshot_file::<C, O>(&path, &evidence)?;
                         Ok::<(), ExternalError>(())
                     })();
                     if let Err(err) = preflight {
@@ -1043,9 +1167,12 @@ where
                         }
                         Err(err) => {
                             let message = err.to_string();
+                            let err = ExternalError::WriterPoisoned(format!(
+                                "live snapshot restore failed: {message}"
+                            ));
                             let _ = ack.send(Err(err));
-                            poisoned = Some(ExternalError::SnapshotMismatch(format!(
-                                "writer poisoned after live restore began: {message}"
+                            poisoned = Some(ExternalError::WriterPoisoned(format!(
+                                "live snapshot restore failed: {message}"
                             )));
                             break;
                         }
@@ -1106,8 +1233,7 @@ where
         O::RECEIPT_CODEC,
     )? {
         CommitClass::Retry(receipt) => {
-            let output = deserialize(&receipt.receipt)
-                .map_err(|err| ExternalError::Serialization(err.to_string()))?;
+            let output = deserialize_exact(&receipt.receipt, "operation receipt")?;
             return Ok(ApplyOutcome::Recovered(output));
         }
         CommitClass::New => {}
@@ -1454,6 +1580,13 @@ fn create_metadata_tables(
 }
 
 fn require_metadata_table(conn: &Connection) -> Result<(), ExternalError> {
+    if !metadata_table_exists(conn)? {
+        return Err(ExternalError::MissingMetadata);
+    }
+    Ok(())
+}
+
+fn metadata_table_exists(conn: &Connection) -> Result<bool, ExternalError> {
     let exists: Option<i64> = conn
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
@@ -1461,10 +1594,7 @@ fn require_metadata_table(conn: &Connection) -> Result<(), ExternalError> {
             |row| row.get(0),
         )
         .optional()?;
-    if exists.is_none() {
-        return Err(ExternalError::MissingMetadata);
-    }
-    Ok(())
+    Ok(exists.is_some())
 }
 
 fn load_state<C>(conn: &Connection) -> Result<StoredState<C>, ExternalError>
@@ -1564,8 +1694,10 @@ where
             row.7.as_deref().expect("checked"),
             "last_sequence",
         )?);
-        let coordinate = deserialize(row.8.as_deref().expect("checked"))
-            .map_err(|err| ExternalError::Serialization(err.to_string()))?;
+        let coordinate = deserialize_exact(
+            row.8.as_deref().expect("checked"),
+            "last-applied coordinate",
+        )?;
         let command_digest = decode_digest(row.9.as_deref().expect("checked"), "command_digest")?;
         let kind = ExternalEntryKind::from_i64(row.10.expect("checked"))?;
         let state_schema = decode_u64(row.11.as_deref().expect("checked"), "state_schema")?;
@@ -1666,8 +1798,7 @@ where
         )
         .optional()?;
     row.map(|row| {
-        let coordinate =
-            deserialize(&row.0).map_err(|err| ExternalError::Serialization(err.to_string()))?;
+        let coordinate = deserialize_exact(&row.0, "receipt coordinate")?;
         let receipt_digest = decode_digest(&row.7, "receipt_digest")?;
         if Sha256Digest::of(&row.6) != receipt_digest {
             return Err(ExternalError::InvalidMetadata(format!(
@@ -1804,11 +1935,10 @@ where
                 }
                 match receipt.kind {
                     ExternalEntryKind::Operation => {
-                        deserialize::<O::Output>(&receipt.receipt).map_err(|err| {
-                            ExternalError::InvalidMetadata(format!(
-                                "operation receipt at sequence {actual} is not decodable: {err}"
-                            ))
-                        })?;
+                        deserialize_exact::<O::Output>(
+                            &receipt.receipt,
+                            &format!("operation receipt at sequence {actual}"),
+                        )?;
                     }
                     ExternalEntryKind::Advance => {
                         let canonical = serialize(&())
@@ -1867,7 +1997,12 @@ where
             "unsupported SQLite snapshot format".to_string(),
         ));
     }
-    let metadata = std::fs::metadata(path)?;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(ExternalError::SnapshotMismatch(
+            "snapshot path is not a regular file".to_string(),
+        ));
+    }
     if metadata.len() != evidence.sqlite_bytes {
         return Err(ExternalError::SnapshotMismatch(
             "file size differs from evidence".to_string(),
@@ -1988,15 +2123,31 @@ fn requires_projection_rebuild(error: &ExternalError) -> bool {
 }
 
 fn create_external_snapshot(conn: &Connection, path: &Path) -> Result<(), ExternalError> {
-    let temporary = PathBuf::from(format!("{}~", path.to_string_lossy()));
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push("~");
+    let temporary = PathBuf::from(temporary);
     let _ = std::fs::remove_file(&temporary);
     if let Err(err) = conn.backup("main", &temporary, None) {
         let _ = std::fs::remove_file(&temporary);
         return Err(err.into());
     }
-    sync_file_and_parent_blocking(&temporary)?;
-    std::fs::rename(&temporary, path)?;
+    if let Err(err) = sync_file_and_parent_blocking(&temporary) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(err);
+    }
+    if let Err(err) = std::fs::hard_link(&temporary, path) {
+        let _ = std::fs::remove_file(&temporary);
+        return if err.kind() == std::io::ErrorKind::AlreadyExists {
+            Err(ExternalError::SnapshotDestinationExists(path.to_owned()))
+        } else {
+            Err(err.into())
+        };
+    }
     sync_file_and_parent_blocking(path)?;
+    std::fs::remove_file(&temporary)?;
+    if let Some(parent) = temporary.parent() {
+        sync_parent_directory(parent)?;
+    }
     Ok(())
 }
 
@@ -2120,6 +2271,18 @@ fn decode_digest(bytes: &[u8], field: &str) -> Result<Sha256Digest, ExternalErro
         ExternalError::InvalidMetadata(format!("{field} must contain exactly 32 bytes"))
     })?;
     Ok(Sha256Digest(bytes))
+}
+
+fn deserialize_exact<T: DeserializeOwned>(bytes: &[u8], field: &str) -> Result<T, ExternalError> {
+    let (value, consumed) =
+        bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::legacy())
+            .map_err(|err| ExternalError::Serialization(err.to_string()))?;
+    if consumed != bytes.len() {
+        return Err(ExternalError::InvalidMetadata(format!(
+            "{field} contains trailing bytes"
+        )));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -2468,6 +2631,13 @@ mod tests {
             CommitSequence(2)
         );
         assert!(snapshot.evidence.sqlite_bytes > 0);
+        let caller_path = source_dir.0.join("caller-owned.snapshot");
+        let caller_snapshot = source.build_snapshot_into(&caller_path).await.unwrap();
+        assert_eq!(caller_snapshot.path, caller_path);
+        assert!(matches!(
+            source.build_snapshot_into(&caller_path).await.unwrap_err(),
+            ExternalError::SnapshotDestinationExists(path) if path == caller_path
+        ));
         source.shutdown().await.unwrap();
 
         let corrupt_path = source_dir.0.join("corrupt-receipt-window.sqlite");
@@ -2548,6 +2718,122 @@ mod tests {
             ExternalError::StaleSnapshot
         ));
         target.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn adoption_is_explicit_and_preserves_existing_application_state() {
+        let dir = TestDir::new("adopt-existing");
+        let options = options(&dir);
+        let db_dir = dir.0.join("external_state_machine/db");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db_path = db_dir.join("external.sqlite");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE adopted (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO adopted(id, value) VALUES (1, 'kept');",
+        )
+        .unwrap();
+        drop(conn);
+
+        let engine = TestEngine::adopt_existing_projection(options.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .read(|conn| {
+                    conn.query_row("SELECT value FROM adopted WHERE id=1", [], |row| {
+                        row.get::<_, String>(0)
+                    })
+                })
+                .await
+                .unwrap(),
+            "kept"
+        );
+        assert!(engine.last_applied().await.unwrap().is_none());
+        engine.shutdown().await.unwrap();
+
+        assert!(matches!(
+            TestEngine::adopt_existing_projection(options.clone())
+                .await
+                .err()
+                .unwrap(),
+            ExternalError::AdoptionNotAllowed(_)
+        ));
+        TestEngine::open(options)
+            .await
+            .unwrap()
+            .shutdown()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn snapshot_restore_waits_for_reads_and_replaces_the_pool() {
+        let source_dir = TestDir::new("restore-read-source");
+        let source = TestEngine::open(options(&source_dir)).await.unwrap();
+        source
+            .apply_committed(commit(1, "create-v1"), TestOperation::Create)
+            .await
+            .unwrap();
+        source
+            .apply_committed(
+                commit(2, "insert-v1"),
+                TestOperation::Insert {
+                    id: 1,
+                    value: "restored",
+                },
+            )
+            .await
+            .unwrap();
+        let snapshot = source.build_snapshot().await.unwrap();
+        source.shutdown().await.unwrap();
+
+        let target_dir = TestDir::new("restore-read-target");
+        let target = std::sync::Arc::new(TestEngine::open(options(&target_dir)).await.unwrap());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let reader = std::sync::Arc::clone(&target);
+        let read = tokio::spawn(async move {
+            reader
+                .read(move |conn| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                })
+                .await
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("read closure should start");
+
+        let installer = std::sync::Arc::clone(&target);
+        let mut install = tokio::spawn(async move { installer.install_snapshot(snapshot).await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut install)
+                .await
+                .is_err()
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(read.await.unwrap().unwrap(), 1);
+        install.await.unwrap().unwrap();
+        assert_eq!(count_items(&target).await, 1);
+
+        std::sync::Arc::try_unwrap(target)
+            .ok()
+            .expect("all test handles should be dropped")
+            .shutdown()
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn external_codec_rejects_trailing_bytes() {
+        let mut bytes = serialize(&TestReceipt::Created).unwrap();
+        bytes.push(0);
+        assert!(matches!(
+            deserialize_exact::<TestReceipt>(&bytes, "test receipt").unwrap_err(),
+            ExternalError::InvalidMetadata(message) if message.contains("trailing bytes")
+        ));
     }
 
     #[tokio::test]

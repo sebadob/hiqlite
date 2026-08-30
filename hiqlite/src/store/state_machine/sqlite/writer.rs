@@ -762,9 +762,9 @@ fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), Erro
     Ok(())
 }
 
-pub(crate) fn restore_snapshot(
+pub(crate) fn restore_snapshot<P: AsRef<std::path::Path>>(
     conn: &mut rusqlite::Connection,
-    path: &str,
+    path: P,
 ) -> Result<(), rusqlite::Error> {
     conn.restore(
         "main",
