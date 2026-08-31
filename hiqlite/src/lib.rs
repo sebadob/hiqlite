@@ -15,9 +15,13 @@ compile_error!("features `cast_ints` and `cast_ints_unchecked` are mutually excl
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use hiqlite_wal::LogSync;
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use openraft::SnapshotPolicy;
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 use serde::{Deserialize, Serialize};
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 use std::fmt::{Debug, Display};
 
 #[cfg(feature = "sqlite")]
@@ -94,12 +98,15 @@ pub mod s3;
 #[cfg(feature = "server")]
 pub mod server;
 
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 mod http_client;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub mod tls;
 
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 type NodeId = u64;
 
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 pub trait CacheVariants {
     /// Returns the Enum Variants index, strictly matching the output of `hiqlite_cache_variants()`.
     fn hiqlite_cache_index(&self) -> usize;
@@ -110,6 +117,7 @@ pub trait CacheVariants {
 
 /// A Raft / Hiqlite node
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 pub struct Node {
     /// Each Raft config must include one Node with `id == 1`.
     /// Node `1` will care about init and setup if the Raft does not exit yet or
@@ -124,6 +132,7 @@ pub struct Node {
     pub addr_api: String,
 }
 
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 impl Display for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(

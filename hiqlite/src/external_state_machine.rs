@@ -70,15 +70,16 @@
 //! engine and leaves a rebuild-required marker. Backup/S3 orchestration from
 //! Hiqlite's Raft API is intentionally outside this feature.
 
-use crate::helpers::{serialize, set_path_access};
-use crate::store::state_machine::sqlite::state_machine::{SqlitePool, StateMachineSqlite};
-use crate::store::state_machine::sqlite::writer::restore_snapshot;
 use deadpool::unmanaged::PoolError;
 use fs4::FileExt;
 /// The exact `rusqlite` version used by this external engine.
 pub use rusqlite;
+use rusqlite::backup::Progress;
+use rusqlite::functions::FunctionFlags;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -95,6 +96,127 @@ use tokio::sync::{RwLock, oneshot};
 use tokio::{fs, task};
 use tracing::warn;
 use uuid::Uuid;
+
+type SqlitePool = deadpool::unmanaged::Pool<Connection>;
+
+fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, bincode::error::EncodeError> {
+    bincode::serde::encode_to_vec(value, bincode::config::legacy())
+}
+
+async fn set_path_access(path: &str, mode: u32) -> Result<(), std::io::Error> {
+    #[cfg(target_family = "unix")]
+    {
+        use std::fs::Permissions;
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, Permissions::from_mode(mode)).await?;
+    }
+    #[cfg(not(target_family = "unix"))]
+    let _ = (path, mode);
+    Ok(())
+}
+
+async fn connect_external(
+    path: String,
+    filename: String,
+    synchronous: &'static str,
+    prepared_statement_cache_capacity: usize,
+) -> Result<Connection, ExternalError> {
+    task::spawn_blocking(move || {
+        let conn = Connection::open(Path::new(&path).join(filename))?;
+        apply_external_write_pragmas(&conn, synchronous, prepared_statement_cache_capacity)?;
+        overwrite_non_deterministic_functions(&conn);
+        Ok::<_, rusqlite::Error>(conn)
+    })
+    .await?
+    .map_err(ExternalError::from)
+}
+
+async fn connect_read_pool_once(
+    path: &str,
+    filename: &str,
+    prepared_statement_cache_capacity: usize,
+    pool_size: usize,
+) -> Result<SqlitePool, ExternalError> {
+    let path = PathBuf::from(path).join(filename);
+    let mut connections = Vec::with_capacity(pool_size);
+    for _ in 0..pool_size {
+        let path = path.clone();
+        connections.push(
+            task::spawn_blocking(move || {
+                let conn = Connection::open_with_flags(
+                    path,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )?;
+                conn.pragma_update(None, "query_only", true)?;
+                conn.busy_timeout(Duration::from_secs(30))?;
+                conn.set_prepared_statement_cache_capacity(prepared_statement_cache_capacity);
+                Ok::<_, rusqlite::Error>(conn)
+            })
+            .await??,
+        );
+    }
+    let pool = SqlitePool::from(connections);
+    let conn = pool.get().await?;
+    task::spawn_blocking(move || conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0)))
+        .await??;
+    Ok(pool)
+}
+
+fn apply_external_write_pragmas(
+    conn: &Connection,
+    synchronous: &str,
+    prepared_statement_cache_capacity: usize,
+) -> Result<(), rusqlite::Error> {
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", synchronous)?;
+    conn.pragma_update(None, "page_size", 4096)?;
+    conn.pragma_update(None, "journal_size_limit", 16384)?;
+    conn.pragma_update(None, "wal_autocheckpoint", 4_000)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+    conn.pragma_update(None, "optimize", "0x10002")?;
+    conn.busy_timeout(Duration::from_secs(30))?;
+    conn.set_prepared_statement_cache_capacity(prepared_statement_cache_capacity);
+    Ok(())
+}
+
+fn overwrite_non_deterministic_functions(conn: &Connection) {
+    const FORBIDDEN: &[&str] = &[
+        "date",
+        "datetime",
+        "julianday",
+        "now",
+        "random",
+        "randomblob",
+        "strftime",
+        "time",
+        "timediff",
+        "unixepoch",
+    ];
+    for &name in FORBIDDEN {
+        conn.create_scalar_function(
+            name,
+            -1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            move |_| -> rusqlite::Result<String> {
+                panic!(
+                    "forbidden usage of `{name}()` - non-deterministic functions must never be used for committed writes"
+                )
+            },
+        )
+        .expect("cannot register non-deterministic function guard");
+    }
+}
+
+fn restore_snapshot(conn: &mut Connection, path: &Path) -> Result<(), rusqlite::Error> {
+    conn.restore(
+        "main",
+        path,
+        Some(|progress: Progress| {
+            let _ = progress;
+        }),
+    )
+}
 
 /// On-disk format version of external state-machine metadata and receipts.
 pub const EXTERNAL_FORMAT_VERSION: u16 = 1;
@@ -763,7 +885,7 @@ where
         }
 
         let db_dir_text = db_dir.to_string_lossy().into_owned();
-        let conn = StateMachineSqlite::connect_external(
+        let conn = connect_external(
             db_dir_text.clone(),
             options.filename.clone(),
             options.durability.pragma_value(),
@@ -788,7 +910,7 @@ where
         validate_configuration(&state, &options, O::RECEIPT_CODEC)?;
         validate_receipts::<C, O>(&conn, &state)?;
 
-        let read_pool = StateMachineSqlite::connect_read_pool_once(
+        let read_pool = connect_read_pool_once(
             &db_dir_text,
             &options.filename,
             options.prepared_statement_cache_capacity,
@@ -1017,7 +1139,7 @@ where
         );
         if writer_can_serve_reads {
             *read_pool = Some(
-                StateMachineSqlite::connect_read_pool_once(
+                connect_read_pool_once(
                     &self.read_pool_config.db_dir,
                     &self.read_pool_config.filename,
                     self.read_pool_config.prepared_statement_cache_capacity,
