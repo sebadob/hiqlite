@@ -1050,6 +1050,20 @@ where
             .await
     }
 
+    /// Validates a caller-staged snapshot without opening or mutating a live
+    /// external state machine.
+    ///
+    /// This proves the regular file, digest, SQLite integrity, embedded
+    /// metadata, checkpoint, and retained receipt window match the supplied
+    /// evidence. It does not prove compatibility with a particular live
+    /// engine, activate the image, or authorize consensus-log reclamation.
+    pub async fn validate_snapshot(snapshot: &ExternalSnapshot<C>) -> Result<(), ExternalError> {
+        let path = snapshot.path.clone();
+        let evidence = snapshot.evidence.clone();
+        task::spawn_blocking(move || validate_snapshot_file::<C, O>(&path, &evidence)).await??;
+        Ok(())
+    }
+
     async fn build_snapshot_at(
         &self,
         snapshot_id: String,
@@ -2789,6 +2803,7 @@ mod tests {
             CommitSequence(2)
         );
         assert!(snapshot.evidence.sqlite_bytes > 0);
+        TestEngine::validate_snapshot(&snapshot).await.unwrap();
         let caller_path = source_dir.0.join("caller-owned.snapshot");
         let caller_snapshot = source.build_snapshot_into(&caller_path).await.unwrap();
         assert_eq!(caller_snapshot.path, caller_path);
