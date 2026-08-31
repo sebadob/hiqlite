@@ -221,10 +221,15 @@ fn restore_snapshot(conn: &mut Connection, path: &Path) -> Result<(), rusqlite::
 /// On-disk format version of external state-machine metadata and receipts.
 pub const EXTERNAL_FORMAT_VERSION: u16 = 1;
 
+/// SQLite artifact format produced by [`ExternalSqlite::build_snapshot`].
+///
+/// Outer snapshot manifests may persist this value to bind their file
+/// inventory without duplicating a private engine literal.
+pub const EXTERNAL_SQLITE_SNAPSHOT_FORMAT: &str = "sqlite3-online-backup/page-image-v1";
+
 const METADATA_TABLE: &str = "_hiqlite_external_state";
 const RECEIPTS_TABLE: &str = "_hiqlite_external_receipts";
 const ADVANCE_RECEIPT_CODEC: &str = "hiqlite/advance-v1";
-const SQLITE_SNAPSHOT_FORMAT: &str = "sqlite3-online-backup/page-image-v1";
 const MAX_READ_POOL_SIZE: usize = 128;
 const MAX_RECEIPT_RETENTION: usize = 1_000_000;
 const MAX_RECEIPT_BYTES: usize = 16 * 1024 * 1024;
@@ -351,6 +356,22 @@ pub struct ExternalApplied<C> {
     pub commit: ExternalCommit<C>,
     pub kind: ExternalEntryKind,
     pub receipt_digest: Sha256Digest,
+}
+
+impl<C> ExternalApplied<C> {
+    /// Creates applied-entry evidence for reconstruction from a caller-owned
+    /// outer snapshot manifest.
+    pub fn new(
+        commit: ExternalCommit<C>,
+        kind: ExternalEntryKind,
+        receipt_digest: Sha256Digest,
+    ) -> Self {
+        Self {
+            commit,
+            kind,
+            receipt_digest,
+        }
+    }
 }
 
 /// A deterministic, typed operation interpreted by the caller.
@@ -528,6 +549,8 @@ impl ExternalSqliteOptions {
 ///
 /// It intentionally contains no consensus membership. A caller should embed
 /// this value in its own outer snapshot manifest and verify it again on install.
+/// Its Serde representation is not a stable wire-format promise; callers that
+/// persist evidence should map it into a versioned format they own.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ExternalSnapshotEvidence<C> {
@@ -545,6 +568,50 @@ pub struct ExternalSnapshotEvidence<C> {
     pub sqlite_page_size: u32,
     pub sqlite_bytes: u64,
     pub sqlite_sha256: Sha256Digest,
+}
+
+impl<C> ExternalSnapshotEvidence<C> {
+    /// Reconstructs engine evidence from a caller-owned, versioned outer
+    /// snapshot manifest.
+    ///
+    /// The engine's `Serialize` representation is descriptive, not a promised
+    /// stable wire format. Protocol owners should persist their own frozen
+    /// representation and use this constructor when validating or installing
+    /// an artifact. Snapshot validation rejects incompatible values.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_manifest(
+        format_version: u16,
+        snapshot_format: String,
+        snapshot_id: String,
+        application_id: String,
+        initial_sequence: CommitSequence,
+        initial_state_schema: u64,
+        receipt_codec: String,
+        checkpoint: Option<ExternalApplied<C>>,
+        receipt_floor: Option<CommitSequence>,
+        receipt_retention: u64,
+        max_receipt_bytes: u64,
+        sqlite_page_size: u32,
+        sqlite_bytes: u64,
+        sqlite_sha256: Sha256Digest,
+    ) -> Self {
+        Self {
+            format_version,
+            snapshot_format,
+            snapshot_id,
+            application_id,
+            initial_sequence,
+            initial_state_schema,
+            receipt_codec,
+            checkpoint,
+            receipt_floor,
+            receipt_retention,
+            max_receipt_bytes,
+            sqlite_page_size,
+            sqlite_bytes,
+            sqlite_sha256,
+        }
+    }
 }
 
 /// A completed, caller-staged snapshot and its exact evidence.
@@ -1218,7 +1285,7 @@ where
     ) -> ExternalSnapshotEvidence<C> {
         ExternalSnapshotEvidence {
             format_version: EXTERNAL_FORMAT_VERSION,
-            snapshot_format: SQLITE_SNAPSHOT_FORMAT.to_string(),
+            snapshot_format: EXTERNAL_SQLITE_SNAPSHOT_FORMAT.to_string(),
             snapshot_id,
             application_id: self.application_id.clone(),
             initial_sequence: self.initial_sequence,
@@ -2151,7 +2218,7 @@ where
     if evidence.format_version != EXTERNAL_FORMAT_VERSION {
         return Err(ExternalError::UnsupportedFormat(evidence.format_version));
     }
-    if evidence.snapshot_format != SQLITE_SNAPSHOT_FORMAT {
+    if evidence.snapshot_format != EXTERNAL_SQLITE_SNAPSHOT_FORMAT {
         return Err(ExternalError::SnapshotMismatch(
             "unsupported SQLite snapshot format".to_string(),
         ));
@@ -2218,7 +2285,7 @@ fn validate_snapshot_compatibility<C>(
     if evidence.format_version != EXTERNAL_FORMAT_VERSION {
         return Err(ExternalError::UnsupportedFormat(evidence.format_version));
     }
-    if evidence.snapshot_format != SQLITE_SNAPSHOT_FORMAT {
+    if evidence.snapshot_format != EXTERNAL_SQLITE_SNAPSHOT_FORMAT {
         return Err(ExternalError::SnapshotMismatch(
             "unsupported SQLite snapshot format".to_string(),
         ));
@@ -3200,8 +3267,31 @@ mod tests {
             .await
             .unwrap();
         let snapshot = source.build_snapshot().await.unwrap();
-        assert_eq!(snapshot.evidence.snapshot_format, SQLITE_SNAPSHOT_FORMAT);
+        assert_eq!(
+            snapshot.evidence.snapshot_format,
+            EXTERNAL_SQLITE_SNAPSHOT_FORMAT
+        );
         assert!(snapshot.evidence.sqlite_page_size > 0);
+        let evidence = &snapshot.evidence;
+        assert_eq!(
+            ExternalSnapshotEvidence::from_manifest(
+                evidence.format_version,
+                evidence.snapshot_format.clone(),
+                evidence.snapshot_id.clone(),
+                evidence.application_id.clone(),
+                evidence.initial_sequence,
+                evidence.initial_state_schema,
+                evidence.receipt_codec.clone(),
+                evidence.checkpoint.clone(),
+                evidence.receipt_floor,
+                evidence.receipt_retention,
+                evidence.max_receipt_bytes,
+                evidence.sqlite_page_size,
+                evidence.sqlite_bytes,
+                evidence.sqlite_sha256,
+            ),
+            evidence.clone()
+        );
         source.shutdown().await.unwrap();
 
         let target_dir = TestDir::new("rowid-target");

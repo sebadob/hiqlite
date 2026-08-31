@@ -316,8 +316,10 @@ format contracts.
 `build_snapshot_into` publishes without replacing an existing caller-owned path, and restore closes and recreates the
 read pool so no pre-restore handle survives. Migrating a quiescent legacy database requires the explicit
 `adopt_existing_projection` constructor; the caller must prove that database is the agreed initial state.
-An outer manifest codec can serialize `ExternalSnapshotEvidence` and call `ExternalSqlite::validate_snapshot` to verify
-a decoded staged image before opening or mutating a live projection.
+An outer manifest codec should map `ExternalSnapshotEvidence` into a frozen versioned format it owns, reconstruct the
+typed value with the public evidence constructors, and call `ExternalSqlite::validate_snapshot` to verify a decoded
+staged image before opening or mutating a live projection. The engine's Serde shape is descriptive, not a stable wire
+format promise; `EXTERNAL_SQLITE_SNAPSHOT_FORMAT` exposes the page-image identity without duplicating a private literal.
 
 This feature is deliberately excluded from both `default` and `full`; enable it only for the alternate ownership model.
 
