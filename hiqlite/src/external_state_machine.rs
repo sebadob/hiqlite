@@ -72,8 +72,6 @@
 
 use deadpool::unmanaged::PoolError;
 use fs4::FileExt;
-/// The exact `rusqlite` version used by this external engine.
-pub use rusqlite;
 use rusqlite::backup::Progress;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};

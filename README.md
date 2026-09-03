@@ -322,6 +322,10 @@ staged image before opening or mutating a live projection. The engine's Serde sh
 format promise; `EXTERNAL_SQLITE_SNAPSHOT_FORMAT` exposes the page-image identity without duplicating a private literal.
 
 This feature is deliberately excluded from both `default` and `full`; enable it only for the alternate ownership model.
+A minimal walkthrough with a mocked consensus log lives in
+[`examples/external-state-machine`](https://github.com/sebadob/hiqlite/tree/main/examples/external-state-machine).
+Use the re-exported `hiqlite::rusqlite` when implementing operations, so the `Transaction` type always matches the
+version Hiqlite was compiled against.
 
 ### `full`
 

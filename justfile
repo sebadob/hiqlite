@@ -68,6 +68,7 @@ check:
     cargo update
     cargo clippy -- -D warnings
     cargo minimal-versions check -p hiqlite --features server
+    cargo minimal-versions check -p hiqlite --no-default-features --features external-state-machine
     cargo minimal-versions check -p hiqlite-wal
 
     # update at the end again for following clippy and testing
@@ -102,6 +103,13 @@ clippy:
     cargo clippy --no-default-features --features dashboard -- -D warnings
     cargo clippy --no-default-features --features shutdown-handle -- -D warnings
 
+    # external-state-machine must build standalone without pulling in the
+    # internal `__cluster` boundary, and must not break any regular combination
+    cargo clippy --no-default-features --features external-state-machine -- -D warnings
+    cargo clippy --no-default-features --features sqlite,external-state-machine -- -D warnings
+    cargo clippy --no-default-features --features full,external-state-machine -- -D warnings
+    cargo clippy --features external-state-machine -- -D warnings
+
 clippy-examples:
     #!/usr/bin/env bash
     set -euxo pipefail
@@ -124,14 +132,14 @@ test test="":
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
-    cargo test --features cache,counters,dlock,listen_notify,macros,toml {{ test }}
+    cargo test --features cache,counters,dlock,listen_notify,macros,toml,external-state-machine {{ test }}
 
 # runs the full set of tests excluding backup to S3 tests
 test-no-s3:
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
-    TEST_SKIP_S3_RESTORE="true" cargo test --features cache,counters,dlock,listen_notify,macros,toml
+    TEST_SKIP_S3_RESTORE="true" cargo test --features cache,counters,dlock,listen_notify,macros,toml,external-state-machine
 
 # builds the code
 build ty="server":

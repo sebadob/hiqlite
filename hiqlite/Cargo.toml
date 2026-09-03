@@ -23,7 +23,7 @@ default = ["auto-heal", "backup", "sqlite", "toml"]
 
 auto-heal = ["hiqlite-wal/auto-heal"]
 backup = ["dep:cron", "s3", "sqlite"]
-cache = ["cluster", "openraft/loosen-follower-log-revert"]
+cache = ["__cluster", "openraft/loosen-follower-log-revert"]
 counters = ["cache"]
 dashboard = [
     "dep:argon2",
@@ -87,7 +87,7 @@ server = [
 ]
 shutdown-handle = ["dep:ctrlc"]
 sqlite = [
-    "cluster",
+    "__cluster",
     "dep:deadpool",
     "dep:rusqlite",
     "dep:serde_rusqlite",
@@ -98,7 +98,7 @@ webpki-roots = [
 
 # Internal dependency boundary for the regular Hiqlite Raft/network runtime.
 # The external state-machine feature deliberately does not enable it.
-cluster = [
+__cluster = [
     "dep:axum",
     "dep:axum-server",
     "dep:bytes",

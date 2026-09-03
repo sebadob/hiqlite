@@ -1,0 +1,16 @@
+[package]
+name = "external-state-machine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Only the opt-in engine is enabled. No Raft node, network, dashboard, backup
+# scheduler or auto-heal code is compiled into this example.
+hiqlite = { path = "../../hiqlite", default-features = false, features = [
+    "external-state-machine",
+] }
+
+serde = { version = "1.0.203", features = ["derive"] }
+tokio = { version = "1.43.1", features = ["fs", "macros", "rt-multi-thread"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
