@@ -1,16 +1,16 @@
 use crate::Error;
 use crate::app_state::AppState;
+use crate::helpers::{deserialize, serialize};
 use axum::http::header::{ACCEPT, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, body};
+use constant_time_eq::constant_time_eq;
 use openraft::error::{ClientWriteError, InitializeError, InstallSnapshotError, RaftError};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
 
-// pub use management::LearnerReq;
-use crate::helpers::{deserialize, serialize};
 pub use raft_client::NetworkStreaming;
 
 pub(crate) mod api;
@@ -65,7 +65,7 @@ fn validate_secret(state: &AppStateExt, headers: &HeaderMap) -> Result<(), Error
     match headers.get(HEADER_NAME_SECRET) {
         None => Err(Error::Token("API Secret missing".into())),
         Some(secret) => {
-            if state.secret_api.as_bytes() != secret.as_bytes() {
+            if !constant_time_eq(state.secret_api.as_bytes(), secret.as_bytes()) {
                 Err(Error::Token("Invalid API Secret".into()))
             } else {
                 Ok(())

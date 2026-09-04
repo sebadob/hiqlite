@@ -300,6 +300,8 @@ impl StateMachineMemory {
 
     /// Serializes the current cache state (caches, TTLs, locks) into a snapshot blob.
     /// Shared by the disk-backed (default) and in-memory (`in-memory-snapshots`) paths.
+    // The error type is huge, but defined by the openraft trait.
+    #[allow(clippy::result_large_err)]
     async fn build_snapshot_data(
         &self,
     ) -> Result<(SnapshotMeta<NodeId, Node>, Vec<u8>), StorageError<NodeId>> {
@@ -366,6 +368,8 @@ impl StateMachineMemory {
 
     /// Persists a serialized snapshot to `data_dir` and spawns cleanup of older snapshots.
     /// Returns the path of the persisted snapshot file.
+    // The error type is huge, but defined by the openraft trait.
+    #[allow(clippy::result_large_err)]
     async fn persist_snapshot(
         &self,
         meta: &SnapshotMeta<NodeId, Node>,
@@ -420,6 +424,8 @@ impl StateMachineMemory {
     }
 
     /// Deserializes a snapshot blob and applies it to the in-memory state.
+    // The error type is huge, but defined by the openraft trait.
+    #[allow(clippy::result_large_err)]
     async fn apply_snapshot_bytes(
         &self,
         meta: &SnapshotMeta<NodeId, Node>,
@@ -480,6 +486,8 @@ impl StateMachineMemory {
         data.last_membership = meta.last_membership;
     }
 
+    // The error type is huge, but defined by the openraft trait.
+    #[allow(clippy::result_large_err)]
     pub async fn read_current_snapshot(
         &self,
     ) -> StorageResult<Option<(String, SnapshotDataContent)>> {

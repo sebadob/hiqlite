@@ -353,7 +353,6 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
 
     debug!("Removing old data");
     let _ = fs::remove_dir_all(&path_db).await;
-    // let _ = fs::remove_dir_all(&path_backups).await;
     let _ = fs::remove_dir_all(&path_snapshots).await;
     let _ = fs::remove_dir_all(&path_lock_file).await;
     let _ = fs::remove_dir_all(&path_logs).await;

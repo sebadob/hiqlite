@@ -1,4 +1,5 @@
 use crate::{Error, NodeId};
+use constant_time_eq::constant_time_eq_32;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -54,7 +55,7 @@ impl ChallengeResponse {
             .finalize()
             .to_vec();
 
-        if self.response != verify {
+        if !cmp_constant_time(&self.response, &verify) {
             return Err(Error::BadRequest("Invalid ChallengeResponse".into()));
         }
 
@@ -83,12 +84,24 @@ impl ResponseFinal {
             .finalize()
             .to_vec();
 
-        if self.0 != verify {
-            Err(Error::BadRequest("Invalid ChallengeResponse".into()))
-        } else {
+        if cmp_constant_time(&self.0, &verify) {
             Ok(())
+        } else {
+            Err(Error::BadRequest("Invalid ChallengeResponse".into()))
         }
     }
+}
+
+#[inline(always)]
+fn cmp_constant_time<T: AsRef<[u8]>>(a: T, b: T) -> bool {
+    debug_assert_eq!(a.as_ref().len(), 32);
+    debug_assert_eq!(b.as_ref().len(), 32);
+    constant_time_eq_32(
+        <&[u8; 32]>::try_from(a.as_ref())
+            .expect("Invalid SHA hash input for 32 byte constant time cmp"),
+        <&[u8; 32]>::try_from(b.as_ref())
+            .expect("Invalid SHA hash input for 32 byte constant time cmp"),
+    )
 }
 
 #[cfg(test)]
@@ -104,18 +117,24 @@ mod tests {
 
         let challenge_response = ChallengeResponse::new(1, &challenge, secret.as_ref()).unwrap();
 
-        assert!(challenge_response
-            .verify(&challenge, secret_bad.as_ref())
-            .is_err());
+        assert!(
+            challenge_response
+                .verify(&challenge, secret_bad.as_ref())
+                .is_err()
+        );
         let response = challenge_response
             .verify(&challenge, secret.as_ref())
             .unwrap();
 
-        assert!(response
-            .verify(&challenge_response, secret_bad.as_ref())
-            .is_err());
-        assert!(response
-            .verify(&challenge_response, secret.as_ref())
-            .is_ok());
+        assert!(
+            response
+                .verify(&challenge_response, secret_bad.as_ref())
+                .is_err()
+        );
+        assert!(
+            response
+                .verify(&challenge_response, secret.as_ref())
+                .is_ok()
+        );
     }
 }

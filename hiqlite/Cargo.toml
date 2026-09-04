@@ -150,6 +150,7 @@ bytes = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 console-subscriber = { workspace = true, optional = true }
+constant_time_eq = { workspace = true }
 cron = { workspace = true, optional = true }
 crossbeam = { workspace = true, optional = true }
 cryptr = { workspace = true, optional = true }
