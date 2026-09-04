@@ -55,12 +55,7 @@ impl ChallengeResponse {
             .finalize()
             .to_vec();
 
-        debug_assert_eq!(self.response.len(), 32);
-        debug_assert_eq!(verify.len(), 32);
-        if constant_time_eq_32(
-            <&[u8; 32]>::try_from(self.response)?,
-            <&[u8; 32]>::try_from(verify)?,
-        ) {
+        if !cmp_constant_time(&self.response, &verify) {
             return Err(Error::BadRequest("Invalid ChallengeResponse".into()));
         }
 
@@ -89,17 +84,24 @@ impl ResponseFinal {
             .finalize()
             .to_vec();
 
-        debug_assert_eq!(self.0.len(), 32);
-        debug_assert_eq!(verify.len(), 32);
-        if constant_time_eq_32(
-            <&[u8; 32]>::try_from(self.0)?,
-            <&[u8; 32]>::try_from(verify)?,
-        ) {
-            Err(Error::BadRequest("Invalid ChallengeResponse".into()))
-        } else {
+        if cmp_constant_time(&self.0, &verify) {
             Ok(())
+        } else {
+            Err(Error::BadRequest("Invalid ChallengeResponse".into()))
         }
     }
+}
+
+#[inline(always)]
+fn cmp_constant_time<T: AsRef<[u8]>>(a: T, b: T) -> bool {
+    debug_assert_eq!(a.as_ref().len(), 32);
+    debug_assert_eq!(b.as_ref().len(), 32);
+    constant_time_eq_32(
+        <&[u8; 32]>::try_from(a.as_ref())
+            .expect("Invalid SHA hash input for 32 byte constant time cmp"),
+        <&[u8; 32]>::try_from(b.as_ref())
+            .expect("Invalid SHA hash input for 32 byte constant time cmp"),
+    )
 }
 
 #[cfg(test)]

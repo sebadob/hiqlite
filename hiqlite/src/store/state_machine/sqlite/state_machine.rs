@@ -148,7 +148,7 @@ impl StateMachineSqlite {
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::s3::S3Config>>,
         do_reset_metadata: bool,
         #[cfg(feature = "backup")] local_backup_keep_days: u16,
-    ) -> Result<StateMachineSqlite, StorageError<NodeId>> {
+    ) -> Result<StateMachineSqlite, Box<StorageError<NodeId>>> {
         // IMPORTANT: Do NOT change the order of the db exists check!
         // DB recovery will fail otherwise!
         let mut db_exists = Self::db_exists(data_dir, filename_db).await;
@@ -441,6 +441,8 @@ impl StateMachineSqlite {
         }
     }
 
+    // The error type is huge, but defined by the openraft trait.
+    #[allow(clippy::result_large_err)]
     async fn update_state_machine_(
         &mut self,
         snapshot_path: String,
@@ -460,6 +462,8 @@ impl StateMachineSqlite {
         Ok(())
     }
 
+    // The error type is huge, but defined by the openraft trait.
+    #[allow(clippy::result_large_err)]
     async fn read_current_snapshot(&mut self) -> StorageResult<Option<StoredSnapshot>> {
         let mut list = tokio::fs::read_dir(&self.path_snapshots)
             .await

@@ -54,6 +54,8 @@ where
 
 #[tracing::instrument(skip_all)]
 #[inline(always)]
+// The error type is huge, but it's given by the openraft trait definition.
+#[allow(clippy::result_large_err)]
 async fn try_get_log_entries<
     T: RaftTypeConfig,
     RB: RangeBounds<u64> + Clone + Debug + OptionalSend,

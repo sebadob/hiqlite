@@ -481,6 +481,8 @@ impl Drop for NetworkConnectionStreaming {
 }
 
 impl NetworkConnectionStreaming {
+    // The error type is huge, but defined by the openraft trait.
+    #[allow(clippy::result_large_err)]
     #[inline(always)]
     async fn send<Err>(
         &mut self,

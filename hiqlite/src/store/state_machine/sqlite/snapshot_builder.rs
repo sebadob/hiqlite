@@ -80,6 +80,8 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
     }
 }
 
+// The error type is huge, but defined by the openraft trait.
+#[allow(clippy::result_large_err)]
 async fn snapshots_cleanup(
     path_snapshots: String,
     #[cfg(feature = "backup")] path_backups: String,
