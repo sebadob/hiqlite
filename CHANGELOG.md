@@ -2,6 +2,11 @@
 
 ## v0.14.0
 
+### Breaking
+
+`NodeConfig::from_toml` and `NodeConfig::from_toml_table` take a new `secrets: Option<toml::Table>` argument (after
+`table` / `table_name`, before the optional `enc_keys`). Existing callers can pass `None` to keep the previous behavior.
+
 ### Raft Rate-Limiting
 
 You can now rate-limit all Raft write actions. These are things like cache PUT or e.g. execute queries. This limit does
@@ -74,12 +79,6 @@ table is provided either via the new `secrets` argument of `NodeConfig::from_tom
 when that is `None`, via a `secrets_file` config option (or `HQL_SECRETS_FILE`) pointing to a TOML file that mirrors the
 config structure. This keeps the main config diffable and version-controllable while secrets are managed separately
 (systemd `LoadCredential`, Docker / Kubernetes secrets, ...).
-
-### Breaking
-
-- `NodeConfig::from_toml` and `NodeConfig::from_toml_table` take a new
-  `secrets: Option<toml::Table>` argument (after `table` / `table_name`, before the optional
-  `enc_keys`). Existing callers can pass `None` to keep the previous behavior.
 
 ## hiqlite-v0.13.2
 
