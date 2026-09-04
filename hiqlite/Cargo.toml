@@ -16,14 +16,14 @@ doctest = false
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["full"]
+features = ["full", "external-state-machine"]
 
 [features]
 default = ["auto-heal", "backup", "sqlite", "toml"]
 
 auto-heal = ["hiqlite-wal/auto-heal"]
 backup = ["dep:cron", "s3", "sqlite"]
-cache = ["openraft/loosen-follower-log-revert"]
+cache = ["__cluster", "openraft/loosen-follower-log-revert"]
 counters = ["cache"]
 dashboard = [
     "dep:argon2",
@@ -37,6 +37,17 @@ dashboard = [
 dlock = ["cache"]
 cast_ints = []
 cast_ints_unchecked = []
+# Opt-in state-machine engine for applications that already own consensus.
+# This reuses the SQLite connection, read-pool, restore, and single-writer
+# machinery without starting a Hiqlite Raft group.
+external-state-machine = [
+    "dep:deadpool",
+    "dep:fs4",
+    "dep:rusqlite",
+    "rusqlite/backup",
+    "rusqlite/functions",
+    "rusqlite/hooks",
+]
 full = [
     "auto-heal",
     "backup",
@@ -76,12 +87,49 @@ server = [
 ]
 shutdown-handle = ["dep:ctrlc"]
 sqlite = [
+    "__cluster",
     "dep:deadpool",
     "dep:rusqlite",
     "dep:serde_rusqlite",
 ]
 webpki-roots = [
     "dep:webpki-root-certs",
+]
+
+# Internal dependency boundary for the regular Hiqlite Raft/network runtime.
+# The external state-machine feature deliberately does not enable it.
+__cluster = [
+    "dep:axum",
+    "dep:axum-server",
+    "dep:bytes",
+    "dep:chrono",
+    "dep:crossbeam",
+    "dep:cryptr",
+    "dep:dotenvy",
+    "dep:fastwebsockets",
+    "dep:getrandom",
+    "dep:hex",
+    "dep:hiqlite-wal",
+    "dep:hostname",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:lazy_static",
+    "dep:lz4-sys",
+    "dep:openraft",
+    "dep:rcgen",
+    "dep:reqwest",
+    "dep:rust_decimal",
+    "dep:rust-embed",
+    "dep:rustls",
+    "dep:rustls-webpki",
+    "dep:serde_json",
+    "dep:serde_rusqlite",
+    "dep:time",
+    "dep:tokio-rustls",
+    "dep:tower-layer",
+    "dep:tower-service",
+    "dep:url",
 ]
 
 # Internal use only
@@ -91,70 +139,71 @@ __profiling = ["dep:console-subscriber"]
 #hiqlite-derive = { version = "0.14", optional = true }
 hiqlite-derive = { path = "../hiqlite-derive", optional = true }
 #hiqlite-wal = { version = "0.14" }
-hiqlite-wal = { path = "../hiqlite-wal" }
+hiqlite-wal = { path = "../hiqlite-wal", optional = true }
 
 argon2 = { workspace = true, optional = true }
-axum.workspace = true
+axum = { workspace = true, optional = true }
 axum-extra = { workspace = true, optional = true }
-axum-server.workspace = true
+axum-server = { workspace = true, optional = true }
 bincode.workspace = true
-bytes.workspace = true
-chrono.workspace = true
+bytes = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 console-subscriber = { workspace = true, optional = true }
 cron = { workspace = true, optional = true }
-crossbeam = { workspace = true }
-cryptr = { workspace = true }
+crossbeam = { workspace = true, optional = true }
+cryptr = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
 deadpool = { workspace = true, optional = true }
-dotenvy.workspace = true
+dotenvy = { workspace = true, optional = true }
 eventsource-client = { workspace = true, optional = true }
-fastwebsockets.workspace = true
+fastwebsockets = { workspace = true, optional = true }
 flume.workspace = true
+fs4 = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
-getrandom.workspace = true
-hex.workspace = true
-hostname.workspace = true
+getrandom = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+hostname = { workspace = true, optional = true }
 home = { workspace = true, optional = true }
-http-body-util.workspace = true
-hyper.workspace = true
-hyper-util.workspace = true
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
-openraft.workspace = true
-rcgen.workspace = true
-reqwest.workspace = true
+openraft = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
-rust-embed.workspace = true
-rustls.workspace = true
+rust-embed = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 serde_rusqlite = { workspace = true, optional = true }
 sha2.workspace = true
 spow = { workspace = true, optional = true }
 thiserror.workspace = true
 thread-priority.workspace = true
-time.workspace = true
+time = { workspace = true, optional = true }
 tokio.workspace = true
-tokio-rustls.workspace = true
+tokio-rustls = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
-url.workspace = true
+url = { workspace = true, optional = true }
 uuid.workspace = true
 # reqwest 0.13 requires the full certs to make them useable
 webpki-root-certs = { workspace = true, optional = true }
 
 # make minimal versions happy
-lazy_static.workspace = true
-lz4-sys.workspace = true
-rust_decimal.workspace = true
-tower-layer.workspace = true
-tower-service.workspace = true
+lazy_static = { workspace = true, optional = true }
+lz4-sys = { workspace = true, optional = true }
+rust_decimal = { workspace = true, optional = true }
+tower-layer = { workspace = true, optional = true }
+tower-service = { workspace = true, optional = true }
 
 # Necessary to fix security issues in current versions.
-rustls-webpki.workspace = true
+rustls-webpki = { workspace = true, optional = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
