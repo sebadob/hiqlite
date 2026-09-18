@@ -426,8 +426,10 @@ impl NodeConfig {
             return Err(Error::Config("'node_id' must be >= 1".into()));
         }
 
-        if self.node_id as usize > self.nodes.len() {
-            return Err(Error::Config("'node_id' not found in 'nodes'".into()));
+        if !self.nodes.iter().any(|node| node.id == self.node_id) {
+            return Err(Error::Config(
+                format!("'node_id' {} not found in 'nodes'", self.node_id).into(),
+            ));
         }
 
         if self.secret_raft.len() < 16 || self.secret_api.len() < 16 {

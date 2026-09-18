@@ -6,6 +6,7 @@ use axum::response::IntoResponse;
 use bincode::error::{DecodeError, EncodeError};
 use fastwebsockets::WebSocketError;
 use openraft::error::{CheckIsLeaderError, ClientWriteError, Fatal, RaftError};
+use openraft::StorageError;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::convert::Infallible;
@@ -251,6 +252,13 @@ impl From<Fatal<u64>> for Error {
     fn from(value: Fatal<u64>) -> Self {
         trace!("RaftErrorFatal: {value}");
         Self::RaftErrorFatal(Box::new(value))
+    }
+}
+
+impl From<Box<StorageError<u64>>> for Error {
+    fn from(value: Box<StorageError<u64>>) -> Self {
+        trace!("RaftErrorFatal: {value}");
+        Self::RaftErrorFatal(Box::new(Fatal::StorageError(*value)))
     }
 }
 

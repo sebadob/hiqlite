@@ -362,6 +362,14 @@ pub(crate) async fn metrics(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
+    // Gate like the other management endpoints - for `RaftType::Unknown` (neither feature
+    // enabled), this is the only guard before `get_raft_metrics` would panic.
+    if helpers::is_raft_stopped(&state, &raft_type)
+        || !helpers::is_raft_initialized(&state, &raft_type).await?
+    {
+        return Err(Error::Error("Raft is not initialized".into()));
+    }
+
     let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
     fmt_ok(headers, &metrics)
 }

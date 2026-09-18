@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicBool;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 #[cfg(feature = "backup")]
 use crate::backup;
@@ -51,7 +51,13 @@ where
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     let backup_applied = backup::restore_backup_start(&node_config).await?;
 
-    let raft_config = Arc::new(node_config.raft_config.clone().validate().unwrap());
+    let raft_config = Arc::new(
+        node_config
+            .raft_config
+            .clone()
+            .validate()
+            .map_err(|err| Error::Config(format!("Invalid Raft config: {err}").into()))?,
+    );
 
     let _do_reset_metadata = init::check_execute_reset(&node_config.data_dir).await?;
     #[cfg(feature = "sqlite")]
@@ -64,8 +70,18 @@ where
     let (api_addr, rpc_addr) = {
         let node = node_config
             .nodes
-            .get(node_config.node_id as usize - 1)
-            .expect("NodeConfig.node_id not found in NodeConfig.nodes");
+            .iter()
+            .find(|node| node.id == node_config.node_id)
+            .cloned()
+            .ok_or_else(|| {
+                Error::Config(
+                    format!(
+                        "NodeConfig.node_id {} not found in NodeConfig.nodes",
+                        node_config.node_id
+                    )
+                    .into(),
+                )
+            })?;
 
         let api_addr = build_listen_addr(
             &node_config.listen_addr_api,
@@ -76,6 +92,15 @@ where
 
         (api_addr, addr_raft)
     };
+
+    // Fail loudly if a listen address is not a valid `host:port` - e.g. because
+    // `HQL_LISTEN_ADDR_API/RAFT` already contained a port, which would be appended twice here.
+    let api_socket_addr = SocketAddr::from_str(&api_addr).map_err(|err| {
+        Error::Config(format!("Invalid API listen address '{api_addr}': {err}").into())
+    })?;
+    let rpc_socket_addr = SocketAddr::from_str(&rpc_addr).map_err(|err| {
+        Error::Config(format!("Invalid Raft listen address '{rpc_addr}': {err}").into())
+    })?;
 
     #[cfg(feature = "sqlite")]
     let (tx_client_stream, rx_client_stream) = flume::bounded(1);
@@ -139,23 +164,24 @@ where
     if let Some(config) = &node_config.tls_raft {
         let config = config.server_config(&node_config.listen_addr_raft).await;
         task::spawn(Box::pin(async move {
-            let addr = SocketAddr::from_str(&rpc_addr).expect("valid RPC socket address");
             // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
             //  properly with axum directly
-            axum_server::bind_rustls(addr, config)
+            axum_server::bind_rustls(rpc_socket_addr, config)
                 .serve(router_internal.into_make_service())
                 .await
-                .unwrap();
+                .map_err(|err| error!("Raft server stopped: {err}"))
         }));
     } else {
+        // Bind before spawning so that a bind failure fails startup loudly instead of
+        // panicking inside the spawned task with a dropped JoinError.
+        let listener = TcpListener::bind(rpc_socket_addr).await.map_err(|err| {
+            Error::Config(format!("Cannot bind Raft listen address '{rpc_addr}': {err}").into())
+        })?;
         task::spawn(Box::pin(async move {
-            let listener = TcpListener::bind(rpc_addr)
-                .await
-                .expect("valid RPC socket address");
             axum::serve(listener, router_internal.into_make_service())
                 .with_graceful_shutdown(shutdown)
                 .await
-                .unwrap()
+                .map_err(|err| error!("Raft server stopped: {err}"))
         }));
     };
 
@@ -225,23 +251,24 @@ where
     if let Some(config) = &node_config.tls_api {
         let config = config.server_config(&node_config.listen_addr_api).await;
         task::spawn(Box::pin(async move {
-            let addr = SocketAddr::from_str(&api_addr).expect("valid RPC socket address");
             // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
             //  properly with axum directly
-            axum_server::bind_rustls(addr, config)
+            axum_server::bind_rustls(api_socket_addr, config)
                 .serve(router_api.into_make_service())
                 .await
-                .unwrap();
+                .map_err(|err| error!("API server stopped: {err}"))
         }));
     } else {
+        // Bind before spawning so that a bind failure fails startup loudly instead of
+        // panicking inside the spawned task with a dropped JoinError.
+        let listener = TcpListener::bind(api_socket_addr).await.map_err(|err| {
+            Error::Config(format!("Cannot bind API listen address '{api_addr}': {err}").into())
+        })?;
         task::spawn(Box::pin(async move {
-            let listener = TcpListener::bind(api_addr)
-                .await
-                .expect("valid RPC socket address");
             axum::serve(listener, router_api.into_make_service())
                 .with_graceful_shutdown(shutdown_signal(rx_shutdown))
                 .await
-                .unwrap()
+                .map_err(|err| error!("API server stopped: {err}"))
         }));
     };
 

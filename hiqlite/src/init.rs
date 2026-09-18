@@ -79,7 +79,7 @@ pub async fn init_pristine_node_1_db(
     tls_no_verify: bool,
 ) -> Result<(), Error> {
     if node_id == 1 {
-        let this_node = get_this_node(node_id, nodes);
+        let this_node = get_this_node(node_id, nodes)?;
 
         if is_initialized_timeout_sqlite(node_id, raft).await? {
             info!("node 1 raft is already initialized");
@@ -114,7 +114,7 @@ pub async fn init_pristine_node_1_cache(
     tls_no_verify: bool,
 ) -> Result<(), Error> {
     if node_id == 1 {
-        let this_node = get_this_node(node_id, nodes);
+        let this_node = get_this_node(node_id, nodes)?;
 
         if wal_on_disk && is_initialized_timeout_cache(node_id, raft).await? {
             info!("node 1 raft is already initialized");
@@ -135,16 +135,16 @@ pub async fn init_pristine_node_1_cache(
     Ok(())
 }
 
-fn get_this_node(this_node: u64, nodes: &[Node]) -> Node {
-    let filtered = nodes
+fn get_this_node(this_node: u64, nodes: &[Node]) -> Result<Node, Error> {
+    nodes
         .iter()
-        .filter(|node| node.id == this_node)
-        .collect::<Vec<&Node>>();
-    let node = filtered
-        .first()
+        .find(|node| node.id == this_node)
         .cloned()
-        .expect("this node to always exist in all nodes");
-    (*node).clone()
+        .ok_or_else(|| {
+            Error::Config(
+                format!("This node ({this_node}) is not part of the configured node list").into(),
+            )
+        })
 }
 
 #[tracing::instrument(skip(nodes, secret_api, tls, tls_no_verify))]
@@ -284,12 +284,11 @@ pub async fn become_cluster_member(
         leave_remote_cluster(
             &state, raft_type, &client, scheme, this_node, nodes, 10, false,
         )
-        .await
-        .expect("Cannot leave remote cluster");
+        .await?;
     }
     set_raft_running(&state, raft_type);
 
-    let this_node = get_this_node(this_node, nodes);
+    let this_node = get_this_node(this_node, nodes)?;
     let payload = serialize(&LearnerReq {
         node_id: this_node.id,
         addr_api: this_node.addr_api,
@@ -562,10 +561,13 @@ async fn is_remote_cluster_member(
                 continue;
             }
             if not_initialized_remotes >= quorum {
+                // A quorum of remotes is not initialized, so this must be a fresh cluster, and we
+                // cannot be a member of it yet - no need to keep checking the remaining nodes.
                 info!(
                     "Found {} remote Nodes that are not initialized - must be a fresh cluster",
                     not_initialized_remotes
                 );
+                return false;
             }
 
             url.clear();
@@ -592,8 +594,15 @@ async fn is_remote_cluster_member(
                             time::sleep(Duration::from_secs(1)).await;
                             continue;
                         };
-                        let metrics = deserialize::<RaftMetrics<u64, Node>>(bytes.as_ref())
-                            .expect("Cannot deserialize remote metrics response");
+                        let Ok(metrics) = deserialize::<RaftMetrics<u64, Node>>(bytes.as_ref())
+                        else {
+                            error!(
+                                "Cannot deserialize remote metrics response from Node {}",
+                                node.id
+                            );
+                            time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        };
 
                         let is_member = metrics
                             .membership_config
@@ -615,16 +624,23 @@ async fn is_remote_cluster_member(
                         // metrics. This can only mean, that remote is not initialized as well.
                         not_initialized_remotes += 1;
 
-                        let body = resp
-                            .bytes()
-                            .await
-                            .expect("API answer to always have a body");
-                        let err: Error =
-                            serde_json::from_slice(&body).expect("To always get back a JSON error");
-                        error!(
-                            "Error retrieving {:?} Raft metrics from remote Node {}: {:?}",
-                            raft_type, node.id, err
-                        );
+                        match resp.bytes().await {
+                            Ok(body) => match serde_json::from_slice::<Error>(&body) {
+                                Ok(err) => error!(
+                                    "Error retrieving {:?} Raft metrics from remote Node {}: {:?}",
+                                    raft_type, node.id, err
+                                ),
+                                Err(err) => error!(
+                                    "Cannot deserialize JSON error from remote Node {} (is a load \
+                                     balancer or proxy in front of the API port?): {}",
+                                    node.id, err
+                                ),
+                            },
+                            Err(err) => error!(
+                                "Cannot read response body from remote Node {}: {}",
+                                node.id, err
+                            ),
+                        }
 
                         time::sleep(Duration::from_secs(1)).await;
                     }

@@ -66,8 +66,7 @@ pub(crate) async fn start_raft_db(
         #[cfg(feature = "backup")]
         node_config.backup_keep_days_local,
     )
-    .await
-    .unwrap();
+    .await?;
 
     let is_startup_finished = Arc::new(AtomicBool::new(false));
     let sql_writer = state_machine_store.write_tx.clone();
@@ -92,8 +91,7 @@ pub(crate) async fn start_raft_db(
         log_store,
         state_machine_store,
     )
-    .await
-    .expect("Raft create failed");
+    .await?;
 
     init::init_pristine_node_1_db(
         &raft,
@@ -174,8 +172,7 @@ where
             log_store,
             state_machine_store,
         )
-        .await
-        .expect("Raft create failed");
+        .await?;
 
         (raft, Some(shutdown_handle))
     } else {
@@ -186,8 +183,7 @@ where
             logs::memory::LogStoreMemory::new(),
             state_machine_store,
         )
-        .await
-        .expect("Raft create failed");
+        .await?;
 
         (raft, None)
     };
