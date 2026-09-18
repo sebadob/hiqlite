@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::clone::Clone;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tokio::{fs, task, time};
@@ -38,6 +38,12 @@ type SnapshotData = tokio::fs::File;
 pub type SqlitePool = deadpool::unmanaged::Pool<rusqlite::Connection>;
 
 pub type Params = Vec<Param>;
+
+/// Total wall-clock budget for retrying read-pool connections at startup. Each attempt already
+/// waits up to 30 s (busy_timeout) for exclusive lock holders, so this covers a full contention
+/// cycle plus margin; beyond that the failure is unrecoverable and we panic instead of hanging
+/// forever.
+const READ_POOL_CONNECT_BUDGET: Duration = Duration::from_secs(60);
 
 /// Non-deterministic SQLite functions that are forbidden on raft write connections,
 /// where every node must apply the identical statement. The dashboard pre-scans
@@ -342,6 +348,11 @@ impl StateMachineSqlite {
 
         let mut conns = Vec::with_capacity(pool_size);
         for _ in 0..pool_size {
+            // Bounded retry: each attempt already waits up to 30 s (busy_timeout) for exclusive
+            // lock holders. After the total budget the failure is unrecoverable at startup, so
+            // we panic instead of retrying forever.
+            let deadline = Instant::now() + READ_POOL_CONNECT_BUDGET;
+            let mut last_warn = None;
             let mut conn = Self::connect(
                 path.to_string(),
                 filename_db.to_string(),
@@ -350,6 +361,25 @@ impl StateMachineSqlite {
             )
             .await;
             while conn.is_err() {
+                let now = Instant::now();
+                if now >= deadline {
+                    panic!(
+                        "Read-pool connection to '{path_full}' still failing after {:?} of retries \
+                         (last error: {:?}). Unrecoverable at startup - panicking instead of \
+                         retrying forever.",
+                        READ_POOL_CONNECT_BUDGET,
+                        conn.as_ref().err()
+                    );
+                }
+                if last_warn.map_or(true, |t| now.duration_since(t) >= Duration::from_secs(5)) {
+                    warn!(
+                        "Read-pool connection to '{path_full}' failing: {:?}; retrying for up to \
+                         {:?} in total",
+                        conn.as_ref().err(),
+                        READ_POOL_CONNECT_BUDGET
+                    );
+                    last_warn = Some(now);
+                }
                 time::sleep(Duration::from_millis(10)).await;
                 conn = Self::connect(
                     path.to_string(),

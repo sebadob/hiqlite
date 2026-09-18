@@ -47,11 +47,18 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
             .expect("Sender to always be listening");
 
         let resp = rx.await.expect("to always receive a snapshot response")?;
-        fs::copy(path_temp, &path)
+        let path_tmp = format!("{path}~");
+        fs::copy(&path_temp, &path_tmp)
             .await
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write_state_machine(&err),
             })?;
+        if let Err(err) = fs::rename(&path_tmp, &path).await {
+            let _ = fs::remove_file(&path_tmp).await;
+            return Err(StorageError::IO {
+                source: StorageIOError::write_state_machine(&err),
+            });
+        }
         let snapshot = fs::File::open(path).await.map_err(|err| StorageError::IO {
             source: StorageIOError::read_state_machine(&err),
         })?;

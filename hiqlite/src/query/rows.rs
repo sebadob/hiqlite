@@ -53,7 +53,8 @@ impl RowOwned {
             let value = match info.typ {
                 ColumnType::Expr => {
                     // returned expressions can be any type we don't know in advance
-                    // TODO is there a nicer solution for this with the encapsulated type?
+                    // The chain below covers every SQLite storage class, so the final Null is
+                    // only reachable for a genuine SQL NULL.
                     if let Ok(text) = row.get::<_, String>(i) {
                         ValueOwned::Text(text)
                     } else if let Ok(i) = row.get::<_, i64>(i) {
@@ -67,13 +68,45 @@ impl RowOwned {
                     }
                 }
                 // ColumnType::Expr => row.get(i).map(ValueOwned::Text).unwrap_or(ValueOwned::Null),
-                ColumnType::Integer => row
-                    .get(i)
-                    .map(ValueOwned::Integer)
-                    .unwrap_or(ValueOwned::Null),
-                ColumnType::Real => row.get(i).map(ValueOwned::Real).unwrap_or(ValueOwned::Null),
-                ColumnType::Text => row.get(i).map(ValueOwned::Text).unwrap_or(ValueOwned::Null),
-                ColumnType::Blob => row.get(i).map(ValueOwned::Blob).unwrap_or(ValueOwned::Null),
+                // Typed columns: a genuine SQL NULL maps to Null; a stored value that cannot be
+                // converted is a type mismatch and must fail loudly instead of silently
+                // becoming Null.
+                ColumnType::Integer => match row.get::<_, Option<i64>>(i) {
+                    Ok(Some(v)) => ValueOwned::Integer(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Integer but the stored value \
+                         cannot be converted to i64: {err:?}",
+                        info.name
+                    ),
+                },
+                ColumnType::Real => match row.get::<_, Option<f64>>(i) {
+                    Ok(Some(v)) => ValueOwned::Real(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Real but the stored value \
+                         cannot be converted to f64: {err:?}",
+                        info.name
+                    ),
+                },
+                ColumnType::Text => match row.get::<_, Option<String>>(i) {
+                    Ok(Some(v)) => ValueOwned::Text(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Text but the stored value \
+                         cannot be converted to String: {err:?}",
+                        info.name
+                    ),
+                },
+                ColumnType::Blob => match row.get::<_, Option<Vec<u8>>>(i) {
+                    Ok(Some(v)) => ValueOwned::Blob(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Blob but the stored value \
+                         cannot be converted to Vec<u8>: {err:?}",
+                        info.name
+                    ),
+                },
             };
 
             cols.push(ColumnOwned {
