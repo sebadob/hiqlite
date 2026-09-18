@@ -176,7 +176,9 @@ impl WalFile {
         // during a force-killed application or similar situation.
         let mut recovered = 0;
         loop {
-            if offset >= self.len_max + 8 + 4 + 4 {
+            // make sure a full record header fits at this offset - use u64 so that a large
+            // `offset` cannot wrap around in u32 arithmetic and pass this check
+            if offset as u64 + 8 + 4 + 4 > self.len_max as u64 {
                 debug!("Reached the end of the WAL file");
                 break;
             }
@@ -269,13 +271,15 @@ impl WalFile {
         // - 4 byte crc
         // - 4 byte data length
         // - variable length data
-        self.len_max
-            > self.data_end.unwrap_or_else(|| self.offset_logs() as u32) + 1 + 8 + 4 + 4 + data_len
+        // use u64 so a corrupt or large `data_end` cannot wrap around in u32 arithmetic and
+        // report free space that does not exist
+        let next = self.data_end.unwrap_or_else(|| self.offset_logs() as u32) as u64;
+        (self.len_max as u64) > next + 1 + 8 + 4 + 4 + data_len as u64
     }
 
     #[inline]
     pub fn space_left(&self) -> u32 {
-        self.len_max - self.data_end.unwrap_or_else(|| self.offset_logs() as u32)
+        self.len_max.saturating_sub(self.data_end.unwrap_or_else(|| self.offset_logs() as u32))
     }
 
     /// Expects to have enough space left -> check MUST be done upfront
@@ -402,6 +406,11 @@ impl WalFile {
 
         if let Some(memo) = memo
             && memo.last_wal_no == self.wal_no
+            // the memo is only valid for the exact same WAL file (same `wal_no` AND same
+            // `id_from`): after all files are purged and re-created, `wal_no` values wrap
+            // around and a stale memo would start scanning at an offset that belongs to
+            // different logs
+            && memo.id_from == self.id_from
             && memo.last_log_id < id_from
         {
             // we can use the memoized last log as our start position
@@ -432,6 +441,9 @@ impl WalFile {
                     1 => {
                         *memo = Some(LogReadMemo {
                             last_wal_no: self.wal_no,
+                            // the file this memo belongs to - `wal_no` alone is not a unique
+                            // identifier, because it wraps around after all files are purged
+                            id_from: self.id_from,
                             last_log_id: record.log_id,
                             // id, crc, length, data
                             data_end: idx + 8 + 4 + 4 + record.data.len() as u32,
@@ -457,11 +469,19 @@ impl WalFile {
         Ok(offset)
     }
 
-    /// Reads a record at the given `offset`. Does NOT do any boundary checking or any other
-    /// validation. Only extracts the data itself.
+    /// Reads a record at the given `offset`. The caller MUST make sure that the offset is valid
+    /// and within the bounds of the file - this function additionally checks that the record
+    /// header and data fit into the file, so callers can rely on it not reading past the end of
+    /// the mapped region (a corrupt `data_len` must not cause an OOB read or a u32 overflow).
     #[inline(always)]
     fn read_record_unchecked(&self, offset: u32) -> Result<WalRecord<'_>, Error> {
-        debug_assert!(offset + 8 + 4 + 4 < self.len_max);
+        // make sure the record header fits completely into the file - use u64 so that a large
+        // `offset` cannot wrap around in u32 arithmetic and pass this check
+        if offset as u64 + 8 + 4 + 4 > self.len_max as u64 {
+            return Err(Error::Integrity(
+                format!("WAL record header at offset {offset} does not fit into file").into(),
+            ));
+        }
 
         // id, crc, length
         let head = self.read_bytes(offset, offset + 8 + 4 + 4)?;
@@ -474,6 +494,13 @@ impl WalFile {
         if data_len == 0 {
             return Err(Error::Integrity(
                 format!("Attempt to read non-existent data of length 0\n{self:?}").into(),
+            ));
+        }
+        // make sure the record data fits into the file - use u64 so a corrupt `data_len` cannot
+        // wrap around in u32 arithmetic and pass this check
+        if (offset as u64 + 8 + 4 + 4) + data_len as u64 > self.len_max as u64 {
+            return Err(Error::Integrity(
+                format!("WAL record data at offset {offset} does not fit into file").into(),
             ));
         }
         let data = self.read_bytes(data_from, data_from + data_len)?;
@@ -804,6 +831,11 @@ impl WalFileSet {
         let mut iter = self.files.iter();
 
         let first = iter.next().unwrap();
+        // the `data_end` bounds check below is skipped for the last file, so it must be done
+        // here for the first one - otherwise a corrupt header could pass startup checks
+        if first.data_end.unwrap_or(0) > first.len_max {
+            return Err(Error::Integrity("WAL data offset bigger than file size".into()));
+        }
         let mut wal_no = first.wal_no;
         let mut until = first.id_until;
         if first.id_from > until {
@@ -932,8 +964,13 @@ impl WalFileSet {
         let mut files = VecDeque::with_capacity(file_names.len());
         for name in file_names {
             let path_full = format!("{base_path}/{name}");
-            if let Ok(wal) = WalFile::read_from_file(path_full) {
-                files.push_back(wal);
+            match WalFile::read_from_file(path_full.clone()) {
+                Ok(wal) => files.push_back(wal),
+                Err(err) => warn!(
+                    "Skipping unreadable WAL file {}: {err:?}. The store will start without it; \
+                     if this is not expected, check or remove the file.",
+                    path_full
+                ),
             }
         }
 
@@ -1596,6 +1633,138 @@ mod tests {
         let back = wal.files.back().unwrap();
         assert_eq!(back.data_start, None);
         assert_eq!(back.data_end, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn deep_integrity_check_stops_before_eof() -> Result<(), Error> {
+        // Regression test: when the last record ends close to the end of the file, the phase-2
+        // scan must not read a partial record header past the end of the mapped region (which
+        // used to be a u32 overflow / out-of-bounds mmap slice).
+        let base_path = format!("{}/deep_check_eof", PATH);
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+
+        let mut buf = Vec::with_capacity(32);
+        let mut wal = WalFile::new(1, &base_path, 0, 0, MB2).unwrap();
+        wal.create_file(&mut buf)?;
+        wal.mmap_mut()?;
+
+        // one record whose `data_end` lands two bytes before the end of the file: the phase-2
+        // scan starts at `data_end + 1`, where a full 16 byte header does not fit anymore
+        let data_len = MB2 as usize - 50;
+        buf.clear();
+        wal.append_log(1, &vec![7u8; data_len], &mut buf)?;
+        assert_eq!(wal.data_end, Some(MB2 - 2));
+
+        // must not panic and must report the file as consistent
+        buf.clear();
+        wal.check_repair_data_integrity(&mut buf)?;
+        assert_eq!(wal.id_from, 1);
+        assert_eq!(wal.id_until, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn read_logs_memo_survives_wal_no_reuse() -> Result<(), Error> {
+        // Regression test: after all WAL files are purged and a new file re-uses `wal_no` 1, an
+        // old `LogReadMemo` must not be applied - it would start scanning at the wrong offset.
+        let base_old = format!("{}/memo_wraparound_old", PATH);
+        let base_new = format!("{}/memo_wraparound_new", PATH);
+        for path in [&base_old, &base_new] {
+            let _ = fs::remove_dir_all(path);
+            fs::create_dir_all(path)?;
+        }
+
+        let mut buf = Vec::with_capacity(32);
+        let mut memo: Option<LogReadMemo> = None;
+
+        // old file #1 with logs 1..=3
+        let mut wal_old = WalFile::new(1, &base_old, 0, 0, MB2).unwrap();
+        wal_old.create_file(&mut buf)?;
+        wal_old.mmap_mut()?;
+        for id in 1..=3 {
+            buf.clear();
+            wal_old.append_log(id, b"payload", &mut buf)?;
+        }
+
+        // read a range that sets the memo (last log ID 2)
+        let mut logs = Vec::new();
+        buf.clear();
+        wal_old.read_logs(1, 2, &mut memo, &mut logs)?;
+        assert_eq!(logs.len(), 2);
+
+        // new file #1 (same `wal_no` after wraparound) with logs 6..=8 at the same offsets
+        let mut wal_new = WalFile::new(1, &base_new, 0, 0, MB2).unwrap();
+        wal_new.create_file(&mut buf)?;
+        wal_new.mmap_mut()?;
+        for id in 6..=8 {
+            buf.clear();
+            wal_new.append_log(id, b"payload", &mut buf)?;
+        }
+
+        // with the stale memo, `read_logs` would start at the old offset and miss log 6
+        let mut logs = Vec::new();
+        buf.clear();
+        wal_new.read_logs(6, 7, &mut memo, &mut logs)?;
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].0, 6);
+        assert_eq!(logs[1].0, 7);
+
+        Ok(())
+    }
+
+    #[test]
+    fn has_space_does_not_overflow() {
+        // Regression test: with a large `data_end` the old u32 arithmetic wrapped around and
+        // reported free space that does not exist.
+        let mut wal = WalFile::new(1, "some/path", 0, 0, MB2).unwrap();
+
+        wal.data_end = Some(u32::MAX - 10);
+        assert!(!wal.has_space(5)); // (u32::MAX - 10) + 17 + 5 wraps in u32 arithmetic
+        assert_eq!(wal.space_left(), 0);
+
+        wal.data_end = None;
+        assert!(wal.has_space(MB2 - 50));
+        assert!(!wal.has_space(MB2 - 49)); // exactly full: no space left
+    }
+
+    #[test]
+    fn integrity_check_rejects_first_file_data_end_overflow() -> Result<(), Error> {
+        // Regression test: the `data_end` bounds check used to be skipped for the first file,
+        // so a corrupt header could pass startup integrity checks.
+        let base_path = format!("{}/integrity_first_eof", PATH);
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+
+        let mut files = VecDeque::with_capacity(1);
+        files.push_back(WalFile {
+            version: 1,
+            wal_no: 1,
+            path: "".to_string(),
+            id_from: 1,
+            id_until: 5,
+            data_start: Some(32),
+            // bigger than the file size - must be rejected
+            data_end: Some(MB2 + 4096),
+            len_max: MB2,
+            mmap: None,
+            mmap_mut: None,
+            file: None,
+        });
+        let mut set = WalFileSet {
+            active: Some(0),
+            base_path,
+            files,
+        };
+
+        let mut buf = Vec::with_capacity(28);
+        assert!(matches!(
+            set.check_integrity(&mut buf, false).unwrap_err(),
+            Error::Integrity(_)
+        ));
 
         Ok(())
     }

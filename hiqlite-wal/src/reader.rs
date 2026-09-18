@@ -33,6 +33,10 @@ pub struct LogState {
 #[derive(Debug)]
 pub struct LogReadMemo {
     pub last_wal_no: u64,
+    // the `id_from` of the WAL file this memo belongs to - together with `last_wal_no` it
+    // uniquely identifies the file, because `wal_no` values wrap around after all files are
+    // purged and re-created
+    pub id_from: u64,
     pub last_log_id: u64,
     pub data_end: u32,
 }
@@ -74,7 +78,7 @@ fn run(
                 }
 
                 let mut from_next = from;
-                for log in wal.files.iter_mut() {
+                'logs: for log in wal.files.iter_mut() {
                     if log.id_until < from_next {
                         debug!(
                             "log.id_until < from_next -> {} < {}",
@@ -87,22 +91,30 @@ fn run(
                     buf.clear();
 
                     if log.id_until < until {
+                        // this file is entirely before `until` - read the whole overlap
                         debug!("log.id_until < until -> {} < {}", log.id_until, until);
-                        log.read_logs(from_next, log.id_until, &mut memo, &mut buf)
-                            .unwrap();
+                        match log.read_logs(from_next, log.id_until, &mut memo, &mut buf) {
+                            Ok(_) => {
+                                for (_id, data) in buf.drain(..) {
+                                    debug_assert!(_id >= from_next && _id <= until);
+                                    ack.send(Some(Ok(data))).unwrap()
+                                }
 
-                        for (_id, data) in buf.drain(..) {
-                            debug_assert!(_id >= from_next && _id <= until);
-                            ack.send(Some(Ok(data))).unwrap()
+                                // If the until goes beyond our current file, we want to remove the `mmap`
+                                // to save memory. Only if the system needs a log snapshot to recover
+                                // another node, it may need lower log IDs again.
+                                log.mmap_drop();
+                            }
+                            Err(err) => {
+                                error!("Error reading logs: {:?}", err);
+                                ack.send(Some(Err(err))).unwrap();
+                                break 'logs;
+                            }
                         }
-
-                        // If the until goes beyond our current file, we want to remove the `mmap`
-                        // to save memory. Only if the system needs a log snapshot to recover
-                        // another node, it may need lower log IDs again.
-                        log.mmap_drop();
 
                         from_next = log.id_until + 1;
                     } else {
+                        // this file contains the end of the read request
                         debug!("log contains end of read request");
 
                         match log.read_logs(from_next, until, &mut memo, &mut buf) {
@@ -113,6 +125,7 @@ fn run(
                             }
                             Err(err) => {
                                 error!("Error reading logs: {:?}", err);
+                                ack.send(Some(Err(err))).unwrap();
                             }
                         }
                         break;
@@ -187,4 +200,74 @@ fn run(
     }
 
     debug!("Logs Reader exiting");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wal::WalFile;
+    use std::collections::VecDeque;
+    use std::fs;
+    use std::io::{Seek, SeekFrom, Write};
+
+    static PATH: &str = "test_data";
+    static MB2: u32 = 2 * 1024 * 1024;
+
+    #[test]
+    fn logs_action_reports_read_errors() -> Result<(), Error> {
+        // Regression test: a read error while serving `Action::Logs` used to be swallowed (or,
+        // for files entirely before `until`, even panicked the reader thread), so callers got a
+        // silent short read instead of an error.
+        let base_path = format!("{}/reader_logs_error", PATH);
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+
+        let mut buf = Vec::with_capacity(32);
+        let mut wal = WalFile::new(1, &base_path, 0, 0, MB2).unwrap();
+        wal.create_file(&mut buf)?;
+        wal.mmap_mut()?;
+        for id in 1..=3 {
+            buf.clear();
+            wal.append_log(id, b"payload", &mut buf)?;
+        }
+        let path = wal.path.clone();
+        drop(wal);
+
+        // corrupt the first data byte of log 3 (record starts at offset 80, header is 16 bytes)
+        {
+            let mut file = fs::OpenOptions::new().write(true).open(&path)?;
+            file.seek(SeekFrom::Start(96))?;
+            file.write_all(b"X")?;
+        }
+
+        let set = WalFileSet {
+            active: Some(0),
+            base_path,
+            files: VecDeque::from([WalFile::read_from_file(path)?]),
+        };
+        let meta = Arc::new(RwLock::new(Metadata {
+            last_purged_log_id: None,
+            vote: None,
+        }));
+
+        let tx = spawn(meta, Arc::new(RwLock::new(set)))?;
+        let (ack, rx) = flume::bounded(2);
+        tx.send(Action::Logs { from: 2, until: 3, ack })
+            .expect("reader to always be listening");
+
+        let mut got_err = false;
+        while let Ok(msg) = rx.recv() {
+            match msg {
+                Some(Ok(_)) => panic!("unexpected data"),
+                Some(Err(err)) => {
+                    assert!(matches!(&err, Error::Integrity(_)));
+                    got_err = true;
+                }
+                None => break,
+            }
+        }
+        assert!(got_err);
+
+        Ok(())
+    }
 }

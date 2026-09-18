@@ -65,17 +65,23 @@ async fn try_get_log_entries<
 ) -> Result<Vec<T::Entry>, StorageError<T::NodeId>> {
     let from = match range.start_bound() {
         Bound::Included(i) => *i,
-        Bound::Excluded(i) => *i + 1,
+        // `Excluded(u64::MAX)` means "nothing after this" - treat it as an empty range below
+        Bound::Excluded(i) => i.checked_add(1).unwrap_or(u64::MAX),
         Bound::Unbounded => 0,
     };
     let until = match range.end_bound() {
         Bound::Included(i) => *i,
-        Bound::Excluded(i) => *i - 1,
+        // `Excluded(0)` means "up to but not including log 0" - an empty range
+        Bound::Excluded(i) => i.saturating_sub(1),
         Bound::Unbounded => unreachable!(),
     };
     debug!("Entering try_get_log_entries() from {from} until {until}");
 
-    let mut res: Vec<T::Entry> = Vec::with_capacity((until - from) as usize + 1);
+    if from > until {
+        // empty range - nothing to read (also covers `Excluded(u64::MAX)` / `Excluded(0)`)
+        return Ok(Vec::new());
+    }
+    let mut res: Vec<T::Entry> = Vec::with_capacity((until - from + 1) as usize);
 
     let (ack, rx) = flume::bounded(1);
     tx.send_async(reader::Action::Logs { from, until, ack })
