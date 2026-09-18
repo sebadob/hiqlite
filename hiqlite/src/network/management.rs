@@ -8,6 +8,7 @@ use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::Response;
 use openraft::error::{CheckIsLeaderError, ForwardToLeader, RaftError};
+use openraft::StoredMembership;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -60,21 +61,19 @@ pub(crate) async fn add_learner(
     let res = helpers::add_new_learner(&state, &raft_type, node).await;
     match res {
         Ok(_) => {
-            let mut metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-            let mut is_member = metrics
-                .membership_config
-                .membership()
-                .get_node(&nid)
-                .is_some();
-            while !is_member {
-                info!("Waiting for node {nid} to become a committed learner");
-                time::sleep(Duration::from_millis(500)).await;
-                metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-                is_member = metrics
-                    .membership_config
-                    .membership()
-                    .get_node(&nid)
-                    .is_some();
+            if let Err(err) = wait_for_membership_commit(
+                &state,
+                &raft_type,
+                &format!("node {nid} to become a committed learner"),
+                |mc| mc.membership().get_node(&nid).is_some(),
+            )
+            .await
+            {
+                error!(
+                    "Error waiting for node {nid} to become a committed learner: {:?}",
+                    err
+                );
+                return Err(err);
             }
 
             // give it a second to sync before dropping the lock
@@ -111,7 +110,7 @@ pub(crate) async fn become_member(
     let payload = get_payload::<LearnerReq>(&headers, body)?;
     info!("{:?} Node membership request: {:?}", raft_type, payload);
 
-    let mut metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+    let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
     debug!("{:?} Members before add: {:?}", raft_type, metrics);
 
     let is_voter = metrics
@@ -134,22 +133,19 @@ pub(crate) async fn become_member(
 
     match helpers::change_membership(&state, &raft_type, nodes_set, true).await {
         Ok(_) => {
-            metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-            let mut is_voter = metrics
-                .membership_config
-                .voter_ids()
-                .any(|id| id == payload.node_id);
-            while !is_voter {
-                info!(
-                    "Waiting for node {} to become a committed learner",
-                    payload.node_id
+            if let Err(err) = wait_for_membership_commit(
+                &state,
+                &raft_type,
+                &format!("node {} to become a committed voter", payload.node_id),
+                |mc| mc.voter_ids().any(|id| id == payload.node_id),
+            )
+            .await
+            {
+                error!(
+                    "Error waiting for node {} to become a committed voter: {:?}",
+                    payload.node_id, err
                 );
-                time::sleep(Duration::from_millis(500)).await;
-                metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-                is_voter = metrics
-                    .membership_config
-                    .voter_ids()
-                    .any(|id| id == payload.node_id);
+                return Err(err);
             }
 
             // give it a second to sync before dropping the lock
@@ -165,7 +161,7 @@ pub(crate) async fn become_member(
     }
 }
 
-async fn are_we_leader(state: &AppStateExt, raft_type: &RaftType) -> Result<(), Error> {
+async fn are_we_leader(state: &Arc<AppState>, raft_type: &RaftType) -> Result<(), Error> {
     if let Some(leader_id) = helpers::get_raft_leader(state, raft_type).await {
         if leader_id == state.id {
             Ok(())
@@ -235,7 +231,13 @@ pub(crate) async fn post_membership(
         return Err(Error::Config("Raft node has not been initialized".into()));
     }
 
+    are_we_leader(&state, &raft_type).await?;
+
     let payload = get_payload::<BTreeSet<NodeId>>(&headers, body)?;
+
+    // Take the shared raft_lock like the other membership endpoints so this full-set change
+    // cannot race with join/leave flows that poll for their commit.
+    let _lock = state.raft_lock.lock().await;
     helpers::change_membership(&state, &raft_type, payload, false).await?;
 
     // retain false removes current cluster members if they do not appear in the new list
@@ -273,8 +275,8 @@ pub async fn leave_cluster_exec(
 
     let lock = state.raft_lock.lock().await;
 
-    let mut metrics = helpers::get_raft_metrics(state, raft_type).await;
-    let mut is_member = metrics
+    let metrics = helpers::get_raft_metrics(state, raft_type).await;
+    let is_member = metrics
         .membership_config
         .nodes()
         .any(|(id, _)| *id == payload.node_id);
@@ -284,7 +286,7 @@ pub async fn leave_cluster_exec(
             "Node {} ({:?}) is a cluster member - removing it",
             payload.node_id, raft_type
         );
-        let mut is_voter = metrics
+        let is_voter = metrics
             .membership_config
             .voter_ids()
             .any(|id| id == payload.node_id);
@@ -301,20 +303,22 @@ pub async fn leave_cluster_exec(
                 );
                 return Err(err);
             }
-            while is_voter {
-                info!(
-                    "Waiting until Node {} is not a ({:?}) Voter anymore\nVoter IDs: {:?}\nis_voter: {}",
-                    payload.node_id,
-                    raft_type,
-                    metrics.membership_config.voter_ids().collect::<Vec<_>>(),
-                    is_voter
+            if let Err(err) = wait_for_membership_commit(
+                state,
+                raft_type,
+                &format!(
+                    "node {} ({:?}) to no longer be a Voter",
+                    payload.node_id, raft_type
+                ),
+                |mc| !mc.voter_ids().any(|id| id == payload.node_id),
+            )
+            .await
+            {
+                error!(
+                    "Error waiting for Node {} ({:?}) to no longer be a Voter: {:?}",
+                    payload.node_id, raft_type, err
                 );
-                time::sleep(Duration::from_millis(500)).await;
-                metrics = helpers::get_raft_metrics(state, raft_type).await;
-                is_voter = metrics
-                    .membership_config
-                    .voter_ids()
-                    .any(|id| id == payload.node_id);
+                return Err(err);
             }
         } else if !payload.stay_as_learner {
             warn!(
@@ -328,22 +332,28 @@ pub async fn leave_cluster_exec(
                 );
                 return Err(err);
             }
-            while is_member {
-                info!(
-                    "Waiting until Node {} ({:?}) is not a Learner anymore",
-                    payload.node_id, raft_type,
+            if let Err(err) = wait_for_membership_commit(
+                state,
+                raft_type,
+                &format!(
+                    "node {} ({:?}) to no longer be a Learner",
+                    payload.node_id, raft_type
+                ),
+                |mc| !mc.nodes().any(|(id, _)| *id == payload.node_id),
+            )
+            .await
+            {
+                error!(
+                    "Error waiting for Node {} ({:?}) to no longer be a Learner: {:?}",
+                    payload.node_id, raft_type, err
                 );
-                time::sleep(Duration::from_millis(500)).await;
-                metrics = helpers::get_raft_metrics(state, raft_type).await;
-                is_member = metrics
-                    .membership_config
-                    .nodes()
-                    .any(|(id, _)| *id == payload.node_id);
+                return Err(err);
             }
         }
     }
 
     drop(lock);
+    let metrics = helpers::get_raft_metrics(state, raft_type).await;
     info!(
         "Node {} ({:?}) has left the cluster: {:?}",
         payload.node_id,
@@ -372,4 +382,46 @@ pub(crate) async fn metrics(
 
     let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
     fmt_ok(headers, &metrics)
+}
+
+/// Maximum time to wait for a membership change to be committed while holding `state.raft_lock`.
+/// A leader change mid-operation can lose the uncommitted entry, so this wait is bounded and
+/// re-checks leadership on every poll - otherwise the shared lock could be held forever (see
+/// SECURITY_ANALYSIS_PLAN.md, L4). 40 s exceeds the ~30 s HTTP client timeout, so API callers
+/// get their own timeout first; for shutdown paths it acts as a loud backstop.
+const MEMBERSHIP_COMMIT_TIMEOUT: Duration = Duration::from_secs(40);
+
+/// Poll metrics until `is_done` reports the membership change as committed.
+///
+/// Bounded by [`MEMBERSHIP_COMMIT_TIMEOUT`] and re-checks leadership on every poll, because a
+/// leader change mid-operation can lose the uncommitted entry. Callers must hold
+/// `state.raft_lock`.
+async fn wait_for_membership_commit(
+    state: &Arc<AppState>,
+    raft_type: &RaftType,
+    what: &str,
+    mut is_done: impl FnMut(&StoredMembership<NodeId, Node>) -> bool,
+) -> Result<(), Error> {
+    let start = time::Instant::now();
+
+    loop {
+        let metrics = helpers::get_raft_metrics(state, raft_type).await;
+        if is_done(&metrics.membership_config) {
+            return Ok(());
+        }
+
+        info!("Waiting for {what}");
+        time::sleep(Duration::from_millis(500)).await;
+
+        // A leader change mid-operation can lose the uncommitted entry, so bail out loudly.
+        are_we_leader(state, raft_type).await?;
+
+        if start.elapsed() > MEMBERSHIP_COMMIT_TIMEOUT {
+            return Err(Error::Error(format!(
+                "Timeout after {:?} waiting for {what}",
+                MEMBERSHIP_COMMIT_TIMEOUT
+            )
+            .into()));
+        }
+    }
 }

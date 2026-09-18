@@ -466,8 +466,31 @@ async fn try_become(
                         debug!("becoming a member via /{suffix} was successful");
                         return Ok(SkipBecome::No);
                     } else {
-                        let body = resp.bytes().await?;
-                        let err: Error = serde_json::from_slice(&body)?;
+                        let body = match resp.bytes().await {
+                            Ok(body) => body,
+                            Err(err) => {
+                                error!(
+                                    "Cannot read response body from remote Node {}: {}",
+                                    node.id, err
+                                );
+                                time::sleep(Duration::from_millis(500)).await;
+                                continue;
+                            }
+                        };
+
+                        // A load balancer or proxy in front of the API port may answer with a
+                        // non-JSON error body (e.g. an HTML 502) - log it and try the next node
+                        // instead of aborting the whole join.
+                        let Ok(err_body) = serde_json::from_slice::<Error>(&body) else {
+                            error!(
+                                "Cannot deserialize JSON error from remote Node {} (is a load \
+                                 balancer or proxy in front of the API port?): {}",
+                                node.id,
+                                String::from_utf8_lossy(&body)
+                            );
+                            time::sleep(Duration::from_millis(500)).await;
+                            continue;
+                        };
 
                         // TODO can this still happen after we added the "leave before proceed"?
                         // We can get into this situation when using the cache layer, because it has
@@ -476,7 +499,8 @@ async fn try_become(
                         // the raft has decided that this node is the new leader.
                         //
                         // -> We must check this after each error to get smooth rolling releases.
-                        if let Some((Some(leader_id), Some(node))) = err.is_forward_to_leader() {
+                        if let Some((Some(leader_id), Some(node))) = err_body.is_forward_to_leader()
+                        {
                             info!(
                                 "Node {} become '{}' member on remote ({}): Remote Node is not the leader - trying next",
                                 this_node,
@@ -517,7 +541,7 @@ async fn try_become(
                                 this_node,
                                 raft_type.as_str(),
                                 url,
-                                err
+                                err_body
                             );
                         }
 
@@ -711,13 +735,35 @@ pub async fn leave_remote_cluster(
                         left_cluster = true;
                         break 'outer;
                     } else {
-                        let body = resp.bytes().await?;
-                        let err: Error = serde_json::from_slice(&body)?;
+                        let body = match resp.bytes().await {
+                            Ok(body) => body,
+                            Err(err) => {
+                                error!(
+                                    "Cannot read response body from remote Node {}: {}",
+                                    node.id, err
+                                );
+                                continue;
+                            }
+                        };
+
+                        // A load balancer or proxy in front of the API port may answer with a
+                        // non-JSON error body (e.g. an HTML 502) - log it and try the next node
+                        // instead of aborting the whole leave.
+                        let Ok(err_body) = serde_json::from_slice::<Error>(&body) else {
+                            error!(
+                                "Cannot deserialize JSON error from remote Node {} (is a load \
+                                 balancer or proxy in front of the API port?): {}",
+                                node.id,
+                                String::from_utf8_lossy(&body)
+                            );
+                            continue;
+                        };
+
                         error!(
                             "Error removing this Node {} from remote {:?} Raft cluster: {:?}",
                             this_node,
                             raft_type.as_str(),
-                            err
+                            err_body
                         );
                     }
                 }

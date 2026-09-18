@@ -179,8 +179,10 @@ impl Client {
     /// upfront, but this has not been stabilized in this version.
     pub async fn shutdown(&self) -> Result<(), Error> {
         if let Some(state) = &self.inner.state {
+            // Must exceed the 9.5 s Kubernetes rolling-release pre-sleep inside
+            // `shutdown_execute`, leaving headroom for the ordered teardown itself.
             if tokio::time::timeout(
-                Duration::from_secs(15),
+                Duration::from_secs(20),
                 Self::shutdown_execute(
                     state,
                     #[cfg(feature = "cache")]

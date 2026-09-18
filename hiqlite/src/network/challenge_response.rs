@@ -94,19 +94,26 @@ impl ResponseFinal {
 
 #[inline(always)]
 fn cmp_constant_time<T: AsRef<[u8]>>(a: T, b: T) -> bool {
-    debug_assert_eq!(a.as_ref().len(), 32);
-    debug_assert_eq!(b.as_ref().len(), 32);
+    let a = a.as_ref();
+    let b = b.as_ref();
+
+    // One side of every comparison is network-supplied, so a malformed length must not panic:
+    // return `false` instead. Lengths are not secret here (both sides are SHA-256 hashes).
+    if a.len() != 32 || b.len() != 32 {
+        return false;
+    }
+
     constant_time_eq_32(
-        <&[u8; 32]>::try_from(a.as_ref())
-            .expect("Invalid SHA hash input for 32 byte constant time cmp"),
-        <&[u8; 32]>::try_from(b.as_ref())
-            .expect("Invalid SHA hash input for 32 byte constant time cmp"),
+        <&[u8; 32]>::try_from(a)
+            .expect("Length checked to be 32 above"),
+        <&[u8; 32]>::try_from(b)
+            .expect("Length checked to be 32 above"),
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::network::challenge_response::{Challenge, ChallengeResponse};
+    use crate::network::challenge_response::{Challenge, ChallengeResponse, ResponseFinal};
 
     #[test]
     fn test_challenge_response() {
@@ -136,5 +143,24 @@ mod tests {
                 .verify(&challenge_response, secret.as_ref())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn test_malformed_lengths_do_not_panic() {
+        let secret = b"SuperMegaSecure1337";
+        let challenge = Challenge::new().unwrap();
+
+        // A peer sending a non-32-byte response field must yield `Err`, not a panic.
+        let bad_response = ChallengeResponse {
+            node_id: 1,
+            challenge: challenge.0.clone(),
+            response: vec![0u8; 16],
+        };
+        assert!(bad_response.verify(&challenge, secret).is_err());
+
+        // Same for a non-32-byte ResponseFinal payload.
+        let challenge_response = ChallengeResponse::new(1, &challenge, secret).unwrap();
+        let bad_final = ResponseFinal(vec![0u8; 8]);
+        assert!(bad_final.verify(&challenge_response, secret).is_err());
     }
 }
