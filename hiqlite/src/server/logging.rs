@@ -2,7 +2,9 @@ use crate::server::args::LogLevel;
 
 pub fn init_logging(level: &LogLevel, _node_id: Option<u64>) {
     #[cfg(feature = "__profiling")]
-    if node_id == Some(1) {
+    if _node_id == Some(1) {
+        use tracing_subscriber::prelude::*;
+
         let console_layer = console_subscriber::spawn();
         tracing_subscriber::registry()
             .with(console_layer)

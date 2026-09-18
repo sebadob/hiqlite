@@ -153,7 +153,7 @@ pub fn build_tls_config(tls_no_verify: bool) -> Arc<ClientConfig> {
     #[allow(unused_mut)]
     let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
     #[cfg(feature = "webpki-roots")]
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    root_store.add_parsable_certificates(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned());
 
     let config = if tls_no_verify {
         tokio_rustls::rustls::ClientConfig::builder()

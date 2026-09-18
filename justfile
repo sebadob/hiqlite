@@ -98,7 +98,7 @@ clippy:
     cargo clippy --no-default-features --features dlock -- -D warnings
     cargo clippy --no-default-features --features listen_notify_local -- -D warnings
     cargo clippy --no-default-features --features listen_notify -- -D warnings
-    cargo clippy --no-default-features --features sqlite,cache -- -D warnings
+    cargo clippy --no-default-features --features sqlite,cache,webpki-roots -- -D warnings
 
     cargo clippy --no-default-features --features dashboard -- -D warnings
     cargo clippy --no-default-features --features shutdown-handle -- -D warnings
