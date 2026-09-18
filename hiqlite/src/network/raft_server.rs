@@ -9,17 +9,8 @@ use std::sync::atomic::Ordering;
 use tokio::task;
 use tracing::{debug, error, warn};
 
-// Reserved for a future openraft upgrade (see SECURITY_ANALYSIS_PLAN.md, N5) - only used by the
-// commented-out `RemoveMembershipCache` handler below. Re-enable together with it.
-// #[cfg(feature = "cache")]
-// use crate::app_state::RaftType;
-// #[cfg(feature = "cache")]
-// use crate::helpers;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
-// #[cfg(feature = "cache")]
-// use std::collections::BTreeSet;
-
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
@@ -46,11 +37,6 @@ pub enum RaftStreamRequest {
     VoteCache((usize, VoteRequest<u64>)),
     #[cfg(feature = "cache")]
     SnapshotCache((usize, InstallSnapshotRequest<TypeConfigKV>)),
-    // Reserved for a future openraft upgrade (see SECURITY_ANALYSIS_PLAN.md, N5) - no one sends
-    // this variant yet, so it is commented out to avoid dead code. Re-enable together with the
-    // handler below and the `RaftType`/`helpers`/`BTreeSet` imports above.
-    // #[cfg(feature = "cache")]
-    // RemoveMembershipCache(u64),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -264,33 +250,7 @@ async fn handle_socket(
             RaftStreamRequest::SnapshotCache((request_id, req)) => {
                 let res = state.raft_cache.raft.install_snapshot(req).await;
                 (request_id, RaftStreamResponsePayload::SnapshotCache(res))
-            } // Reserved for a future openraft upgrade (see SECURITY_ANALYSIS_PLAN.md, N5) - no one
-              // sends this variant yet, so it is commented out to avoid dead code. Re-enable
-              // together with the enum variant above and the imports at the top of this file.
-              // #[cfg(feature = "cache")]
-              // RaftStreamRequest::RemoveMembershipCache(node_id) => {
-              //     debug!("Node drop membership request for Node: {}\n", node_id);
-              //
-              //     // we want to hold the lock until we finished to not end up with race conditions
-              //     let _lock = state.raft_lock.lock().await;
-              //
-              //     let metrics = helpers::get_raft_metrics(&state, &RaftType::Cache).await;
-              //     let members = metrics.membership_config;
-              //
-              //     let mut nodes_set = BTreeSet::new();
-              //     for (id, _node) in members.nodes() {
-              //         if *id != node_id {
-              //             nodes_set.insert(*id);
-              //         }
-              //     }
-              //
-              //     if let Err(err) =
-              //         helpers::change_membership(&state, &RaftType::Cache, nodes_set, false).await
-              //     {
-              //         error!("Error removing remote Cache Member: {:?}", err);
-              //     }
-              //     break;
-              // }
+            }
         };
 
         if let Err(err) = tx_write
