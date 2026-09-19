@@ -91,7 +91,10 @@ fn drop_expiry(
     }
 }
 
-/// Registers the key's expiry in the index; call after updating its entry in `values`.
+/// Registers the key's expiry in the index. It must run inside the same synchronous message as
+/// the matching change of `values` (no await between), so the index mirrors `values` again
+/// before the next top-of-loop iteration; it may come before that change - so the key can be
+/// moved into the map without a clone - or after it.
 #[inline(always)]
 fn register_expiry(expiries: &mut BTreeMap<i64, Vec<String>>, key: &str, exp: i64) {
     expiries.entry(exp).or_default().push(key.to_string());
@@ -118,6 +121,13 @@ async fn kv_handler(cache_name: &'static str, rx: flume::Receiver<CacheRequestHa
 
     // key -> (value, optional expiry in unix micros). The expiry lives with the value, so a
     // snapshot serializes it for free and an install rebuilds the index below from it.
+    //
+    // Expiry timing intentionally uses wall clocks. `expires` is an absolute timestamp computed
+    // client-side (client/cache.rs) from that client's clock and replicated via the Raft; every
+    // node then enforces it against its own clock, so a skewed client or node shifts the
+    // effective TTL by the skew amount - a far-future write can land already expired on a
+    // faster clock. Keep the clocks close enough that the skew is negligible next to the
+    // smallest TTL in use.
     let mut values: BTreeMap<String, (Vec<u8>, Option<i64>)> = BTreeMap::new();
     #[cfg(feature = "counters")]
     let mut counters: BTreeMap<String, i64> = BTreeMap::new();
@@ -187,23 +197,24 @@ async fn kv_handler(cache_name: &'static str, rx: flume::Receiver<CacheRequestHa
                     CacheRequestHandler::Put { key, value, expires } => {
                         // Drop the key's previous expiry (or register a fresh one), then install
                         // the value - all inside this one message, so a stale expiry can never
-                        // remove the freshly put value.
+                        // remove the freshly put value. The new expiry is registered before the
+                        // insert so `key` can be moved into `values` without a clone.
                         drop_expiry(&mut values, &mut expiries, &key);
-                        values.insert(key.clone(), (value, expires));
                         if let Some(exp) = expires {
                             register_expiry(&mut expiries, &key, exp);
                         }
+                        values.insert(key, (value, expires));
                     }
                     CacheRequestHandler::Replace { key, value, expires, reply } => {
                         drop_expiry(&mut values, &mut expiries, &key);
-                        // returns the physically stored old value (no lazy expiry check),
-                        // keeping raft responses as deterministic as before the merge
-                        let old = values
-                            .insert(key.clone(), (value, expires))
-                            .map(|(old_value, _)| old_value);
                         if let Some(exp) = expires {
                             register_expiry(&mut expiries, &key, exp);
                         }
+                        // returns the physically stored old value (no lazy expiry check),
+                        // keeping raft responses as deterministic as before the merge
+                        let old = values
+                            .insert(key, (value, expires))
+                            .map(|(old_value, _)| old_value);
                         if reply.send(old).is_err() {
                             error!("Error sending back Cache REPLACE request: channel closed");
                         }
