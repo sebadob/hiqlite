@@ -89,11 +89,9 @@ impl Client {
     #[cold]
     pub(crate) async fn migrate_execute(&self, migrations: Vec<Migration>) -> Result<(), Error> {
         if let Some(state) = self.is_leader_db_with_state().await {
-            let res = state
-                .raft_db
-                .raft
-                .client_write(QueryWrite::Migration(migrations))
-                .await?;
+            let res =
+                Self::client_write_local(&state.raft_db.raft, QueryWrite::Migration(migrations))
+                    .await?;
             let resp: Response = res.data;
             match resp {
                 Response::Migrate(res) => res,

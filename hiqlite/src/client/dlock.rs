@@ -157,7 +157,7 @@ impl Client {
         is_remote_await: bool,
     ) -> Result<LockState, Error> {
         if let Some(state) = self.is_leader_cache_with_state().await {
-            let res = state.raft_cache.raft.client_write(cache_req).await?;
+            let res = Self::client_write_local(&state.raft_cache.raft, cache_req).await?;
             let data: CacheResponse = res.data;
             match data {
                 CacheResponse::Lock(state) => Ok(state),

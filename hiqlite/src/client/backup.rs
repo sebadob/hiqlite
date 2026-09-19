@@ -73,11 +73,11 @@ impl Client {
         let ts = Utc::now().timestamp();
 
         if let Some(state) = self.is_leader_db_with_state().await {
-            let res = state
-                .raft_db
-                .raft
-                .client_write(QueryWrite::Backup((current_leader, ts)))
-                .await?;
+            let res = Self::client_write_local(
+                &state.raft_db.raft,
+                QueryWrite::Backup((current_leader, ts)),
+            )
+            .await?;
             let resp: Response = res.data;
             match resp {
                 Response::Backup(res) => res,
@@ -106,6 +106,15 @@ impl Client {
     /// Get the file handle to a local backup.
     pub async fn backup_file_local(&self, filename: &str) -> Result<fs::File, Error> {
         if let Some(state) = self.inner.state.clone() {
+            // Backups are always created as `backup_node_{node_id}_{ts}.sqlite` directly in the
+            // flat backups dir; enforce that shape so a caller cannot reach outside of it (e.g.
+            // via "../" or an embedded path separator).
+            if !valid_backup_filename(filename) {
+                return Err(Error::BadRequest(
+                    format!("invalid backup filename: {filename}").into(),
+                ));
+            }
+
             let path = format!("{}/{filename}", state.backups_dir);
             let file = fs::File::open(path).await?;
             Ok(file)
@@ -224,6 +233,53 @@ impl Client {
             Err(Error::Config(
                 "Backups cannot be listed for remote clients".into(),
             ))
+        }
+    }
+}
+
+/// Backups are always created as `backup_node_{node_id}_{ts}.sqlite` directly in the flat backups
+/// dir; only that exact shape is accepted, so a caller cannot reach outside of it (e.g. via "../"
+/// or an embedded path separator).
+fn valid_backup_filename(filename: &str) -> bool {
+    let Some(rest) = filename.strip_prefix("backup_node_") else {
+        return false;
+    };
+    let Some(stem) = rest.strip_suffix(".sqlite") else {
+        return false;
+    };
+    // `stem` is `{node_id}_{ts}`; both must be plain integers, which also rules out any embedded
+    // path separator.
+    let (node_id, ts) = match stem.rsplit_once('_') {
+        Some(parts) => parts,
+        None => return false,
+    };
+    node_id.parse::<u64>().is_ok() && ts.parse::<i64>().is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_backup_filename;
+
+    #[test]
+    fn valid_backup_filenames_are_accepted() {
+        assert!(valid_backup_filename("backup_node_1_1700000000.sqlite"));
+        assert!(valid_backup_filename("backup_node_42_1700000000.sqlite"));
+    }
+
+    #[test]
+    fn invalid_backup_filenames_are_rejected() {
+        for name in [
+            "",
+            "backup_node_1",
+            "backup_node_1_.sqlite",
+            ".sqlite",
+            "../backup_node_1_1700000000.sqlite",
+            "backup_node_1_1700000000.sqlite/",
+            "backup_node_1/../../etc/passwd",
+            "backup_node_1\\..\\..\\windows",
+            "node_backup_1_1700000000.sqlite",
+        ] {
+            assert!(!valid_backup_filename(name), "should reject: {name:?}");
         }
     }
 }

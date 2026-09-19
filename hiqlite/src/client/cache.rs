@@ -107,7 +107,10 @@ impl Client {
                 .tx_caches
                 .get(cache.hiqlite_cache_index())
                 .unwrap()
-                .send(CacheRequestHandler::Get { key: key.into(), reply: ack })
+                .send(CacheRequestHandler::Get {
+                    key: key.into(),
+                    reply: ack,
+                })
                 .expect("kv handler to always be running");
             let value = await_channel_response(rx).await?;
             Ok(value)
@@ -190,8 +193,7 @@ impl Client {
         K: Into<Cow<'static, str>>,
         V: Serialize,
     {
-        self.rate_limit_cache().await?;
-
+        // `put_bytes` below applies the cache rate limit itself
         self.put_bytes(cache, key, serialize_network(value), ttl)
             .await?;
         Ok(())
@@ -216,7 +218,11 @@ impl Client {
                 cache_idx: cache.hiqlite_cache_index(),
                 key: key.into(),
                 value,
-                expires: ttl.map(|seconds| Utc::now().timestamp_micros().saturating_add(seconds.saturating_mul(1_000_000))),
+                expires: ttl.map(|seconds| {
+                    Utc::now()
+                        .timestamp_micros()
+                        .saturating_add(seconds.saturating_mul(1_000_000))
+                }),
             },
             false,
         )
@@ -255,6 +261,7 @@ impl Client {
         K: Into<Cow<'static, str>>,
         V: for<'a> Deserialize<'a>,
     {
+        // `get_remove_bytes` below applies the cache rate limit itself
         match self.get_remove_bytes(cache, key).await {
             Ok(value) => {
                 if let Some(v) = value {
@@ -496,7 +503,7 @@ impl Client {
         is_remote_get: bool,
     ) -> Result<CacheResponse, Error> {
         if let Some(state) = self.is_leader_cache_with_state().await {
-            let res = state.raft_cache.raft.client_write(cache_req).await?;
+            let res = Self::client_write_local(&state.raft_cache.raft, cache_req).await?;
             Ok(res.data)
         } else {
             let (ack, rx) = oneshot::channel();

@@ -67,6 +67,11 @@ pub(crate) mod remote {
                                 info!("Opened /listen events stream: {:?}", c);
                             }
                             SSE::Event(event) => {
+                                // TODO(L16): these `expect()`s panic the long-lived listener task on a
+                                // malformed frame (bad split / ts parse / b64), killing all listen
+                                // consumers with no reconnect or external signal. The SSE handler is
+                                // being reworked in another task, which should resolve this; until
+                                // then a bad server frame permanently stops this client's listener.
                                 let (ts, data) = event
                                     .data
                                     .split_once(' ')
@@ -196,7 +201,7 @@ impl Client {
 
     pub(crate) async fn notify_req(&self, cache_req: CacheRequest) -> Result<(), Error> {
         if let Some(state) = self.is_leader_cache_with_state().await {
-            state.raft_cache.raft.client_write(cache_req).await?;
+            Self::client_write_local(&state.raft_cache.raft, cache_req).await?;
             Ok(())
         } else {
             let (ack, rx) = oneshot::channel();

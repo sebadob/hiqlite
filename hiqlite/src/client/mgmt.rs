@@ -251,7 +251,32 @@ impl Client {
             is_single_instance = node_count == 1;
         }
 
-        state.is_shutting_down.store(true, Ordering::Relaxed);
+        // Only one caller performs the ordered teardown below. Concurrent callers (e.g. an app that
+        // calls `Client::shutdown()` at the same time a SIGTERM unblocks `ShutdownHandle::wait`)
+        // would otherwise double-run it: a second `raft.shutdown()`, a second cluster leave, and a
+        // second `WriterRequest::Shutdown` whose ack channel is already dropped (panicking the
+        // `.expect` below). The loser therefore waits for the winner to finish instead.
+        let is_runner = state
+            .is_shutting_down
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok();
+
+        if !is_runner {
+            // Wait until the winning caller signals completion by setting `tx_shutdown`, so a caller
+            // that returns from here can safely proceed (e.g. let the process exit). The outer 20s
+            // timeout in both entry points bounds this wait, so it cannot hang forever.
+            info!("Shutdown already in progress - waiting for it to complete");
+            if let Some(tx) = tx_shutdown {
+                let mut rx = tx.subscribe();
+                while !*rx.borrow() {
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            }
+            info!("Shutdown complete (waited on concurrent shutdown)");
+            return Ok(());
+        }
 
         // This pre-shutdown delay is not strictly necessary, but it makes rolling releases
         // smoother, especially with ephemeral storage. It also allows to set a ready check
