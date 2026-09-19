@@ -758,7 +758,8 @@ fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), Erro
     // vacuum into a temp file and move it into place, so a crash can never leave a
     // partially written snapshot at the final path
     let path_temp = format!("{path}~");
-    let q = format!("VACUUM main INTO '{path_temp}'");
+    // escape single quotes so a folder name containing ' cannot break (or inject into) the SQL literal
+    let q = format!("VACUUM main INTO '{}'", path_temp.replace('\'', "''"));
     if let Err(err) = conn.execute(&q, ()) {
         let _ = std::fs::remove_file(&path_temp);
         return Err(Error::Sqlite(err.to_string().into()));
@@ -791,7 +792,9 @@ fn create_backup(
     // vacuum into a temp file and move it into place, so a crash mid-backup can never leave
     // a partial file under the final backup name (restore would pick it up as valid)
     let path_temp = format!("{path_full}~");
-    if let Err(err) = conn.execute(&format!("VACUUM main INTO '{path_temp}'"), ()) {
+    // escape single quotes so a folder name containing ' cannot break (or inject into) the SQL literal
+    let path_sql = path_temp.replace('\'', "''");
+    if let Err(err) = conn.execute(&format!("VACUUM main INTO '{path_sql}'"), ()) {
         let _ = std::fs::remove_file(&path_temp);
         return Err(err.into());
     }

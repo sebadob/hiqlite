@@ -217,7 +217,13 @@ pub(crate) async fn backup_local_cleanup(backup_path: String, keep_days: u16) ->
         }
 
         let name = entry.file_name();
-        if let Some(s) = name.to_str() {
+        if let Some(s_orig) = name.to_str() {
+            // A backup is written to a temp file named "...sqlite~" and renamed into
+            // place; a crash between the two orphans that temp file. Strip the trailing
+            // '~' so it is judged by the same age rule as its final-name counterpart:
+            // old orphans are reclaimed, while an in-progress backup (fresh ts) is kept.
+            let s = s_orig.strip_suffix('~').unwrap_or(s_orig);
+
             if !s.starts_with("backup_node_") && !s.ends_with(".sqlite") {
                 continue;
             }
@@ -228,15 +234,16 @@ pub(crate) async fn backup_local_cleanup(backup_path: String, keep_days: u16) ->
             match ts.parse::<i64>() {
                 Ok(ts) => {
                     if ts > ts_min && ts < ts_threshold {
-                        let p = format!("{backup_path}/{s}");
-                        info!("Cleaning up local backup {s} ({p})");
+                        // remove the on-disk file under its real name (keep any '~' suffix)
+                        let p = format!("{backup_path}/{s_orig}");
+                        info!("Cleaning up local backup {s_orig} ({p})");
                         if let Err(err) = tokio::fs::remove_file(p).await {
                             error!(?err, "Error removing local backup");
                         }
                     }
                 }
                 Err(err) => {
-                    error!(?err, "Cannot parse ts from file {s}")
+                    error!(?err, "Cannot parse ts from file {s_orig}")
                 }
             }
         }
@@ -348,8 +355,8 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
         }
     };
 
-    is_metadata_ok(path_backup.clone()).await?;
-    debug!("Database backup metadata is ok");
+    validate_backup_db(path_backup.clone()).await?;
+    debug!("Database backup validation passed (metadata + integrity check)");
 
     debug!("Removing old data");
     let _ = fs::remove_dir_all(&path_db).await;
@@ -376,13 +383,15 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     Ok(())
 }
 
-async fn is_metadata_ok(path_db: String) -> Result<(), Error> {
+async fn validate_backup_db(path_db: String) -> Result<(), Error> {
     if env::var("HQL_BACKUP_SKIP_VALIDATION") == Ok("true".to_string()) {
         return Ok(());
     }
 
     task::spawn_blocking(move || {
         let conn = rusqlite::Connection::open(path_db)?;
+
+        // 1. Metadata check: the backup must carry our state-machine metadata row.
         let mut stmt = conn.prepare_cached("SELECT data FROM _metadata WHERE key = 'meta'")?;
         let bytes = stmt.query_row((), |row| {
             let bytes: Vec<u8> = row.get(0)?;
@@ -390,7 +399,23 @@ async fn is_metadata_ok(path_db: String) -> Result<(), Error> {
         })?;
         let _meta: StateMachineData = deserialize(&bytes).unwrap();
 
-        // TODO we could maybe add the expected backup id as well, if it should make sense...
+        // 2. Full SQLite integrity check: a corrupt-but-openable DB must not pass
+        //    silently. `PRAGMA integrity_check` returns exactly one "ok" row when the
+        //    database is healthy, and one row per problem otherwise.
+        let mut stmt = conn.prepare("PRAGMA integrity_check")?;
+        let mut problems: Vec<String> = Vec::new();
+        {
+            let rows = stmt.query_map(rusqlite::params![], |row| row.get::<_, String>(0))?;
+            for r in rows {
+                problems.push(r?);
+            }
+        }
+        if problems.len() != 1 || problems[0] != "ok" {
+            return Err(Error::Sqlite(
+                format!("Backup integrity check failed: {}", problems.join("; ")).into(),
+            ));
+        }
+
         Ok::<(), Error>(())
     })
     .await??;
@@ -461,11 +486,6 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
         error!("Error triggering snapshot: {err}");
         return;
     }
-
-    // while let Err(_err) = state.raft_db.raft.trigger().snapshot().await {
-    //     debug_assert!("")
-    //     time::sleep(Duration::from_millis(500)).await;
-    // }
 
     // wait until snapshot has been built
     while state.raft_db.raft.metrics().borrow().snapshot.is_none() {
