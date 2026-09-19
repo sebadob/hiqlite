@@ -1,8 +1,7 @@
 use crate::helpers::{deserialize, serialize, set_path_access};
 use crate::store::StorageResult;
-use crate::store::state_machine::memory::cache_ttl_handler::TtlRequest;
-use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
-use crate::store::state_machine::memory::{TypeConfigKV, cache_ttl_handler, kv_handler};
+use crate::store::state_machine::memory::kv_handler::{CacheRequestHandler, CacheSnapshot};
+use crate::store::state_machine::memory::{TypeConfigKV, kv_handler};
 use crate::{CacheVariants, Error, Node, NodeId};
 use chrono::Utc;
 use cryptr::utils::secure_random_alnum;
@@ -42,15 +41,9 @@ type SnapshotData = fs::File;
 #[cfg(feature = "in-memory-snapshots")]
 type SnapshotData = Cursor<Vec<u8>>;
 
-type SnapshotKVs = Vec<(BTreeMap<String, Vec<u8>>, BTreeMap<String, i64>)>;
-type SnapshotTTLs = Vec<BTreeMap<i64, String>>;
+type SnapshotKVs = Vec<CacheSnapshot>;
 type SnapshotLocks = Vec<u8>;
-type SnapshotDataContent = (
-    SnapshotMeta<NodeId, Node>,
-    SnapshotKVs,
-    SnapshotTTLs,
-    SnapshotLocks,
-);
+type SnapshotDataContent = (SnapshotMeta<NodeId, Node>, SnapshotKVs, SnapshotLocks);
 /// The latest snapshot kept in memory (`meta` + serialized bytes) for memory-only mode.
 #[cfg(feature = "in-memory-snapshots")]
 type MemSnapshot = (SnapshotMeta<NodeId, Node>, Vec<u8>);
@@ -160,7 +153,6 @@ pub struct StateMachineMemory {
     snapshot_mem: RwLock<Option<MemSnapshot>>,
 
     pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
-    tx_ttls: Vec<flume::Sender<TtlRequest>>,
 
     #[cfg(feature = "listen_notify_local")]
     pub(crate) tx_notify: flume::Sender<NotifyRequest>,
@@ -243,12 +235,28 @@ impl StateMachineMemory {
 
         // we will start a separate task for each given cache index
         let variants = C::hiqlite_cache_variants();
+
+        // Validate the cache indices at setup time so `apply()` can rely on `.get(idx)`
+        // never failing: the indices must be exactly 0..len (no gaps, no duplicates),
+        // otherwise a request for a missing index would panic the state machine deep
+        // inside raft apply.
+        {
+            let mut seen = vec![false; variants.len()];
+            for &(idx, _) in variants {
+                if idx >= variants.len() || seen[idx] {
+                    panic!(
+                        "cache variant index {idx} is out of range or duplicated \
+                         (expected exactly 0..{})",
+                        variants.len()
+                    );
+                }
+                seen[idx] = true;
+            }
+        }
+
         let mut tx_caches = Vec::with_capacity(variants.len());
-        let mut tx_ttls = Vec::with_capacity(variants.len());
         for (_, name) in variants {
-            let tx_cache = kv_handler::spawn(name);
-            tx_caches.push(tx_cache.clone());
-            tx_ttls.push(cache_ttl_handler::spawn(tx_cache));
+            tx_caches.push(kv_handler::spawn(name));
         }
 
         #[cfg(feature = "dlock")]
@@ -265,7 +273,6 @@ impl StateMachineMemory {
             #[cfg(feature = "in-memory-snapshots")]
             snapshot_mem: RwLock::new(None),
             tx_caches,
-            tx_ttls,
             #[cfg(feature = "listen_notify_local")]
             tx_notify,
             #[cfg(feature = "listen_notify_local")]
@@ -298,7 +305,7 @@ impl StateMachineMemory {
         Ok(slf)
     }
 
-    /// Serializes the current cache state (caches, TTLs, locks) into a snapshot blob.
+    /// Serializes the current cache state (caches, locks) into a snapshot blob.
     /// Shared by the disk-backed (default) and in-memory (`in-memory-snapshots`) paths.
     // The error type is huge, but defined by the openraft trait.
     #[allow(clippy::result_large_err)]
@@ -307,29 +314,28 @@ impl StateMachineMemory {
     ) -> Result<(SnapshotMeta<NodeId, Node>, Vec<u8>), StorageError<NodeId>> {
         let data = self.data.read().await;
 
+        // Snapshot consistency: this read lock is held across the whole capture below, while
+        // `apply()` takes the write lock. No entry can therefore be applied between reading
+        // `last_applied_log_id` and round-tripping the caches/ttls/locks, so the snapshot
+        // contains exactly the effects of entries up to that log id; recovery re-applies only
+        // later ones (no gap, no double-apply). Do not drop the lock early when extending
+        // this function.
+
         // TODO should we include notifications in snapshots as well?
         //  -> unsure if it makes sense or not
 
-        let mut ttls = Vec::with_capacity(self.tx_ttls.len());
-        for tx in &self.tx_ttls {
-            let (ack, rx) = oneshot::channel();
-            tx.send(TtlRequest::SnapshotBuild(ack))
-                .expect("ttl handler to always be running");
-            let snap = rx
-                .await
-                .expect("to always receive an answer from ttl handler");
-            ttls.push(snap);
-        }
-
+        // One roundtrip per cache: the handler owns values and counters together, so a single
+        // SnapshotBuild returns both. Expiries live inside the entries and are rebuilt by the
+        // handler on install.
         let mut caches = Vec::with_capacity(self.tx_caches.len());
         for tx in &self.tx_caches {
             let (ack, rx) = oneshot::channel();
-            tx.send(CacheRequestHandler::SnapshotBuild(ack))
+            tx.send(CacheRequestHandler::SnapshotBuild { reply: ack })
                 .expect("kv handler to always be running");
-            let snap = rx
-                .await
-                .expect("to always receive an answer from kv handler");
-            caches.push(snap);
+            caches.push(
+                rx.await
+                    .expect("to always receive an answer from kv handler"),
+            );
         }
 
         #[cfg(feature = "dlock")]
@@ -359,7 +365,7 @@ impl StateMachineMemory {
             snapshot_id,
         };
 
-        let snap: SnapshotDataContent = (meta.clone(), caches, ttls, locks_bytes);
+        let snap: SnapshotDataContent = (meta.clone(), caches, locks_bytes);
         let snapshot_bytes =
             serialize(&snap).map_err(|err| StorageIOError::write_state_machine(&err))?;
 
@@ -412,6 +418,8 @@ impl StateMachineMemory {
                 let fname = entry.file_name();
                 let name = fname.to_str().unwrap_or_default();
                 if !name.is_empty()
+                    // skip the in-flight snapshot receive temp file (`begin_receiving_snapshot`)
+                    && name != "temp~"
                     && name != id
                     && let Err(err) = fs::remove_file(format!("{dir}/{name}")).await
                 {
@@ -431,44 +439,35 @@ impl StateMachineMemory {
         meta: &SnapshotMeta<NodeId, Node>,
         bytes: &[u8],
     ) -> Result<(), StorageError<NodeId>> {
-        let (meta_snap, kvs, ttls, locks) = deserialize::<SnapshotDataContent>(bytes)
+        let (meta_snap, kvs, locks) = deserialize::<SnapshotDataContent>(bytes)
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
         debug_assert_eq!(meta.snapshot_id, meta_snap.snapshot_id);
         debug_assert_eq!(meta.last_log_id, meta_snap.last_log_id);
         debug_assert_eq!(meta.last_membership, meta_snap.last_membership);
 
-        self.update_state_machine((meta_snap, kvs, ttls, locks))
-            .await;
+        self.update_state_machine((meta_snap, kvs, locks)).await;
 
         Ok(())
     }
 
     async fn update_state_machine(&self, content: SnapshotDataContent) {
-        let (meta, kvs, ttls, locks) = content;
+        let (meta, kvs, locks) = content;
 
         // make sure to hold the metadata lock the whole time
         let mut data = self.data.write().await;
 
-        for (idx, kv_data) in kvs.into_iter().enumerate() {
+        // One install per cache: values + counters travel together, mirroring the single
+        // roundtrip used in `build_snapshot_data`. Expiries live inside the entries and are
+        // rebuilt by the handler on install.
+        for (idx, snapshot) in kvs.into_iter().enumerate() {
             let (ack, rx) = oneshot::channel();
             self.tx_caches
                 .get(idx)
                 .unwrap()
-                .send(CacheRequestHandler::SnapshotInstall((kv_data, ack)))
+                .send(CacheRequestHandler::SnapshotInstall { snapshot, ack })
                 .expect("kv handler to always be running");
             rx.await
                 .expect("to always receive an answer from the kv handler");
-        }
-
-        for (idx, kv_data) in ttls.into_iter().enumerate() {
-            let (ack, rx) = oneshot::channel();
-            self.tx_ttls
-                .get(idx)
-                .unwrap()
-                .send(TtlRequest::SnapshotInstall((kv_data, ack)))
-                .expect("ttl handler to always be running");
-            rx.await
-                .expect("to always receive an answer from the ttl handler");
         }
 
         #[cfg(feature = "dlock")]
@@ -626,12 +625,17 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         for entry in entries {
             last_applied_log_id = Some(entry.log_id);
 
-            // we are using sync sends -> unbounded channels
+            // we are using sync sends -> unbounded channels. Every `cache_idx` below is
+            // validated at setup time (see `new()`) and again at the API boundary
+            // (`network/api.rs`), so `.get(idx).unwrap()` cannot fail on valid requests.
             let resp_value = match entry.payload {
                 EntryPayload::Blank => CacheResponse::Empty,
 
                 EntryPayload::Normal(req) => match req {
                     CacheRequest::Get { .. } => {
+                        // `Get` is served locally by the client and never enters the raft log; if it
+                        // ever does (hand-crafted wire bytes), we want to fail loudly here rather
+                        // than silently drop the entry in favor of data consistency.
                         unreachable!("a CacheRequest::Get should never come through the Raft")
                     }
 
@@ -641,27 +645,18 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         value,
                         expires,
                     } => {
-                        if let Some(exp) = expires {
-                            self.tx_ttls
-                                .get(cache_idx)
-                                .unwrap()
-                                .send(TtlRequest::Ttl((exp, key.to_string())))
-                                .expect("cache ttl handler to always be running");
-                        } else {
-                            // the value was re-put without a TTL: drop any previously registered
-                            // expiry so it cannot delete the fresh value
-                            self.tx_ttls
-                                .get(cache_idx)
-                                .unwrap()
-                                .send(TtlRequest::Clear(key.to_string()))
-                                .expect("cache ttl handler to always be running");
-                        }
-
+                        // The per-cache handler owns values and expiries together, so the expiry
+                        // registration/drop and the value change happen atomically inside one
+                        // task: a stale expiry can never remove the freshly put value.
                         self.tx_caches
                             .get(cache_idx)
                             .unwrap()
-                            .send(CacheRequestHandler::Put((key.to_string(), value)))
-                            .expect("cache ttl handler to always be running");
+                            .send(CacheRequestHandler::Put {
+                                key: key.to_string(),
+                                value,
+                                expires,
+                            })
+                            .expect("kv handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -671,7 +666,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         self.tx_caches
                             .get(cache_idx)
                             .unwrap()
-                            .send(CacheRequestHandler::GetRemove((key.to_string(), ack)))
+                            .send(CacheRequestHandler::GetRemove {
+                                key: key.to_string(),
+                                reply: ack,
+                            })
                             .expect("kv handler to always be running");
 
                         // The kv handler runs on its own thread per cache and never takes the
@@ -686,26 +684,19 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         value,
                         expires,
                     } => {
-                        if let Some(exp) = expires {
-                            self.tx_ttls
-                                .get(cache_idx)
-                                .unwrap()
-                                .send(TtlRequest::Ttl((exp, key.to_string())))
-                                .expect("cache ttl handler to always be running");
-                        } else {
-                            // mirrors `Put`: a re-put without a TTL drops any registered expiry
-                            self.tx_ttls
-                                .get(cache_idx)
-                                .unwrap()
-                                .send(TtlRequest::Clear(key.to_string()))
-                                .expect("cache ttl handler to always be running");
-                        }
-
+                        // The expiry registration/drop and the value change happen atomically
+                        // inside the per-cache handler, so a stale expiry can never remove the
+                        // freshly replaced value.
                         let (ack, rx) = oneshot::channel();
                         self.tx_caches
                             .get(cache_idx)
                             .unwrap()
-                            .send(CacheRequestHandler::Replace((key.to_string(), value, ack)))
+                            .send(CacheRequestHandler::Replace {
+                                key: key.to_string(),
+                                value,
+                                expires,
+                                reply: ack,
+                            })
                             .expect("kv handler to always be running");
 
                         CacheResponse::Value(rx.await.expect("kv handler to always answer"))
@@ -715,8 +706,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         self.tx_caches
                             .get(cache_idx)
                             .unwrap()
-                            .send(CacheRequestHandler::Delete(key.to_string()))
-                            .expect("cache ttl handler to always be running");
+                            .send(CacheRequestHandler::Delete {
+                                key: key.to_string(),
+                            })
+                            .expect("kv handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -726,7 +719,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             .get(cache_idx)
                             .unwrap()
                             .send(CacheRequestHandler::Clear)
-                            .expect("cache ttl handler to always be running");
+                            .expect("kv handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -738,7 +731,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 .get(cache_idx)
                                 .unwrap()
                                 .send(CacheRequestHandler::ClearCounters)
-                                .expect("cache ttl handler to always be running");
+                                .expect("kv handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -749,10 +742,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                     CacheRequest::ClearAll => {
                         for tx in &self.tx_caches {
                             tx.send(CacheRequestHandler::Clear)
-                                .expect("cache ttl handler to always be running");
+                                .expect("kv handler to always be running");
                             #[cfg(feature = "counters")]
                             tx.send(CacheRequestHandler::ClearCounters)
-                                .expect("cache ttl handler to always be running");
+                                .expect("kv handler to always be running");
                         }
 
                         CacheResponse::Ok
@@ -841,8 +834,11 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             self.tx_caches
                                 .get(cache_idx)
                                 .unwrap()
-                                .send(CacheRequestHandler::CounterSet((key.to_string(), value)))
-                                .expect("cache ttl handler to always be running");
+                                .send(CacheRequestHandler::CounterSet {
+                                    key: key.to_string(),
+                                    value,
+                                })
+                                .expect("kv handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -862,12 +858,12 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             self.tx_caches
                                 .get(cache_idx)
                                 .unwrap()
-                                .send(CacheRequestHandler::CounterAdd((
-                                    key.to_string(),
-                                    value,
-                                    ack,
-                                )))
-                                .expect("cache ttl handler to always be running");
+                                .send(CacheRequestHandler::CounterAdd {
+                                    key: key.to_string(),
+                                    delta: value,
+                                    reply: ack,
+                                })
+                                .expect("kv handler to always be running");
 
                             let v = rx.await.unwrap();
                             CacheResponse::CounterValue(Some(v))
@@ -882,8 +878,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             self.tx_caches
                                 .get(cache_idx)
                                 .unwrap()
-                                .send(CacheRequestHandler::CounterDel(key.to_string()))
-                                .expect("cache ttl handler to always be running");
+                                .send(CacheRequestHandler::CounterDel {
+                                    key: key.to_string(),
+                                })
+                                .expect("kv handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -915,7 +913,9 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     async fn begin_receiving_snapshot(
         &mut self,
     ) -> Result<Box<SnapshotData>, StorageError<NodeId>> {
-        let path = format!("{}/temp", self.path_snapshots);
+        // `~`-suffixed name: both `read_current_snapshot` and the snapshot cleanup skip those,
+        // so an in-flight receive is never mistaken for a real (complete) snapshot.
+        let path = format!("{}/temp~", self.path_snapshots);
         info!("Saving incoming snapshot to {}", path);
 
         // clean up possible existing old data
@@ -947,7 +947,8 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         // the streamed data already lives in the temp file created by `begin_receiving_snapshot`
         _snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
-        let src = format!("{}/temp", self.path_snapshots);
+        // the temp file created by `begin_receiving_snapshot` (see its `~` naming comment)
+        let src = format!("{}/temp~", self.path_snapshots);
         let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
         fs::copy(&src, &dest)
             .await

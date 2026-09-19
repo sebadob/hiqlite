@@ -175,29 +175,56 @@ for this endpoint will be stored inside the listen / notify handler as well. Eac
 listeners as well and if they return an error because of a closed channel or something like that, the `tx` will simply
 be removed from the store.
 
+## In-Memory KV Store
+
+With the `cache` feature enabled, every configured cache gets its own handler task (`kv_handler.rs`) which owns the
+complete state for that cache: a `BTreeMap` of key to value plus an optional expiry timestamp, and (with the
+`counters` feature) a counters map. All state-changing requests travel through the Raft just like SQLite statements,
+so every node applies the same sequence in the same order. The task never blocks and always returns immediately.
+
+TTL handling lives inside the same task on purpose. The expiry is stored right next to the value in unix
+microseconds, so there is nothing else that could get out of sync with it, and a snapshot only needs to carry values
+and counters: the handler additionally keeps an in-memory-only index from expiry timestamp to keys which is never
+serialized and gets rebuilt from the entries when a snapshot is installed. The task's loop sleeps until either the
+earliest pending expiry or the next request arrives, whichever comes first, with requests always processed before
+expiry - so a refresh can never be outraced by its own old expiry - and removes every key registered at a due
+timestamp. As a second line of defense, `Get` and `GetRemove` also never serve a value whose expiry is already in the
+past, which covers the clock advancing within a single iteration (e.g. an NTP step).
+
+Because all state-changing requests are deterministic given the same input, Raft responses stay deterministic as
+well: for instance, `Replace` answers with the physically stored old value without any lazy expiry check.
+
 ## Distributed Locks
 
-The distributed locks handler task will work similar to the listen / notify. If the `dlock` feature is enabled, the
-handler task will be spawned which will hold all locks in-memory in a lock free local HashMap. Each lock is indexed via
-a `String`. If the requested lock is not locked already, it will simply return the response that the lock was
-successful + a locking id.
+The distributed locks handler task works similar to the listen / notify handler. If the `dlock` feature is enabled, a
+handler task is spawned which holds all locks in-memory in a lock free local HashMap, keyed by the key string. All
+state changing requests (`Lock`, `Acquire`, `Release`) travel through the Raft so that every node applies the same
+sequence; they must not block and return immediately. The `Await` request is the only out-of-band message: it is
+delivered via the client's local channel or the API stream, and it is at-least-once. A client may therefore register
+the same ticket twice (for instance after the 120 s API stream timeout), and every registration gets answered.
 
-However, this becomes a bit more complex if it is currently locked. These messages are coming through the Raft and they
-must not block and return immediately. In case of an already locked lock / index, a locking id will be returned with the
-information, that the lock must be awaited, since it's locked already. If the client receives this message, it will open
-another listener on this handler via its local client outside the Raft replication. This will work depending on the
-locking ID it received, because it might be the case that there are other locking requests in the queue beforehand. To
-handle this, the `dlock` handler also maintains a local queue will all the locking ids waiting to lock an index. When
-the `Await` returns, the client will receive a `Locked` message with its ID again. If the client has the lock, it will
-create a `Lock` struct and return it. On `drop()`, this lock will send a message through the Raft again to `Unlock` the
-index with its own locking id appended.
+Fairness is strict FIFO. Every request carries its Raft log index as a ticket, which increases strictly per key, so
+the queue order is the commit order and a new arrival can never cut in line. If the requested lock is free, it is
+granted immediately together with a locking id. Otherwise the ticket is appended to the back of the queue and the
+client receives `Queued` with its id; it then opens an await on that id via its local client outside the Raft
+replication. When the ticket is promoted, the client receives a `Locked` message with its id again, creates a `Lock`
+struct and returns it. On `drop()`, this lock sends a `Release` through the Raft with its own locking id appended.
+
+Only the front ticket can be promoted: when the holder releases, when a new request for that key arrives, or by a
+periodic 1 s sweep. Promotion hands the lock to the front ticket with a fresh lease and answers exactly the waiters
+registered for that ticket — `Locked(id)` is delivered directly on their pending `Await`, so the common path costs no
+extra round trips and no other waiter is woken. There are no wake-all storms: a waiter is only ever answered when its
+own ticket is promoted, or when the key disappears entirely.
 
 Distributed locks become tricky during network issues. In case a client holds a `Lock` and then the network goes down
-before it can release the lock, or maybe even the application or the OS crashes. If this happens, the lock could end up
-in a state where it would be impossible to unlock again, because the locking id would be lost as well. To counter this
-issue, the timestamp will always be saved with each new lock. When a new locking request comes in for an already locked
-index, the timestamp will be compared to `now()`. If the current lock has been locked more than 10 seconds ago, it will
-be considered "dead" and the new lock will be granted.  
+before it can release the lock, or maybe even the application or the OS crashes, the locking id would be lost as well
+and the lock could end up in a state where it is impossible to unlock again. To counter this issue, every grant saves
+a timestamp with the lock. A holder that does not release within 10 seconds is considered "dead": its reservation
+simply expires, the sweep promotes the next ticket and answers its waiters. A dead holder therefore blocks its queue
+position for at most one lease window plus the sweep interval — never forever, and no waiter can be left without an
+answer. When a lock key is fully removed, or when a snapshot is installed, all outstanding waiters are answered with
+`Released`, matching the "lock removed while awaiting" semantics.
+
 In the current implementation, it is not possible to hold a lock for more than 10 seconds. This could be achieved with
 the possibility to refresh a timestamp, but it has not been implemented so far.
 
@@ -218,8 +245,7 @@ With all features enabled, Hiqlite will spawn :
 - 1 writer task for the WAL + 1+ reader tasks (depending on setup maybe multiple via `openraft`)
 - 1 writer task for SQLite + temporary tasks in case of snapshots, backups, uploads, ...
 - 1 temporary task for each SQLite read / `SELECT` query being executed
-- 1 task for the in-memory KV store
-- 1 task for in-memory KV TTL, to cleanup and expire values when necessary
+- 1 task per configured cache for the in-memory KV store, which also handles TTL expiry
 - 1 task for the `listen_notify` handler
 - 1 task for the `dlock` handler
 

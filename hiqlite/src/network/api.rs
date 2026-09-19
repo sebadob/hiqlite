@@ -761,18 +761,53 @@ async fn handle_socket_concurrent(
 
                 #[cfg(feature = "cache")]
                 ApiStreamRequestPayload::KV(cache_req) => {
-                    match state.raft_cache.raft.client_write(cache_req).await {
-                        Ok(resp) => {
-                            let resp: CacheResponse = resp.data;
-                            ApiStreamResponse {
-                                request_id,
-                                result: ApiStreamResponsePayload::KV(Ok(resp)),
-                            }
-                        }
-                        Err(err) => ApiStreamResponse {
+                    // Bounds-check the cache index before committing to the raft log. Embedded
+                    // clients resolve indices locally, so an out-of-range index can only arrive
+                    // via a hand-crafted wire request; rejecting it here keeps the state
+                    // machine's `.get(idx).unwrap()` in `apply()` from panicking on it.
+                    let cache_idx = match cache_req {
+                        CacheRequest::Get { cache_idx, .. }
+                        | CacheRequest::Put { cache_idx, .. }
+                        | CacheRequest::GetRemove { cache_idx, .. }
+                        | CacheRequest::Replace { cache_idx, .. }
+                        | CacheRequest::Delete { cache_idx, .. }
+                        | CacheRequest::Clear { cache_idx, .. }
+                        | CacheRequest::ClearCounters { cache_idx, .. }
+                        | CacheRequest::CounterGet { cache_idx, .. }
+                        | CacheRequest::CounterSet { cache_idx, .. }
+                        | CacheRequest::CounterAdd { cache_idx, .. }
+                        | CacheRequest::CounterDel { cache_idx, .. } => Some(cache_idx),
+                        CacheRequest::ClearAll
+                        | CacheRequest::Notify(_)
+                        | CacheRequest::Lock(_)
+                        | CacheRequest::LockAwait(_)
+                        | CacheRequest::LockRelease(_) => None,
+                    };
+
+                    if let Some(cache_idx) = cache_idx
+                        && cache_idx >= state.raft_cache.tx_caches.len()
+                    {
+                        ApiStreamResponse {
                             request_id,
-                            result: ApiStreamResponsePayload::KV(Err(Error::from(err))),
-                        },
+                            result: ApiStreamResponsePayload::KV(Err(Error::new(format!(
+                                "cache index {cache_idx} out of range (0..{})",
+                                state.raft_cache.tx_caches.len()
+                            )))),
+                        }
+                    } else {
+                        match state.raft_cache.raft.client_write(cache_req).await {
+                            Ok(resp) => {
+                                let resp: CacheResponse = resp.data;
+                                ApiStreamResponse {
+                                    request_id,
+                                    result: ApiStreamResponsePayload::KV(Ok(resp)),
+                                }
+                            }
+                            Err(err) => ApiStreamResponse {
+                                request_id,
+                                result: ApiStreamResponsePayload::KV(Err(Error::from(err))),
+                            },
+                        }
                     }
                 }
 
@@ -789,7 +824,7 @@ async fn handle_socket_concurrent(
                         .tx_caches
                         .get(cache_idx)
                         .unwrap()
-                        .send(CacheRequestHandler::Get((key, ack)))
+                        .send(CacheRequestHandler::Get { key, reply: ack })
                         .expect("kv handler to always be running");
                     let value = rx.await.expect("to always get an answer from kv handler");
                     ApiStreamResponse {

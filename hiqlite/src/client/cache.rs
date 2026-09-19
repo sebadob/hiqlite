@@ -107,7 +107,7 @@ impl Client {
                 .tx_caches
                 .get(cache.hiqlite_cache_index())
                 .unwrap()
-                .send(CacheRequestHandler::Get((key.into(), ack)))
+                .send(CacheRequestHandler::Get { key: key.into(), reply: ack })
                 .expect("kv handler to always be running");
             let value = await_channel_response(rx).await?;
             Ok(value)
@@ -145,7 +145,7 @@ impl Client {
                 .tx_caches
                 .get(cache.hiqlite_cache_index())
                 .unwrap()
-                .send(CacheRequestHandler::SnapshotBuildCacheOnly(ack))
+                .send(CacheRequestHandler::SnapshotBuildCacheOnly { reply: ack })
                 .expect("kv handler to always be running");
             let snapshot = await_channel_response(rx).await?;
 
@@ -371,10 +371,10 @@ impl Client {
                 .tx_caches
                 .get(cache.hiqlite_cache_index())
                 .unwrap()
-                .send(CacheRequestHandler::CounterGet((
-                    key.into().to_string(),
-                    ack,
-                )))
+                .send(CacheRequestHandler::CounterGet {
+                    key: key.into().to_string(),
+                    reply: ack,
+                })
                 .expect("kv handler to always be running");
             let value = await_channel_response(rx).await?;
             Ok(value)

@@ -3,7 +3,6 @@ use crate::Node;
 #[cfg(feature = "in-memory-snapshots")]
 use std::io::Cursor;
 
-mod cache_ttl_handler;
 pub mod kv_handler;
 pub mod state_machine;
 
