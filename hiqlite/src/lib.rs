@@ -122,6 +122,40 @@ pub trait CacheVariants {
 
     /// Returns the Enum Variants as `(idx, name)` in strictly ascending order, starting at `0`.
     fn hiqlite_cache_variants() -> &'static [(usize, &'static str)];
+
+    /// Returns the cache variants as a stable, line-oriented text form: one `<index> <name>`
+    /// pair per line in ascending index order (e.g. `0 App\n1 AuthCodes\n`). This is the
+    /// on-disk metadata format written by the cache state machine; parse each line with
+    /// `split_once(' ')`.
+    fn hiqlite_cache_variants_normalized() -> String {
+        Self::hiqlite_cache_variants()
+            .iter()
+            .map(|&(idx, name)| format!("{idx} {name}\n"))
+            .collect()
+    }
+
+    /// Returns `true` when every `(index, name)` pair recorded in `stored` (the normalized
+    /// form of a previously persisted cache index) still exists unchanged in the current enum.
+    /// Adding new variants at the end is allowed (enum expansion); any re-order,
+    /// insert-in-between, removal, or rename makes it incompatible and returns `false`.
+    fn hiqlite_cache_compatible_with(stored: &str) -> bool {
+        let variants = Self::hiqlite_cache_variants();
+        for line in stored.lines() {
+            let (idx, name) = match line.split_once(' ') {
+                Some((idx, name)) => (idx, name),
+                None => return false,
+            };
+            let idx: usize = match idx.parse() {
+                Ok(idx) => idx,
+                Err(_) => return false,
+            };
+            match variants.get(idx).map(|v| v.1) {
+                Some(n) if n == name => {}
+                _ => return false,
+            }
+        }
+        true
+    }
 }
 
 /// A Raft / Hiqlite node

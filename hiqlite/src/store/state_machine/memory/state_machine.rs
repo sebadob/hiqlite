@@ -254,6 +254,60 @@ impl StateMachineMemory {
             }
         }
 
+        // Cross-restart cache-index compatibility check. The cache index is encoded
+        // positionally in persisted snapshots and in Raft log entries, so a re-order,
+        // insert-in-between, removal or rename of the enum would silently install data
+        // into the wrong cache. We persist the current enum's normalized form to
+        // `cache_index.meta` and compare it against any existing file on every startup:
+        // only a pure expansion at the end is allowed. This is only meaningful when data
+        // is actually persisted to disk (`!in_memory_only`).
+        if !in_memory_only {
+            let path_meta = format!("{path_sm}/cache_index.meta");
+            match fs::read_to_string(&path_meta).await {
+                Ok(stored) => {
+                    if !C::hiqlite_cache_compatible_with(&stored) {
+                        return Err(Error::Cache(
+                            format!(
+                                "cache index enum is incompatible with previously persisted \
+                                 data ({}):\n--- stored ---\n{}--- current ---\n{}",
+                                path_meta,
+                                stored,
+                                C::hiqlite_cache_variants_normalized()
+                            )
+                            .into(),
+                        ));
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(Error::Cache(
+                        format!("cannot read cache index metadata {path_meta}: {err}").into(),
+                    ))
+                }
+            }
+
+            // (Re)write the normalized form atomically so the file always reflects the
+            // current enum and a torn write can never leave a half-written fingerprint.
+            let normalized = C::hiqlite_cache_variants_normalized();
+            let path_temp = format!("{path_sm}/cache_index.meta~");
+            {
+                let mut file = fs::File::create(&path_temp)
+                    .await
+                    .map_err(|err| Error::Cache(format!("cannot create {path_temp}: {err}").into()))?;
+                file.write_all(normalized.as_bytes())
+                    .await
+                    .map_err(|err| Error::Cache(format!("cannot write {path_temp}: {err}").into()))?;
+                file.sync_data()
+                    .await
+                    .map_err(|err| Error::Cache(format!("cannot sync {path_temp}: {err}").into()))?;
+            }
+            fs::rename(&path_temp, &path_meta)
+                .await
+                .map_err(|err| {
+                    Error::Cache(format!("cannot rename {path_temp} to {path_meta}: {err}").into())
+                })?;
+        }
+
         let mut tx_caches = Vec::with_capacity(variants.len());
         for (_, name) in variants {
             tx_caches.push(kv_handler::spawn(name));
@@ -1150,6 +1204,34 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base_dir);
     }
+
+    /// A disk-backed state machine must refuse to start when the persisted cache-index
+    /// fingerprint no longer matches the current enum (a rename here). This is the startup
+    /// safeguard that catches re-order / insert-in-between / removal / rename of the
+    /// `CacheVariants` enum across restarts; a pure expansion at the end is still accepted.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_rejects_incompatible_cache_index() {
+        let base_dir = std::env::temp_dir().join("hiqlite_cache_index_compat_test");
+        let _ = std::fs::remove_dir_all(&base_dir);
+        let base = base_dir.to_str().unwrap();
+
+        // TestCache's current enum is a single variant at index 0 named "One". A stored
+        // fingerprint claiming index 0 is something else is a rename -> incompatible.
+        std::fs::create_dir_all(format!("{base}/state_machine_cache")).unwrap();
+        std::fs::write(
+            format!("{base}/state_machine_cache/cache_index.meta"),
+            "0 SomethingElse\n",
+        )
+        .unwrap();
+
+        let res = StateMachineMemory::new::<TestCache>(base, false).await;
+        assert!(
+            matches!(res, Err(Error::Cache(_))),
+            "expected an incompatible cache index to be rejected at startup, got {res:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
 }
 
 #[cfg(test)]
@@ -1240,5 +1322,85 @@ mod serialized_enum_order {
             }),
             15
         );
+    }
+}
+
+#[cfg(test)]
+mod cache_index_compatibility {
+    use crate::CacheVariants;
+
+    /// A fixed "current" enum used to exercise the compatibility check against a variety of
+    /// previously-persisted (stored) index maps. Only the associated functions are used, so
+    /// `hiqlite_cache_index` is never called at runtime here.
+    #[derive(Debug)]
+    enum Cur {
+        App,
+        AuthCodes,
+        Users,
+        MagicLinks,
+    }
+
+    impl CacheVariants for Cur {
+        fn hiqlite_cache_index(&self) -> usize {
+            match self {
+                Self::App => 0,
+                Self::AuthCodes => 1,
+                Self::Users => 2,
+                Self::MagicLinks => 3,
+            }
+        }
+
+        fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
+            &[(0, "App"), (1, "AuthCodes"), (2, "Users"), (3, "MagicLinks")]
+        }
+    }
+
+    #[test]
+    fn normalized_form_is_stable_and_self_compatible() {
+        let normalized = Cur::hiqlite_cache_variants_normalized();
+        assert_eq!(normalized, "0 App\n1 AuthCodes\n2 Users\n3 MagicLinks\n");
+        // the on-disk fingerprint is always compatible with itself
+        assert!(Cur::hiqlite_cache_compatible_with(&normalized));
+    }
+
+    #[test]
+    fn expansion_at_the_end_is_allowed() {
+        // data was written when only the first three variants existed; `MagicLinks` was
+        // added at the end later -> every stored index still maps to the same name.
+        assert!(Cur::hiqlite_cache_compatible_with("0 App\n1 AuthCodes\n2 Users\n"));
+    }
+
+    #[test]
+    fn reorder_is_incompatible() {
+        // `Users` moved to index 1, pushing `AuthCodes` down -> data at index 1 would be
+        // installed into the wrong cache.
+        assert!(!Cur::hiqlite_cache_compatible_with(
+            "0 App\n1 Users\n2 AuthCodes\n3 MagicLinks\n"
+        ));
+    }
+
+    #[test]
+    fn insert_in_between_is_incompatible() {
+        // an older enum where `Users` sat at index 1 (no `AuthCodes` yet) -> inserting a
+        // variant in the middle shifts every following index.
+        assert!(!Cur::hiqlite_cache_compatible_with("0 App\n1 Users\n2 MagicLinks\n"));
+    }
+
+    #[test]
+    fn removal_or_rename_is_incompatible() {
+        // a stored index that no longer exists (out of range for the current enum) ...
+        assert!(!Cur::hiqlite_cache_compatible_with("0 App\n4 Sessions\n"));
+        // ... or the same index now carrying a different variant name.
+        assert!(!Cur::hiqlite_cache_compatible_with(
+            "0 App\n1 Tokens\n2 Users\n3 MagicLinks\n"
+        ));
+    }
+
+    #[test]
+    fn malformed_stored_lines_are_incompatible() {
+        // no space -> cannot split into index + name
+        assert!(!Cur::hiqlite_cache_compatible_with("App\n"));
+        // non-numeric index
+        assert!(!Cur::hiqlite_cache_compatible_with("x App\n"));
     }
 }
