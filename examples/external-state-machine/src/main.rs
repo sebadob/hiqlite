@@ -163,7 +163,7 @@ impl DeterministicSqliteOperation for TodoOperation {
     type Error = rusqlite::Error;
 
     /// Name + version of the receipt encoding. The default codec is Hiqlite's
-    /// bincode configuration; you can override `encode_receipt` /
+    /// bincode-next configuration; you can override `encode_receipt` /
     /// `decode_receipt` if you want to own the format.
     const RECEIPT_CODEC: &'static str = "hiqlite-example-todos/receipt-v1";
 

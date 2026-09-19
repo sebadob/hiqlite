@@ -3,7 +3,7 @@ use crate::network::{RaftInitError, RaftSnapshotError, RaftWriteError};
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use bincode::error::{DecodeError, EncodeError};
+use bincode_next::error::{DecodeError, EncodeError};
 use fastwebsockets::WebSocketError;
 use openraft::StorageError;
 use openraft::error::{CheckIsLeaderError, ClientWriteError, Fatal, RaftError};
@@ -21,7 +21,7 @@ use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 pub enum Error {
     #[error("BadRequest: {0}")]
     BadRequest(Cow<'static, str>),
-    /// Serialization / Deserialization errors from `bincode`
+    /// Serialization / Deserialization errors from `bincode-next`
     #[error("Bincode: {0}")]
     Bincode(String),
     #[error("Cache: {0}")]
@@ -188,14 +188,14 @@ impl From<std::io::Error> for Error {
 
 impl From<Box<EncodeError>> for Error {
     fn from(value: Box<EncodeError>) -> Self {
-        trace!("bincode::EncodeError: {value}");
+        trace!("bincode_next::EncodeError: {value}");
         Self::Bincode(value.to_string())
     }
 }
 
 impl From<Box<DecodeError>> for Error {
     fn from(value: Box<DecodeError>) -> Self {
-        trace!("bincode::DecodeError: {value}");
+        trace!("bincode_next::DecodeError: {value}");
         Self::Bincode(value.to_string())
     }
 }

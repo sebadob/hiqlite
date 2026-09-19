@@ -54,7 +54,7 @@ fn fmt_ok<S: Debug + Serialize>(headers: HeaderMap, payload: S) -> Result<Respon
 
 /// Serialization used for all network requests for non-raft-internal traffic and types.
 /// # Panics
-/// If the given type cannot be serialized with bincode + serde successfully
+/// If the given type cannot be serialized with bincode-next + serde successfully
 #[inline(always)]
 pub fn serialize_network<T: Serialize>(value: &T) -> Vec<u8> {
     serialize(value).expect("Network payload serialization should always succeed")

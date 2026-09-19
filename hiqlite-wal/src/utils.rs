@@ -2,13 +2,12 @@ use crate::error::Error;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
 
-pub(crate) use crc;
-
 pub const CHKSUM: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_CKSUM);
 
 macro_rules! crc {
     ($input:expr) => {{ crate::utils::CHKSUM.checksum($input).to_le_bytes() }};
 }
+pub(crate) use crc;
 
 #[inline]
 pub fn u64_to_bin(id: u64, buf: &mut Vec<u8>) -> Result<(), Error> {
@@ -34,9 +33,9 @@ pub fn bin_to_u32(buf: &[u8]) -> Result<u32, Error> {
 
 #[inline(always)]
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
-    Ok(bincode::serde::encode_to_vec(
+    Ok(bincode_next::serde::encode_to_vec(
         value,
-        bincode::config::standard(),
+        bincode_next::config::standard(),
     )?)
 }
 
@@ -45,6 +44,7 @@ pub fn deserialize<T>(bytes: &[u8]) -> Result<T, Error>
 where
     T: for<'a> Deserialize<'a>,
 {
-    let (res, _) = bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::standard())?;
+    let (res, _) =
+        bincode_next::serde::decode_from_slice::<T, _>(bytes, bincode_next::config::standard())?;
     Ok(res)
 }

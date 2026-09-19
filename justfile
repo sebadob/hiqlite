@@ -66,6 +66,7 @@ check:
     set -euxo pipefail
     clear
     cargo update
+    cargo fmt --check
     cargo clippy -- -D warnings
     cargo minimal-versions check -p hiqlite --features server
     cargo minimal-versions check -p hiqlite --no-default-features --features external-state-machine

@@ -145,7 +145,7 @@ argon2 = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 axum-extra = { workspace = true, optional = true }
 axum-server = { workspace = true, optional = true }
-bincode.workspace = true
+bincode-next.workspace = true
 bytes = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
@@ -210,6 +210,13 @@ rustls-webpki = { workspace = true, optional = true }
 tikv-jemallocator = { workspace = true, optional = true }
 
 [dev-dependencies]
+bincode.workspace = true
+criterion.workspace = true
 tokio = { workspace = true, features = ["full", "test-util", "tracing"] }
 tokio-test = "0.4.4"
 tracing-subscriber.workspace = true
+
+[[bench]]
+name = "bincode"
+path = "benches/bincode.rs"
+harness = false

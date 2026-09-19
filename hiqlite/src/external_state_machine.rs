@@ -26,7 +26,7 @@
 //! without running the operation again. Older retries return
 //! [`ExternalError::ReceiptUnavailable`](crate::external_state_machine::ExternalError::ReceiptUnavailable).
 //!
-//! Coordinates use Hiqlite's bincode legacy encoding on disk. Operation
+//! Coordinates use Hiqlite's bincode-next legacy encoding on disk. Operation
 //! outputs use that encoding by default, while protocol owners may override
 //! [`DeterministicSqliteOperation::encode_receipt`](crate::external_state_machine::DeterministicSqliteOperation::encode_receipt)
 //! and its decoder. `C`, the selected output codec, and
@@ -97,8 +97,8 @@ use uuid::Uuid;
 
 type SqlitePool = deadpool::unmanaged::Pool<Connection>;
 
-fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, bincode::error::EncodeError> {
-    bincode::serde::encode_to_vec(value, bincode::config::legacy())
+fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, bincode_next::error::EncodeError> {
+    bincode_next::serde::encode_to_vec(value, bincode_next::config::legacy())
 }
 
 async fn set_path_access(path: &str, mode: u32) -> Result<(), std::io::Error> {
@@ -389,7 +389,7 @@ pub trait DeterministicSqliteOperation: Send + 'static {
 
     /// Encodes the durable lost-response receipt.
     ///
-    /// The default retains Hiqlite's legacy bincode representation. Protocol
+    /// The default retains Hiqlite's legacy bincode-next representation. Protocol
     /// owners may override both codec methods to own a stable canonical format.
     fn encode_receipt(output: &Self::Output) -> Result<Vec<u8>, String> {
         serialize(output).map_err(|err| err.to_string())
@@ -397,9 +397,11 @@ pub trait DeterministicSqliteOperation: Send + 'static {
 
     /// Decodes one durable lost-response receipt.
     fn decode_receipt(bytes: &[u8]) -> Result<Self::Output, String> {
-        let (output, consumed) =
-            bincode::serde::decode_from_slice::<Self::Output, _>(bytes, bincode::config::legacy())
-                .map_err(|err| err.to_string())?;
+        let (output, consumed) = bincode_next::serde::decode_from_slice::<Self::Output, _>(
+            bytes,
+            bincode_next::config::legacy(),
+        )
+        .map_err(|err| err.to_string())?;
         if consumed != bytes.len() {
             return Err("receipt contains trailing bytes".to_string());
         }
@@ -2499,7 +2501,7 @@ fn decode_digest(bytes: &[u8], field: &str) -> Result<Sha256Digest, ExternalErro
 
 fn deserialize_exact<T: DeserializeOwned>(bytes: &[u8], field: &str) -> Result<T, ExternalError> {
     let (value, consumed) =
-        bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::legacy())
+        bincode_next::serde::decode_from_slice::<T, _>(bytes, bincode_next::config::legacy())
             .map_err(|err| ExternalError::Serialization(err.to_string()))?;
     if consumed != bytes.len() {
         return Err(ExternalError::InvalidMetadata(format!(

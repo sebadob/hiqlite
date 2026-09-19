@@ -42,14 +42,14 @@ impl From<task::JoinError> for Error {
     }
 }
 
-impl From<bincode::error::DecodeError> for Error {
-    fn from(err: bincode::error::DecodeError) -> Self {
+impl From<bincode_next::error::DecodeError> for Error {
+    fn from(err: bincode_next::error::DecodeError) -> Self {
         Self::Decode(err.to_string())
     }
 }
 
-impl From<bincode::error::EncodeError> for Error {
-    fn from(err: bincode::error::EncodeError) -> Self {
+impl From<bincode_next::error::EncodeError> for Error {
+    fn from(err: bincode_next::error::EncodeError) -> Self {
         Self::Encode(err.to_string())
     }
 }

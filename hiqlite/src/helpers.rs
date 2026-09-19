@@ -1,6 +1,6 @@
 use crate::app_state::{AppState, RaftType};
 use crate::{Error, Node};
-use bincode::error::{DecodeError, EncodeError};
+use bincode_next::error::{DecodeError, EncodeError};
 use openraft::{ChangeMembers, RaftMetrics};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -13,12 +13,13 @@ use tracing::info;
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
     // We are using the legacy config on purpose here. It uses fixed-width integer fields, which
     // uses a bit more space, but is faster.
-    bincode::serde::encode_to_vec(value, bincode::config::legacy())
+    bincode_next::serde::encode_to_vec(value, bincode_next::config::legacy())
 }
 
 #[inline(always)]
 pub fn deserialize<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
-    bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::legacy()).map(|(res, _)| res)
+    bincode_next::serde::decode_from_slice::<T, _>(bytes, bincode_next::config::legacy())
+        .map(|(res, _)| res)
 }
 
 pub async fn is_raft_initialized(
