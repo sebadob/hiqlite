@@ -441,7 +441,9 @@ CREATE TABLE IF NOT EXISTS _metadata
                             if let Err(e) = txn.rollback() {
                                 error!("Error during txn rollback: {:?}", e);
                             }
-                            req.tx.send(Err(err)).expect("oneshot tx to never be dropped");
+                            req.tx
+                                .send(Err(err))
+                                .expect("oneshot tx to never be dropped");
                         } else {
                             match txn.commit() {
                                 Ok(()) => {
@@ -485,9 +487,13 @@ CREATE TABLE IF NOT EXISTS _metadata
                         }
 
                         if let Some(err) = err {
-                            req.tx.send(Err(err)).expect("oneshot tx to never be dropped");
+                            req.tx
+                                .send(Err(err))
+                                .expect("oneshot tx to never be dropped");
                         } else {
-                            req.tx.send(Ok(res)).expect("oneshot tx to never be dropped");
+                            req.tx
+                                .send(Ok(res))
+                                .expect("oneshot tx to never be dropped");
                         }
                     }
                 },
@@ -578,7 +584,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                         })
                         .expect("Metadata query to always succeed");
 
-                    ack.send(Ok(())).expect("snapshot install listener to always exist");
+                    ack.send(Ok(()))
+                        .expect("snapshot install listener to always exist");
                 }
 
                 WriterRequest::MetadataRead(ack) => {
@@ -594,8 +601,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             // a present but corrupt metadata row leaves no known log
                             // position - fail hard rather than guess
                             Ok(bytes) => {
-                                sm_data =
-                                    deserialize(&bytes).expect("Metadata to deserialize ok");
+                                sm_data = deserialize(&bytes).expect("Metadata to deserialize ok");
                             }
                             Err(err) => {
                                 warn!("No metadata exists inside the DB yet");
@@ -603,13 +609,16 @@ CREATE TABLE IF NOT EXISTS _metadata
                         }
                     }
 
-                    ack.send(sm_data.clone()).expect("metadata read listener to always exist");
+                    ack.send(sm_data.clone())
+                        .expect("metadata read listener to always exist");
                 }
 
                 WriterRequest::MetadataMembership(req) => {
                     sm_data.last_membership = req.last_membership;
                     sm_data.last_applied_log_id = req.last_applied_log_id;
-                    req.ack.send(()).expect("membership ack listener to always exist");
+                    req.ack
+                        .send(())
+                        .expect("membership ack listener to always exist");
                 }
 
                 WriterRequest::Backup(req) => {

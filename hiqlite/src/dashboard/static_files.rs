@@ -2,7 +2,7 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::Uri;
 use axum::{
-    http::{header, Response, StatusCode},
+    http::{Response, StatusCode, header},
     response,
 };
 use rust_embed::RustEmbed;

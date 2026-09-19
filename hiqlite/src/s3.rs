@@ -1,7 +1,7 @@
 use crate::Error;
+pub use cryptr::EncKeys;
 pub use cryptr::stream::s3::*;
 use cryptr::stream::writer::channel_writer::{ChannelReceiver, ChannelWriter};
-pub use cryptr::EncKeys;
 use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter};
 use std::env;
 use std::sync::Arc;

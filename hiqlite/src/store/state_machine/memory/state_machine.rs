@@ -282,7 +282,7 @@ impl StateMachineMemory {
                 Err(err) => {
                     return Err(Error::Cache(
                         format!("cannot read cache index metadata {path_meta}: {err}").into(),
-                    ))
+                    ));
                 }
             }
 
@@ -291,21 +291,19 @@ impl StateMachineMemory {
             let normalized = C::hiqlite_cache_variants_normalized();
             let path_temp = format!("{path_sm}/cache_index.meta~");
             {
-                let mut file = fs::File::create(&path_temp)
-                    .await
-                    .map_err(|err| Error::Cache(format!("cannot create {path_temp}: {err}").into()))?;
-                file.write_all(normalized.as_bytes())
-                    .await
-                    .map_err(|err| Error::Cache(format!("cannot write {path_temp}: {err}").into()))?;
-                file.sync_data()
-                    .await
-                    .map_err(|err| Error::Cache(format!("cannot sync {path_temp}: {err}").into()))?;
-            }
-            fs::rename(&path_temp, &path_meta)
-                .await
-                .map_err(|err| {
-                    Error::Cache(format!("cannot rename {path_temp} to {path_meta}: {err}").into())
+                let mut file = fs::File::create(&path_temp).await.map_err(|err| {
+                    Error::Cache(format!("cannot create {path_temp}: {err}").into())
                 })?;
+                file.write_all(normalized.as_bytes()).await.map_err(|err| {
+                    Error::Cache(format!("cannot write {path_temp}: {err}").into())
+                })?;
+                file.sync_data().await.map_err(|err| {
+                    Error::Cache(format!("cannot sync {path_temp}: {err}").into())
+                })?;
+            }
+            fs::rename(&path_temp, &path_meta).await.map_err(|err| {
+                Error::Cache(format!("cannot rename {path_temp} to {path_meta}: {err}").into())
+            })?;
         }
 
         let mut tx_caches = Vec::with_capacity(variants.len());
@@ -1351,7 +1349,12 @@ mod cache_index_compatibility {
         }
 
         fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
-            &[(0, "App"), (1, "AuthCodes"), (2, "Users"), (3, "MagicLinks")]
+            &[
+                (0, "App"),
+                (1, "AuthCodes"),
+                (2, "Users"),
+                (3, "MagicLinks"),
+            ]
         }
     }
 
@@ -1367,7 +1370,9 @@ mod cache_index_compatibility {
     fn expansion_at_the_end_is_allowed() {
         // data was written when only the first three variants existed; `MagicLinks` was
         // added at the end later -> every stored index still maps to the same name.
-        assert!(Cur::hiqlite_cache_compatible_with("0 App\n1 AuthCodes\n2 Users\n"));
+        assert!(Cur::hiqlite_cache_compatible_with(
+            "0 App\n1 AuthCodes\n2 Users\n"
+        ));
     }
 
     #[test]
@@ -1383,7 +1388,9 @@ mod cache_index_compatibility {
     fn insert_in_between_is_incompatible() {
         // an older enum where `Users` sat at index 1 (no `AuthCodes` yet) -> inserting a
         // variant in the middle shifts every following index.
-        assert!(!Cur::hiqlite_cache_compatible_with("0 App\n1 Users\n2 MagicLinks\n"));
+        assert!(!Cur::hiqlite_cache_compatible_with(
+            "0 App\n1 Users\n2 MagicLinks\n"
+        ));
     }
 
     #[test]

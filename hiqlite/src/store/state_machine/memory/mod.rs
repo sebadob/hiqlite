@@ -1,7 +1,5 @@
-use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
 use crate::Node;
-#[cfg(feature = "in-memory-snapshots")]
-use std::io::Cursor;
+use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
 
 pub mod kv_handler;
 pub mod state_machine;
@@ -30,5 +28,5 @@ openraft::declare_raft_types!(
         D = CacheRequest,
         R = CacheResponse,
         Node = Node,
-        SnapshotData = Cursor<Vec<u8>>,
+        SnapshotData = std::io::Cursor<Vec<u8>>,
 );

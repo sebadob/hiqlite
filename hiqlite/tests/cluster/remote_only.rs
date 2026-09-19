@@ -106,7 +106,10 @@ async fn test_mixed_claim_atomicity(client: &Client) -> Result<(), Error> {
             .filter(|v| v.as_deref() == Some("atomic"))
             .count()
             + usize::from(r?.as_deref() == Some("atomic"));
-        assert!(claims <= 1, "the original value must be claimed at most once");
+        assert!(
+            claims <= 1,
+            "the original value must be claimed at most once"
+        );
 
         let v: Option<String> = client.get(Cache::One, key).await?;
         assert!(

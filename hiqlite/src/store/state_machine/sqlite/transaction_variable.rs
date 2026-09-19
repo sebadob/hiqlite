@@ -5,7 +5,10 @@ pub struct StmtIndex(pub usize);
 impl StmtIndex {
     /// Specify a column on the StmtIndex to produce a [StmtColumn].
     pub fn column<C>(self, column: C) -> StmtColumn<C> {
-        StmtColumn { stmt_index: self, column }
+        StmtColumn {
+            stmt_index: self,
+            column,
+        }
     }
 }
 

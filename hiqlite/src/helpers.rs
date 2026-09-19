@@ -2,11 +2,11 @@ use crate::app_state::{AppState, RaftType};
 use crate::{Error, Node};
 use bincode::error::{DecodeError, EncodeError};
 use openraft::{ChangeMembers, RaftMetrics};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::BTreeSet;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tracing::info;
 
 #[inline(always)]

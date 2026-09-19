@@ -105,12 +105,32 @@ async fn wait_for_ready(addr_api: &str) -> Result<(), Error> {
 
 async fn assert_learner_only_membership(client: &Client, node_id: u64) -> Result<(), Error> {
     let metrics_db = client.metrics_db().await?;
-    assert!(metrics_db.membership_config.nodes().any(|(id, _)| *id == node_id));
-    assert!(!metrics_db.membership_config.voter_ids().any(|id| id == node_id));
+    assert!(
+        metrics_db
+            .membership_config
+            .nodes()
+            .any(|(id, _)| *id == node_id)
+    );
+    assert!(
+        !metrics_db
+            .membership_config
+            .voter_ids()
+            .any(|id| id == node_id)
+    );
 
     let metrics_cache = client.metrics_cache().await?;
-    assert!(metrics_cache.membership_config.nodes().any(|(id, _)| *id == node_id));
-    assert!(!metrics_cache.membership_config.voter_ids().any(|id| id == node_id));
+    assert!(
+        metrics_cache
+            .membership_config
+            .nodes()
+            .any(|(id, _)| *id == node_id)
+    );
+    assert!(
+        !metrics_cache
+            .membership_config
+            .voter_ids()
+            .any(|id| id == node_id)
+    );
 
     if client.metrics_db().await?.id == node_id {
         assert_eq!(metrics_db.state, ServerState::Learner);

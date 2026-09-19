@@ -104,10 +104,8 @@ fn cmp_constant_time<T: AsRef<[u8]>>(a: T, b: T) -> bool {
     }
 
     constant_time_eq_32(
-        <&[u8; 32]>::try_from(a)
-            .expect("Length checked to be 32 above"),
-        <&[u8; 32]>::try_from(b)
-            .expect("Length checked to be 32 above"),
+        <&[u8; 32]>::try_from(a).expect("Length checked to be 32 above"),
+        <&[u8; 32]>::try_from(b).expect("Length checked to be 32 above"),
     )
 }
 

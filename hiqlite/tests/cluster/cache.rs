@@ -1,4 +1,4 @@
-use crate::{log, Cache};
+use crate::{Cache, log};
 use hiqlite::{Client, Error};
 use std::string::ToString;
 use std::time::Duration;
@@ -177,7 +177,9 @@ pub async fn test_cache(
     assert!(v.is_none());
 
     log("Test replace");
-    let v: Option<String> = client_1.replace(Cache::One, KEY, &VALUE.to_string(), None).await?;
+    let v: Option<String> = client_1
+        .replace(Cache::One, KEY, &VALUE.to_string(), None)
+        .await?;
     assert!(v.is_none());
     let v: Option<String> = client_1
         .replace(Cache::One, KEY, &VALUE_2.to_string(), None)
@@ -194,7 +196,9 @@ pub async fn test_cache(
     client_1
         .put(Cache::One, KEY, &VALUE.to_string(), Some(1))
         .await?;
-    let v: Option<String> = client_1.replace(Cache::One, KEY, &VALUE_2.to_string(), None).await?;
+    let v: Option<String> = client_1
+        .replace(Cache::One, KEY, &VALUE_2.to_string(), None)
+        .await?;
     assert_eq!(v.as_deref(), Some(VALUE));
     time::sleep(Duration::from_millis(1500)).await;
     let v: String = client_1.get(Cache::One, KEY).await?.unwrap();
@@ -205,7 +209,9 @@ pub async fn test_cache(
     client_1
         .put(Cache::One, KEY, &VALUE.to_string(), None)
         .await?;
-    let v: Option<String> = client_1.replace(Cache::One, KEY, &VALUE_2.to_string(), Some(1)).await?;
+    let v: Option<String> = client_1
+        .replace(Cache::One, KEY, &VALUE_2.to_string(), Some(1))
+        .await?;
     assert_eq!(v.as_deref(), Some(VALUE));
     time::sleep(Duration::from_millis(1500)).await;
     let v: Option<String> = client_1.get(Cache::One, KEY).await?;

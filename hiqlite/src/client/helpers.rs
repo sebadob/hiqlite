@@ -198,8 +198,7 @@ impl Client {
         let Some((leader_node_id, node)) = metrics
             .membership_config
             .nodes()
-            .filter(|(id, _)| *id == &leader_id)
-            .next()
+            .find(|(id, _)| *id == &leader_id)
         else {
             return Err(Error::Connect(format!(
                 "Reported leader {leader_id} is not part of the current membership (stale metrics)"

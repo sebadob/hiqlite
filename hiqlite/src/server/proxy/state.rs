@@ -1,5 +1,5 @@
-use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 use crate::Client;
+use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 
 pub struct AppStateProxy {
     pub client: Client,

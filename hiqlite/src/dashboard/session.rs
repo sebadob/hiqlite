@@ -4,8 +4,8 @@ use crate::helpers::deserialize;
 use crate::network::{AppStateExt, serialize_network};
 use axum::Json;
 use axum::extract::FromRequestParts;
-use axum::http::header::{RETRY_AFTER, SET_COOKIE};
 use axum::http::StatusCode;
+use axum::http::header::{RETRY_AFTER, SET_COOKIE};
 use axum::http::{HeaderMap, Method, request};
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
@@ -62,9 +62,7 @@ fn cooldown_response() -> Response {
         .map(|t| t.saturating_duration_since(Instant::now()).as_secs())
         .unwrap_or(LOGIN_COOLDOWN.as_secs())
         .max(1);
-    let err = Error::RateLimit(
-        "too many failed login attempts, try again in a few seconds".into(),
-    );
+    let err = Error::RateLimit("too many failed login attempts, try again in a few seconds".into());
     (
         StatusCode::TOO_MANY_REQUESTS,
         [(RETRY_AFTER, remaining.to_string())],
@@ -122,7 +120,9 @@ impl Session {
         let cookie_header = if *INSECURE_COOKIES {
             format!("{COOKIE_NAME_DEV}={b64}; HttpOnly; SameSite=Lax; Max-Age={max_age}")
         } else {
-            format!("{COOKIE_NAME}={b64}; Secure; HttpOnly; SameSite=Lax; Max-Age={max_age}; Path=/")
+            format!(
+                "{COOKIE_NAME}={b64}; Secure; HttpOnly; SameSite=Lax; Max-Age={max_age}; Path=/"
+            )
         };
 
         Ok(cookie_header)

@@ -7,8 +7,8 @@ use axum::body::Body;
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::Response;
-use openraft::error::{CheckIsLeaderError, ForwardToLeader, RaftError};
 use openraft::StoredMembership;
+use openraft::error::{CheckIsLeaderError, ForwardToLeader, RaftError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -417,11 +417,13 @@ async fn wait_for_membership_commit(
         are_we_leader(state, raft_type).await?;
 
         if start.elapsed() > MEMBERSHIP_COMMIT_TIMEOUT {
-            return Err(Error::Error(format!(
-                "Timeout after {:?} waiting for {what}",
-                MEMBERSHIP_COMMIT_TIMEOUT
-            )
-            .into()));
+            return Err(Error::Error(
+                format!(
+                    "Timeout after {:?} waiting for {what}",
+                    MEMBERSHIP_COMMIT_TIMEOUT
+                )
+                .into(),
+            ));
         }
     }
 }

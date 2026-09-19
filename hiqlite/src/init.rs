@@ -66,7 +66,8 @@ pub async fn check_execute_reset(base_path: &str) -> Result<bool, Error> {
     }
     // A manual reset wipes the persisted cache data, so drop the cache-index fingerprint too;
     // otherwise a stale file would be compared against on the next (data-free) startup.
-    if let Err(err) = fs::remove_file(format!("{base_path}/state_machine_cache/cache_index.meta")).await
+    if let Err(err) =
+        fs::remove_file(format!("{base_path}/state_machine_cache/cache_index.meta")).await
     {
         // A missing metadata file is expected on a pristine node; only log real errors.
         if err.kind() != std::io::ErrorKind::NotFound {

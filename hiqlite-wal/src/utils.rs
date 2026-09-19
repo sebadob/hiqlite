@@ -2,14 +2,13 @@ use crate::error::Error;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
 
+pub(crate) use crc;
+
 pub const CHKSUM: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_CKSUM);
 
 macro_rules! crc {
-    ($input:expr) => {{
-        crate::utils::CHKSUM.checksum($input).to_le_bytes()
-    }};
+    ($input:expr) => {{ crate::utils::CHKSUM.checksum($input).to_le_bytes() }};
 }
-pub(crate) use crc;
 
 #[inline]
 pub fn u64_to_bin(id: u64, buf: &mut Vec<u8>) -> Result<(), Error> {
@@ -41,7 +40,7 @@ pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     )?)
 }
 
-#[inline]
+#[inline(always)]
 pub fn deserialize<T>(bytes: &[u8]) -> Result<T, Error>
 where
     T: for<'a> Deserialize<'a>,

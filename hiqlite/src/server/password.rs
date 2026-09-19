@@ -1,7 +1,7 @@
-use crate::{dashboard, Error};
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::SaltString;
+use crate::{Error, dashboard};
 use argon2::PasswordHasher;
+use argon2::password_hash::SaltString;
+use argon2::password_hash::rand_core::OsRng;
 use cryptr::utils::b64_encode;
 use tokio::task;
 
