@@ -260,9 +260,9 @@ impl StateMachineMemory {
         // insert-in-between, removal or rename of the enum would silently install data
         // into the wrong cache. We persist the current enum's normalized form to
         // `cache_index.meta` and compare it against any existing file on every startup:
-        // only a pure expansion at the end is allowed. This is only meaningful when data
-        // is actually persisted to disk (`!in_memory_only`).
-        if !in_memory_only {
+        // only a pure expansion at the end is allowed.
+        #[cfg(not(feature = "in-memory-snapshots"))]
+        {
             let path_meta = format!("{path_sm}/cache_index.meta");
             match fs::read_to_string(&path_meta).await {
                 Ok(stored) => {

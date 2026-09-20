@@ -112,8 +112,13 @@ mod http_client;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub mod tls;
 
+#[cfg(feature = "cache")]
+mod v0_15_auto_cache_migration;
+
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 type NodeId = u64;
+
+pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub trait CacheVariants {

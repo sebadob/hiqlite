@@ -42,6 +42,14 @@ where
         .map(|c| c.danger_tls_no_verify())
         .unwrap_or(false);
 
+    #[cfg(feature = "cache")]
+    if let Err(err) = crate::v0_15_auto_cache_migration::check_migrate(&node_config).await {
+        error!(
+            "Error during auto-migration for the Cache WAL layer and version migration: {err:?}"
+        );
+        return Err(err);
+    }
+
     #[cfg(any(feature = "s3", feature = "dashboard"))]
     node_config.init_enc_keys();
 
@@ -155,6 +163,7 @@ where
         .route("/stream/cache", get(raft_server::stream_cache))
         .route("/health", get(api::health))
         .route("/ping", get(api::ping))
+        .route("/version", get(api::get_version))
         // .layer(compression_middleware.clone().into_inner())
         .with_state(state.clone());
 
@@ -207,7 +216,8 @@ where
         .route("/backup", post(api::post_create_backup))
         .route("/health", get(api::health))
         .route("/ready", get(api::ready))
-        .route("/ping", get(api::ping));
+        .route("/ping", get(api::ping))
+        .route("/version", get(api::get_version));
 
     #[cfg(not(feature = "dashboard"))]
     let router_api = default_routes.with_state(state.clone());
