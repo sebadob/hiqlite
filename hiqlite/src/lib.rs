@@ -118,6 +118,7 @@ mod v0_15_auto_cache_migration;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 type NodeId = u64;
 
+#[allow(dead_code)]
 pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
