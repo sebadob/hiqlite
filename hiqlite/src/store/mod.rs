@@ -64,7 +64,7 @@ pub(crate) async fn start_raft_db(
         node_config.s3_config.clone(),
         do_reset_metadata,
         #[cfg(feature = "backup")]
-        node_config.backup_keep_days_local,
+        node_config.backup_keep_for_local,
     )
     .await?;
 

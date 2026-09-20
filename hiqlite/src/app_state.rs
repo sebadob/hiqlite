@@ -24,6 +24,7 @@ use crate::store::state_machine::sqlite::{
 };
 #[cfg(any(feature = "backup", feature = "dashboard"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -73,7 +74,7 @@ pub(crate) struct AppState {
     pub client_request_id: AtomicUsize,
     #[cfg(any(feature = "backup", feature = "dashboard"))]
     pub tx_client_stream: flume::Sender<ClientStreamReq>,
-    pub health_check_delay_secs: u32,
+    pub health_check_delay: Duration,
     pub learner_only: bool,
 }
 

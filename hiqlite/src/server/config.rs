@@ -296,7 +296,7 @@ secret_api = "{secret_api}"
 # relying on `readinessProbe` checks.
 #
 # default: 30
-#health_check_delay_secs = 30
+#health_check_delay = 30
 
 # Set a newly joining node to stay a learner during startup reconciliation.
 # This is useful for read-only replicas that should not become voting
@@ -317,16 +317,16 @@ secret_api = "{secret_api}"
 # Backups older than the configured days will be cleaned up on S3
 # after the backup cron job `backup_cron`.
 #
-# default: 30
-# overwritten by: HQL_BACKUP_KEEP_DAYS
-#backup_keep_days = 30
+# default: '30d'
+# overwritten by: HQL_BACKUP_KEEP_FOR
+#backup_keep_for = '30d'
 
 # Backups older than the configured days will be cleaned up locally
 # after each `Client::backup()` and the cron job `HQL_BACKUP_CRON`.
 #
-# default: 30
-# overwritten by: HQL_BACKUP_KEEP_DAYS_LOCAL
-#backup_keep_days_local = 30
+# default: '30d'
+# overwritten by: HQL_BACKUP_KEEP_FOR_LOCAL
+#backup_keep_for_local = '30d'
 
 # If you ever need to restore from a backup, the process is simple.
 # 1. Have the cluster shut down. This is probably the case anyway, if

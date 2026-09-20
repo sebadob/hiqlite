@@ -153,7 +153,7 @@ impl StateMachineSqlite {
         read_pool_size: usize,
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::s3::S3Config>>,
         do_reset_metadata: bool,
-        #[cfg(feature = "backup")] local_backup_keep_days: u16,
+        #[cfg(feature = "backup")] local_backup_keep_for: Duration,
     ) -> Result<StateMachineSqlite, Box<StorageError<NodeId>>> {
         // IMPORTANT: Do NOT change the order of the db exists check!
         // DB recovery will fail otherwise!
@@ -187,7 +187,7 @@ impl StateMachineSqlite {
             log_statements,
             do_reset_metadata,
             #[cfg(feature = "backup")]
-            local_backup_keep_days,
+            local_backup_keep_for,
         );
 
         let read_pool = Self::connect_read_pool(

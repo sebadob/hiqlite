@@ -3,6 +3,7 @@ use crate::{Error, Node, NodeId};
 use openraft::SnapshotPolicy;
 use std::borrow::Cow;
 use std::env;
+use std::time::Duration;
 use tracing::{debug, warn};
 
 #[cfg(feature = "backup")]
@@ -11,6 +12,7 @@ use crate::backup;
 #[cfg(feature = "dashboard")]
 use crate::dashboard::DashboardState;
 
+use crate::helpers::parse_duration;
 pub use openraft::Config as RaftConfig;
 
 #[derive(Debug)]
@@ -75,14 +77,20 @@ pub struct NodeConfig {
     pub read_pool_size: usize,
     /// When Raft logs should be synced to disk.
     ///
-    /// - `Immediate` fsyncs the WAL before openraft is told the append finished, so an
-    ///   acknowledged write is on disk.
-    /// - `ImmediateAsync` (default) tells openraft the append finished after starting the
-    ///   writeback without waiting for it (`sync_file_range` on Linux, `msync(MS_ASYNC)`
-    ///   elsewhere). Entries are typically on disk within milliseconds, but there is no hard
-    ///   bound, because the device write cache is not flushed.
-    /// - `IntervalMillis(ms)` acknowledges the same way and flushes the WAL from a ticker every
-    ///   `ms` milliseconds.
+    /// - `Immediate` fsyncs the WAL before the Raft is told the append finished, so an
+    ///   acknowledged write is on disk. Very huge impact on performance, but highest degree of
+    ///   consistency, especially important for a single node "cluster".
+    /// - `ImmediateAsync` tells the Raft the append finished after starting the writeback without
+    ///   waiting for it (`sync_file_range` on Linux, `msync(MS_ASYNC)` elsewhere). Entries are
+    ///   typically on disk within milliseconds, but there is no hard bound, because the device
+    ///   write cache is not flushed. As long as the kernel does not crash, your data is safe, even
+    ///   if the app crashes.
+    /// - `IntervalMillis(ms)` (default with 200) acknowledges the same way and flushes the WAL from
+    ///   a ticker every X `ms` milliseconds. This is the best compromise for HA clusters between
+    ///   performance and consistency. Data is fsync'ed every 200ms (by default) and kept in kernel
+    ///   buffers in between. If your app crashes, your data is safe. If your full kernel crashes,
+    ///   it might not. However, when you run a HA cluster, anything that got lost in the last 200ms
+    ///   can be synced from another node on the next startup.
     ///
     /// The two async levels trade durability for throughput: a power loss or a kernel panic can
     /// drop entries the cluster already acknowledged, and that loss is not confined to the node
@@ -92,7 +100,7 @@ pub struct NodeConfig {
     /// follower. The acknowledged write is gone cluster-wide, and no member can re-sync it.
     /// Pick `Immediate` when acknowledged writes have to survive a power loss.
     ///
-    /// default: `ImmediateAsync`
+    /// default: `IntervalMillis(200)`
     pub wal_sync: hiqlite_wal::LogSync,
     /// Maximum WAL size in bytes.
     pub wal_size: u32,
@@ -135,7 +143,7 @@ pub struct NodeConfig {
     #[cfg(feature = "backup")]
     pub backup_config: backup::BackupConfig,
     #[cfg(feature = "backup")]
-    pub backup_keep_days_local: u16,
+    pub backup_keep_for_local: Duration,
     /// If an `S3Config` is given, it will be used to push backups to the S3 bucket. feature `s3`
     #[cfg(feature = "s3")]
     pub s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
@@ -149,7 +157,7 @@ pub struct NodeConfig {
     /// The initial delay until which the "true" health will be returned. A delay at the start is
     /// necessary to solve a chicken-and-egg problem when cold starting cluster which depend on
     /// health checks.
-    pub health_check_delay_secs: u32,
+    pub health_check_delay: Duration,
     /// If true, keep a newly joining node as a learner instead of promoting it to a voting member
     /// during startup reconciliation. This does not demote an existing voter.
     pub learner_only: bool,
@@ -175,7 +183,7 @@ impl Default for NodeConfig {
             log_statements: false,
             prepared_statement_cache_capacity: 1024,
             read_pool_size: 4,
-            wal_sync: hiqlite_wal::LogSync::ImmediateAsync,
+            wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
             wal_size: 2 * 1024 * 1024,
             #[cfg(feature = "cache")]
             cache_storage_disk: true,
@@ -189,14 +197,14 @@ impl Default for NodeConfig {
             #[cfg(feature = "backup")]
             backup_config: backup::BackupConfig::default(),
             #[cfg(feature = "backup")]
-            backup_keep_days_local: 30,
+            backup_keep_for_local: Duration::from_secs(30 * 24 * 3600),
             #[cfg(feature = "s3")]
             s3_config: None,
             #[cfg(feature = "dashboard")]
             password_dashboard: None,
             #[cfg(feature = "dashboard")]
             insecure_cookie: false,
-            health_check_delay_secs: 30,
+            health_check_delay: Duration::from_secs(30),
             learner_only: false,
             #[cfg(feature = "cache")]
             rate_limit_cache: None,
@@ -269,11 +277,11 @@ impl NodeConfig {
             .parse::<u64>()
             .expect("Cannot parse HQL_LOGS_UNTIL_SNAPSHOT to u64");
         #[cfg(feature = "backup")]
-        let backup_keep_days_local = env::var("HQL_BACKUP_KEEP_DAYS_LOCAL")
+        let backup_keep_for_local = env::var("HQL_BACKUP_KEEP_FOR_LOCAL")
+            .ok()
             .as_deref()
-            .unwrap_or("30")
-            .parse::<u16>()
-            .expect("Cannot parse HQL_BACKUP_KEEP_DAYS_LOCAL as u16");
+            .map(|v| parse_duration(v).expect("Cannot parse HQL_BACKUP_KEEP_FOR_LOCAL as Duration"))
+            .unwrap_or(Duration::from_secs(30 * 24 * 3600));
 
         #[cfg(feature = "dashboard")]
         let insecure_cookie = env::var("HQL_INSECURE_COOKIE")
@@ -362,14 +370,20 @@ impl NodeConfig {
             password_dashboard: DashboardState::from_env().password_dashboard,
             #[cfg(feature = "dashboard")]
             insecure_cookie,
-            health_check_delay_secs: 30,
+            health_check_delay: env::var("HQL_HEALTH_CHECK_DELAY")
+                .ok()
+                .as_deref()
+                .map(|v| {
+                    parse_duration(v).expect("Cannot parse HQL_HEALTH_CHECK_DELAY as Duration")
+                })
+                .unwrap_or(Duration::from_secs(30)),
             learner_only: env::var("HQL_LEARNER_ONLY")
                 .as_deref()
                 .unwrap_or("false")
                 .parse::<bool>()
                 .expect("Cannot parse HQL_LEARNER_ONLY as bool"),
             #[cfg(feature = "backup")]
-            backup_keep_days_local,
+            backup_keep_for_local,
             #[cfg(feature = "cache")]
             rate_limit_cache,
             #[cfg(feature = "sqlite")]

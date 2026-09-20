@@ -56,10 +56,8 @@ pub async fn health(state: AppStateExt) -> Result<(), Error> {
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 async fn check_health(state: &AppStateExt) -> Result<(), Error> {
-    if Utc::now().sub(state.app_start).num_seconds() < state.health_check_delay_secs as i64 {
-        info!(
-            "Early health check within the HQL_HEALTH_CHECK_DELAY_SECS timeframe - returning true"
-        );
+    if Utc::now().sub(state.health_check_delay) < state.app_start {
+        info!("Early health check within the HQL_HEALTH_CHECK_DELAY timeframe - returning true");
         return Ok(());
     }
 
@@ -359,7 +357,9 @@ async fn handle_listen_socket(
 
     if let Err(err) = HandshakeSecret::server(&mut ws, state.secret_api.as_bytes()).await {
         error!("Error during /listen WebSocket handshake: {}", err);
-        let _ = ws.write_frame(Frame::close(1000, b"Invalid Handshake")).await;
+        let _ = ws
+            .write_frame(Frame::close(1000, b"Invalid Handshake"))
+            .await;
         return Ok(());
     }
 

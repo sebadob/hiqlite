@@ -137,7 +137,7 @@ where
         client_request_id: std::sync::atomic::AtomicUsize::new(0),
         #[cfg(any(feature = "backup", feature = "dashboard"))]
         tx_client_stream: tx_client_stream.clone(),
-        health_check_delay_secs: node_config.health_check_delay_secs,
+        health_check_delay: node_config.health_check_delay,
         learner_only: node_config.learner_only,
         #[cfg(feature = "s3")]
         s3_config: node_config.s3_config.clone(),

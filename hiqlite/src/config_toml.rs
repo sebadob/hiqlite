@@ -1,9 +1,11 @@
 use crate::config::RateLimitConfig;
+use crate::helpers::parse_duration;
 use crate::tls::{ServerTlsConfig, ServerTlsConfigCerts};
 use crate::{Error, Node, NodeConfig};
 use hiqlite_wal::LogSync;
 use std::borrow::Cow;
 use std::env;
+use std::time::Duration;
 use tokio::fs;
 use toml::Value;
 
@@ -238,33 +240,39 @@ impl NodeConfig {
             )));
         };
 
-        let health_check_delay_secs =
-            t_u32(&mut map, t_name, "health_check_delay_secs", "")?.unwrap_or(30);
+        let health_check_delay = t_duration(
+            &mut map,
+            t_name,
+            "health_check_delay",
+            "HQL_HEALTH_CHECK_DELAY",
+        )?
+        .unwrap_or(Duration::from_secs(30));
         let learner_only =
             t_bool(&mut map, t_name, "learner_only", "HQL_LEARNER_ONLY")?.unwrap_or(false);
 
         #[cfg(feature = "backup")]
-        let (backup_config, backup_keep_days_local) = {
+        let (backup_config, backup_keep_for_local) = {
             let backup_cron =
                 if let Some(v) = t_str(&mut map, t_name, "backup_cron", "HQL_BACKUP_CRON")? {
                     Cow::from(v)
                 } else {
                     Cow::from("0 30 2 * * * *")
                 };
-            let backup_keep_days =
-                t_u16(&mut map, t_name, "backup_keep_days", "HQL_BACKUP_KEEP_DAYS")?.unwrap_or(30);
-            let backup_keep_days_local = t_u16(
+            let backup_keep_for =
+                t_duration(&mut map, t_name, "backup_keep_for", "HQL_BACKUP_KEEP_FOR")?
+                    .unwrap_or(Duration::from_secs(30 * 24 * 3600));
+            let backup_keep_for_local = t_duration(
                 &mut map,
                 t_name,
-                "backup_keep_days_local",
-                "HQL_BACKUP_KEEP_DAYS_LOCAL",
+                "backup_keep_for_local",
+                "HQL_BACKUP_KEEP_FOR_LOCAL",
             )?
-            .unwrap_or(30);
+            .unwrap_or(Duration::from_secs(30 * 24 * 3600));
 
             let backup_config =
-                crate::backup::BackupConfig::new(backup_cron.as_ref(), backup_keep_days)
+                crate::backup::BackupConfig::new(backup_cron.as_ref(), backup_keep_for)
                     .map_err(|err| Error::config(format!("Error building BackupConfig: {err}")))?;
-            (backup_config, backup_keep_days_local)
+            (backup_config, backup_keep_for_local)
         };
 
         #[cfg(feature = "s3")]
@@ -403,14 +411,14 @@ impl NodeConfig {
             #[cfg(feature = "backup")]
             backup_config,
             #[cfg(feature = "backup")]
-            backup_keep_days_local,
+            backup_keep_for_local,
             #[cfg(feature = "s3")]
             s3_config,
             #[cfg(feature = "dashboard")]
             password_dashboard,
             #[cfg(feature = "dashboard")]
             insecure_cookie,
-            health_check_delay_secs,
+            health_check_delay,
             learner_only,
             #[cfg(feature = "cache")]
             rate_limit_cache,
@@ -430,8 +438,8 @@ fn check_empty(table: toml::Table, tbl_name: &str) -> Result<(), Error> {
         for key in table.keys() {
             if ![
                 "backup_cron",
-                "backup_keep_days",
-                "backup_keep_days_local",
+                "backup_keep_for",
+                "backup_keep_for_local",
                 "cache_storage_disk",
                 "s3_url",
                 "s3_bucket",
@@ -489,6 +497,41 @@ fn t_bool(
         Ok(Some(b))
     } else {
         Ok(None)
+    }
+}
+
+/// When calling `.as_secs()` later on, it is guaranteed to be safe to downcast to an `i64`.
+fn t_duration(
+    map: &mut toml::Table,
+    parent: &str,
+    key: &str,
+    env_var: &str,
+) -> Result<Option<Duration>, Error> {
+    let value = map.remove(key);
+
+    if !env_var.is_empty()
+        && let Ok(v) = env::var(env_var)
+    {
+        return match parse_duration(&v) {
+            None => Err(Error::config(err_t(key, parent, "Duration"))),
+            Some(d) => Ok(Some(d)),
+        };
+    }
+
+    let Some(value) = value else { return Ok(None) };
+    match value {
+        Value::String(s) => match parse_duration(&s) {
+            None => Err(Error::config(err_t(key, parent, "Duration"))),
+            Some(d) => Ok(Some(d)),
+        },
+        Value::Integer(i) => {
+            if i < 0 {
+                Err(Error::config(err_t(key, parent, "Duration")))
+            } else {
+                Ok(Some(Duration::from_secs(i as u64)))
+            }
+        }
+        _ => Err(Error::config(err_t(key, parent, "Duration"))),
     }
 }
 

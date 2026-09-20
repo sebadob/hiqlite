@@ -75,8 +75,8 @@ HQL_BACKUP_CRON="0 30 2 * * * *"
 
 # Backups older than the configured days will be cleaned up after
 # the backup cron job.
-# default: 30
-HQL_BACKUP_KEEP_DAYS=30
+# default: '30d'
+HQL_BACKUP_KEEP_FOR='30d'
 
 # Access values for the S3 bucket where backups will be pushed to.
 #HQL_S3_URL=https://s3.example.com

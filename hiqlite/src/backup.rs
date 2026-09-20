@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::helpers::{deserialize, set_path_access};
+use crate::helpers::{deserialize, parse_duration, set_path_access};
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{
     PathBackups, PathDb, PathLockFile, PathSnapshots, QueryWrite, StateMachineData,
@@ -25,24 +25,24 @@ pub const BACKUP_DB_NAME: &str = "restore.sqlite";
 #[derive(Debug, Clone)]
 pub struct BackupConfig {
     cron_schedule: cron::Schedule,
-    keep_days: u16,
+    keep_for: Duration,
 }
 
 impl Default for BackupConfig {
     fn default() -> Self {
         Self {
             cron_schedule: cron::Schedule::from_str("0 30 2 * * * *").unwrap(),
-            keep_days: 30,
+            keep_for: Duration::from_secs(30 * 24 * 3600),
         }
     }
 }
 
 impl BackupConfig {
-    pub fn new(cron_schedule: &str, keep_days: u16) -> Result<Self, Error> {
+    pub fn new(cron_schedule: &str, keep_days: Duration) -> Result<Self, Error> {
         Ok(Self {
             cron_schedule: cron::Schedule::from_str(cron_schedule)
                 .map_err(|_| Error::Config("Invalid syntax for cron_schedule".into()))?,
-            keep_days,
+            keep_for: keep_days,
         })
     }
 
@@ -51,14 +51,15 @@ impl BackupConfig {
         let cron_schedule =
             cron::Schedule::from_str(&cron_str).expect("Invalid syntax for HQL_BACKUP_CRON");
 
-        let keep_days = env::var("HQL_BACKUP_KEEP_DAYS")
-            .unwrap_or_else(|_| "30".to_string())
-            .parse::<u16>()
-            .expect("Cannot parse HQL_BACKUP_KEEP_DAYS to u16");
+        let keep_days = env::var("HQL_BACKUP_KEEP_FOR")
+            .ok()
+            .as_deref()
+            .map(|v| parse_duration(v).expect("Cannot parse HQL_BACKUP_KEEP_FOR as Duration"))
+            .unwrap_or(Duration::from_secs(30 * 24 * 3600));
 
         Self {
             cron_schedule,
-            keep_days,
+            keep_for: keep_days,
         }
     }
 }
@@ -124,7 +125,7 @@ pub fn start_cron(
             for _ in 0..retries {
                 match backup_cron_job(
                     &client,
-                    backup_config.keep_days,
+                    backup_config.keep_for,
                     #[cfg(feature = "s3")]
                     &s3_config,
                 )
@@ -159,7 +160,7 @@ pub fn start_cron(
 
 async fn backup_cron_job(
     client: &Client,
-    keep_days: u16,
+    keep_days: Duration,
     #[cfg(feature = "s3")] s3_config: &Option<Arc<S3Config>>,
 ) -> Result<(), Error> {
     client.backup().await?;
@@ -168,7 +169,7 @@ async fn backup_cron_job(
     {
         if let Some(s3_config) = s3_config {
             // the backup task will be async in the background, but we can start cleaning up already
-            let threshold = Utc::now().sub(chrono::Duration::days(keep_days as i64));
+            let threshold = Utc::now().sub(keep_days);
 
             let list = s3_config.bucket.list("", None).await?;
             for bucket in list {
@@ -192,13 +193,14 @@ async fn backup_cron_job(
     Ok(())
 }
 
-pub(crate) async fn backup_local_cleanup(backup_path: String, keep_days: u16) -> Result<(), Error> {
+pub(crate) async fn backup_local_cleanup(
+    backup_path: String,
+    keep_days: Duration,
+) -> Result<(), Error> {
     // 2024/01/01 00:00:00
     let ts_min = 1704063600;
 
-    let ts_threshold = Utc::now()
-        .sub(chrono::Duration::days(keep_days as i64))
-        .timestamp();
+    let ts_threshold = Utc::now().sub(keep_days).timestamp();
 
     let path = Path::new(&backup_path);
     let mut dir_entries = tokio::fs::read_dir(path).await?;
@@ -384,7 +386,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
 }
 
 async fn validate_backup_db(path_db: String) -> Result<(), Error> {
-    if env::var("HQL_BACKUP_SKIP_VALIDATION") == Ok("true".to_string()) {
+    if env::var("HQL_BACKUP_SKIP_VALIDATION").as_deref() == Ok("true") {
         return Ok(());
     }
 

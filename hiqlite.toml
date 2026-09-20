@@ -99,7 +99,7 @@ read_pool_size = 4
 # `immediate` to have the highest degree of consistency. If set
 # to `immediate`, the Raft will block until data has been flushed
 # to disk. This is especially important for a single instance
-# deployment, because there is no way to recover state from other
+# deployment because there is no way to recover state from other
 # nodes or re-sync a maybe corrupted WAL file.
 # `immediate` has a very huge negative impact on throughput, and
 # it puts a lot of stress on your disk, which is important to
@@ -127,7 +127,7 @@ read_pool_size = 4
 # would need to re-sync from a healthy cluster member in such
 # a case, if the automactic WAL repair does not succeed.
 #
-# default: immediate_async
+# default: 'interval_200'
 # overwritten by: HQL_LOG_SYNC
 log_sync = "interval_200"
 
@@ -227,7 +227,7 @@ secret_api = "SuperSecureSecret1337"
 # relying on `readinessProbe` checks.
 #
 # default: 30
-#health_check_delay_secs = 30
+#health_check_delay = 30
 
 # Set a newly joining node to stay a learner during startup reconciliation.
 # This is useful for read-only replicas that should not become voting
@@ -247,16 +247,16 @@ backup_cron = "0 30 2 * * * *"
 # Backups older than the configured days will be cleaned up on S3
 # after the backup cron job `backup_cron`.
 #
-# default: 30
-# overwritten by: HQL_BACKUP_KEEP_DAYS
-#backup_keep_days = 30
+# default: '30d'
+# overwritten by: HQL_BACKUP_KEEP_FOR
+#backup_keep_for = '30d'
 
 # Backups older than the configured days will be cleaned up locally
 # after each `Client::backup()` and the cron job `HQL_BACKUP_CRON`.
 #
-# default: 3
-# overwritten by: HQL_BACKUP_KEEP_DAYS_LOCAL
-#backup_keep_days_local = 3
+# default: '3d'
+# overwritten by: HQL_BACKUP_KEEP_FOR_LOCAL
+#backup_keep_for_local = '3d'
 
 # If you ever need to restore from a backup, the process is simple.
 # 1. Have the cluster shut down. This is probably the case anyway, if

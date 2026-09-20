@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tracing::info;
 
 #[inline(always)]
@@ -158,56 +159,12 @@ pub async fn remove_learner(
     }
 }
 
-// pub async fn remove_voter(
-//     state: &Arc<AppState>,
-//     raft_type: &RaftType,
-//     new_members: BTreeMap<NodeId, Node>,
-//     // node_id: u64,
-//     retain: bool,
-// ) -> Result<(), Error> {
-//     info!(
-//         "Removing Node from {:?} Voters, new members: {:?}",
-//         raft_type, new_members
-//     );
-//     // info!("Removing Node {} from {:?} Voters", node_id, raft_type);
-//     // let mut set = BTreeSet::new();
-//     // set.insert(node_id);
-//
-//     match raft_type {
-//         #[cfg(feature = "sqlite")]
-//         RaftType::Sqlite => {
-//             state
-//                 .raft_db
-//                 .raft
-//                 .change_membership(ChangeMembers::SetNodes(new_members), retain)
-//                 .await?;
-//             Ok(())
-//         }
-//         #[cfg(feature = "cache")]
-//         RaftType::Cache => {
-//             state
-//                 .raft_cache
-//                 .raft
-//                 // .change_membership(ChangeMembers::RemoveVoters(set), retain)
-//                 .change_membership(ChangeMembers::SetNodes(new_members), retain)
-//                 .await?;
-//             Ok(())
-//         }
-//         RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
-//     }
-// }
-
 pub async fn remove_voter(
     state: &Arc<AppState>,
     raft_type: &RaftType,
-    // new_members: BTreeMap<NodeId, Node>,
     node_id: u64,
     retain: bool,
 ) -> Result<(), Error> {
-    // info!(
-    //     "Removing Node from {:?} Voters, new members: {:?}",
-    //     raft_type, new_members
-    // );
     info!("Removing Node {} from {:?} Voters", node_id, raft_type);
     let mut set = BTreeSet::new();
     set.insert(node_id);
@@ -235,6 +192,46 @@ pub async fn remove_voter(
         }
         RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
     }
+}
+
+/// Parses the given input into a type-safe `Duration`. The input can have the following suffixes:
+/// - s -> seconds
+/// - m -> minutes
+/// - h -> hours
+/// - d -> days
+/// - w -> weeks
+/// - y -> years
+pub fn parse_duration<T: AsRef<str>>(input: T) -> Option<Duration> {
+    let input = input.as_ref().trim();
+    if input.is_empty() {
+        return None;
+    }
+    let (value, unit) = input.split_at(input.len() - 1);
+
+    let mul = match unit {
+        "s" | "S" => 1,
+        "m" | "M" => 60,
+        "h" | "H" => 60 * 60,
+        "d" | "D" => 60 * 60 * 24,
+        "w" | "W" => 60 * 60 * 24 * 7,
+        "y" | "Y" => 60 * 60 * 24 * 365,
+        _ => {
+            return if let Ok(i) = input.parse::<u64>() {
+                Some(Duration::from_secs(i))
+            } else {
+                None
+            };
+        }
+    };
+
+    value
+        .trim()
+        // we only want positive values
+        .parse::<u32>()
+        .ok()
+        // i64 casting here is necessary to guarantee safety when we downcast later on
+        // for cache TTL and so on.
+        .map(|v| Duration::from_secs((v as i64).saturating_mul(mul) as u64))
 }
 
 /// Restricts the access for the given path.
