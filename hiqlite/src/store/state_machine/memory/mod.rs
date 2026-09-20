@@ -7,7 +7,7 @@ pub mod state_machine;
 #[cfg(feature = "dlock")]
 pub mod dlock_handler;
 
-#[cfg(feature = "listen_notify_local")]
+#[cfg(feature = "listen_notify")]
 pub mod notify_handler;
 
 // By default Cache Snapshots are streamed directly from file, which is zero-copy and

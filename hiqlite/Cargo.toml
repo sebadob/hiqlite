@@ -1,6 +1,6 @@
 [package]
 name = "hiqlite"
-version = "0.14.0"
+version = "0.15.0-20260920"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -54,7 +54,7 @@ full = [
     "cache",
     "dashboard",
     "dlock",
-    "listen_notify_local",
+    "listen_notify",
     "macros",
     "s3",
     "shutdown-handle",
@@ -67,10 +67,6 @@ full = [
 in-memory-snapshots = ["cache"]
 jemalloc = ["dep:tikv-jemallocator"]
 listen_notify = [
-    "dep:eventsource-client",
-    "listen_notify_local"
-]
-listen_notify_local = [
     "dep:futures-util",
     "cache"
 ]
@@ -157,7 +153,6 @@ cryptr = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
 deadpool = { workspace = true, optional = true }
 dotenvy = { workspace = true, optional = true }
-eventsource-client = { workspace = true, optional = true }
 fastwebsockets = { workspace = true, optional = true }
 flume.workspace = true
 fs4 = { workspace = true, optional = true }

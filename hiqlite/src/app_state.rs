@@ -102,7 +102,7 @@ pub struct StateRaftCache {
     pub tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     #[cfg(feature = "listen_notify")]
     pub tx_notify: flume::Sender<NotifyRequest>,
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     pub rx_notify: flume::Receiver<(i64, Vec<u8>)>,
     #[cfg(feature = "dlock")]
     pub tx_dlock: flume::Sender<LockRequest>,

@@ -56,10 +56,6 @@ cryptr = { version = "0.10", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.13", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"
-# TODO
-#  The new version requires weird 3rd party dependencies or lots of manual work for the Transport.
-#  This development is annoying and not worth it -> migrate to WebSocket in the future.
-eventsource-client = { version = "0.16" }
 fastwebsockets = { version = "0.10.0", features = [
     "upgrade",
     "with_axum",

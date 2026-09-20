@@ -210,7 +210,7 @@ impl NetworkStreaming {
                 match web_socket_connect::try_connect(
                     this_node,
                     &node.addr_raft,
-                    &raft_type,
+                    &format!("/stream/{}", raft_type.as_str()),
                     tls_config.clone(),
                     &secret,
                 )

@@ -32,7 +32,7 @@ use uuid::Uuid;
 
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::{self, *};
-#[cfg(feature = "listen_notify_local")]
+#[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
 
 type Entry = openraft::Entry<TypeConfigKV>;
@@ -86,7 +86,7 @@ pub enum CacheRequest {
         cache_idx: usize,
     },
     ClearAll,
-    #[allow(dead_code)] // only constructed with the `listen_notify_local` feature
+    #[allow(dead_code)] // only constructed with the `listen_notify` feature
     Notify((i64, Vec<u8>)),
     #[allow(dead_code)] // only constructed with the `dlock` feature
     Lock((Cow<'static, str>, Option<u64>)),
@@ -154,9 +154,9 @@ pub struct StateMachineMemory {
 
     pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
 
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     pub(crate) tx_notify: flume::Sender<NotifyRequest>,
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     pub(crate) rx_notify: flume::Receiver<(i64, Vec<u8>)>,
 
     #[cfg(feature = "dlock")]
@@ -245,8 +245,9 @@ impl StateMachineMemory {
             for &(idx, _) in variants {
                 if idx >= variants.len() || seen[idx] {
                     panic!(
-                        "cache variant index {idx} is out of range or duplicated \
+                        "cache variant index {} is out of range or duplicated \
                          (expected exactly 0..{})",
+                        idx,
                         variants.len()
                     );
                 }
@@ -314,7 +315,7 @@ impl StateMachineMemory {
         #[cfg(feature = "dlock")]
         let tx_dlock = dlock_handler::spawn();
 
-        #[cfg(feature = "listen_notify_local")]
+        #[cfg(feature = "listen_notify")]
         let (tx_notify, rx_notify) = notify_handler::spawn();
 
         let slf = Self {
@@ -325,9 +326,9 @@ impl StateMachineMemory {
             #[cfg(feature = "in-memory-snapshots")]
             snapshot_mem: RwLock::new(None),
             tx_caches,
-            #[cfg(feature = "listen_notify_local")]
+            #[cfg(feature = "listen_notify")]
             tx_notify,
-            #[cfg(feature = "listen_notify_local")]
+            #[cfg(feature = "listen_notify")]
             rx_notify,
             #[cfg(feature = "dlock")]
             tx_dlock,
@@ -804,7 +805,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                     }
 
                     CacheRequest::Notify(payload) => {
-                        #[cfg(feature = "listen_notify_local")]
+                        #[cfg(feature = "listen_notify")]
                         {
                             self.tx_notify
                                 .send(NotifyRequest::Notify(payload))
@@ -812,8 +813,8 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 .unwrap();
                             CacheResponse::Ok
                         }
-                        #[cfg(not(feature = "listen_notify_local"))]
-                        unreachable!("Notify requires the `listen_notify_local` feature")
+                        #[cfg(not(feature = "listen_notify"))]
+                        unreachable!("Notify requires the `listen_notify` feature")
                     }
 
                     CacheRequest::Lock((key, id)) => {

@@ -1,8 +1,8 @@
-use crate::Node;
 use crate::app_state::RaftType;
 use crate::helpers::{deserialize, get_raft_metrics, serialize};
 use crate::network::handshake::HandshakeSecret;
 use crate::network::{AppStateExt, Error, validate_secret};
+use crate::{APP_VERSION, Node};
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
@@ -37,10 +37,6 @@ use crate::{
 
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
-#[cfg(feature = "listen_notify")]
-use axum::response::sse;
-#[cfg(feature = "listen_notify")]
-use futures_util::stream::Stream;
 
 pub async fn health(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
@@ -260,6 +256,10 @@ pub async fn post_create_backup(state: AppStateExt, headers: HeaderMap) -> Resul
 
 pub async fn ping() {}
 
+pub async fn get_version() -> impl IntoResponse {
+    APP_VERSION
+}
+
 #[cfg(test)]
 mod tests {
     use super::ensure_ready_member;
@@ -335,18 +335,116 @@ mod tests {
 #[cfg(feature = "listen_notify")]
 pub async fn listen(
     state: AppStateExt,
-    headers: HeaderMap,
-) -> Result<sse::Sse<impl Stream<Item = Result<sse::Event, Error>>>, Error> {
-    validate_secret(&state, &headers)?;
+    ws: upgrade::IncomingUpgrade,
+) -> Result<impl IntoResponse, Error> {
+    let (response, socket) = ws.upgrade()?;
+    debug!("New /listen WebSocket connection");
 
-    let (tx, rx) = flume::bounded(1);
-    state
+    tokio::task::spawn(async move {
+        if let Err(err) = handle_listen_socket(state, socket).await {
+            error!("Error in /listen WebSocket connection: {}", err);
+        }
+    });
+
+    Ok(response)
+}
+
+#[cfg(feature = "listen_notify")]
+async fn handle_listen_socket(
+    state: AppStateExt,
+    socket: upgrade::UpgradeFut,
+) -> Result<(), fastwebsockets::WebSocketError> {
+    let mut ws = socket.await?;
+    ws.set_auto_close(true);
+
+    if let Err(err) = HandshakeSecret::server(&mut ws, state.secret_api.as_bytes()).await {
+        error!("Error during /listen WebSocket handshake: {}", err);
+        let _ = ws.write_frame(Frame::close(1000, b"Invalid Handshake")).await;
+        return Ok(());
+    }
+
+    // Register this connection as a listener with the state machine.
+    let (tx_notify, rx_notify) = flume::bounded::<(i64, Vec<u8>)>(1);
+    if let Err(err) = state
         .raft_cache
         .tx_notify
-        .send_async(NotifyRequest::Listen(tx))
-        .await?;
+        .send_async(NotifyRequest::Listen(tx_notify))
+        .await
+    {
+        error!("Failed to register /listen listener: {}", err);
+        return Ok(());
+    }
 
-    Ok(sse::Sse::new(rx.into_stream()).keep_alive(sse::KeepAlive::default()))
+    let (rx, mut write) = ws.split(tokio::io::split);
+    // IMPORTANT: the reader is NOT CANCEL SAFE - it runs in its own task.
+    let mut read = FragmentCollectorRead::new(rx);
+
+    // The client pings for keepalive; echo the obligated sends (Pong / Close) back to the socket.
+    let (tx_obligated, rx_obligated) = flume::bounded::<(OpCode, Vec<u8>)>(1);
+    let handle_read = task::spawn(async move {
+        while let Ok(frame) = read
+            .read_frame(&mut |frame| {
+                let tx_obligated = tx_obligated.clone();
+                async move {
+                    if let Err(err) = tx_obligated
+                        .send_async((frame.opcode, frame.payload.to_vec()))
+                        .await
+                    {
+                        error!("/listen: failed to forward obligated frame: {}", err);
+                    }
+                    Ok::<(), Error>(())
+                }
+            })
+            .await
+        {
+            if frame.opcode == OpCode::Close {
+                break;
+            }
+        }
+    });
+
+    loop {
+        tokio::select! {
+            ev = rx_notify.recv_async() => match ev {
+                Ok((ts, data)) => {
+                    let bytes = match serialize(&(ts, data)) {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            error!("/listen: failed to serialize notification: {}", err);
+                            break;
+                        }
+                    };
+                    if write.write_frame(Frame::binary(Payload::Owned(bytes))).await.is_err() {
+                        debug!("/listen: write failed - closing");
+                        break;
+                    }
+                }
+                Err(_) => break,
+            },
+            ob = rx_obligated.recv_async() => match ob {
+                Ok((opcode, payload)) => {
+                    // The library produced this frame and expects us to send it verbatim: a Pong
+                    // in response to the client's keepalive Ping, or the echo of a Close frame.
+                    let frame = if opcode == OpCode::Pong {
+                        Frame::pong(Payload::Owned(payload))
+                    } else {
+                        Frame::close_raw(Payload::Owned(payload))
+                    };
+                    if write.write_frame(frame).await.is_err() {
+                        debug!("/listen: obligated frame write failed - closing");
+                        break;
+                    }
+                }
+                Err(_) => break,
+            },
+        }
+    }
+
+    handle_read.abort();
+    let _ = write.write_frame(Frame::close(1000, b"Done")).await;
+    debug!("/listen WebSocket connection exiting");
+
+    Ok(())
 }
 
 #[cfg(not(feature = "listen_notify"))]
@@ -432,7 +530,7 @@ pub(crate) enum ApiStreamRequestPayload {
     KVGet(CacheRequest),
     #[cfg(feature = "dlock")]
     LockAwait(CacheRequest),
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     Notify(CacheRequest),
 }
 
@@ -468,7 +566,7 @@ pub(crate) enum ApiStreamResponsePayload {
     #[cfg(feature = "dlock")]
     Lock(Result<LockState, Error>),
 
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     Notify(Result<(), Error>),
 }
 
@@ -897,7 +995,7 @@ async fn handle_socket_concurrent(
                     }
                 }
 
-                #[cfg(feature = "listen_notify_local")]
+                #[cfg(feature = "listen_notify")]
                 ApiStreamRequestPayload::Notify(cache_req) => {
                     let (ts, data) = match cache_req {
                         CacheRequest::Notify((ts, data)) => (ts, data),

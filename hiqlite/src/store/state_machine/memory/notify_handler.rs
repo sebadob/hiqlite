@@ -1,12 +1,10 @@
 use crate::Error;
-use axum::response::sse;
-use cryptr::utils::b64_encode;
 use tokio::task;
 use tracing::{debug, error, info, warn};
 
 pub enum NotifyRequest {
     Notify((i64, Vec<u8>)),
-    Listen((flume::Sender<Result<sse::Event, Error>>)),
+    Listen(flume::Sender<(i64, Vec<u8>)>),
 }
 
 pub fn spawn() -> (
@@ -21,7 +19,7 @@ pub fn spawn() -> (
 
 #[tracing::instrument(level = "debug", skip_all)]
 async fn handler(rx_req: flume::Receiver<NotifyRequest>, tx_local: flume::Sender<(i64, Vec<u8>)>) {
-    let mut listeners: Vec<flume::Sender<Result<sse::Event, Error>>> = Vec::new();
+    let mut listeners: Vec<flume::Sender<(i64, Vec<u8>)>> = Vec::new();
     let mut remove_indexes = Vec::new();
 
     while let Ok(req) = rx_req.recv_async().await {
@@ -30,11 +28,9 @@ async fn handler(rx_req: flume::Receiver<NotifyRequest>, tx_local: flume::Sender
                 debug!("new notification from {}", ts);
 
                 if !listeners.is_empty() {
-                    let event = sse::Event::default().data(format!("{} {}", ts, b64_encode(&data)));
-
                     for (idx, listener) in listeners.iter().enumerate() {
                         // unbounded channels can never block
-                        if let Err(err) = listener.send(Ok(event.clone())) {
+                        if let Err(err) = listener.send((ts, data.clone())) {
                             error!("Error sending listener Notification: {}", err);
                             remove_indexes.push(idx);
                         }

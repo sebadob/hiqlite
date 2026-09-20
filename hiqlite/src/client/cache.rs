@@ -529,7 +529,7 @@ impl Client {
             let res = await_channel_response(rx).await??;
             match res {
                 ApiStreamResponsePayload::KV(res) => res,
-                #[cfg(any(feature = "sqlite", feature = "dlock", feature = "listen_notify_local"))]
+                #[cfg(any(feature = "sqlite", feature = "dlock", feature = "listen_notify"))]
                 _ => unreachable!(),
             }
         }

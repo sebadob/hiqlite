@@ -1,7 +1,7 @@
 use crate::empty::Empty;
 use crate::server::args::{Args, LogLevel};
 use crate::server::proxy::config::Config;
-use crate::{Error, start_node_with_cache};
+use crate::{APP_VERSION, Error, start_node_with_cache};
 use clap::Parser;
 use tracing::info;
 
@@ -10,8 +10,6 @@ pub mod config;
 mod logging;
 mod password;
 mod proxy;
-
-pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub async fn server() -> Result<(), Error> {
     match Args::parse() {
