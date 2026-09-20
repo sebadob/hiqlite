@@ -1,6 +1,5 @@
-use crate::{Error, Node, tls::ServerTlsConfig};
+use crate::{Error, Node, RateLimitConfig, tls::ServerTlsConfig};
 use cryptr::EncKeys;
-use spow::pow::Pow;
 use std::env;
 use tracing::debug;
 
@@ -10,6 +9,9 @@ pub struct Config {
     pub nodes: Vec<String>,
     pub tls_config: Option<ServerTlsConfig>,
     pub secret_api: String,
+    pub max_stream_connections: usize,
+    pub rate_limit_cache: Option<RateLimitConfig>,
+    pub rate_limit_db: Option<RateLimitConfig>,
 }
 
 impl Config {
@@ -27,13 +29,53 @@ impl Config {
             .parse::<u16>()
             .expect("Cannot parse LISTEN_PORT to u16");
 
+        let max_stream_connections = env::var("HQL_PROXY_MAX_STREAM_CONNECTIONS")
+            .unwrap_or_else(|_| "20".to_string())
+            .parse::<usize>()
+            .expect("Cannot parse HQL_PROXY_MAX_STREAM_CONNECTIONS to usize");
+
+        // Honor the same rate-limit settings a node would, so a proxy can be limited too.
+        let rate_limit_cache = {
+            if let Some(rps) = env::var("HQL_RL_CACHE_RPS").as_deref().ok().map(|v| {
+                v.parse::<u32>()
+                    .expect("Cannot parse HQL_RL_CACHE_RPS as u32")
+            }) {
+                let burst = env::var("HQL_RL_CACHE_BURST").as_deref().ok().map(|v| {
+                    v.parse::<u32>()
+                        .expect("Cannot parse HQL_RL_CACHE_BURST as u32")
+                });
+                Some(RateLimitConfig {
+                    rps,
+                    burst: burst.unwrap_or(rps),
+                })
+            } else {
+                None
+            }
+        };
+
+        let rate_limit_db = {
+            if let Some(rps) = env::var("HQL_RL_DB_RPS")
+                .as_deref()
+                .ok()
+                .map(|v| v.parse::<u32>().expect("Cannot parse HQL_RL_DB_RPS as u32"))
+            {
+                let burst = env::var("HQL_RL_DB_BURST").as_deref().ok().map(|v| {
+                    v.parse::<u32>()
+                        .expect("Cannot parse HQL_RL_DB_BURST as u32")
+                });
+                Some(RateLimitConfig {
+                    rps,
+                    burst: burst.unwrap_or(rps),
+                })
+            } else {
+                None
+            }
+        };
+
         EncKeys::from_env()
             .expect("ENC_KEYS not configured correctly")
             .init()
             .unwrap();
-
-        let enc_key_active = EncKeys::get_key_active().unwrap();
-        Pow::init_bytes(enc_key_active);
 
         Self {
             listen_port,
@@ -43,7 +85,9 @@ impl Config {
                 .collect::<Vec<_>>(),
             tls_config: ServerTlsConfig::from_env("API"),
             secret_api: env::var("HQL_SECRET_API").expect("HQL_SECRET_API not found"),
-            // password_dashboard,
+            max_stream_connections,
+            rate_limit_cache,
+            rate_limit_db,
         }
     }
 
@@ -52,9 +96,9 @@ impl Config {
             return Err(Error::Config("'nodes' must not be empty".into()));
         }
 
-        if self.secret_api.len() < 16 {
+        if self.secret_api.chars().count() < 16 {
             return Err(Error::Config(
-                "'secret_raft' and 'secret_api' should be at least 16 characters long".into(),
+                "'secret_api' should be at least 16 characters long".into(),
             ));
         }
 

@@ -14,6 +14,7 @@ use futures_util::Stream;
 use serde::Serialize;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::error;
 
 pub type AppStateExt = axum::extract::State<Arc<AppStateProxy>>;
@@ -41,10 +42,18 @@ pub async fn stream(
     state: AppStateExt,
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
-    let (response, socket) = ws.upgrade()?;
+    let permit = tokio::time::timeout(
+        Duration::from_secs(10),
+        state.active_streams_permits.clone().acquire_owned(),
+    )
+    .await
+    .map_err(|_| Error::Timeout("Stream request timed out - max connections reached".to_string()))?
+    .map_err(|_| Error::Request("Server is shutting down".to_string()))?;
 
+    let (response, socket) = ws.upgrade()?;
     tokio::task::spawn(async move {
-        if let Err(err) = stream::handle_socket(state, socket).await {
+        let _permit = permit;
+        if let Err(err) = stream::handle_socket(state.clone(), socket).await {
             // if let Err(err) = handle_socket_sequential(state, socket).await {
             error!("Error in websocket connection: {}", err);
         }
@@ -65,7 +74,11 @@ pub(crate) async fn metrics(
         RaftType::Sqlite => state.client.metrics_db().await?,
         #[cfg(feature = "cache")]
         RaftType::Cache => state.client.metrics_cache().await?,
-        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
+        RaftType::Unknown => {
+            return Err(Error::new(
+                "unknown raft type - neither `sqlite` nor `cache` feature enabled",
+            ));
+        }
     };
 
     fmt_ok(headers, &metrics)
@@ -86,7 +99,7 @@ fn validate_secret(state: &AppStateExt, headers: &HeaderMap) -> Result<(), Error
     match headers.get(HEADER_NAME_SECRET) {
         None => Err(Error::Token("API Secret missing".into())),
         Some(secret) => {
-            if state.secret_api.as_bytes() != secret.as_bytes() {
+            if !constant_time_eq::constant_time_eq(state.secret_api.as_bytes(), secret.as_bytes()) {
                 Err(Error::Token("Invalid API Secret".into()))
             } else {
                 Ok(())

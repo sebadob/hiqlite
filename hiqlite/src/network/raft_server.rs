@@ -66,6 +66,13 @@ pub enum RaftStreamResponsePayload {
 #[derive(Debug)]
 pub(crate) enum WsWriteMsg {
     Payload(Vec<u8>),
+    /// A frame the WebSocket library generated and obligates us to send back to the peer:
+    /// a Pong in response to a Ping, or the echo of a Close frame. `payload` is the raw
+    /// payload of the corresponding inbound frame, `opcode` tells us which one it was.
+    ObligatedSend {
+        opcode: OpCode,
+        payload: Vec<u8>,
+    },
     Break,
 }
 
@@ -158,6 +165,19 @@ async fn handle_socket(
                         break;
                     }
                 }
+                WsWriteMsg::ObligatedSend { opcode, payload } => {
+                    // The library generated this frame and expects us to send it verbatim.
+                    let frame = if opcode == OpCode::Pong {
+                        Frame::pong(Payload::Owned(payload))
+                    } else {
+                        // The only other obligated send the library produces is the Close echo.
+                        Frame::close_raw(Payload::Owned(payload))
+                    };
+                    if let Err(err) = write.write_frame(frame).await {
+                        error!("Error writing obligated WebSocket frame: {}", err);
+                        break;
+                    }
+                }
                 WsWriteMsg::Break => {
                     debug!("handle_socket -> server stream break message");
                     break;
@@ -170,14 +190,25 @@ async fn handle_socket(
     });
 
     while let Ok(frame) = read
-        .read_frame(&mut |frame| async move {
-            // TODO obligated sends should be auto ping / pong / close ? -> verify!
-            debug!(
-                "Received obligated send in stream client: OpCode: {:?}: {:?}",
-                frame.opcode.clone(),
-                frame.payload
-            );
-            Ok::<(), Error>(())
+        .read_frame(&mut |frame| {
+            // The library generates the obligated frame (Pong for Ping, Close echo) and
+            // expects us to send it back on the socket - forward it to the writer task.
+            let tx_write = tx_write.clone();
+            async move {
+                if let Err(err) = tx_write
+                    .send_async(WsWriteMsg::ObligatedSend {
+                        opcode: frame.opcode,
+                        payload: frame.payload.to_vec(),
+                    })
+                    .await
+                {
+                    error!(
+                        "Error forwarding obligated WebSocket frame to writer (OpCode {:?}): {}",
+                        frame.opcode, err
+                    );
+                }
+                Ok::<(), Error>(())
+            }
         })
         .await
     {

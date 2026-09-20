@@ -27,8 +27,6 @@ pub async fn handle_socket(
     };
 
     let (tx_write, rx_write) = flume::bounded::<WsWriteMsg>(1);
-    // let (tx_write, rx_write) = flume::unbounded::<WsWriteMsg>();
-    // let (tx_read, rx_read) = flume::unbounded();
 
     // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
     let (rx, mut write) = ws.split(tokio::io::split);
@@ -39,17 +37,33 @@ pub async fn handle_socket(
         while let Ok(req) = rx_write.recv_async().await {
             match req {
                 WsWriteMsg::Payload(resp) => {
-                    let bytes = serialize(&resp).unwrap();
+                    let bytes = match serialize(&resp) {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            error!(
+                                "Error serializing response payload - closing connection: {}",
+                                err
+                            );
+                            break;
+                        }
+                    };
                     let frame = Frame::binary(Payload::Borrowed(&bytes));
                     if let Err(err) = write.write_frame(frame).await {
                         error!("Error during WebSocket write: {}", err);
-                        // // if we have a WebSocket error, save all open requests into the client_buffer
-                        // let payload = bincode::serialize(&resp).unwrap();
-                        // buf_tx
-                        //     .send_async(payload)
-                        //     .await
-                        //     .expect("client_buffer to always be working");
 
+                        break;
+                    }
+                }
+                WsWriteMsg::ObligatedSend { opcode, payload } => {
+                    // The library generated this frame and expects us to send it verbatim.
+                    let frame = if opcode == OpCode::Pong {
+                        Frame::pong(Payload::Owned(payload))
+                    } else {
+                        // The only other obligated send the library produces is the Close echo.
+                        Frame::close_raw(Payload::Owned(payload))
+                    };
+                    if let Err(err) = write.write_frame(frame).await {
+                        error!("Error writing obligated WebSocket frame: {}", err);
                         break;
                     }
                 }
@@ -69,14 +83,25 @@ pub async fn handle_socket(
     });
 
     while let Ok(frame) = read
-        .read_frame(&mut |frame| async move {
-            // TODO obligated sends should be auto ping / pong / close ? -> verify!
-            debug!(
-                "Received obligated send in stream client: OpCode: {:?}: {:?}",
-                frame.opcode.clone(),
-                frame.payload
-            );
-            Ok::<(), Error>(())
+        .read_frame(&mut |frame| {
+            // The library generates the obligated frame (Pong for Ping, Close echo) and
+            // expects us to send it back on the socket - forward it to the writer task.
+            let tx_write = tx_write.clone();
+            async move {
+                if let Err(err) = tx_write
+                    .send_async(WsWriteMsg::ObligatedSend {
+                        opcode: frame.opcode,
+                        payload: frame.payload.to_vec(),
+                    })
+                    .await
+                {
+                    error!(
+                        "Error forwarding obligated WebSocket frame to writer (OpCode {:?}): {}",
+                        frame.opcode, err
+                    );
+                }
+                Ok::<(), Error>(())
+            }
         })
         .await
     {
@@ -110,7 +135,7 @@ pub async fn handle_socket(
         let tx_write = tx_write.clone();
         task::spawn(async move {
             let client = &state.client;
-            // exchange orig req id for our own to avoid conflicts
+            // Keep the client's original request_id so the response correlates back to it.
             let request_id = req.request_id;
 
             let res = match req.payload {

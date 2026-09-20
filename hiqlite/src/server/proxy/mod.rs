@@ -6,6 +6,7 @@ use config::Config;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tracing::info;
 
 pub mod config;
@@ -33,8 +34,8 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
             .unwrap_or(false),
         config.secret_api.clone(),
         false,
-        None,
-        None,
+        config.rate_limit_cache,
+        config.rate_limit_db,
     )
     .await?;
 
@@ -44,7 +45,7 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
         client,
         secret_api: config.secret_api,
         tx_notify,
-        // dashboard_password: config.password_dashboard,
+        active_streams_permits: Arc::new(Semaphore::new(config.max_stream_connections)),
     });
 
     let router = Router::new()

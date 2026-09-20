@@ -6,7 +6,6 @@ use clap::Parser;
 use tracing::info;
 
 mod args;
-mod cache;
 pub mod config;
 mod logging;
 mod password;

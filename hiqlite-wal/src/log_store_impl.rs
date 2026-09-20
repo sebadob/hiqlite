@@ -1,8 +1,4 @@
 use crate::{LogStore, LogStoreReader, reader, writer};
-use bincode_next::config::{
-    BincodeLegacyFormat, Configuration, FingerprintDisabled, Fixint, LittleEndian, LsbFirst,
-    NoLimit, SkipBitPacking,
-};
 use bincode_next::error::{DecodeError, EncodeError};
 use openraft::storage::{LogFlushed, RaftLogStorage};
 use openraft::{

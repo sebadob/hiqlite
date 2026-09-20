@@ -38,6 +38,8 @@ pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
         if line != "yes" {
             return Ok(());
         }
+        // Make sure the existing file is not world-readable while we rewrite it.
+        set_path_access(&path_file, 0o600).await?;
     }
 
     let pwd_plain = if args.password {
@@ -45,11 +47,14 @@ pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
         loop {
             println!("Provide a password with at least 16 characters: ");
             let line = read_line_stdin().await?;
-            if line.len() >= 16 {
+            if line.chars().count() >= 16 {
                 plain = line;
                 break;
             } else {
-                eprintln!("Input too short - has only {} characters", line.len());
+                eprintln!(
+                    "Input too short - has only {} characters",
+                    line.chars().count()
+                );
             }
         }
         plain
@@ -60,7 +65,27 @@ pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
     let password_dashboard = password::hash_password_b64(pwd_plain).await?;
 
     let default_config = default_config(&password_dashboard, args.insecure_cookie)?;
-    fs::write(&path_file, default_config).await?;
+
+    // Create the file with restrictive permissions up front so it is never
+    // world-readable between creation and the chmod below. On unix we can set the
+    // mode at creation time; elsewhere fall back to a plain write.
+    #[cfg(target_family = "unix")]
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path_file)
+            .await?;
+        file.write_all(default_config.as_bytes()).await?;
+    }
+    #[cfg(not(target_family = "unix"))]
+    {
+        fs::write(&path_file, default_config).await?;
+    }
+
     println!("New default config file created: {}", path_file);
 
     set_path_access(&path_file, 0o600).await?;

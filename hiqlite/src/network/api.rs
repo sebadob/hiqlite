@@ -1,8 +1,8 @@
 use crate::Node;
 use crate::app_state::RaftType;
-use crate::helpers::{deserialize, get_raft_metrics};
+use crate::helpers::{deserialize, get_raft_metrics, serialize};
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{AppStateExt, Error, serialize_network, validate_secret};
+use crate::network::{AppStateExt, Error, validate_secret};
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
@@ -475,6 +475,13 @@ pub(crate) enum ApiStreamResponsePayload {
 #[derive(Debug)]
 pub(crate) enum WsWriteMsg {
     Payload(ApiStreamResponse),
+    /// A frame the WebSocket library generated and obligates us to send back to the peer:
+    /// a Pong in response to a Ping, or the echo of a Close frame. `payload` is the raw
+    /// payload of the corresponding inbound frame, `opcode` tells us which one it was.
+    ObligatedSend {
+        opcode: OpCode,
+        payload: Vec<u8>,
+    },
     Break,
 }
 
@@ -496,6 +503,7 @@ async fn handle_socket_concurrent(
     };
 
     let (tx_write, rx_write) = flume::bounded::<WsWriteMsg>(1);
+
     // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
     let (rx, mut write) = ws.split(tokio::io::split);
     // IMPORTANT: the reader is NOT CANCEL SAFE in v0.8!
@@ -505,10 +513,32 @@ async fn handle_socket_concurrent(
         while let Ok(req) = rx_write.recv_async().await {
             match req {
                 WsWriteMsg::Payload(resp) => {
-                    let bytes = serialize_network(&resp);
+                    let bytes = match serialize(&resp) {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            error!(
+                                "Error serializing response payload - closing connection: {}",
+                                err
+                            );
+                            break;
+                        }
+                    };
                     let frame = Frame::binary(Payload::Borrowed(&bytes));
                     if let Err(err) = write.write_frame(frame).await {
                         error!("Error during WebSocket write: {}", err);
+                        break;
+                    }
+                }
+                WsWriteMsg::ObligatedSend { opcode, payload } => {
+                    // The library generated this frame and expects us to send it verbatim.
+                    let frame = if opcode == OpCode::Pong {
+                        Frame::pong(Payload::Owned(payload))
+                    } else {
+                        // The only other obligated send the library produces is the Close echo.
+                        Frame::close_raw(Payload::Owned(payload))
+                    };
+                    if let Err(err) = write.write_frame(frame).await {
+                        error!("Error writing obligated WebSocket frame: {}", err);
                         break;
                     }
                 }
@@ -529,14 +559,25 @@ async fn handle_socket_concurrent(
     });
 
     while let Ok(frame) = read
-        .read_frame(&mut |frame| async move {
-            // TODO obligated sends should be auto ping / pong / close ? -> verify!
-            debug!(
-                "Received obligated send in stream client: OpCode: {:?}: {:?}",
-                frame.opcode.clone(),
-                frame.payload
-            );
-            Ok::<(), Error>(())
+        .read_frame(&mut |frame| {
+            // The library generates the obligated frame (Pong for Ping, Close echo) and
+            // expects us to send it back on the socket - forward it to the writer task.
+            let tx_write = tx_write.clone();
+            async move {
+                if let Err(err) = tx_write
+                    .send_async(WsWriteMsg::ObligatedSend {
+                        opcode: frame.opcode,
+                        payload: frame.payload.to_vec(),
+                    })
+                    .await
+                {
+                    error!(
+                        "Error forwarding obligated WebSocket frame to writer (OpCode {:?}): {}",
+                        frame.opcode, err
+                    );
+                }
+                Ok::<(), Error>(())
+            }
         })
         .await
     {
