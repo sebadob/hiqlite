@@ -1,7 +1,7 @@
 use crate::Node;
 use crate::NodeId;
 use crate::app_state::RaftType;
-use crate::helpers::{deserialize, serialize};
+use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::network::raft_server::{
     RaftStreamRequest, RaftStreamResponse, RaftStreamResponsePayload,
 };
@@ -355,7 +355,7 @@ impl NetworkStreaming {
                 };
 
                 if let Some((ack, payload)) = stream_req {
-                    let bytes = serialize(&payload).unwrap();
+                    let bytes = serialize_serde(&payload).unwrap();
 
                     if let Err(err) = tx_write.send_async(WritePayload::Payload(bytes)).await {
                         let _ = ack.send(Err(Error::Connect(format!(
@@ -413,7 +413,7 @@ impl NetworkStreaming {
                 OpCode::Text => {}
                 OpCode::Binary => {
                     let bytes = frame.payload.deref();
-                    let payload = match deserialize::<RaftStreamResponse>(bytes) {
+                    let payload = match deserialize_serde::<RaftStreamResponse>(bytes) {
                         Ok(payload) => payload,
                         Err(err) => {
                             // corrupt frame from a cluster member: drop the connection instead

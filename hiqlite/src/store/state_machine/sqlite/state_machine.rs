@@ -1,6 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use crate::helpers::{deserialize, set_path_access};
+use bincode_next::{Decode, Encode};
+use crate::helpers::{deserialize_serde, set_path_access};
 use crate::migration::Migration;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
@@ -68,20 +69,21 @@ pub struct PathLockFile(pub String);
 
 // The variant order is part of the raft log format and must stay stable and
 // feature-independent (see `CacheRequest` for details).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub enum QueryWrite {
     Execute(Query),
     ExecuteReturning(Query),
     Transaction(Vec<Query>),
-    Batch(Cow<'static, str>),
+    Batch(#[bincode(with_serde)] Cow<'static, str>),
     Migration(Vec<Migration>),
     #[allow(dead_code)] // only constructed with the `backup` feature
     Backup((NodeId, i64)),
     RTT,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct Query {
+    #[bincode(with_serde)] 
     pub sql: Cow<'static, str>,
     pub params: Params,
 }
@@ -572,7 +574,7 @@ impl StateMachineSqlite {
                 .query_row((), |row| {
                     let meta_bytes: Vec<u8> = row.get(0)?;
                     let metadata: StateMachineData =
-                        deserialize(&meta_bytes).expect("Metadata to deserialize ok");
+                        deserialize_serde(&meta_bytes).expect("Metadata to deserialize ok");
                     Ok(metadata)
                 })
                 .map_err(|err| {

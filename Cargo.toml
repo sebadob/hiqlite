@@ -27,7 +27,7 @@ strip = false
 #s3-simple = { path = "../s3-simple" }
 
 [workspace.dependencies]
-argon2 = "0.5.3"
+argon2 = { version = "0.6", features = ["parallel", "zeroize"] }
 axum = { version = "0.8.1", features = ["http2", "tokio"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
 axum-server = { version = "0.8", features = [
@@ -51,10 +51,10 @@ clap = { version = "4.1.11", features = ["derive", "env"] }
 console-subscriber = "0.5.0"
 constant_time_eq = "0.6"
 crc = "3.3.0"
-criterion = "0.7"
+criterion = "0.8"
 cron = { version = "0.17" }
 crossbeam = "0.8.4"
-cryptr = { version = "0.10", features = ["s3"] }
+cryptr = { version = "0.12", features = ["s3"] }
 ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.13", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"
@@ -76,8 +76,8 @@ hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
 memmap2 = "0.9.5"
 mime_guess = "2.0.5"
 openraft = { version = "0.9.21", features = ["serde", "storage-v2"] }
-rcgen = "0.14.7"
-reqwest = { version = "0.13", default-features = false, features = [
+rcgen = "0.14.10"
+reqwest = { version = "0.13.4", default-features = false, features = [
     "charset",
     "http2",
     "json",
@@ -111,8 +111,7 @@ spow = { version = "0.7", features = ["server"] }
 thiserror = "2"
 thread-priority = "3.0.0"
 tikv-jemallocator = "0.7.0"
-# 0.3.52 introduced an invalid breaking change
-time = "=0.3.51"
+time = "0.3.51"
 tokio = { version = "1.43.1", features = ["fs", "sync", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.4", features = ["ring"] }
 toml = "1"

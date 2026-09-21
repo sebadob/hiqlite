@@ -6,6 +6,7 @@ use crate::{APP_VERSION, Node};
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
+use bincode_next::{Decode, Encode};
 use chrono::Utc;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use openraft::{ServerState, StoredMembership};
@@ -496,13 +497,13 @@ pub async fn stream(
     Ok(response)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub(crate) struct ApiStreamRequest {
     pub(crate) request_id: usize,
     pub(crate) payload: ApiStreamRequestPayload,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub(crate) enum ApiStreamRequestPayload {
     #[cfg(feature = "sqlite")]
     Execute(Query),
@@ -513,7 +514,7 @@ pub(crate) enum ApiStreamRequestPayload {
     #[cfg(feature = "sqlite")]
     QueryConsistent(Query),
     #[cfg(feature = "sqlite")]
-    Batch(std::borrow::Cow<'static, str>),
+    Batch(#[bincode(with_serde)] std::borrow::Cow<'static, str>),
     #[cfg(feature = "sqlite")]
     Migrate(Vec<Migration>),
 
@@ -534,13 +535,13 @@ pub(crate) enum ApiStreamRequestPayload {
     Notify(CacheRequest),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub(crate) struct ApiStreamResponse {
     pub(crate) request_id: usize,
     pub(crate) result: ApiStreamResponsePayload,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub(crate) enum ApiStreamResponsePayload {
     #[cfg(feature = "sqlite")]
     Execute(Result<usize, Error>),

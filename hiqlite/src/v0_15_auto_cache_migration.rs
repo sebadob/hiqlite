@@ -1,5 +1,5 @@
 use crate::http_client::build_http_client;
-use crate::{APP_VERSION, Error, NodeConfig};
+use crate::{Error, NodeConfig};
 use std::env;
 use std::fmt::Write;
 use std::time::Duration;
@@ -20,7 +20,7 @@ use tracing::{debug, error, info, warn};
 #[tracing::instrument]
 pub async fn check_migrate(config: &NodeConfig) -> Result<(), Error> {
     #[cfg(debug_assertions)]
-    if !APP_VERSION.starts_with("0.15.") {
+    if !crate::APP_VERSION.starts_with("0.15.") {
         todo!("Clean up the whole check_migrate() function after v0.15 - it's not needed anymore");
     }
 

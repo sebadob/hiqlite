@@ -1,4 +1,5 @@
 use crate::{Error, NodeId};
+use bincode_next::{Decode, Encode};
 use constant_time_eq::constant_time_eq_32;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -15,7 +16,7 @@ impl Salt {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct Challenge(Vec<u8>);
 
 impl Challenge {
@@ -25,7 +26,7 @@ impl Challenge {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct ChallengeResponse {
     pub(crate) node_id: NodeId,
     challenge: Vec<u8>,
@@ -69,7 +70,7 @@ impl ChallengeResponse {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct ResponseFinal(Vec<u8>);
 
 impl ResponseFinal {

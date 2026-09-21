@@ -1,4 +1,5 @@
-use crate::helpers::{deserialize, serialize, set_path_access};
+use bincode_next::{Decode, Encode};
+use crate::helpers::{deserialize_serde, serialize_serde, set_path_access};
 use crate::store::StorageResult;
 use crate::store::state_machine::memory::kv_handler::{CacheRequestHandler, CacheSnapshot};
 use crate::store::state_machine::memory::{TypeConfigKV, kv_handler};
@@ -52,7 +53,7 @@ type MemSnapshot = (SnapshotMeta<NodeId, Node>, Vec<u8>);
 // feature-independent: adding variants changes the serialized indices of
 // everything after them, which silently corrupts logs written with a different
 // feature set. New variants therefore go at the end of the enum.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub enum CacheRequest {
     Get {
         cache_idx: usize,
@@ -60,22 +61,26 @@ pub enum CacheRequest {
     },
     Put {
         cache_idx: usize,
+        #[bincode(with_serde)] 
         key: Cow<'static, str>,
         value: Vec<u8>,
         expires: Option<i64>,
     },
     GetRemove {
         cache_idx: usize,
+        #[bincode(with_serde)] 
         key: Cow<'static, str>,
     },
     Replace {
         cache_idx: usize,
+        #[bincode(with_serde)] 
         key: Cow<'static, str>,
         value: Vec<u8>,
         expires: Option<i64>,
     },
     Delete {
         cache_idx: usize,
+        #[bincode(with_serde)] 
         key: Cow<'static, str>,
     },
     Clear {
@@ -89,36 +94,40 @@ pub enum CacheRequest {
     #[allow(dead_code)] // only constructed with the `listen_notify` feature
     Notify((i64, Vec<u8>)),
     #[allow(dead_code)] // only constructed with the `dlock` feature
-    Lock((Cow<'static, str>, Option<u64>)),
+    Lock(#[bincode(with_serde)] (Cow<'static, str>, Option<u64>)),
     #[allow(dead_code)] // only constructed with the `dlock` feature
-    LockAwait((Cow<'static, str>, u64)),
+    LockAwait(#[bincode(with_serde)] (Cow<'static, str>, u64)),
     #[allow(dead_code)] // only constructed with the `dlock` feature
-    LockRelease((Cow<'static, str>, u64)),
+    LockRelease(#[bincode(with_serde)] (Cow<'static, str>, u64)),
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterGet {
         cache_idx: usize,
+        #[bincode(with_serde)] 
         key: Cow<'static, str>,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterSet {
         cache_idx: usize,
+        #[bincode(with_serde)] 
         key: Cow<'static, str>,
         value: i64,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterAdd {
         cache_idx: usize,
+        #[bincode(with_serde)] 
         key: Cow<'static, str>,
         value: i64,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterDel {
         cache_idx: usize,
+        #[bincode(with_serde)] 
         key: Cow<'static, str>,
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub enum CacheResponse {
     Empty,
     Ok,
@@ -400,7 +409,7 @@ impl StateMachineMemory {
             let locks = rx
                 .await
                 .expect("to always receive an answer from locks handler");
-            serialize(&locks).unwrap()
+            serialize_serde(&locks).unwrap()
         };
         #[cfg(not(feature = "dlock"))]
         let locks_bytes: Vec<u8> = Vec::default();
@@ -420,7 +429,7 @@ impl StateMachineMemory {
 
         let snap: SnapshotDataContent = (meta.clone(), caches, locks_bytes);
         let snapshot_bytes =
-            serialize(&snap).map_err(|err| StorageIOError::write_state_machine(&err))?;
+            serialize_serde(&snap).map_err(|err| StorageIOError::write_state_machine(&err))?;
 
         Ok((meta, snapshot_bytes))
     }
@@ -492,7 +501,7 @@ impl StateMachineMemory {
         meta: &SnapshotMeta<NodeId, Node>,
         bytes: &[u8],
     ) -> Result<(), StorageError<NodeId>> {
-        let (meta_snap, kvs, locks) = deserialize::<SnapshotDataContent>(bytes)
+        let (meta_snap, kvs, locks) = deserialize_serde::<SnapshotDataContent>(bytes)
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
         debug_assert_eq!(meta.snapshot_id, meta_snap.snapshot_id);
         debug_assert_eq!(meta.last_log_id, meta_snap.last_log_id);
@@ -525,7 +534,8 @@ impl StateMachineMemory {
 
         #[cfg(feature = "dlock")]
         {
-            let locks: HashMap<String, dlock_handler::LockQueue> = deserialize(&locks).unwrap();
+            let locks: HashMap<String, dlock_handler::LockQueue> =
+                deserialize_serde(&locks).unwrap();
             let (ack, rx) = oneshot::channel();
             self.tx_dlock
                 .send(LockRequest::SnapshotInstall((locks, ack)))
@@ -646,7 +656,7 @@ impl StateMachineMemory {
 
         Ok(Some((
             path,
-            deserialize::<SnapshotDataContent>(&bytes)
+            deserialize_serde::<SnapshotDataContent>(&bytes)
                 .map_err(|e| StorageIOError::read_snapshot(None, &e))?,
         )))
     }

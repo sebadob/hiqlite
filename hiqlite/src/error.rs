@@ -4,6 +4,7 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use bincode_next::error::{DecodeError, EncodeError};
+use bincode_next::{Decode, Encode};
 use fastwebsockets::WebSocketError;
 use openraft::StorageError;
 use openraft::error::{CheckIsLeaderError, ClientWriteError, Fatal, RaftError};
@@ -17,25 +18,28 @@ use tracing::trace;
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 
-#[derive(Debug, Error, Serialize, Deserialize)]
+// The serde derives stay for the JSON API path and cross-decode tooling; the native derives make
+// this type flow through `helpers::serialize` / `helpers::deserialize`. The openraft payload
+// fields we do not own are bridged through the byte-identical serde adapter via `with_serde`.
+#[derive(Debug, Error, Serialize, Deserialize, Encode, Decode)]
 pub enum Error {
     #[error("BadRequest: {0}")]
-    BadRequest(Cow<'static, str>),
+    BadRequest(#[bincode(with_serde)] Cow<'static, str>),
     /// Serialization / Deserialization errors from `bincode-next`
     #[error("Bincode: {0}")]
     Bincode(String),
     #[error("Cache: {0}")]
-    Cache(Cow<'static, str>),
+    Cache(#[bincode(with_serde)] Cow<'static, str>),
     /// Internal Channel errors from `flume`
     #[error("Channel: {0}")]
     Channel(String),
     /// Internal error when a leader-request is sent to a non-leader node
     #[error("CheckIsLeaderError: {0}")]
-    CheckIsLeaderError(Box<RaftError<u64, CheckIsLeaderError<u64, Node>>>),
+    CheckIsLeaderError(#[bincode(with_serde)] Box<RaftError<u64, CheckIsLeaderError<u64, Node>>>),
     #[error("ClientWriteError: {0}")]
-    ClientWriteError(Box<RaftWriteError>),
+    ClientWriteError(#[bincode(with_serde)] Box<RaftWriteError>),
     #[error("Config: {0}")]
-    Config(Cow<'static, str>),
+    Config(#[bincode(with_serde)] Cow<'static, str>),
     #[error("Connect: {0}")]
     Connect(String),
     /// Sqlite constraint violation
@@ -45,49 +49,49 @@ pub enum Error {
     #[error("Cryptr: {0}")]
     Cryptr(String),
     #[error("Error: {0}")]
-    Error(Cow<'static, str>),
+    Error(#[bincode(with_serde)] Cow<'static, str>),
     #[error("InitializeError: {0}")]
-    InitializeError(Box<RaftInitError>),
+    InitializeError(#[bincode(with_serde)] Box<RaftInitError>),
     /// Error informing about a Raft leader change
     #[error("LeaderChange: {0}")]
-    LeaderChange(Cow<'static, str>),
+    LeaderChange(#[bincode(with_serde)] Cow<'static, str>),
     /// Error when the given query parameters could not be bound properly to the prepared statement.
     #[error("QueryParams: {0}")]
-    QueryParams(Cow<'static, str>),
+    QueryParams(#[bincode(with_serde)] Cow<'static, str>),
     /// Error returned when a query did not return any rows.
     #[error("QueryReturnedNoRows: {0}")]
-    QueryReturnedNoRows(Cow<'static, str>),
+    QueryReturnedNoRows(#[bincode(with_serde)] Cow<'static, str>),
     /// Error if the prepared statement cannot be built properly.
     #[error("PrepareStatement: {0}")]
-    PrepareStatement(Cow<'static, str>),
+    PrepareStatement(#[bincode(with_serde)] Cow<'static, str>),
     /// Internal Raft error
     #[error("RaftError: {0}")]
-    RaftError(Box<RaftError<u64>>),
+    RaftError(#[bincode(with_serde)] Box<RaftError<u64>>),
     #[error("RaftErrorFatal: {0}")]
     /// Internal Raft error
-    RaftErrorFatal(Box<Fatal<u64>>),
+    RaftErrorFatal(#[bincode(with_serde)] Box<Fatal<u64>>),
     #[error("RateLimit: {0}")]
-    RateLimit(Cow<'static, str>),
+    RateLimit(#[bincode(with_serde)] Cow<'static, str>),
     #[error("Request: {0}")]
     Request(String),
     #[cfg(feature = "s3")]
     #[error("S3: {0}")]
     S3(String),
     #[error("SnapshotError: {0}")]
-    SnapshotError(Box<RaftSnapshotError>),
+    SnapshotError(#[bincode(with_serde)] Box<RaftSnapshotError>),
     /// All kinds of SQLite database errors, mostly just a wrapper for the `rusqlite` error apart
     /// from `QueryReturnedNoRows`.
     #[cfg(feature = "sqlite")]
     #[error("Sqlite: {0}")]
-    Sqlite(Cow<'static, str>),
+    Sqlite(#[bincode(with_serde)] Cow<'static, str>),
     #[error("Timeout: {0}")]
     Timeout(String),
     #[error("Token: {0}")]
-    Token(Cow<'static, str>),
+    Token(#[bincode(with_serde)] Cow<'static, str>),
     #[error("Transaction: {0}")]
-    Transaction(Cow<'static, str>),
+    Transaction(#[bincode(with_serde)] Cow<'static, str>),
     #[error("Unauthorized: {0}")]
-    Unauthorized(Cow<'static, str>),
+    Unauthorized(#[bincode(with_serde)] Cow<'static, str>),
     #[error("WAL: {0}")]
     WAL(String),
     #[error("WebSocket: {0}")]
@@ -397,6 +401,14 @@ impl From<cryptr::CryptrError> for Error {
 impl From<argon2::password_hash::Error> for Error {
     fn from(value: argon2::password_hash::Error) -> Self {
         trace!("argon2::password_hash::Error: {value}");
+        Self::Unauthorized("invalid credentials".into())
+    }
+}
+
+#[cfg(feature = "dashboard")]
+impl From<argon2::password_hash::phc::Error> for Error {
+    fn from(value: argon2::password_hash::phc::Error) -> Self {
+        trace!("argon2::password_hash::phc::Error: {value}");
         Self::Unauthorized("invalid credentials".into())
     }
 }

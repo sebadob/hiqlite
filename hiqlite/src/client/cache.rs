@@ -1,8 +1,7 @@
 use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
-use crate::helpers::deserialize;
+use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::network::api::ApiStreamResponsePayload;
-use crate::network::serialize_network;
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
 use crate::{CacheVariants, Client, Error};
@@ -83,7 +82,7 @@ impl Client {
         match self.get_bytes(cache, key).await {
             Ok(value) => {
                 if let Some(v) = value {
-                    Ok(Some(deserialize(&v)?))
+                    Ok(Some(deserialize_serde(&v)?))
                 } else {
                     Ok(None)
                 }
@@ -154,7 +153,7 @@ impl Client {
 
             let mut res = BTreeMap::new();
             for (k, v) in snapshot {
-                res.insert(k, deserialize(&v)?);
+                res.insert(k, deserialize_serde(&v)?);
             }
             Ok(res)
         } else {
@@ -194,7 +193,7 @@ impl Client {
         V: Serialize,
     {
         // `put_bytes` below applies the cache rate limit itself
-        self.put_bytes(cache, key, serialize_network(value), ttl)
+        self.put_bytes(cache, key, serialize_serde(value).expect("Network payload serialization should always succeed"), ttl)
             .await?;
         Ok(())
     }
@@ -265,7 +264,7 @@ impl Client {
         match self.get_remove_bytes(cache, key).await {
             Ok(value) => {
                 if let Some(v) = value {
-                    Ok(Some(deserialize(&v)?))
+                    Ok(Some(deserialize_serde(&v)?))
                 } else {
                     Ok(None)
                 }
@@ -315,12 +314,12 @@ impl Client {
     {
         // `replace_bytes` below applies the cache rate limit itself
         match self
-            .replace_bytes(cache, key, serialize_network(value), ttl)
+            .replace_bytes(cache, key, serialize_serde(value).expect("Network payload serialization should always succeed"), ttl)
             .await
         {
             Ok(value) => {
                 if let Some(v) = value {
-                    Ok(Some(deserialize(&v)?))
+                    Ok(Some(deserialize_serde(&v)?))
                 } else {
                     Ok(None)
                 }

@@ -1,6 +1,6 @@
 use crate::Error;
 use crate::app_state::RaftType;
-use crate::helpers::serialize;
+use crate::helpers::{serialize, serialize_serde};
 use crate::network::handshake::HandshakeSecret;
 use crate::server::proxy::state::AppStateProxy;
 use crate::server::proxy::stream;
@@ -178,7 +178,7 @@ pub(crate) async fn metrics(
         }
     };
 
-    fmt_ok(headers, &metrics)
+    fmt_ok_serde(headers, &metrics)
 }
 
 #[inline(always)]
@@ -189,6 +189,18 @@ fn fmt_ok<S: Debug + Serialize>(headers: HeaderMap, payload: S) -> Result<Respon
         return Ok(Json(payload).into_response());
     }
     Ok(serialize(&payload)?.into_response())
+}
+
+/// Like [`fmt_ok`], but for openraft-owned payloads (e.g. `RaftMetrics`), which stay on the
+/// byte-identical serde adapter instead of native Encode/Decode.
+#[inline(always)]
+fn fmt_ok_serde<S: Debug + Serialize>(headers: HeaderMap, payload: S) -> Result<Response, Error> {
+    if let Some(accept) = headers.get(ACCEPT)
+        && accept == HeaderValue::from_static("application/json")
+    {
+        return Ok(Json(payload).into_response());
+    }
+    Ok(serialize_serde(&payload)?.into_response())
 }
 
 #[inline(always)]

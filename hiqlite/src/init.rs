@@ -1,5 +1,5 @@
 use crate::app_state::{AppState, RaftType};
-use crate::helpers::{deserialize, serialize};
+use crate::helpers::{deserialize_serde, serialize};
 use crate::network::HEADER_NAME_SECRET;
 use crate::network::management::{ClusterLeaveReq, LearnerReq};
 use crate::{Error, Node, NodeId, helpers};
@@ -201,7 +201,8 @@ async fn should_node_1_skip_init(
                     debug!("{} status: {}", node.id, resp.status());
                     if resp.status().is_success() {
                         let body = resp.bytes().await?;
-                        let membership: Membership<NodeId, Node> = deserialize(body.as_ref())?;
+                        let membership: Membership<NodeId, Node> =
+                            deserialize_serde(body.as_ref())?;
 
                         if membership.nodes().count() > 0 {
                             return Ok(true);
@@ -628,7 +629,8 @@ async fn is_remote_cluster_member(
                             time::sleep(Duration::from_secs(1)).await;
                             continue;
                         };
-                        let Ok(metrics) = deserialize::<RaftMetrics<u64, Node>>(bytes.as_ref())
+                        let Ok(metrics) =
+                            deserialize_serde::<RaftMetrics<u64, Node>>(bytes.as_ref())
                         else {
                             error!(
                                 "Cannot deserialize remote metrics response from Node {}",
@@ -824,7 +826,7 @@ pub async fn leave_remote_cluster(
 
             if res.status().is_success() {
                 let bytes = res.bytes().await?;
-                let metrics = deserialize::<RaftMetrics<u64, Node>>(bytes.as_ref())?;
+                let metrics = deserialize_serde::<RaftMetrics<u64, Node>>(bytes.as_ref())?;
                 let is_member = metrics
                     .membership_config
                     .nodes()

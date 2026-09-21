@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
-use crate::helpers::deserialize;
+use crate::helpers::deserialize_serde;
 use crate::network::HEADER_NAME_SECRET;
 use crate::{Client, Error};
 use openraft::ServerState;
@@ -76,7 +76,7 @@ impl Client {
 
         if res.status().is_success() {
             let bytes = res.bytes().await?;
-            let resp = deserialize(bytes.as_ref())?;
+            let resp = deserialize_serde(bytes.as_ref())?;
             Ok(resp)
         } else {
             let err = res.json::<Error>().await?;

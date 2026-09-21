@@ -5,12 +5,13 @@ use super::{
     transaction_variable::StmtColumn,
 };
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use bincode_next::{Decode, Encode};
 use rusqlite::types::{ToSqlOutput, Value};
 use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub enum Param {
     /// The value is a `NULL` value.
     Null,
@@ -27,7 +28,7 @@ pub enum Param {
     StmtOutputIndexed(usize, usize),
     /// The value is a variable referencing the first row of a previous statement in a transaction.
     /// The key is the statement index and a column name.
-    StmtOutputNamed(usize, Cow<'static, str>),
+    StmtOutputNamed(usize, #[bincode(with_serde)] Cow<'static, str>),
 }
 
 impl Param {

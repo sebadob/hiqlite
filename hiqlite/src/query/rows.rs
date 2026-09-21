@@ -1,4 +1,5 @@
 use crate::Error;
+use bincode_next::{Decode, Encode};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::error;
@@ -39,7 +40,7 @@ impl Row<'_> {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct RowOwned {
     pub(crate) columns: Vec<ColumnOwned>,
 }
@@ -235,7 +236,7 @@ impl ColumnType {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct ColumnOwned {
     // TODO find a way to include all the column names only once at the very top level and
     // somehow get a reference of them into a `From<_>` impl, probably with a new Trait.
@@ -259,7 +260,7 @@ impl ColumnOwned {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub enum ValueOwned {
     Null,
     Integer(i64),

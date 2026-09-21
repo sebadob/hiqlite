@@ -1,6 +1,7 @@
 use crate::app_state::{AppState, RaftType};
 use crate::{Error, Node};
 use bincode_next::error::{DecodeError, EncodeError};
+use bincode_next::{Decode, Encode};
 use openraft::{ChangeMembers, RaftMetrics};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -11,14 +12,36 @@ use std::time::Duration;
 use tracing::info;
 
 #[inline(always)]
-pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
+pub fn serialize<T: Encode>(value: &T) -> Result<Vec<u8>, EncodeError> {
     // We are using the legacy config on purpose here. It uses fixed-width integer fields, which
     // uses a bit more space, but is faster.
-    bincode_next::serde::encode_to_vec(value, bincode_next::config::legacy())
+    //
+    // Native derived encoding (not the serde adapter): byte-identical to the old
+    // `bincode_next::serde` path for every type that flows through this choke point (same u32
+    // variant tags, same integer widths) - pinned by the bincode_compat_* / raft_wire_goldens
+    // tests in state_machine.rs. Callers keep their serde derives for the JSON API path and
+    // cross-decode tooling.
+    bincode_next::encode_to_vec(value, bincode_next::config::legacy())
 }
 
 #[inline(always)]
-pub fn deserialize<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
+pub fn deserialize<T: Decode<()>>(bytes: &[u8]) -> Result<T, DecodeError> {
+    bincode_next::decode_from_slice::<T, _>(bytes, bincode_next::config::legacy())
+        .map(|(res, _)| res)
+}
+
+/// Serde-adapter serialization for the few call sites whose types we do not own (openraft
+/// payload types like `SnapshotMeta` or `StateMachineData` fields). Byte-identical to what the
+/// native path above produces for the same values; kept until those boundaries move to native
+/// derives with `#[bincode(with_serde)]` fields.
+#[inline(always)]
+pub fn serialize_serde<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
+    bincode_next::serde::encode_to_vec(value, bincode_next::config::legacy())
+}
+
+/// Counterpart of [serialize_serde] for deserialization.
+#[inline(always)]
+pub fn deserialize_serde<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
     bincode_next::serde::decode_from_slice::<T, _>(bytes, bincode_next::config::legacy())
         .map(|(res, _)| res)
 }

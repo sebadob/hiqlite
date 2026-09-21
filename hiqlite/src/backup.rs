@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::helpers::{deserialize, parse_duration, set_path_access};
+use crate::helpers::{deserialize_serde, parse_duration, set_path_access};
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{
     PathBackups, PathDb, PathLockFile, PathSnapshots, QueryWrite, StateMachineData,
@@ -399,7 +399,7 @@ async fn validate_backup_db(path_db: String) -> Result<(), Error> {
             let bytes: Vec<u8> = row.get(0)?;
             Ok(bytes)
         })?;
-        let _meta: StateMachineData = deserialize(&bytes).unwrap();
+        let _meta: StateMachineData = deserialize_serde(&bytes).unwrap();
 
         // Full SQLite integrity check: a corrupt-but-openable DB must not pass
         // silently. `PRAGMA integrity_check` returns exactly one "ok" row when the
@@ -423,10 +423,6 @@ async fn validate_backup_db(path_db: String) -> Result<(), Error> {
     .await??;
     Ok(())
 }
-
-// pub fn restore_backup_finish(state: Arc<AppState>, nodes_count: usize) {
-//     task::spawn(restore_backup_cleanup_task(state, nodes_count));
-// }
 
 #[tracing::instrument(level = "debug", skip_all)]
 #[cfg(feature = "backup")]

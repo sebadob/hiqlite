@@ -1,5 +1,6 @@
+use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{AppStateExt, Error, serialize_network};
+use crate::network::{AppStateExt, Error};
 use axum::response::IntoResponse;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use openraft::error::{Fatal, InstallSnapshotError, RaftError};
@@ -14,7 +15,6 @@ use crate::store::state_machine::memory::TypeConfigKV;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
-use crate::helpers::deserialize;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
@@ -219,7 +219,7 @@ async fn handle_socket(
             }
             OpCode::Binary => {
                 let bytes = frame.payload.deref();
-                match deserialize::<RaftStreamRequest>(bytes) {
+                match deserialize_serde::<RaftStreamRequest>(bytes) {
                     Ok(req) => req,
                     Err(err) => {
                         error!("Error deserializing RaftStreamRequest: {:?}", err);
@@ -285,12 +285,13 @@ async fn handle_socket(
         };
 
         if let Err(err) = tx_write
-            .send_async(WsWriteMsg::Payload(serialize_network(
-                &RaftStreamResponse {
+            .send_async(WsWriteMsg::Payload(
+                serialize_serde(&RaftStreamResponse {
                     request_id,
                     payload,
-                },
-            )))
+                })
+                .expect("Network payload serialization should always succeed"),
+            ))
             .await
         {
             error!(

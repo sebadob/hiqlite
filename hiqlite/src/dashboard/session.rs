@@ -1,3 +1,4 @@
+use bincode_next::{Decode, Encode};
 use crate::Error;
 use crate::dashboard::password;
 use crate::helpers::deserialize;
@@ -71,7 +72,7 @@ fn cooldown_response() -> Response {
         .into_response()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub(crate) struct Session {
     created: i64,
     expires: i64,

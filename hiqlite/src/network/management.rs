@@ -1,12 +1,14 @@
 use crate::NodeId;
 use crate::app_state::{AppState, RaftType};
-use crate::network::{AppStateExt, Error, fmt_ok, get_payload, validate_secret};
+use crate::network::{AppStateExt, Error, fmt_ok, fmt_ok_serde, get_payload, validate_secret};
 use crate::{Node, helpers};
 use axum::body;
 use axum::body::Body;
 use axum::extract::Path;
+use bincode_next::{Decode, Encode};
 use axum::http::HeaderMap;
 use axum::response::Response;
+use openraft::ServerState;
 use openraft::StoredMembership;
 use openraft::error::{CheckIsLeaderError, ForwardToLeader, RaftError};
 use serde::{Deserialize, Serialize};
@@ -16,14 +18,14 @@ use std::time::Duration;
 use tokio::time;
 use tracing::{debug, error, info, warn};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct LearnerReq {
     pub node_id: u64,
     pub addr_api: String,
     pub addr_raft: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct ClusterLeaveReq {
     pub node_id: u64,
     pub stay_as_learner: bool,
@@ -213,7 +215,7 @@ pub(crate) async fn get_membership(
         ));
     }
 
-    fmt_ok(headers, members.membership())
+    fmt_ok_serde(headers, members.membership())
 }
 
 /// Changes specified learners to members, or remove members.
@@ -238,7 +240,42 @@ pub(crate) async fn post_membership(
     // Take the shared raft_lock like the other membership endpoints so this full-set change
     // cannot race with join/leave flows that poll for their commit.
     let _lock = state.raft_lock.lock().await;
-    helpers::change_membership(&state, &raft_type, payload, false).await?;
+    let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+    let old_voters: BTreeSet<u64> = metrics.membership_config.voter_ids().collect();
+
+    // A full-set change that drops this node (the leader) goes through openraft's two-step voter
+    // removal. With `retain=false` the joint config already removes us from the node map, but we
+    // only step down on a later heartbeat tick: if the second (uniform) config is processed before
+    // that tick, openraft's `append_membership` debug assert panics ("Only leader is allowed to
+    // call update_effective_membership()"). Keeping ourselves as a learner through the protocol
+    // keeps `is_leader()` true for both steps, so the panic is unreachable. Dropping our own node
+    // entry afterwards (RemoveNodes) opens the same zombie-leader window until that tick fires,
+    // so we also wait for the demotion before releasing the lock (see wait_for_demotion).
+    let self_removal = !payload.contains(&state.id);
+    let dropped_voters: BTreeSet<u64> = old_voters.difference(&payload).copied().collect();
+    helpers::change_membership(&state, &raft_type, payload, self_removal).await?;
+
+    if self_removal {
+        // `retain=true` kept every dropped voter in the node map as a learner. Drop those entries
+        // now: RemoveNodes only edits the node map (single-step), so it cannot hit the race above.
+        // If we were demoted in the meantime, the removal is rejected with ForwardToLeader and the
+        // nodes simply remain committed learners - emit loudly instead of failing the request.
+        for id in &dropped_voters {
+            if let Err(err) = helpers::remove_learner(&state, &raft_type, *id).await {
+                warn!(
+                    "Node {id} ({:?}) was dropped from the voter set but its Learner entry could \
+                     not be removed (we may have been demoted in the meantime): {:?}",
+                    raft_type, err
+                );
+            }
+        }
+
+        if dropped_voters.contains(&state.id) {
+            // We just removed ourselves from the node map: wait for openraft to actually step us
+            // down before releasing the lock, so no queued membership write can hit the assert.
+            wait_for_demotion(&state, &raft_type).await;
+        }
+    }
 
     // retain false removes current cluster members if they do not appear in the new list
     fmt_ok(headers, ())
@@ -293,9 +330,24 @@ pub async fn leave_cluster_exec(
 
         if is_voter {
             warn!("Node {} ({:?}) is a Voter", payload.node_id, raft_type);
-            if let Err(err) =
-                helpers::remove_voter(state, raft_type, payload.node_id, payload.stay_as_learner)
-                    .await
+
+            // We are the leader here (the HTTP path checks it via `are_we_leader`, the shutdown
+            // path only calls this when we are the current leader). openraft commits voter removal
+            // in two steps: joint config first, then the uniform one. When the leader removes
+            // itself with `retain=false`, the joint config already drops it from the node map, but
+            // the leader only steps down on a later heartbeat tick: if the second step is processed
+            // before that tick, openraft's `append_membership` debug assert panics ("Only leader is
+            // allowed to call update_effective_membership()"). Keeping ourselves as a learner
+            // through the protocol keeps `is_leader()` true for both steps, so the panic is
+            // unreachable.
+            let self_removal = payload.node_id == state.id;
+            if let Err(err) = helpers::remove_voter(
+                state,
+                raft_type,
+                payload.node_id,
+                self_removal || payload.stay_as_learner,
+            )
+            .await
             {
                 error!(
                     "Error removing Node {} ({:?}) from Voters: {:?}",
@@ -319,6 +371,29 @@ pub async fn leave_cluster_exec(
                     payload.node_id, raft_type, err
                 );
                 return Err(err);
+            }
+
+            // The self-removal above kept us in the node map as a learner to make the two-step
+            // protocol safe. If we should not stay a learner, drop that entry now: RemoveNodes only
+            // edits the node map (single-step), so it cannot hit the race above. If we were demoted
+            // in the meantime, the removal is rejected with ForwardToLeader and we simply remain a
+            // committed learner - emit loudly instead of failing the leave.
+            if self_removal && !payload.stay_as_learner {
+                if let Err(err) =
+                    helpers::remove_learner(state, raft_type, payload.node_id).await
+                {
+                    warn!(
+                        "Node {} ({:?}) removed itself as Voter but could not drop its Learner \
+                         entry (it may have been demoted in the meantime): {:?}",
+                        payload.node_id, raft_type, err
+                    );
+                }
+
+                // We are out of the membership entirely now. openraft only steps us down on a
+                // heartbeat tick, so wait that out before releasing the lock: until then we are a
+                // zombie leader (still in Leader state, but no longer in the node map), and any
+                // queued membership write would hit the assert above.
+                wait_for_demotion(state, raft_type).await;
             }
         } else if !payload.stay_as_learner {
             warn!(
@@ -381,7 +456,7 @@ pub(crate) async fn metrics(
     }
 
     let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
-    fmt_ok(headers, &metrics)
+    fmt_ok_serde(headers, &metrics)
 }
 
 /// Maximum time to wait for a membership change to be committed while holding `state.raft_lock`.
@@ -424,6 +499,50 @@ async fn wait_for_membership_commit(
                 )
                 .into(),
             ));
+        }
+    }
+}
+
+/// Maximum time to wait for this node to actually step down after it removed itself from the
+/// membership (see [`wait_for_demotion`]). The demotion happens on the next heartbeat tick once
+/// the removal is applied, so this is a generous backstop, not an expected duration.
+const DEMOTION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Wait until this node has stepped down out of `ServerState::Leader`.
+///
+/// openraft only steps a leader down on a heartbeat tick, and only once the removal has been
+/// applied (`io_applied() >= effective().log_id()`). Until that tick, `server_state` stays
+/// `Leader` while the membership no longer contains us: any membership entry appended in that
+/// window hits openraft's `append_membership` debug assert ("Only leader is allowed to call
+/// update_effective_membership()") and panics. Callers must hold `state.raft_lock`, which
+/// serializes every membership mutation on this node - so once we return as Follower the window
+/// is closed and queued writes are rejected with a graceful ForwardToLeader instead.
+///
+/// On timeout we emit loudly and continue: the leave itself is already committed, and the node
+/// steps down on the very next tick regardless.
+async fn wait_for_demotion(state: &Arc<AppState>, raft_type: &RaftType) {
+    let start = time::Instant::now();
+
+    loop {
+        let metrics = helpers::get_raft_metrics(state, raft_type).await;
+        if metrics.state != ServerState::Leader {
+            return;
+        }
+
+        debug!(
+            "Waiting for node {} ({:?}) to step down from Leader",
+            state.id, raft_type
+        );
+        time::sleep(Duration::from_millis(250)).await;
+
+        if start.elapsed() > DEMOTION_TIMEOUT {
+            warn!(
+                "Node {} ({:?}) removed itself from the membership but is still in Leader state \
+                 after {:?}; a membership write in this window may hit openraft's append_membership \
+                 assert",
+                state.id, raft_type, DEMOTION_TIMEOUT
+            );
+            return;
         }
     }
 }

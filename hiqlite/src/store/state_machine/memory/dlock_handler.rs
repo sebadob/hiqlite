@@ -1,3 +1,4 @@
+use bincode_next::{Decode, Encode};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -43,7 +44,7 @@ pub struct LockAwaitPayload {
     pub ack: oneshot::Sender<LockState>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub enum LockState {
     Locked(u64),
     Queued(u64),
