@@ -184,7 +184,7 @@ async fn node_config(nodes: Vec<Node>, options: &Options) -> NodeConfig {
     // state after restart, because the current Leader expects the node to still have the last known
     // state applied.
     //
-    config.cache_storage_disk = false;
+    config.cache_storage_disk = true;
 
     // The only reason we set the WAL size to 8MB here is because of the possibly huge transactional
     // inserts with a high row count and low concurrency. At least for `hiqlite-wal`, the WAL size
@@ -208,7 +208,7 @@ async fn node_config(nodes: Vec<Node>, options: &Options) -> NodeConfig {
     // However, both `hiqlite::LogSync::Immediate` + `hiqlite::LogSync::ImmediateAsync` will put
     // a lot of stress on your SSD in case of high traffic. The default is to sync every 200ms.
     //
-    //config.wal_sync = hiqlite::LogSync::IntervalMillis(200);
+    config.wal_sync = hiqlite::LogSync::IntervalMillis(200);
 
     config
 }

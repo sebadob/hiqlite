@@ -101,7 +101,7 @@ considering that SQLite only allows a single writer at the same time.
 
 Test command (`-c` adjusted each time for different concurrency):
 
-```
+```bash
 cargo run --release -- cluster -c 4 -r 100000
 ```
 

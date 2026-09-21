@@ -1434,7 +1434,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiqlite"
-version = "0.14.0"
+version = "0.15.0-20260920"
 dependencies = [
  "axum",
  "axum-server",
@@ -1487,7 +1487,7 @@ dependencies = [
 
 [[package]]
 name = "hiqlite-derive"
-version = "0.14.0"
+version = "0.15.0-20260920"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1496,7 +1496,7 @@ dependencies = [
 
 [[package]]
 name = "hiqlite-wal"
-version = "0.14.0"
+version = "0.15.0-20260920"
 dependencies = [
  "bincode-next",
  "byteorder",
