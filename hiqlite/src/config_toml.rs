@@ -161,7 +161,7 @@ impl NodeConfig {
             };
             sync
         } else {
-            LogSync::ImmediateAsync
+            LogSync::IntervalMillis(200)
         };
         let wal_size =
             t_u32(&mut map, t_name, "wal_size", "HQL_WAL_SIZE")?.unwrap_or(2 * 1024 * 1024);

@@ -351,7 +351,7 @@ impl NodeConfig {
                 .unwrap_or("4")
                 .parse()
                 .expect("Cannot parse HQL_READ_POOL_SIZE as usize"),
-            wal_sync: hiqlite_wal::LogSync::ImmediateAsync,
+            wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
             wal_size: 2 * 1024 * 1024,
             #[cfg(feature = "cache")]
             cache_storage_disk,

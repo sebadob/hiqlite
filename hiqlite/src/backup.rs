@@ -38,11 +38,11 @@ impl Default for BackupConfig {
 }
 
 impl BackupConfig {
-    pub fn new(cron_schedule: &str, keep_days: Duration) -> Result<Self, Error> {
+    pub fn new(cron_schedule: &str, keep_for: Duration) -> Result<Self, Error> {
         Ok(Self {
             cron_schedule: cron::Schedule::from_str(cron_schedule)
                 .map_err(|_| Error::Config("Invalid syntax for cron_schedule".into()))?,
-            keep_for: keep_days,
+            keep_for,
         })
     }
 
@@ -51,7 +51,7 @@ impl BackupConfig {
         let cron_schedule =
             cron::Schedule::from_str(&cron_str).expect("Invalid syntax for HQL_BACKUP_CRON");
 
-        let keep_days = env::var("HQL_BACKUP_KEEP_FOR")
+        let keep_for = env::var("HQL_BACKUP_KEEP_FOR")
             .ok()
             .as_deref()
             .map(|v| parse_duration(v).expect("Cannot parse HQL_BACKUP_KEEP_FOR as Duration"))
@@ -59,7 +59,7 @@ impl BackupConfig {
 
         Self {
             cron_schedule,
-            keep_for: keep_days,
+            keep_for,
         }
     }
 }
@@ -160,7 +160,7 @@ pub fn start_cron(
 
 async fn backup_cron_job(
     client: &Client,
-    keep_days: Duration,
+    keep_for: Duration,
     #[cfg(feature = "s3")] s3_config: &Option<Arc<S3Config>>,
 ) -> Result<(), Error> {
     client.backup().await?;
@@ -169,7 +169,7 @@ async fn backup_cron_job(
     {
         if let Some(s3_config) = s3_config {
             // the backup task will be async in the background, but we can start cleaning up already
-            let threshold = Utc::now().sub(keep_days);
+            let threshold = Utc::now().sub(keep_for);
 
             let list = s3_config.bucket.list("", None).await?;
             for bucket in list {
@@ -195,12 +195,12 @@ async fn backup_cron_job(
 
 pub(crate) async fn backup_local_cleanup(
     backup_path: String,
-    keep_days: Duration,
+    keep_for: Duration,
 ) -> Result<(), Error> {
     // 2024/01/01 00:00:00
     let ts_min = 1704063600;
 
-    let ts_threshold = Utc::now().sub(keep_days).timestamp();
+    let ts_threshold = Utc::now().sub(keep_for).timestamp();
 
     let path = Path::new(&backup_path);
     let mut dir_entries = tokio::fs::read_dir(path).await?;
@@ -393,7 +393,7 @@ async fn validate_backup_db(path_db: String) -> Result<(), Error> {
     task::spawn_blocking(move || {
         let conn = rusqlite::Connection::open(path_db)?;
 
-        // 1. Metadata check: the backup must carry our state-machine metadata row.
+        // Metadata check: the backup must carry our state-machine metadata row.
         let mut stmt = conn.prepare_cached("SELECT data FROM _metadata WHERE key = 'meta'")?;
         let bytes = stmt.query_row((), |row| {
             let bytes: Vec<u8> = row.get(0)?;
@@ -401,9 +401,9 @@ async fn validate_backup_db(path_db: String) -> Result<(), Error> {
         })?;
         let _meta: StateMachineData = deserialize(&bytes).unwrap();
 
-        // 2. Full SQLite integrity check: a corrupt-but-openable DB must not pass
-        //    silently. `PRAGMA integrity_check` returns exactly one "ok" row when the
-        //    database is healthy, and one row per problem otherwise.
+        // Full SQLite integrity check: a corrupt-but-openable DB must not pass
+        // silently. `PRAGMA integrity_check` returns exactly one "ok" row when the
+        // database is healthy, and one row per problem otherwise.
         let mut stmt = conn.prepare("PRAGMA integrity_check")?;
         let mut problems: Vec<String> = Vec::new();
         {
