@@ -54,7 +54,7 @@ impl ServerTlsConfig {
         }
     }
 
-    pub fn from_env(variant: &str) -> Option<Self> {
+    pub fn from_env(variant: &str) -> Result<Option<Self>, Error> {
         let tls_auto_certificates = env::var("HQL_TLS_AUTO_CERTS")
             .map(|v| v.parse::<bool>().unwrap_or(false))
             .unwrap_or(false);
@@ -70,15 +70,20 @@ impl ServerTlsConfig {
 
         #[allow(clippy::unnecessary_unwrap)]
         if key.is_some() && cert.is_some() {
-            Some(Self::Specific(ServerTlsConfigCerts {
+            Ok(Some(Self::Specific(ServerTlsConfigCerts {
                 key: key.unwrap().into(),
                 cert: cert.unwrap().into(),
                 danger_tls_no_verify: no_verify.unwrap_or(false),
-            }))
+            })))
+        } else if key.is_some() != cert.is_some() {
+            Err(Error::Config(
+                "You must provide at least both HQL_TLS_{variant}_KEY + HQL_TLS_{variant}_CERT"
+                    .into(),
+            ))
         } else if tls_auto_certificates {
-            Some(Self::TlsAutoCertificates)
+            Ok(Some(Self::TlsAutoCertificates))
         } else {
-            None
+            Ok(None)
         }
     }
 

@@ -211,7 +211,7 @@ impl NodeConfig {
         let tls_api_key = t_str(&mut map, t_name, "tls_api_key", "HQL_TLS_API_KEY")?;
         let tls_api_cert = t_str(&mut map, t_name, "tls_api_cert", "HQL_TLS_API_CERT")?;
         let tls_api_danger_tls_no_verify =
-            t_bool(&mut map, t_name, "tls_raft_danger_tls_no_verify", "")?.unwrap_or(false);
+            t_bool(&mut map, t_name, "tls_api_danger_tls_no_verify", "")?.unwrap_or(false);
         #[allow(clippy::unnecessary_unwrap)]
         let tls_api = if tls_api_key.is_some() && tls_api_cert.is_some() {
             Some(ServerTlsConfig::Specific(ServerTlsConfigCerts {

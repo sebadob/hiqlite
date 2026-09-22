@@ -36,8 +36,8 @@ where
 
     let tls_api_client_config = node_config.tls_api.clone().map(|c| c.client_config());
     let tls_raft = node_config.tls_raft.is_some();
-    let tls_no_verify = node_config
-        .tls_raft
+    let tls_no_verify_api = node_config
+        .tls_api
         .as_ref()
         .map(|c| c.danger_tls_no_verify())
         .unwrap_or(false);
@@ -171,11 +171,23 @@ where
 
     let shutdown = shutdown_signal(rx_shutdown.clone());
     if let Some(config) = &node_config.tls_raft {
+        let listener = task::spawn_blocking(move || std::net::TcpListener::bind(rpc_socket_addr))
+            .await
+            .unwrap()
+            .map_err(|err| {
+                Error::Config(format!("Cannot bind Raft listen address '{rpc_addr}': {err}").into())
+            })?;
+        listener
+            .set_nonblocking(true)
+            .expect("Cannot create non-blocking socket");
+
         let config = config.server_config(&node_config.listen_addr_raft).await;
         task::spawn(Box::pin(async move {
             // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
             //  properly with axum directly
-            axum_server::bind_rustls(rpc_socket_addr, config)
+            axum_server::from_tcp_rustls(listener, config)
+                // errors when the socket is blocking
+                .unwrap()
                 .serve(router_internal.into_make_service())
                 .await
                 .map_err(|err| error!("Raft server stopped: {err}"))
@@ -259,21 +271,32 @@ where
 
     info!("api external listening on {api_addr}");
     if let Some(config) = &node_config.tls_api {
+        let listener = task::spawn_blocking(move || std::net::TcpListener::bind(api_socket_addr))
+            .await
+            .unwrap()
+            .map_err(|err| {
+                Error::Config(format!("Cannot bind API listen address '{api_addr}': {err}").into())
+            })?;
+        listener
+            .set_nonblocking(true)
+            .expect("Cannot create non-blocking socket");
+
         let config = config.server_config(&node_config.listen_addr_api).await;
         task::spawn(Box::pin(async move {
             // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
             //  properly with axum directly
-            axum_server::bind_rustls(api_socket_addr, config)
+            axum_server::from_tcp_rustls(listener, config)
+                // errors when the socket is blocking
+                .expect("properly configured TCP listener")
                 .serve(router_api.into_make_service())
                 .await
                 .map_err(|err| error!("API server stopped: {err}"))
         }));
     } else {
-        // Bind before spawning so that a bind failure fails startup loudly instead of
-        // panicking inside the spawned task with a dropped JoinError.
         let listener = TcpListener::bind(api_socket_addr).await.map_err(|err| {
             Error::Config(format!("Cannot bind API listen address '{api_addr}': {err}").into())
         })?;
+
         task::spawn(Box::pin(async move {
             axum::serve(listener, router_api.into_make_service())
                 .with_graceful_shutdown(shutdown_signal(rx_shutdown))
@@ -295,7 +318,7 @@ where
                 node_id,
                 &nodes,
                 tls_raft,
-                tls_no_verify,
+                tls_no_verify_api,
             )
             .await
         }))
@@ -314,7 +337,7 @@ where
                 node_id,
                 &nodes,
                 tls_raft,
-                tls_no_verify,
+                tls_no_verify_api,
             )
             .await
         }))
@@ -329,7 +352,7 @@ where
         state,
         tls_api_client_config,
         #[cfg(feature = "cache")]
-        tls_no_verify,
+        tls_no_verify_api,
         #[cfg(feature = "sqlite")]
         tx_client_stream,
         #[cfg(feature = "sqlite")]

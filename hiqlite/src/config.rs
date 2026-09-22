@@ -356,8 +356,8 @@ impl NodeConfig {
             #[cfg(feature = "cache")]
             cache_storage_disk,
             raft_config: Self::default_raft_config(logs_keep),
-            tls_raft: ServerTlsConfig::from_env("RAFT"),
-            tls_api: ServerTlsConfig::from_env("API"),
+            tls_raft: ServerTlsConfig::from_env("RAFT").expect("Error building Raft TLS config"),
+            tls_api: ServerTlsConfig::from_env("API").expect("Error building API TLS config"),
             secret_raft: env::var("HQL_SECRET_RAFT").expect("HQL_SECRET_RAFT not found"),
             secret_api: env::var("HQL_SECRET_API").expect("HQL_SECRET_API not found"),
             #[cfg(any(feature = "s3", feature = "dashboard"))]
