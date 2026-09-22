@@ -207,7 +207,7 @@ where
         let (tx, rx) = flume::bounded(1);
         let (ack, ack_rx) = oneshot::channel();
 
-        let callback = Box::new(move || callback.log_io_completed(Ok(())));
+        let callback = Box::new(move |res| callback.log_io_completed(res));
         self.writer
             .send_async(writer::Action::Append { rx, callback, ack })
             .await

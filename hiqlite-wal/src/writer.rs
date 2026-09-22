@@ -7,8 +7,8 @@ use crate::wal::WalFileSet;
 use openraft::{LeaderId, LogId};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
-use std::thread;
 use std::time::Duration;
+use std::{io, thread};
 use thread_priority::ThreadPriority;
 use tokio::sync::oneshot;
 use tokio::time::Interval;
@@ -18,7 +18,7 @@ use tracing::{debug, error, warn};
 pub enum Action {
     Append {
         rx: flume::Receiver<Option<(u64, Vec<u8>)>>,
-        callback: Box<dyn FnOnce() + Send>,
+        callback: Box<dyn FnOnce(Result<(), io::Error>) + Send>,
         ack: oneshot::Sender<Result<(), Error>>,
     },
     Remove {
@@ -274,6 +274,10 @@ fn run(
                     lock.active().clone_from_no_mmap(wal.active());
                 }
 
+                let res_cb = match &res {
+                    Ok(_) => Ok(()),
+                    Err(err) => Err(io::Error::other(err.to_string())),
+                };
                 if let Err(err) = ack.send(res) {
                     // this should usually not happen, but it may during an incorrect shutdown
                     error!("error sending back ack after logs append: {err:?}");
@@ -291,7 +295,11 @@ fn run(
                 // openraft takes this callback as "these entries are on disk" and commits on
                 // a quorum of such acks. Only `Immediate` upholds that here: the async levels
                 // deliberately ack first and trade the writeback window for throughput.
-                callback();
+                // TODO check openraft how we should behave in this scenario. I guess, as
+                //  long as we don't callback(), the Raft will fully block. -> verify + double-check
+                //  Do we need to callback() when this batch is processed apart from the result, or
+                //  only ever if it fully succeeded?
+                callback(res_cb);
 
                 // Roll WAL pre-emptively if only very few space is left at this point, because
                 // if we just wrote some chunks, me probably have a very short break now until the
@@ -499,7 +507,7 @@ mod tests {
             // the assertion is that the append is never acked.
             let _ = tx.send(Action::Append {
                 rx: entry_rx,
-                callback: Box::new(|| {}),
+                callback: Box::new(|_| ()),
                 ack: ack_tx,
             });
             let _ = entry_tx.send(Some((id, bytes)));
