@@ -5,9 +5,9 @@ use crate::{Node, helpers};
 use axum::body;
 use axum::body::Body;
 use axum::extract::Path;
-use bincode_next::{Decode, Encode};
 use axum::http::HeaderMap;
 use axum::response::Response;
+use bincode_next::{Decode, Encode};
 use openraft::ServerState;
 use openraft::StoredMembership;
 use openraft::error::{CheckIsLeaderError, ForwardToLeader, RaftError};
@@ -112,7 +112,7 @@ pub(crate) async fn become_member(
     let payload = get_payload::<LearnerReq>(&headers, body)?;
     info!("{:?} Node membership request: {:?}", raft_type, payload);
 
-    let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+    let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
     debug!("{:?} Members before add: {:?}", raft_type, metrics);
 
     let is_voter = metrics
@@ -164,11 +164,11 @@ pub(crate) async fn become_member(
 }
 
 async fn are_we_leader(state: &Arc<AppState>, raft_type: &RaftType) -> Result<(), Error> {
-    if let Some(leader_id) = helpers::get_raft_leader(state, raft_type).await {
+    if let Some(leader_id) = helpers::get_raft_leader(state, raft_type).await? {
         if leader_id == state.id {
             Ok(())
         } else {
-            let metrics = helpers::get_raft_metrics(state, raft_type).await;
+            let metrics = helpers::get_raft_metrics(state, raft_type).await?;
             let Some(leader) = metrics.membership_config.membership().get_node(&leader_id) else {
                 return Err(Error::Error(
                     format!("Leader {leader_id} not found in membership config").into(),
@@ -199,13 +199,13 @@ pub(crate) async fn get_membership(
         return Err(Error::Config("Raft node has not been initialized".into()));
     }
 
-    let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+    let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
     let mut members = metrics.membership_config;
 
     // it is possible to end up in a race condition on rolling releases
     if members.nodes().count() == 0 {
         time::sleep(Duration::from_millis(1000)).await;
-        let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+        let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
         members = metrics.membership_config;
         debug!("Membership after 1000ms timeout: {:?}", members);
 
@@ -240,7 +240,7 @@ pub(crate) async fn post_membership(
     // Take the shared raft_lock like the other membership endpoints so this full-set change
     // cannot race with join/leave flows that poll for their commit.
     let _lock = state.raft_lock.lock().await;
-    let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+    let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
     let old_voters: BTreeSet<u64> = metrics.membership_config.voter_ids().collect();
 
     // A full-set change that drops this node (the leader) goes through openraft's two-step voter
@@ -273,7 +273,7 @@ pub(crate) async fn post_membership(
         if dropped_voters.contains(&state.id) {
             // We just removed ourselves from the node map: wait for openraft to actually step us
             // down before releasing the lock, so no queued membership write can hit the assert.
-            wait_for_demotion(&state, &raft_type).await;
+            wait_for_demotion(&state, &raft_type).await?;
         }
     }
 
@@ -312,7 +312,7 @@ pub async fn leave_cluster_exec(
 
     let lock = state.raft_lock.lock().await;
 
-    let metrics = helpers::get_raft_metrics(state, raft_type).await;
+    let metrics = helpers::get_raft_metrics(state, raft_type).await?;
     let is_member = metrics
         .membership_config
         .nodes()
@@ -379,9 +379,7 @@ pub async fn leave_cluster_exec(
             // in the meantime, the removal is rejected with ForwardToLeader and we simply remain a
             // committed learner - emit loudly instead of failing the leave.
             if self_removal && !payload.stay_as_learner {
-                if let Err(err) =
-                    helpers::remove_learner(state, raft_type, payload.node_id).await
-                {
+                if let Err(err) = helpers::remove_learner(state, raft_type, payload.node_id).await {
                     warn!(
                         "Node {} ({:?}) removed itself as Voter but could not drop its Learner \
                          entry (it may have been demoted in the meantime): {:?}",
@@ -393,7 +391,7 @@ pub async fn leave_cluster_exec(
                 // heartbeat tick, so wait that out before releasing the lock: until then we are a
                 // zombie leader (still in Leader state, but no longer in the node map), and any
                 // queued membership write would hit the assert above.
-                wait_for_demotion(state, raft_type).await;
+                wait_for_demotion(state, raft_type).await?;
             }
         } else if !payload.stay_as_learner {
             warn!(
@@ -428,7 +426,7 @@ pub async fn leave_cluster_exec(
     }
 
     drop(lock);
-    let metrics = helpers::get_raft_metrics(state, raft_type).await;
+    let metrics = helpers::get_raft_metrics(state, raft_type).await?;
     info!(
         "Node {} ({:?}) has left the cluster: {:?}",
         payload.node_id,
@@ -455,7 +453,7 @@ pub(crate) async fn metrics(
         return Err(Error::Error("Raft is not initialized".into()));
     }
 
-    let metrics = helpers::get_raft_metrics(&state, &raft_type).await;
+    let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
     fmt_ok_serde(headers, &metrics)
 }
 
@@ -480,7 +478,7 @@ async fn wait_for_membership_commit(
     let start = time::Instant::now();
 
     loop {
-        let metrics = helpers::get_raft_metrics(state, raft_type).await;
+        let metrics = helpers::get_raft_metrics(state, raft_type).await?;
         if is_done(&metrics.membership_config) {
             return Ok(());
         }
@@ -520,13 +518,13 @@ const DEMOTION_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// On timeout we emit loudly and continue: the leave itself is already committed, and the node
 /// steps down on the very next tick regardless.
-async fn wait_for_demotion(state: &Arc<AppState>, raft_type: &RaftType) {
+async fn wait_for_demotion(state: &Arc<AppState>, raft_type: &RaftType) -> Result<(), Error> {
     let start = time::Instant::now();
 
     loop {
-        let metrics = helpers::get_raft_metrics(state, raft_type).await;
+        let metrics = helpers::get_raft_metrics(state, raft_type).await?;
         if metrics.state != ServerState::Leader {
-            return;
+            return Ok(());
         }
 
         debug!(
@@ -542,7 +540,7 @@ async fn wait_for_demotion(state: &Arc<AppState>, raft_type: &RaftType) {
                  assert",
                 state.id, raft_type, DEMOTION_TIMEOUT
             );
-            return;
+            return Ok(());
         }
     }
 }

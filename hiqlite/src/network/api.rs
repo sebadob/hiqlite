@@ -114,7 +114,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                 return Err(Error::Error("sqlite raft is not running".into()));
             }
 
-            let metrics = get_raft_metrics(&state, &RaftType::Sqlite).await;
+            let metrics = get_raft_metrics(&state, &RaftType::Sqlite).await?;
             ensure_ready_member(
                 state.id,
                 state.learner_only,
@@ -147,7 +147,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                 return Err(Error::Error("cache raft is not running".into()));
             }
 
-            let metrics = get_raft_metrics(&state, &RaftType::Cache).await;
+            let metrics = get_raft_metrics(&state, &RaftType::Cache).await?;
             ensure_ready_member(
                 state.id,
                 state.learner_only,

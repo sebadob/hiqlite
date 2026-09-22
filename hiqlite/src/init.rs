@@ -264,7 +264,7 @@ pub async fn become_cluster_member(
         // Only makes sense for actual HA deployments.
         if nodes.len() > 1 {
             time::sleep(Duration::from_secs(1)).await;
-            let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
+            let mut metrics = helpers::get_raft_metrics(&state, raft_type).await?;
             info!("Waiting for Raft Leader");
             for _ in 0..5 {
                 // Make sure that this node is not the current leader,
@@ -276,7 +276,7 @@ pub async fn become_cluster_member(
                     break;
                 }
                 time::sleep(Duration::from_millis(1000)).await;
-                metrics = helpers::get_raft_metrics(&state, raft_type).await;
+                metrics = helpers::get_raft_metrics(&state, raft_type).await?;
             }
         }
 
@@ -342,7 +342,7 @@ pub async fn become_cluster_member(
     // membership modification, we can get into a deadlock situation on the leader.
     // We want to wait until we are a commited Raft learner.
     {
-        let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
+        let mut metrics = helpers::get_raft_metrics(&state, raft_type).await?;
 
         let mut are_we_learner = metrics
             .membership_config
@@ -351,7 +351,7 @@ pub async fn become_cluster_member(
         while !are_we_learner {
             info!("Waiting until we are a replicated Raft Learner ...",);
             time::sleep(Duration::from_secs(1)).await;
-            metrics = helpers::get_raft_metrics(&state, raft_type).await;
+            metrics = helpers::get_raft_metrics(&state, raft_type).await?;
             are_we_learner = metrics
                 .membership_config
                 .nodes()
@@ -396,7 +396,7 @@ pub async fn become_cluster_member(
     );
 
     {
-        let mut metrics = helpers::get_raft_metrics(&state, raft_type).await;
+        let mut metrics = helpers::get_raft_metrics(&state, raft_type).await?;
 
         // To smooth out startups, wait until this node has replicated its
         // own voter state logs.
@@ -407,7 +407,7 @@ pub async fn become_cluster_member(
         while !are_we_voter {
             info!("Waiting until we are a replicated Raft Voter ...",);
             time::sleep(Duration::from_secs(1)).await;
-            metrics = helpers::get_raft_metrics(&state, raft_type).await;
+            metrics = helpers::get_raft_metrics(&state, raft_type).await?;
             are_we_voter = metrics
                 .membership_config
                 .voter_ids()
@@ -523,7 +523,8 @@ async fn try_become(
                             if leader_id == this_node {
                                 if !helpers::is_raft_initialized(state, raft_type).await? {
                                     let leader = helpers::get_raft_leader(state, raft_type).await;
-                                    let metrics = helpers::get_raft_metrics(state, raft_type).await;
+                                    let metrics =
+                                        helpers::get_raft_metrics(state, raft_type).await?;
 
                                     panic!(
                                         r#"

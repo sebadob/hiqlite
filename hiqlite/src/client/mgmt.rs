@@ -76,8 +76,7 @@ impl Client {
 
         if res.status().is_success() {
             let bytes = res.bytes().await?;
-            let resp = deserialize_serde(bytes.as_ref())?;
-            Ok(resp)
+            Ok(deserialize_serde(bytes.as_ref())?)
         } else {
             let err = res.json::<Error>().await?;
             Err(err)

@@ -55,7 +55,7 @@ pub async fn is_raft_initialized(
         RaftType::Sqlite => state.raft_db.raft.is_initialized().await?,
         #[cfg(feature = "cache")]
         RaftType::Cache => state.raft_cache.raft.is_initialized().await?,
-        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
+        RaftType::Unknown => return Err(Error::Error("Unknown Raft type".into())),
     };
     Ok(is_initialized)
 }
@@ -72,26 +72,29 @@ pub fn is_raft_stopped(state: &Arc<AppState>, raft_type: &RaftType) -> bool {
 }
 
 #[inline]
-pub async fn get_raft_leader(state: &Arc<AppState>, raft_type: &RaftType) -> Option<u64> {
+pub async fn get_raft_leader(
+    state: &Arc<AppState>,
+    raft_type: &RaftType,
+) -> Result<Option<u64>, Error> {
     match raft_type {
         #[cfg(feature = "sqlite")]
-        RaftType::Sqlite => state.raft_db.raft.current_leader().await,
+        RaftType::Sqlite => Ok(state.raft_db.raft.current_leader().await),
         #[cfg(feature = "cache")]
-        RaftType::Cache => state.raft_cache.raft.current_leader().await,
-        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
+        RaftType::Cache => Ok(state.raft_cache.raft.current_leader().await),
+        RaftType::Unknown => Err(Error::Error("Unknown Raft type".into())),
     }
 }
 
 pub async fn get_raft_metrics(
     state: &Arc<AppState>,
     raft_type: &RaftType,
-) -> RaftMetrics<u64, Node> {
+) -> Result<RaftMetrics<u64, Node>, Error> {
     match raft_type {
         #[cfg(feature = "sqlite")]
-        RaftType::Sqlite => state.raft_db.raft.metrics().borrow().clone(),
+        RaftType::Sqlite => Ok(state.raft_db.raft.metrics().borrow().clone()),
         #[cfg(feature = "cache")]
-        RaftType::Cache => state.raft_cache.raft.metrics().borrow().clone(),
-        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
+        RaftType::Cache => Ok(state.raft_cache.raft.metrics().borrow().clone()),
+        RaftType::Unknown => Err(Error::Error("Unknown Raft type".into())),
     }
 }
 
@@ -116,7 +119,7 @@ pub async fn add_new_learner(
                 .await?;
             Ok(())
         }
-        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
+        RaftType::Unknown => Err(Error::Error("Unknown Raft type".into())),
     }
 }
 
@@ -146,7 +149,7 @@ pub async fn change_membership(
                 .await?;
             Ok(())
         }
-        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
+        RaftType::Unknown => Err(Error::Error("Unknown Raft type".into())),
     }
 }
 
@@ -178,7 +181,7 @@ pub async fn remove_learner(
                 .await?;
             Ok(())
         }
-        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
+        RaftType::Unknown => Err(Error::Error("Unknown Raft type".into())),
     }
 }
 
@@ -213,7 +216,7 @@ pub async fn remove_voter(
                 .await?;
             Ok(())
         }
-        RaftType::Unknown => panic!("neither `sqlite` nor `cache` feature enabled"),
+        RaftType::Unknown => Err(Error::Error("Unknown Raft type".into())),
     }
 }
 
