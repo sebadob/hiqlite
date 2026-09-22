@@ -182,16 +182,22 @@ where
             .expect("Cannot create non-blocking socket");
 
         let config = config.server_config(&node_config.listen_addr_raft).await;
+        let handle = axum_server::Handle::<std::net::SocketAddr>::new();
+        let h_shutdown = handle.clone();
         task::spawn(Box::pin(async move {
-            // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
-            //  properly with axum directly
             axum_server::from_tcp_rustls(listener, config)
                 // errors when the socket is blocking
                 .unwrap()
+                .handle(handle)
                 .serve(router_internal.into_make_service())
                 .await
                 .map_err(|err| error!("Raft server stopped: {err}"))
         }));
+        let rx = rx_shutdown.clone();
+        task::spawn(async move {
+            shutdown_signal(rx).await;
+            h_shutdown.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+        });
     } else {
         // Bind before spawning so that a bind failure fails startup loudly instead of
         // panicking inside the spawned task with a dropped JoinError.
@@ -282,16 +288,22 @@ where
             .expect("Cannot create non-blocking socket");
 
         let config = config.server_config(&node_config.listen_addr_api).await;
+        let handle = axum_server::Handle::<std::net::SocketAddr>::new();
+        let h_shutdown = handle.clone();
         task::spawn(Box::pin(async move {
-            // TODO find a way to do a graceful shutdown with `axum_server` or to handle TLS
-            //  properly with axum directly
             axum_server::from_tcp_rustls(listener, config)
                 // errors when the socket is blocking
                 .expect("properly configured TCP listener")
+                .handle(handle)
                 .serve(router_api.into_make_service())
                 .await
                 .map_err(|err| error!("API server stopped: {err}"))
         }));
+        let rx = rx_shutdown.clone();
+        task::spawn(async move {
+            shutdown_signal(rx).await;
+            h_shutdown.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+        });
     } else {
         let listener = TcpListener::bind(api_socket_addr).await.map_err(|err| {
             Error::Config(format!("Cannot bind API listen address '{api_addr}': {err}").into())
@@ -379,7 +391,7 @@ where
 
 /// The port will be split off from the `node_addr`
 fn build_listen_addr(listen_addr: &str, node_addr: &str, tls: bool) -> String {
-    let port = if let Some((_, port)) = node_addr.split_once(':') {
+    let port = if let Some((_, port)) = node_addr.rsplit_once(':') {
         port
     } else if tls {
         "443"
