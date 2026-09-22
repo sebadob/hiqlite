@@ -1,9 +1,9 @@
-use bincode_next::{Decode, Encode};
-use crate::helpers::{deserialize_serde, serialize_serde, set_path_access};
+use crate::helpers::{atomic_file_switch, deserialize_serde, serialize_serde, set_path_access};
 use crate::store::StorageResult;
 use crate::store::state_machine::memory::kv_handler::{CacheRequestHandler, CacheSnapshot};
 use crate::store::state_machine::memory::{TypeConfigKV, kv_handler};
 use crate::{CacheVariants, Error, Node, NodeId};
+use bincode_next::{Decode, Encode};
 use chrono::Utc;
 use cryptr::utils::secure_random_alnum;
 use dotenvy::var;
@@ -61,26 +61,26 @@ pub enum CacheRequest {
     },
     Put {
         cache_idx: usize,
-        #[bincode(with_serde)] 
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: Vec<u8>,
         expires: Option<i64>,
     },
     GetRemove {
         cache_idx: usize,
-        #[bincode(with_serde)] 
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
     Replace {
         cache_idx: usize,
-        #[bincode(with_serde)] 
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: Vec<u8>,
         expires: Option<i64>,
     },
     Delete {
         cache_idx: usize,
-        #[bincode(with_serde)] 
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
     Clear {
@@ -102,27 +102,27 @@ pub enum CacheRequest {
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterGet {
         cache_idx: usize,
-        #[bincode(with_serde)] 
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterSet {
         cache_idx: usize,
-        #[bincode(with_serde)] 
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: i64,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterAdd {
         cache_idx: usize,
-        #[bincode(with_serde)] 
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: i64,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterDel {
         cache_idx: usize,
-        #[bincode(with_serde)] 
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
 }
@@ -311,9 +311,7 @@ impl StateMachineMemory {
                     Error::Cache(format!("cannot sync {path_temp}: {err}").into())
                 })?;
             }
-            fs::rename(&path_temp, &path_meta).await.map_err(|err| {
-                Error::Cache(format!("cannot rename {path_temp} to {path_meta}: {err}").into())
-            })?;
+            atomic_file_switch(path_temp, path_meta).await?;
         }
 
         let mut tx_caches = Vec::with_capacity(variants.len());
@@ -458,8 +456,7 @@ impl StateMachineMemory {
                 .map_err(|err| StorageIOError::write_state_machine(&err))?;
         }
 
-        // atomic move: a crash can never leave a partially written snapshot at the final path
-        fs::rename(&path_temp, &path)
+        atomic_file_switch(path_temp, &path)
             .await
             .map_err(|err| StorageIOError::write_state_machine(&err))?;
 
@@ -480,9 +477,9 @@ impl StateMachineMemory {
                 let fname = entry.file_name();
                 let name = fname.to_str().unwrap_or_default();
                 if !name.is_empty()
-                    // skip the in-flight snapshot receive temp file (`begin_receiving_snapshot`)
-                    && name != "temp~"
                     && name != id
+                    // skip the in-flight snapshot receive temp file (`begin_receiving_snapshot`)
+                    && !(name.ends_with("~") || name.ends_with("tmp") || name.ends_with("temp"))
                     && let Err(err) = fs::remove_file(format!("{dir}/{name}")).await
                 {
                     warn!("Error removing old snapshot {name}: {err:?}");
@@ -617,7 +614,7 @@ impl StateMachineMemory {
                     };
 
                     let last_name = latest_file_name.as_deref().unwrap_or_default();
-                    let Some((rest_, log_id_latest)) = name.rsplit_once('-') else {
+                    let Some((rest_, log_id_latest)) = last_name.rsplit_once('-') else {
                         warn!("Invalid filename in snapshots dir: {}", name);
                         continue;
                     };
@@ -1013,15 +1010,12 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         // the temp file created by `begin_receiving_snapshot` (see its `~` naming comment)
         let src = format!("{}/temp~", self.path_snapshots);
         let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
-        fs::copy(&src, &dest)
+
+        atomic_file_switch(src, &dest)
             .await
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write(&err),
             })?;
-
-        fs::remove_file(src).await.map_err(|err| StorageError::IO {
-            source: StorageIOError::write(&err),
-        })?;
 
         let bytes = fs::read(dest)
             .await

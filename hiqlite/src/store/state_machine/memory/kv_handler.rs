@@ -132,7 +132,6 @@ async fn kv_handler(cache_name: &'static str, rx: flume::Receiver<CacheRequestHa
     #[cfg(feature = "counters")]
     let mut counters: BTreeMap<String, i64> = BTreeMap::new();
     // expiry (micros) -> keys due at that instant. In-memory only; several keys may share one
-    // timestamp, so no collision bumping is needed anymore.
     let mut expiries: BTreeMap<i64, Vec<String>> = BTreeMap::new();
 
     loop {
