@@ -2,6 +2,7 @@ use crate::http_client::build_http_client;
 use crate::{Error, NodeConfig};
 use std::env;
 use std::fmt::Write;
+use std::io::ErrorKind;
 use std::time::Duration;
 use tokio::fs;
 use tracing::{debug, error, info, warn};
@@ -65,26 +66,23 @@ pub async fn check_migrate(config: &NodeConfig) -> Result<(), Error> {
             debug!("No existing cache data found - all good");
             return Ok(());
         }
-    }
 
-    if !force_migration && env::var("HQL_CACHE_WAL_AUTO_MIGRATE").as_deref() != Ok("true") {
-        return Err(Error::Error(
+        if env::var("HQL_CACHE_WAL_AUTO_MIGRATE").as_deref() != Ok("true") {
+            return Err(Error::Error(
             r#"
     The Cache cleanup must be done as mentioned in the changelog.
     Either you do it manually, or set the env var `HQL_CACHE_WAL_AUTO_MIGRATE=true` before the startup.
     Read the changelog!
 "#.into(),
         ));
+        }
     }
 
     // If this is not a single instance, we must check possibly running members on old versions.
     if config.nodes.len() > 1 {
-        let tls_no_verify = config
-            .tls_raft
-            .as_ref()
-            .map(|c| c.danger_tls_no_verify())
-            .unwrap_or(false);
-        let client = build_http_client(tls_no_verify);
+        // We don't care about TLS validation at this point, and if we ignore it directly, we
+        // exclude a possible error source during our checks.
+        let client = build_http_client(true);
 
         const ERR: &str = r#"
 
@@ -112,14 +110,31 @@ pub async fn check_migrate(config: &NodeConfig) -> Result<(), Error> {
         info!("Still no old, running cluster member found - proceeding with the auto-cleanup.");
     }
 
-    // all good - cleanup data
-    // may be possible that dirs only partly exist -> ignore errors
-    warn!("Cleaning up {path_logs}");
-    let _ = fs::remove_dir_all(&path_logs).await;
-    warn!("Cleaning up {path_sm}");
-    let _ = fs::remove_dir_all(&path_sm).await;
+    if !is_pure_in_mem {
+        // all good - cleanup data
+        warn!("Cleaning up {path_logs}");
+        if let Err(err) = fs::remove_dir_all(&path_logs).await
+            && !matches!(err.kind(), ErrorKind::NotFound)
+        {
+            return Err(Error::Error(
+                format!("Error during auto-cleaning {path_logs}: {err:?}").into(),
+            ));
+        }
 
-    info!("Auto-Cleanup of cache data successful - proceeding with normal startup now.");
+        warn!("Cleaning up {path_sm}");
+        if let Err(err) = fs::remove_dir_all(&path_sm).await
+            && !matches!(err.kind(), ErrorKind::NotFound)
+        {
+            return Err(Error::Error(
+                format!("Error during auto-cleaning {path_sm}: {err:?}").into(),
+            ));
+        }
+
+        info!("Auto-Cleanup of cache data successful - proceeding with normal startup now.");
+    } else {
+        info!("No auto-cleanup needed for pure in memory caches.")
+    }
+
     Ok(())
 }
 
