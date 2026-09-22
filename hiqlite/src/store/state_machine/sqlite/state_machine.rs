@@ -1,7 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use bincode_next::{Decode, Encode};
-use crate::helpers::{deserialize_serde, set_path_access};
+use crate::helpers::{atomic_file_switch, deserialize_serde, set_path_access};
 use crate::migration::Migration;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
@@ -13,6 +12,7 @@ use crate::store::state_machine::sqlite::writer::{
 };
 use crate::store::{StorageResult, logs};
 use crate::{Error, Node, NodeId};
+use bincode_next::{Decode, Encode};
 use openraft::storage::RaftStateMachine;
 use openraft::{
     EntryPayload, LogId, OptionalSend, Snapshot, SnapshotId, SnapshotMeta, StorageError,
@@ -83,7 +83,7 @@ pub enum QueryWrite {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct Query {
-    #[bincode(with_serde)] 
+    #[bincode(with_serde)]
     pub sql: Cow<'static, str>,
     pub params: Params,
 }
@@ -851,8 +851,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     ) -> Result<(), StorageError<NodeId>> {
         let src = format!("{}/temp", self.path_snapshots);
         let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
-        // atomic move: a crash can never leave a partially copied snapshot at the final path
-        fs::rename(&src, &dest)
+        atomic_file_switch(src, &dest)
             .await
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write(&err),

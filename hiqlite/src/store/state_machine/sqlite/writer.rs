@@ -21,6 +21,7 @@ use rusqlite::{Batch, CachedStatement, Rows, Transaction};
 use std::borrow::Cow;
 use std::default::Default;
 use std::ops::Sub;
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 use thread_priority::ThreadPriority;
@@ -764,12 +765,21 @@ Got:      {}
 }
 
 #[inline]
-fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), Error> {
+fn create_snapshot<P: Into<PathBuf>>(conn: &rusqlite::Connection, path: P) -> Result<(), Error> {
+    let mut path = path.into();
     // vacuum into a temp file and move it into place, so a crash can never leave a
     // partially written snapshot at the final path
-    let path_temp = format!("{path}~");
+    let mut path_temp = path.clone();
+    path_temp.add_extension("tmp");
     // escape single quotes so a folder name containing ' cannot break (or inject into) the SQL literal
-    let q = format!("VACUUM main INTO '{}'", path_temp.replace('\'', "''"));
+    let q = format!(
+        "VACUUM main INTO '{}'",
+        path_temp
+            .as_os_str()
+            .to_str()
+            .unwrap_or_default()
+            .replace('\'', "''")
+    );
     if let Err(err) = conn.execute(&q, ()) {
         let _ = std::fs::remove_file(&path_temp);
         return Err(Error::Sqlite(err.to_string().into()));
@@ -777,6 +787,9 @@ fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), Erro
     std::fs::File::open(&path_temp)?.sync_data();
     std::fs::rename(&path_temp, &path)
         .map_err(|err| Error::Error(format!("rename snapshot into place: {err}").into()))?;
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_data();
+    }
     Ok(())
 }
 
