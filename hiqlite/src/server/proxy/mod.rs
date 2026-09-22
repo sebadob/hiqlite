@@ -51,19 +51,12 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
     let router = Router::new()
         .nest(
             "/cluster",
-            Router::new()
-                // .route("/add_learner/:raft_type", post(management::add_learner))
-                // .route("/become_member/:raft_type", post(management::become_member))
-                // .route(
-                //     "/membership/:raft_type",
-                //     get(management::get_membership).post(management::post_membership),
-                // )
-                .route("/metrics/:raft_type", get(handlers::metrics)),
+            Router::new().route("/metrics/{raft_type}", get(handlers::metrics)),
         )
         .route("/listen", get(handlers::listen))
         .route("/stream", get(handlers::stream))
-        // .route("/health", get(api::health))
         .route("/ping", get(handlers::ping))
+        .route("/version", get(handlers::get_version))
         .with_state(state.clone());
 
     let addr_str = format!("0.0.0.0:{}", config.listen_port);

@@ -83,7 +83,7 @@ impl Config {
                 .into_iter()
                 .map(|n| n.addr_api)
                 .collect::<Vec<_>>(),
-            tls_config: ServerTlsConfig::from_env("API"),
+            tls_config: ServerTlsConfig::from_env("API").expect("Cannot parse TLS config"),
             secret_api: env::var("HQL_SECRET_API").expect("HQL_SECRET_API not found"),
             max_stream_connections,
             rate_limit_cache,

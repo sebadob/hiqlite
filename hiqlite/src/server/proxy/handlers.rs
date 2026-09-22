@@ -1,16 +1,16 @@
-use crate::Error;
 use crate::app_state::RaftType;
 use crate::helpers::{serialize, serialize_serde};
 use crate::network::handshake::HandshakeSecret;
 use crate::server::proxy::state::AppStateProxy;
 use crate::server::proxy::stream;
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
+use crate::{APP_VERSION, Error};
 use axum::Json;
 use axum::extract::Path;
 use axum::http::header::ACCEPT;
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
-use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, Payload};
+use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use serde::Serialize;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -22,6 +22,10 @@ pub type AppStateExt = axum::extract::State<Arc<AppStateProxy>>;
 static HEADER_NAME_SECRET: &str = "X-API-SECRET";
 
 pub async fn ping() {}
+
+pub async fn get_version() -> impl IntoResponse {
+    APP_VERSION
+}
 
 pub async fn listen(
     state: AppStateExt,
@@ -48,7 +52,9 @@ async fn handle_listen_socket(
 
     if let Err(err) = HandshakeSecret::server(&mut ws, state.secret_api.as_bytes()).await {
         error!("Error during /listen WebSocket handshake: {}", err);
-        let _ = ws.write_frame(Frame::close(1000, b"Invalid Handshake")).await;
+        let _ = ws
+            .write_frame(Frame::close(1000, b"Invalid Handshake"))
+            .await;
         return Ok(());
     }
 
@@ -181,15 +187,18 @@ pub(crate) async fn metrics(
     fmt_ok_serde(headers, &metrics)
 }
 
-#[inline(always)]
-fn fmt_ok<S: Debug + Serialize>(headers: HeaderMap, payload: S) -> Result<Response, Error> {
-    if let Some(accept) = headers.get(ACCEPT)
-        && accept == HeaderValue::from_static("application/json")
-    {
-        return Ok(Json(payload).into_response());
-    }
-    Ok(serialize(&payload)?.into_response())
-}
+// #[inline(always)]
+// fn fmt_ok<S: Debug + Serialize + Encode>(
+//     headers: HeaderMap,
+//     payload: S,
+// ) -> Result<Response, Error> {
+//     if let Some(accept) = headers.get(ACCEPT)
+//         && accept == HeaderValue::from_static("application/json")
+//     {
+//         return Ok(Json(payload).into_response());
+//     }
+//     Ok(serialize_network(&payload).into_response())
+// }
 
 /// Like [`fmt_ok`], but for openraft-owned payloads (e.g. `RaftMetrics`), which stay on the
 /// byte-identical serde adapter instead of native Encode/Decode.
