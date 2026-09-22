@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::helpers::{deserialize_serde, parse_duration, set_path_access};
+use crate::helpers::{atomic_file_switch, deserialize_serde, parse_duration, set_path_access};
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{
     PathBackups, PathDb, PathLockFile, PathSnapshots, QueryWrite, StateMachineData,
@@ -333,7 +333,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     fs::create_dir_all(&path_backups).await?;
     set_path_access(&path_backups, 0o700).await?;
 
-    let (path_backup, remove_src) = match src {
+    let path_backup = match src {
         BackupSource::S3(s3_obj) => {
             let s3_config = match &node_config.s3_config {
                 None => {
@@ -345,7 +345,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
             };
             let path_backup = format!("{path_backups}/{BACKUP_DB_NAME}");
             s3_config.pull(&s3_obj, &path_backup).await?;
-            (path_backup, true)
+            path_backup
         }
         BackupSource::File(path_src) => {
             let (path, filename) = path_src.rsplit_once('/').unwrap_or(("", &path_src));
@@ -353,7 +353,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
             let path_backup = format!("{path_backups}/{filename}");
 
             fs::copy(path_src, &path_backup).await?;
-            (path_backup, false)
+            path_backup
         }
     };
 
@@ -361,6 +361,10 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     debug!("Database backup validation passed (metadata + integrity check)");
 
     debug!("Removing old data");
+    // Removing old dirs even before the backup is in its final place. Important to never end up
+    // in an inconsistent state with a partly applied backups and maybe still existing old WAL data.
+    // You apply the backup for a reason -> the current data is broken anyway. If anything fails
+    // between here and getting the backup into place, you start fresh anyway.
     let _ = fs::remove_dir_all(&path_db).await;
     let _ = fs::remove_dir_all(&path_snapshots).await;
     let _ = fs::remove_dir_all(&path_lock_file).await;
@@ -374,13 +378,8 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
         "Given backup check ok - copying into its final place: {} -> {}",
         path_backup, path_db_full
     );
-    fs::copy(&path_backup, &path_db_full).await?;
+    atomic_file_switch(path_backup, path_db_full).await?;
     set_path_access(&path_db_full, 0o700).await?;
-
-    if remove_src {
-        info!("Cleaning up S3 backup from {}", path_backup);
-        fs::remove_file(path_backup).await?;
-    }
 
     Ok(())
 }
@@ -399,7 +398,7 @@ async fn validate_backup_db(path_db: String) -> Result<(), Error> {
             let bytes: Vec<u8> = row.get(0)?;
             Ok(bytes)
         })?;
-        let _meta: StateMachineData = deserialize_serde(&bytes).unwrap();
+        deserialize_serde::<StateMachineData>(&bytes)?;
 
         // Full SQLite integrity check: a corrupt-but-openable DB must not pass
         // silently. `PRAGMA integrity_check` returns exactly one "ok" row when the
@@ -493,7 +492,12 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
 
     debug!("Purging logs");
     while let Err(err) = state.raft_db.raft.trigger().purge_log(last_log).await {
+        // It's very important to retry until success. If we had an upper limit and exit early,
+        // the only thing we could do is actually panic. This is important because the first
+        // WAL logs entry MUST NOT start fresh. Otherwise, it would screw up the backup logic.
+        // -> retry until success, which will usually succeed instantly
         error!("Error during logs purge: {}", err);
+        time::sleep(Duration::from_millis(100)).await;
     }
 
     info!("restore_backup_finish task successful");

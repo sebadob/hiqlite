@@ -6,10 +6,31 @@ use openraft::{ChangeMembers, RaftMetrics};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::fs;
 use tracing::info;
+
+/// Will fsync the `src`, then `rename` to `dest`, and then flush the parent dir of `dest` to
+/// guarantee the rename is persistent.
+pub async fn atomic_file_switch<S, D>(src: S, dest: D) -> Result<(), Error>
+where
+    S: Into<PathBuf>,
+    D: Into<PathBuf>,
+{
+    let src = src.into();
+    let dest = dest.into();
+
+    fs::File::open(&src).await?.sync_data().await?;
+    fs::rename(src, &dest).await?;
+    if let Some(parent) = dest.parent() {
+        fs::File::open(parent).await?.sync_data().await?;
+    }
+
+    Ok(())
+}
 
 #[inline(always)]
 pub fn serialize<T: Encode>(value: &T) -> Result<Vec<u8>, EncodeError> {
