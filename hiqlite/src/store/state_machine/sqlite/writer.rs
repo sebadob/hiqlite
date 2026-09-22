@@ -601,7 +601,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                             // a present but corrupt metadata row leaves no known log
                             // position - fail hard rather than guess
                             Ok(bytes) => {
-                                sm_data = deserialize_serde(&bytes).expect("Metadata to deserialize ok");
+                                sm_data =
+                                    deserialize_serde(&bytes).expect("Metadata to deserialize ok");
                             }
                             Err(err) => {
                                 warn!("No metadata exists inside the DB yet");
@@ -773,6 +774,7 @@ fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), Erro
         let _ = std::fs::remove_file(&path_temp);
         return Err(Error::Sqlite(err.to_string().into()));
     }
+    std::fs::File::open(&path_temp)?.sync_data();
     std::fs::rename(&path_temp, &path)
         .map_err(|err| Error::Error(format!("rename snapshot into place: {err}").into()))?;
     Ok(())
