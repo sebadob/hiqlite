@@ -335,7 +335,10 @@ fn run(
                 // The flush has to block. `flush_async` only starts the writeback and returns,
                 // so a crash during the removal below can still land after the deletions and
                 // before the header reaches disk, which is the hole this guards against.
-                flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
+                if let Err(err) = flush_blocking(&mut wal, &mut buf, &mut is_dirty) {
+                    ack.send(Err(err)).unwrap();
+                    continue;
+                }
 
                 // Persist the purge frontier before deleting (too low = hole into deleted files;
                 // too high = extra files). Revert it again if the deletion fails below.
@@ -362,10 +365,9 @@ fn run(
                             // deletion failed: revert the frontier, but still report the error
                             let revert_res = {
                                 // `Metadata::write` re-locks the meta, so release the guard first
-                                let mut m = match meta.write() {
-                                    Ok(m) => m,
-                                    Err(poisoned) => poisoned.into_inner(),
-                                };
+                                let mut m = meta
+                                    .write()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                                 m.last_purged_log_id = previous_purged;
                                 drop(m);
                                 Metadata::write(meta.clone(), &wal.base_path)
