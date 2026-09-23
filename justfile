@@ -110,6 +110,8 @@ clippy:
     cargo clippy --no-default-features --features full,external-state-machine -- -D warnings
     cargo clippy --features external-state-machine -- -D warnings
 
+    cargo clippy --no-default-features --features server -- -D warnings
+
 clippy-examples:
     #!/usr/bin/env bash
     set -euxo pipefail

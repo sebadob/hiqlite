@@ -26,6 +26,14 @@ The main key aspects for writing code are in order:
   should never happen. Emit any issues loudly instead of sacrificing data integrity.
 - performance
 
+**IMPORTANT:** We actually prefer and specifically want to `panic` in situations with unrecoverable errors. A typical
+example would be if the `FromRow` mapping for a DB row to a Rust `struct` fails because of type mismatches. Such a
+conversion can never succeed, no matter how many times you try. It requires a code change. Another example would be a
+broken startup config: non-recoverable and needs an actual user interaction. In these situations, a `panic` is actually
+desired.
+
+Handle errors gracefully with a `Result` when they are temporary, but `panic` when they are unrecoverable.
+
 ## Repository layout
 
 - `hiqlite/` main crate
@@ -55,7 +63,7 @@ The main key aspects for writing code are in order:
   polling metrics until committed.
 - Wire format: bincode default, JSON if `Content-Type: application/json` (`network/mod.rs::get_payload`); the API
   stream is request_id-correlated over one multiplexed WebSocket (`client/stream.rs`, 120 s at-least-once timeout).
-- SQLite state machine: single writer thread, max priority, bounded(1) channel
+- SQLite state machine: single writer thread, max priority, bounded (1) channel
   (`store/state_machine/sqlite/writer.rs`); `synchronous=OFF` justified by Raft log replay; auto-heal deletes the DB
   dir on unclean shutdown (data-loss-by-design); non-deterministic SQLite functions are panicking guards on write
   connections only.
@@ -77,9 +85,9 @@ Basically everything in this project is done via `just`. Check `just -l` for mor
 - A normal full test run finishes just below 4 minutes; wrap runs in a ~5 minute timeout so a deadlock or loop
   cannot hang the session.
 - In agent sandboxes, `just` needs two env workarounds. First, the default recipe temp
-dir under `/run/user/1000/` is read-only: create a scratch dir in the workspace and point
-`XDG_RUNTIME_DIR` at it. Second, `TERM=dumb` makes each recipe's leading `clear` exit 1,
-which kills the recipe under `set -e` right after `+ clear`; run just with a real terminal
-type, e.g. `TERM=xterm-256color`. Additionally, `$HOME` is read-only, so point `CARGO_HOME` at a writable copy of
-`~/.cargo` (registry and config), and `RUSTUP_HOME` at one containing the needed toolchains; cargo-msrv also needs
-writable `XDG_CACHE_HOME` and `XDG_DATA_HOME` for its changelog and log caches.
+  dir under `/run/user/1000/` is read-only: create a scratch dir in the workspace and point
+  `XDG_RUNTIME_DIR` at it. Second, `TERM=dumb` makes each recipe's leading `clear` exit 1,
+  which kills the recipe under `set -e` right after `+ clear`; run just with a real terminal
+  type, e.g. `TERM=xterm-256color`. Additionally, `$HOME` is read-only, so point `CARGO_HOME` at a writable copy of
+  `~/.cargo` (registry and config), and `RUSTUP_HOME` at one containing the needed toolchains; cargo-msrv also needs
+  writable `XDG_CACHE_HOME` and `XDG_DATA_HOME` for its changelog and log caches.

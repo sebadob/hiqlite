@@ -179,7 +179,7 @@ logs_until_snapshot = 10000
 #
 # default: false
 # overwritten by: HQL_TLS_AUTO_CERTS
-tls_auto_certificates = false
+tls_auto_certificates = true
 
 # If given, these keys / certificates will be used to establish
 # TLS connections between nodes.

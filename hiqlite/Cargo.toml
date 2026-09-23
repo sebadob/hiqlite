@@ -85,6 +85,7 @@ shutdown-handle = ["dep:ctrlc"]
 sqlite = [
     "__cluster",
     "dep:deadpool",
+    "dep:fs4",
     "dep:rusqlite",
     "dep:serde_rusqlite",
 ]
@@ -171,6 +172,7 @@ reqwest = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 rust-embed = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
+rustls-platform-verifier = { workspace = true }
 serde.workspace = true
 serde_json = { workspace = true, optional = true }
 serde_rusqlite = { workspace = true, optional = true }

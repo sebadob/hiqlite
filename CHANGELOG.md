@@ -2,6 +2,10 @@
 
 ## UNRELEASED
 
+This version brings a huge number of tiny (and some big) bugfixes. The list is too long to write it down here
+meaningfully. In general: if you had any issue, this version probably fixes it. The part that did not undergo a big
+rework yet is the server / proxy, which is usually not even used. That will come in the future.
+
 ### BREAKING - VERY IMPORTANT
 
 **IF YOU DON'T FOLLOW THE STEPS BELOW, YOU MIGHT END UP WITH INCONSISTENT DATA!**
@@ -60,7 +64,7 @@ State Machine are fully compatible.
 
 - The following config vars have been renamed:
   ```
-  health_check_delay          -> health_check_delay
+  health_check_delay_secs     -> health_check_delay
   HQL_HEALTH_CHECK_DELAY_SECS -> HQL_HEALTH_CHECK_DELAY
   backup_keep_days            -> backup_keep_for
   HQL_BACKUP_KEEP_DAYS        -> HQL_BACKUP_KEEP_FOR

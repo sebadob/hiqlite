@@ -150,7 +150,7 @@ impl NodeConfig {
         let log_statements =
             t_bool(&mut map, t_name, "log_statements", "HQL_LOG_STATEMENTS")?.unwrap_or(false);
         let prepared_statement_cache_capacity =
-            t_u16(&mut map, t_name, "prepared_statement_cache_capacity", "")?.unwrap_or(1000)
+            t_u16(&mut map, t_name, "prepared_statement_cache_capacity", "")?.unwrap_or(1024)
                 as usize;
         let read_pool_size =
             t_u16(&mut map, t_name, "read_pool_size", "HQL_READ_POOL_SIZE")?.unwrap_or(4) as usize;

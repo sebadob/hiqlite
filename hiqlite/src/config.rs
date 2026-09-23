@@ -344,7 +344,7 @@ impl NodeConfig {
                 .as_deref()
                 .unwrap_or("false")
                 .parse()
-                .expect("Cannot parse HQL_LOG_STATEMENTS as u64"),
+                .expect("Cannot parse HQL_LOG_STATEMENTS as bool"),
             prepared_statement_cache_capacity: 1024,
             read_pool_size: env::var("HQL_READ_POOL_SIZE")
                 .as_deref()
