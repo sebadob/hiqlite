@@ -155,20 +155,37 @@ impl ServerTlsConfig {
 }
 
 pub fn build_tls_config(tls_no_verify: bool) -> Arc<ClientConfig> {
-    #[allow(unused_mut)]
-    let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-    #[cfg(feature = "webpki-roots")]
-    root_store.add_parsable_certificates(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned());
-
     let config = if tls_no_verify {
         tokio_rustls::rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoTlsVerifier {}))
             .with_no_client_auth()
     } else {
-        tokio_rustls::rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth()
+        #[cfg(feature = "webpki-roots")]
+        let config = {
+            let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
+            root_store.add_parsable_certificates(
+                webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned(),
+            );
+            tokio_rustls::rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth()
+        };
+
+        #[cfg(not(feature = "webpki-roots"))]
+        let config = {
+            use rustls_platform_verifier::BuilderVerifierExt;
+
+            let arc_crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
+            tokio_rustls::rustls::ClientConfig::builder_with_provider(arc_crypto_provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_platform_verifier()
+                .expect("Cannot build Hiqlite TLS client with platform verifier. If not available, you can use the `webpki-roots` feature")
+                .with_no_client_auth()
+        };
+
+        config
     };
 
     Arc::new(config)
