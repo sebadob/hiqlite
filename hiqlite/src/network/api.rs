@@ -365,7 +365,7 @@ async fn handle_listen_socket(
     }
 
     // Register this connection as a listener with the state machine.
-    let (tx_notify, rx_notify) = flume::bounded::<(i64, Vec<u8>)>(1);
+    let (tx_notify, rx_notify) = flume::unbounded();
     if let Err(err) = state
         .raft_cache
         .tx_notify
@@ -959,18 +959,32 @@ async fn handle_socket_concurrent(
                         _ => unreachable!(),
                     };
 
-                    let (ack, rx) = tokio::sync::oneshot::channel();
-                    state
-                        .raft_cache
-                        .tx_caches
-                        .get(cache_idx)
-                        .unwrap()
-                        .send(CacheRequestHandler::Get { key, reply: ack })
-                        .expect("kv handler to always be running");
-                    let value = rx.await.expect("to always get an answer from kv handler");
-                    ApiStreamResponse {
-                        request_id,
-                        result: ApiStreamResponsePayload::KV(Ok(CacheResponse::Value(value))),
+                    // Bounds-check the cache index before touching the handler channel.
+                    // Embedded clients resolve indices locally, so an out-of-range index can
+                    // only arrive via a hand-crafted wire request; rejecting it here keeps the
+                    // state machine's `.get(idx).unwrap()` in `apply()` from panicking on it.
+                    if cache_idx >= state.raft_cache.tx_caches.len() {
+                        ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::KV(Err(Error::new(format!(
+                                "cache index {cache_idx} out of range (0..{})",
+                                state.raft_cache.tx_caches.len()
+                            )))),
+                        }
+                    } else {
+                        let (ack, rx) = tokio::sync::oneshot::channel();
+                        state
+                            .raft_cache
+                            .tx_caches
+                            .get(cache_idx)
+                            .unwrap()
+                            .send(CacheRequestHandler::Get { key, reply: ack })
+                            .expect("kv handler to always be running");
+                        let value = rx.await.expect("to always get an answer from kv handler");
+                        ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::KV(Ok(CacheResponse::Value(value))),
+                        }
                     }
                 }
 

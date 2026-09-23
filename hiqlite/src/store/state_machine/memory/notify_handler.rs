@@ -49,6 +49,8 @@ async fn handler(rx_req: flume::Receiver<NotifyRequest>, tx_local: flume::Sender
                 }
             }
             NotifyRequest::Listen(tx) => {
+                // make sure all senders are actually unbounded so they never block
+                debug_assert!(tx.capacity().is_none());
                 info!("New notification listener subscribed");
                 listeners.push(tx);
             }
