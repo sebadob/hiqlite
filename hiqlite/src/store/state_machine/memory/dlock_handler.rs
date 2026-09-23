@@ -9,8 +9,18 @@ use tokio::task;
 use tracing::{debug, warn};
 
 /// How long a granted (or reserved) ticket is considered alive before its holder is treated as
-/// dead.
+/// dead. Shorter under `debug_assertions` so integration tests don't have to wait out the full
+/// production window.
+#[cfg(debug_assertions)]
+pub const LOCK_VALID_SECONDS: i64 = 2;
+#[cfg(not(debug_assertions))]
 const LOCK_VALID_SECONDS: i64 = 10;
+/// How often a lock holder sends `LockAlive` heartbeats to extend its lease. Must stay well
+/// below `LOCK_VALID_SECONDS`. Shorter under `debug_assertions`, matching the shorter lease.
+#[cfg(debug_assertions)]
+pub const LOCK_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
+#[cfg(not(debug_assertions))]
+pub const LOCK_ALIVE_INTERVAL: Duration = Duration::from_secs(3);
 /// How often the handler wakes itself up to promote queued tickets. Promotion is also triggered
 /// by every lock request and release for that key, so this only bounds how long a queue waits
 /// behind an expired (dead) holder when no further requests arrive for that key.
@@ -22,6 +32,7 @@ pub enum LockRequest {
     /// used after an await to acquire the lock now
     Acquire(LockRequestPayload),
     Release(LockReleasePayload),
+    Alive(LockAlivePayload),
     Await(LockAwaitPayload),
     SnapshotBuild(oneshot::Sender<HashMap<String, LockQueue>>),
     SnapshotInstall((HashMap<String, LockQueue>, oneshot::Sender<()>)),
@@ -39,6 +50,12 @@ pub struct LockReleasePayload {
 }
 
 pub struct LockAwaitPayload {
+    pub key: Cow<'static, str>,
+    pub id: u64,
+    pub ack: oneshot::Sender<LockState>,
+}
+
+pub struct LockAlivePayload {
     pub key: Cow<'static, str>,
     pub id: u64,
     pub ack: oneshot::Sender<LockState>,
@@ -104,6 +121,7 @@ fn handle_request(req: LockRequest, locks: &mut HashMap<String, LockQueue>, wait
         LockRequest::Lock(p) => handle_lock(locks, waiters, p),
         LockRequest::Acquire(p) => handle_acquire(locks, waiters, p),
         LockRequest::Release(p) => handle_release(locks, waiters, p),
+        LockRequest::Alive(p) => handle_alive(locks, p),
         LockRequest::Await(p) => handle_await(locks, waiters, p),
         LockRequest::SnapshotBuild(ack) => ack.send(locks.clone()).unwrap(),
         LockRequest::SnapshotInstall((data, ack)) => {
@@ -326,6 +344,34 @@ fn handle_release(
     }
 }
 
+/// Extend the lease of a live holder. Sent by clients as a heartbeat (`LockAlive`) while they
+/// hold a lock, so held locks are not capped at one lease window.
+///
+/// The extension is unconditional on purpose: a node whose local copy already expired self-heals
+/// on the next heartbeat instead of being stuck with a stale lease. A late heartbeat from a dead
+/// client can add at most one extra lease window, and only if no waiter was promoted in between
+/// (a promotion changes `current_ticket`, making this a no-op anyway). Alive never touches the
+/// queue or waiters: it promotes nothing and wakes nothing.
+fn handle_alive(locks: &mut HashMap<String, LockQueue>, p: LockAlivePayload) {
+    let key = p.key.as_ref();
+
+    let alive = match locks.get_mut(key) {
+        Some(lock) if lock.current_ticket == Some(p.id) => {
+            lock.exp = Utc::now().timestamp() + LOCK_VALID_SECONDS;
+            true
+        }
+        _ => false,
+    };
+
+    p.ack
+        .send(if alive {
+            LockState::Locked(p.id)
+        } else {
+            LockState::Released
+        })
+        .unwrap();
+}
+
 fn handle_await(
     locks: &mut HashMap<String, LockQueue>,
     waiters: &mut Waiters,
@@ -435,6 +481,23 @@ mod tests {
                 id,
             }),
         );
+    }
+
+    fn alive(tx: &flume::Sender<LockRequest>, key: &str, id: u64) -> oneshot::Receiver<LockState> {
+        let (ack, rx) = oneshot::channel();
+        send(
+            tx,
+            LockRequest::Alive(LockAlivePayload {
+                key: Cow::Owned(key.to_string()),
+                id,
+                ack,
+            }),
+        );
+        rx
+    }
+
+    async fn alive_lock(tx: &flume::Sender<LockRequest>, key: &str, id: u64) -> LockState {
+        alive(tx, key, id).await.unwrap()
     }
 
     async fn snapshot_build(tx: &flume::Sender<LockRequest>) -> HashMap<String, LockQueue> {
@@ -659,5 +722,40 @@ mod tests {
 
         // The client re-requests and is queued again against the installed state.
         assert_eq!(acquire(&tx2, "k", 2).await, LockState::Queued(2));
+    }
+
+    #[tokio::test]
+    async fn alive_extends_lease_past_expiry() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        assert_eq!(lock(&tx, "k", 2).await, LockState::Queued(2));
+        // Heartbeat just before the original lease would expire.
+        tokio::time::sleep(Duration::from_secs(LOCK_VALID_SECONDS as u64 - 1)).await;
+        assert_eq!(alive_lock(&tx, "k", 1).await, LockState::Locked(1));
+        // Past the original expiry: without the heartbeat the sweep would have promoted ticket
+        // 2 by now; with it, ticket 1 still holds.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let snap = snapshot_build(&tx).await;
+        assert_eq!(snap["k"].current_ticket, Some(1));
+        release(&tx, "k", 1);
+    }
+
+    #[tokio::test]
+    async fn alive_for_non_holder_is_noop() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        // A heartbeat for a ticket that does not hold the lock answers Released.
+        assert_eq!(alive_lock(&tx, "k", 99).await, LockState::Released);
+        let snap = snapshot_build(&tx).await;
+        assert_eq!(snap["k"].current_ticket, Some(1));
+        release(&tx, "k", 1);
+    }
+
+    #[tokio::test]
+    async fn alive_after_release_returns_released() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        release(&tx, "k", 1); // key fully removed
+        assert_eq!(alive_lock(&tx, "k", 1).await, LockState::Released);
     }
 }

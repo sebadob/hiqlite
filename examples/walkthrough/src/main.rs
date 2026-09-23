@@ -316,9 +316,12 @@ async fn server(args: Option<Server>) -> Result<(), Error> {
         // exists, other locks will have to wait.
         //
         // In the current implementation, distributed locks have an internal timeout of 10 seconds.
-        // When this time expires, a lock will be considered "dead" because of network issues, just
-        // in case it has not been possible to release the lock properly. This prevents deadlocks
-        // just because some client or server crashed.
+        // As long as the `Lock` handle is alive, the client automatically renews the lease with a
+        // heartbeat, so a held lock will never expire on its own. The timeout only applies when
+        // the owning client dies without releasing: when this time expires, a lock will be
+        // considered "dead" because of network issues, just in case it has not been possible to
+        // release the lock properly. This prevents deadlocks just because some client or server
+        // crashed.
         drop(lock);
 
         log("All tests successful");

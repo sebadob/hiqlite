@@ -96,6 +96,8 @@ pub enum CacheRequest {
     #[allow(dead_code)] // only constructed with the `dlock` feature
     Lock(#[bincode(with_serde)] (Cow<'static, str>, Option<u64>)),
     #[allow(dead_code)] // only constructed with the `dlock` feature
+    LockAlive(#[bincode(with_serde)] (Cow<'static, str>, u64)),
+    #[allow(dead_code)] // only constructed with the `dlock` feature
     LockAwait(#[bincode(with_serde)] (Cow<'static, str>, u64)),
     #[allow(dead_code)] // only constructed with the `dlock` feature
     LockRelease(#[bincode(with_serde)] (Cow<'static, str>, u64)),
@@ -273,7 +275,7 @@ impl StateMachineMemory {
         #[cfg(not(feature = "in-memory-snapshots"))]
         {
             let path_meta = format!("{path_sm}/cache_index.meta");
-            match fs::read_to_string(&path_meta).await {
+            let stored = match fs::read_to_string(&path_meta).await {
                 Ok(stored) => {
                     if !C::hiqlite_cache_compatible_with(&stored) {
                         return Err(Error::Cache(
@@ -287,31 +289,31 @@ impl StateMachineMemory {
                             .into(),
                         ));
                     }
+                    stored
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::default(),
                 Err(err) => {
                     return Err(Error::Cache(
                         format!("cannot read cache index metadata {path_meta}: {err}").into(),
                     ));
                 }
-            }
+            };
 
             // (Re)write the normalized form atomically so the file always reflects the
             // current enum and a torn write can never leave a half-written fingerprint.
             let normalized = C::hiqlite_cache_variants_normalized();
-            let path_temp = format!("{path_sm}/cache_index.meta~");
-            {
-                let mut file = fs::File::create(&path_temp).await.map_err(|err| {
-                    Error::Cache(format!("cannot create {path_temp}: {err}").into())
-                })?;
-                file.write_all(normalized.as_bytes()).await.map_err(|err| {
-                    Error::Cache(format!("cannot write {path_temp}: {err}").into())
-                })?;
-                file.sync_data().await.map_err(|err| {
-                    Error::Cache(format!("cannot sync {path_temp}: {err}").into())
-                })?;
+            if stored.as_bytes() != normalized.as_bytes() {
+                let path_temp = format!("{path_meta}~");
+                {
+                    let mut file = fs::File::create(&path_temp).await.map_err(|err| {
+                        Error::Cache(format!("cannot create {path_temp}: {err}").into())
+                    })?;
+                    file.write_all(normalized.as_bytes()).await.map_err(|err| {
+                        Error::Cache(format!("cannot write {path_temp}: {err}").into())
+                    })?;
+                }
+                atomic_file_switch(path_temp, path_meta).await?;
             }
-            atomic_file_switch(path_temp, path_meta).await?;
         }
 
         let mut tx_caches = Vec::with_capacity(variants.len());
@@ -681,6 +683,12 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         // TODO -> we could take the lock only once at the start and be much faster with everything!
         let mut data = self.data.write().await;
 
+        // Note: We do not need to have a bounds-check on `cache_index` here:
+        // - when the request is coming over the network, we have a check in `network/api.rs`
+        // - when the request is direct without the network, it can only come from the same
+        //   `CacheVariants` enum that this handler is running on, because all client functions are
+        //   sealed and the user never provides the Integer manually.
+
         let mut last_applied_log_id = None;
         for entry in entries {
             last_applied_log_id = Some(entry.log_id);
@@ -878,6 +886,26 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         }
                         #[cfg(not(feature = "dlock"))]
                         unreachable!("LockRelease requires the `dlock` feature")
+                    }
+
+                    CacheRequest::LockAlive((key, id)) => {
+                        #[cfg(feature = "dlock")]
+                        {
+                            let (ack, rx) = oneshot::channel();
+
+                            self.tx_dlock
+                                .send(LockRequest::Alive(LockAlivePayload { key, id, ack }))
+                                // this channel can never be closed - we have both sides
+                                .unwrap();
+
+                            let state = rx
+                                .await
+                                .expect("To always get a response from dlock handler");
+
+                            CacheResponse::Lock(state)
+                        }
+                        #[cfg(not(feature = "dlock"))]
+                        unreachable!("LockAlive requires the `dlock` feature")
                     }
 
                     CacheRequest::CounterGet { .. } => {
@@ -1293,14 +1321,15 @@ mod serialized_enum_order {
         assert_eq!(idx(&CacheRequest::ClearAll), 7);
         assert_eq!(idx(&CacheRequest::Notify((0, vec![]))), 8);
         assert_eq!(idx(&CacheRequest::Lock((key(), None))), 9);
-        assert_eq!(idx(&CacheRequest::LockAwait((key(), 0))), 10);
-        assert_eq!(idx(&CacheRequest::LockRelease((key(), 0))), 11);
+        assert_eq!(idx(&CacheRequest::LockAlive((key(), 0))), 10);
+        assert_eq!(idx(&CacheRequest::LockAwait((key(), 0))), 11);
+        assert_eq!(idx(&CacheRequest::LockRelease((key(), 0))), 12);
         assert_eq!(
             idx(&CacheRequest::CounterGet {
                 cache_idx: 0,
                 key: key()
             }),
-            12
+            13
         );
         assert_eq!(
             idx(&CacheRequest::CounterSet {
@@ -1308,7 +1337,7 @@ mod serialized_enum_order {
                 key: key(),
                 value: 0
             }),
-            13
+            14
         );
         assert_eq!(
             idx(&CacheRequest::CounterAdd {
@@ -1316,14 +1345,14 @@ mod serialized_enum_order {
                 key: key(),
                 value: 0
             }),
-            14
+            15
         );
         assert_eq!(
             idx(&CacheRequest::CounterDel {
                 cache_idx: 0,
                 key: key()
             }),
-            15
+            16
         );
     }
 }

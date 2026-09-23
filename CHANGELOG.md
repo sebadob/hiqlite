@@ -128,6 +128,14 @@ calculated absolute TTL consistently, you would get an overflow, but that is
 The distributed locks handler had some stability issues. It was possible that some locks could end up being stale
 and never woken when there was a conflict. This handler was completely reworked, and this should not happen anymore.
 
+Locks are now self-renewing: as long as the `Lock` handle is alive, the client sends a heartbeat that extends the lease
+on all cluster nodes. The hard timeout (10 s in release builds, 2 s in debug builds) now only applies to dead clients,
+so a held lock no longer expires while its owner is still running. The new `Lock` you get also provides a helper
+function `is_locked()` that you can use to double-check your lock is still hold, even if you have a network partition
+when you are beyond the 10s timeout with a very long-running job. The `Lock` is also not cloneable anymore. It made
+no sense that it derived `Clone`, because it will release as soon as one of them is dropped, which makes a clone pretty
+useless.
+
 #### Rate-Limiting Fixes
 
 It was possible that the rate-limiting bucket inside the client got more permits than intended.

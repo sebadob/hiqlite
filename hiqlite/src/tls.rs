@@ -107,7 +107,13 @@ impl ServerTlsConfig {
             let key_pair = tokio::task::spawn_blocking(|| rcgen::KeyPair::generate().unwrap())
                 .await
                 .unwrap();
+            // Multiple test nodes can race here: if another task wins the `set`,
+            // it hands our key pair back and we simply use the winner's.
+            #[cfg(debug_assertions)]
+            let _ = KEY_PAIR.set(key_pair);
+            #[cfg(not(debug_assertions))]
             KEY_PAIR.set(key_pair).unwrap();
+
             KEY_PAIR.get().unwrap()
         };
 

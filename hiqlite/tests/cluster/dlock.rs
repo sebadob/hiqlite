@@ -55,6 +55,29 @@ pub async fn test_dlock(
     log("awaiting handle_1_2");
     handle_1_2.await??;
 
+    log("Test that the heartbeat keeps a held lock alive past its lease window");
+    let lock_hb = client_1.lock("heartbeat").await?;
+    // Wait longer than one full lease window (2 s in debug builds, 10 s otherwise): without
+    // the heartbeat ticker the sweep would have promoted the waiter by now.
+    #[cfg(debug_assertions)]
+    let lease_plus_one = Duration::from_secs(3);
+    #[cfg(not(debug_assertions))]
+    let lease_plus_one = Duration::from_secs(11);
+    time::sleep(lease_plus_one).await;
+
+    let c3 = client_3.clone();
+    let handle_hb = task::spawn(async move {
+        c3.lock("heartbeat").await?;
+        Ok::<(), Error>(())
+    });
+    time::sleep(Duration::from_millis(200)).await;
+    // The waiter must still be queued: the heartbeat extended the holder's lease.
+    assert!(!handle_hb.is_finished());
+
+    drop(lock_hb);
+    log("awaiting handle_hb");
+    handle_hb.await??;
+
     log("Locks tests finished");
 
     Ok(())

@@ -294,9 +294,9 @@ You can lock any key, then do whatever you need, and as soon as the `Lock` you w
 released automatically.
 
 **Important:**
-In the current version, a distributed lock is only valid for max 10 seconds, to avoid issues with network segmentation
-or crashed nodes while they were holding some locks. If a lock is older than 10 seconds, it will be considered being
-"dead" in the current implementation to get rid of never-ending locks.
+Distributed locks have a hard timeout of 10 seconds (2s in debug builds), and they send heartbeats every 3 seconds
+(500ms in debug builds). A heartbeat extends the expiry. The hard timeout makes sure that a stale or crashed client
+can never hold a lock forever.
 
 ### `external-state-machine`
 
