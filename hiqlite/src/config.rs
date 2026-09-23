@@ -356,8 +356,17 @@ impl NodeConfig {
                 .unwrap_or("4")
                 .parse()
                 .expect("Cannot parse HQL_READ_POOL_SIZE as usize"),
-            wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
-            wal_size: 2 * 1024 * 1024,
+            wal_sync: if let Ok(v) = env::var("HQL_LOG_SYNC") {
+                hiqlite_wal::LogSync::try_from(v.as_str())
+                    .expect("Cannot parse HQL_LOG_SYNC as LogSync")
+            } else {
+                hiqlite_wal::LogSync::IntervalMillis(200)
+            },
+            wal_size: env::var("HQL_WAL_SIZE")
+                .ok()
+                .as_deref()
+                .map(|v| v.parse::<u32>().expect("Cannot parse HQL_WAL_SIZE as u32"))
+                .unwrap_or(2 * 1024 * 1024),
             #[cfg(feature = "cache")]
             cache_storage_disk,
             raft_config: Self::default_raft_config(logs_keep),

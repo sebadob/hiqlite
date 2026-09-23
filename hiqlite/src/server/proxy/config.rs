@@ -5,6 +5,7 @@ use tracing::debug;
 
 #[derive(Debug)]
 pub struct Config {
+    // TODO we also want the listen socket addr to be configurable
     pub listen_port: u16,
     pub nodes: Vec<String>,
     pub tls_config: Option<ServerTlsConfig>,

@@ -88,6 +88,8 @@ State Machine are fully compatible.
   `IntervalMillis(200)`. Data is still collected async in memory, but will be force-flushed every 200ms to disk. There
   is almost no real throughput penalty compared to `ImmediateAsync`, but you have way better consistency (even though
   more stress on your SSD).
+- The ENV var `HQL_TLS_{variant}_DANGER_TLS_NO_VERIFY` was renamed to `HQL_TLS_{variant}_NO_VERIFY`. Apart from that,
+  there is now a `REFERENCE_CONFIG.toml` in the crates root dir. It was updated and added into the tests.
 - The MSRV for all crates was bumped to 1.95.
 
 ### Changes

@@ -196,7 +196,7 @@ tls_auto_certificates = false
 # If given, these keys / certificates will be used to establish
 # TLS connections between nodes.
 #
-# values are optional, overwritten by: HQL_TLS_{RAFT|API|NO_VERIFY}_{KEY|CERT|NO_VERIFY}
+# values are optional, overwritten by: HQL_TLS_{RAFT|API}_{KEY|CERT|NO_VERIFY}
 #tls_raft_key = "tls/key.pem"
 #tls_raft_cert = "tls/cert-chain.pem"
 #tls_raft_danger_tls_no_verify = true

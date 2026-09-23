@@ -61,11 +61,11 @@ impl ServerTlsConfig {
 
         let key = env::var(format!("HQL_TLS_{variant}_KEY")).ok();
         let cert = env::var(format!("HQL_TLS_{variant}_CERT")).ok();
-        let no_verify = env::var(format!("HQL_TLS_{variant}_DANGER_TLS_NO_VERIFY"))
+        let no_verify = env::var(format!("HQL_TLS_{variant}_NO_VERIFY"))
             .ok()
             .map(|v| {
                 v.parse::<bool>()
-                    .expect("Cannot parse HQL_TLS_*_DANGER_TLS_NO_VERIFY to bool")
+                    .expect("Cannot parse HQL_TLS_*_NO_VERIFY to bool")
             });
 
         #[allow(clippy::unnecessary_unwrap)]
@@ -77,8 +77,10 @@ impl ServerTlsConfig {
             })))
         } else if key.is_some() != cert.is_some() {
             Err(Error::Config(
-                "You must provide at least both HQL_TLS_{variant}_KEY + HQL_TLS_{variant}_CERT"
-                    .into(),
+                format!(
+                    "You must provide at least both HQL_TLS_{variant}_KEY + HQL_TLS_{variant}_CERT"
+                )
+                .into(),
             ))
         } else if tls_auto_certificates {
             Ok(Some(Self::TlsAutoCertificates))
