@@ -1,9 +1,10 @@
 use crate::app_state::AppState;
-use crate::helpers::{atomic_file_switch, deserialize_serde, parse_duration, set_path_access};
+use crate::helpers::{
+    atomic_file_switch, parse_duration, set_path_access, validate_db_backup_snapshot,
+};
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{
-    PathBackups, PathDb, PathLockFile, PathSnapshots, QueryWrite, StateMachineData,
-    StateMachineSqlite,
+    PathBackups, PathDb, PathLockFile, PathSnapshots, QueryWrite, StateMachineSqlite,
 };
 use crate::{Client, Error, NodeConfig};
 use chrono::{DateTime, Utc};
@@ -142,13 +143,15 @@ pub fn start_cron(
                                 "Raft currently has no leader - retrying in 10 seconds\n{:?}",
                                 err
                             );
-                            time::sleep(Duration::from_secs(10)).await;
                         } else {
+                            // If we get here, it was most likely an S3 failure. The other things
+                            // that could go wrong are disk / DB operations, which is somewhat
+                            // unlikely.
                             error!("Error during backup task execution: {}", err);
-                            break;
                         }
                     }
                 }
+                time::sleep(Duration::from_secs(10)).await;
             }
 
             if !success {
@@ -197,7 +200,7 @@ pub(crate) async fn backup_local_cleanup(
     backup_path: String,
     keep_for: Duration,
 ) -> Result<(), Error> {
-    // 2024/01/01 00:00:00
+    // just make sure the parsed TS later on is somewhat reasonable
     let ts_min = 1704063600;
 
     let ts_threshold = Utc::now().sub(keep_for).timestamp();
@@ -356,6 +359,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
             path_backup
         }
     };
+    fs::File::open(&path_backup).await?.sync_data().await?;
 
     validate_backup_db(path_backup.clone()).await?;
     debug!("Database backup validation passed (metadata + integrity check)");
@@ -375,52 +379,20 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
 
     let path_db_full = format!("{}/{}", path_db, node_config.filename_db);
     info!(
-        "Given backup check ok - copying into its final place: {} -> {}",
+        "Given backup check ok - moving into its final place: {} -> {}",
         path_backup, path_db_full
     );
-    atomic_file_switch(path_backup, path_db_full).await?;
+    atomic_file_switch(path_backup, &path_db_full).await?;
     set_path_access(&path_db_full, 0o700).await?;
 
     Ok(())
 }
 
-async fn validate_backup_db(path_db: String) -> Result<(), Error> {
+pub(crate) async fn validate_backup_db(path_db: String) -> Result<(), Error> {
     if env::var("HQL_BACKUP_SKIP_VALIDATION").as_deref() == Ok("true") {
         return Ok(());
     }
-
-    task::spawn_blocking(move || {
-        let conn = rusqlite::Connection::open(path_db)?;
-
-        // Metadata check: the backup must carry our state-machine metadata row.
-        let mut stmt = conn.prepare_cached("SELECT data FROM _metadata WHERE key = 'meta'")?;
-        let bytes = stmt.query_row((), |row| {
-            let bytes: Vec<u8> = row.get(0)?;
-            Ok(bytes)
-        })?;
-        deserialize_serde::<StateMachineData>(&bytes)?;
-
-        // Full SQLite integrity check: a corrupt-but-openable DB must not pass
-        // silently. `PRAGMA integrity_check` returns exactly one "ok" row when the
-        // database is healthy, and one row per problem otherwise.
-        let mut stmt = conn.prepare("PRAGMA integrity_check")?;
-        let mut problems: Vec<String> = Vec::new();
-        {
-            let rows = stmt.query_map(rusqlite::params![], |row| row.get::<_, String>(0))?;
-            for r in rows {
-                problems.push(r?);
-            }
-        }
-        if problems.len() != 1 || problems[0] != "ok" {
-            return Err(Error::Sqlite(
-                format!("Backup integrity check failed: {}", problems.join("; ")).into(),
-            ));
-        }
-
-        Ok::<(), Error>(())
-    })
-    .await??;
-    Ok(())
+    validate_db_backup_snapshot(path_db).await
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
