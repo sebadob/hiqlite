@@ -160,10 +160,13 @@ impl Client {
         let (tx_client_cache, rx_client_cache) = flume::bounded(1);
 
         #[cfg(feature = "listen_notify")]
+        let (tx, ack_listen_notify) = tokio::sync::oneshot::channel();
+        #[cfg(feature = "listen_notify")]
         let rx_notify = Some(RemoteListener::spawn(
             leader_cache.clone(),
             tls_config.clone(),
             api_secret.clone(),
+            Some(tx),
         ));
 
         #[allow(unused_variables)]
@@ -223,6 +226,7 @@ impl Client {
             rx_client_cache,
             RaftType::Cache,
         );
+
         #[cfg(feature = "sqlite")]
         slf.open_stream(
             api_secret_bytes,
@@ -237,6 +241,11 @@ impl Client {
         slf.spawn_rate_limit_ticker(rate_limit_cache, None, rx_cache_await, rx_db_await);
         #[cfg(all(not(feature = "cache"), feature = "sqlite"))]
         slf.spawn_rate_limit_ticker(None, rate_limit_db, rx_cache_await, rx_db_await);
+
+        #[cfg(feature = "listen_notify")]
+        ack_listen_notify.await.map_err(|_| {
+            Error::Timeout("Connecting to remote event listener stream timed out".to_string())
+        })?;
 
         Ok(slf)
     }

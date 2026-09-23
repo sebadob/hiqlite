@@ -17,11 +17,12 @@ pub(crate) mod remote {
     use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocket};
     use hyper::upgrade::Upgraded;
     use hyper_util::rt::TokioIo;
+    use std::mem;
     use std::ops::Deref;
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::ReadHalf;
-    use tokio::sync::RwLock;
+    use tokio::sync::{RwLock, oneshot};
     use tokio::{select, task, time};
     use tracing::{debug, error, info};
 
@@ -56,9 +57,16 @@ pub(crate) mod remote {
             leader_cache: Arc<RwLock<(NodeId, String)>>,
             tls_config: Option<Arc<rustls::ClientConfig>>,
             api_secret: String,
+            ack_ready: Option<oneshot::Sender<()>>,
         ) -> flume::Receiver<(i64, Vec<u8>)> {
             let (tx, rx) = flume::unbounded();
-            task::spawn(Self::handler(leader_cache, tls_config, api_secret, tx));
+            task::spawn(Self::handler(
+                leader_cache,
+                tls_config,
+                api_secret,
+                tx,
+                ack_ready,
+            ));
             rx
         }
 
@@ -67,6 +75,7 @@ pub(crate) mod remote {
             tls_config: Option<Arc<rustls::ClientConfig>>,
             api_secret: String,
             tx: flume::Sender<(i64, Vec<u8>)>,
+            mut ack_ready: Option<oneshot::Sender<()>>,
         ) {
             let mut failed_retries: u32 = 0;
             loop {
@@ -77,6 +86,9 @@ pub(crate) mod remote {
                             "Client /listen WebSocket to {} opened successfully",
                             leader_cache.read().await.1
                         );
+                        if let Some(ack) = mem::take(&mut ack_ready) {
+                            let _ = ack.send(());
+                        }
                         ws
                     }
                     Err(err) => {
@@ -200,7 +212,10 @@ pub(crate) mod remote {
                             }
                         };
                         if let Err(err) = tx.send_async(ListenRead::Event((ts, data))).await {
-                            debug!("Client /listen reader: handler gone, dropping event: {:?}", err);
+                            debug!(
+                                "Client /listen reader: handler gone, dropping event: {:?}",
+                                err
+                            );
                         }
                     }
                     OpCode::Close => break,
@@ -226,8 +241,14 @@ pub(crate) mod remote {
                 let lock = leader_cache.read().await;
                 (lock.0, lock.1.clone())
             };
-            web_socket_connect::try_connect(node_id, &addr, "/listen", tls_config, api_secret.as_bytes())
-                .await
+            web_socket_connect::try_connect(
+                node_id,
+                &addr,
+                "/listen",
+                tls_config,
+                api_secret.as_bytes(),
+            )
+            .await
         }
     }
 }
@@ -305,7 +326,11 @@ impl Client {
         let now = Utc::now().timestamp_micros();
 
         match self
-            .notify_req(CacheRequest::Notify((now, serialize_serde(payload).expect("Network payload serialization should always succeed"))))
+            .notify_req(CacheRequest::Notify((
+                now,
+                serialize_serde(payload)
+                    .expect("Network payload serialization should always succeed"),
+            )))
             .await
         {
             Ok(_) => Ok(()),
@@ -318,8 +343,12 @@ impl Client {
                     )
                     .await
                 {
-                    self.notify_req(CacheRequest::Notify((now, serialize_serde(payload).expect("Network payload serialization should always succeed"))))
-                        .await
+                    self.notify_req(CacheRequest::Notify((
+                        now,
+                        serialize_serde(payload)
+                            .expect("Network payload serialization should always succeed"),
+                    )))
+                    .await
                 } else {
                     Err(err)
                 }
