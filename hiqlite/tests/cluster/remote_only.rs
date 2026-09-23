@@ -7,7 +7,7 @@ use hiqlite::{Client, Error, Lock};
 use std::time::Duration;
 use tokio::{task, time};
 
-pub async fn test_remote_only_client() -> Result<(), Error> {
+pub async fn test_remote_only_client(tls_api: bool) -> Result<(), Error> {
     log("Make sure remote clients work fine with any member node, even if none leader");
 
     let nodes = start::nodes()
@@ -17,8 +17,8 @@ pub async fn test_remote_only_client() -> Result<(), Error> {
 
     let client_1 = Client::remote(
         nodes.clone(),
-        false,
-        false,
+        tls_api,
+        true,
         SECRET_API.to_string(),
         false,
         None,
@@ -29,8 +29,8 @@ pub async fn test_remote_only_client() -> Result<(), Error> {
 
     let client_2 = Client::remote(
         nodes,
-        false,
-        false,
+        tls_api,
+        true,
         SECRET_API.to_string(),
         false,
         None,

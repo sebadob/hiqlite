@@ -6,19 +6,28 @@ use tokio::{fs, task, time};
 
 const TEST_DATA_DIR_LEARNER_ONLY: &str = "tests/data_test_learner_only";
 
+// TODO split this test into a separate module, so that, even when very unlikely, the env::set_var
+//  from the main test, as well as process::exit do not interfere this this test.
 #[tokio::test(flavor = "multi_thread")]
 async fn learner_only_node_stays_non_voter_and_becomes_ready() {
     let _ = fs::remove_dir_all(TEST_DATA_DIR_LEARNER_ONLY).await;
 
     let nodes = learner_only_nodes();
+    // Standalone cluster on its own ports; run it with both sides over TLS so the no-verify client
+    // path is exercised here too.
+    let combo = crate::start::TlsCombo {
+        api: true,
+        raft: true,
+    };
+
     let handle_client_1 = task::spawn(start_node_with_cache::<Cache>(
-        build_learner_only_config(1, nodes.clone()).await,
+        build_learner_only_config(1, nodes.clone(), combo).await,
     ));
     let handle_client_2 = task::spawn(start_node_with_cache::<Cache>(
-        build_learner_only_config(2, nodes.clone()).await,
+        build_learner_only_config(2, nodes.clone(), combo).await,
     ));
     let handle_client_3 = task::spawn(start_node_with_cache::<Cache>(
-        build_learner_only_config(3, nodes).await,
+        build_learner_only_config(3, nodes, combo).await,
     ));
 
     let client_1 = handle_client_1.await.unwrap().unwrap();
@@ -28,7 +37,7 @@ async fn learner_only_node_stays_non_voter_and_becomes_ready() {
     wait_for_node_health(&client_1).await.unwrap();
     wait_for_node_health(&client_2).await.unwrap();
     wait_for_node_health(&client_3).await.unwrap();
-    wait_for_ready("127.0.0.1:35003").await.unwrap();
+    wait_for_ready("127.0.0.1:35003", combo.api).await.unwrap();
 
     assert_learner_only_membership(&client_1, 3).await.unwrap();
     assert_learner_only_membership(&client_3, 3).await.unwrap();
@@ -57,9 +66,14 @@ fn learner_only_nodes() -> Vec<Node> {
     ]
 }
 
-async fn build_learner_only_config(node_id: u64, nodes: Vec<Node>) -> NodeConfig {
+async fn build_learner_only_config(
+    node_id: u64,
+    nodes: Vec<Node>,
+    combo: crate::start::TlsCombo,
+) -> NodeConfig {
     let mut config =
-        crate::start::build_config_with_nodes(node_id, nodes, TEST_DATA_DIR_LEARNER_ONLY).await;
+        crate::start::build_config_with_nodes(node_id, nodes, TEST_DATA_DIR_LEARNER_ONLY, combo)
+            .await;
     config.learner_only = node_id == 3;
     config
 }
@@ -79,9 +93,13 @@ async fn wait_for_node_health(client: &Client) -> Result<(), Error> {
     client.is_healthy_cache().await
 }
 
-async fn wait_for_ready(addr_api: &str) -> Result<(), Error> {
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr_api}/ready");
+async fn wait_for_ready(addr_api: &str, with_tls: bool) -> Result<(), Error> {
+    let client = reqwest::Client::builder()
+        .tls_danger_accept_invalid_certs(with_tls)
+        .build()
+        .unwrap();
+    let scheme = if with_tls { "https" } else { "http" };
+    let url = format!("{scheme}://{addr_api}/ready");
 
     for _ in 0..30 {
         if let Ok(resp) = client.get(&url).send().await

@@ -35,6 +35,7 @@ where
     }
 
     let tls_api_client_config = node_config.tls_api.clone().map(|c| c.client_config());
+    let tls_api = node_config.tls_api.is_some();
     let tls_raft = node_config.tls_raft.is_some();
     let tls_no_verify_api = node_config
         .tls_api
@@ -329,7 +330,7 @@ where
                 &crate::app_state::RaftType::Sqlite,
                 node_id,
                 &nodes,
-                tls_raft,
+                tls_api,
                 tls_no_verify_api,
             )
             .await
@@ -348,7 +349,7 @@ where
                 &crate::app_state::RaftType::Cache,
                 node_id,
                 &nodes,
-                tls_raft,
+                tls_api,
                 tls_no_verify_api,
             )
             .await
