@@ -6,6 +6,7 @@ use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader,
 use std::env;
 use std::sync::Arc;
 use tokio::task;
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct S3Config {
@@ -37,10 +38,15 @@ impl S3Config {
         let bucket = Bucket::new(endpoint, bucket_name.into(), region, credentials, options)
             .map_err(|err| Error::S3(err.to_string()))?;
 
-        if let Err(err) = bucket.head("").await {
-            return Err(Error::S3(format!(
-                "Error testing S3 connection for backups: {err:?}"
-            )));
+        match bucket.head("").await {
+            Ok(_) => {
+                info!("S3 connection test successful");
+            }
+            Err(err) => {
+                return Err(Error::S3(format!(
+                    "Error testing S3 connection for backups: {err:?}"
+                )));
+            }
         }
 
         Ok(Arc::new(Self { bucket }))
