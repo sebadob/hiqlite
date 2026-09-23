@@ -321,7 +321,7 @@ tls_auto_certificates = false
 # If given, these keys / certificates will be used to establish
 # TLS connections between nodes.
 #
-# values are optional, overwritten by: HQL_TLS_{RAFT|API|NO_VERIFY}_{KEY|CERT|NO_VERIFY}
+# values are optional, overwritten by: HQL_TLS_{{RAFT|API|NO_VERIFY}}_{{KEY|CERT|NO_VERIFY}}
 #tls_raft_key = "tls/key.pem"
 #tls_raft_cert = "tls/cert-chain.pem"
 #tls_raft_danger_tls_no_verify = true
@@ -454,7 +454,7 @@ backup_keep_for_local = "3d"
 # "
 #
 # The first part until the first `/` is the key ID.
-# The ID must match '[a-zA-Z0-9]{2,20}'
+# The ID must match '[a-zA-Z0-9]{{2,20}}'
 #
 # The key itself begins after the first `/` has been found.
 # The key must be exactly 32 bytes long, encoded as base64.

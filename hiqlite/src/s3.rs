@@ -13,7 +13,7 @@ pub struct S3Config {
 }
 
 impl S3Config {
-    pub fn new<S>(
+    pub async fn new<S>(
         endpoint: &str,
         bucket_name: S,
         region: S,
@@ -37,7 +37,11 @@ impl S3Config {
         let bucket = Bucket::new(endpoint, bucket_name.into(), region, credentials, options)
             .map_err(|err| Error::S3(err.to_string()))?;
 
-        // TODO try to list bucket and make sure access creds work fine
+        if let Err(err) = bucket.head("").await {
+            return Err(Error::S3(format!(
+                "Error testing S3 connection for backups: {err:?}"
+            )));
+        }
 
         Ok(Arc::new(Self { bucket }))
     }

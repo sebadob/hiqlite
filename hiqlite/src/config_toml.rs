@@ -317,6 +317,7 @@ impl NodeConfig {
                 ))?;
 
             let config = crate::s3::S3Config::new(&url, bucket, region, key, secret, path_style)
+                .await
                 .map_err(|err| {
                     Error::config(format!(
                         "Cannot build S3Config from given S3 values in {t_name}: {err:?}"
