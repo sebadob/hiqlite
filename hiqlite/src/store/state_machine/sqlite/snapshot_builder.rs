@@ -1,7 +1,8 @@
+use crate::helpers::deserialize_serde;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
-use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
+use crate::store::state_machine::sqlite::state_machine::{StateMachineData, StateMachineSqlite};
 use crate::store::state_machine::sqlite::writer::{SnapshotRequest, WriterRequest};
-use crate::{Node, NodeId};
+use crate::{Error, Node, NodeId};
 use openraft::{
     RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership,
 };

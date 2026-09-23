@@ -1,6 +1,8 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use crate::helpers::{atomic_file_switch, deserialize_serde, set_path_access};
+use crate::helpers::{
+    atomic_file_switch, deserialize_serde, set_path_access, validate_db_backup_snapshot,
+};
 use crate::migration::Migration;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
@@ -13,7 +15,8 @@ use crate::store::state_machine::sqlite::writer::{
 use crate::store::{StorageResult, logs};
 use crate::{Error, Node, NodeId};
 use bincode_next::{Decode, Encode};
-use openraft::storage::RaftStateMachine;
+use fs4::FileExt;
+use openraft::storage::{RaftStateMachine, SnapshotSignature};
 use openraft::{
     EntryPayload, LogId, OptionalSend, Snapshot, SnapshotId, SnapshotMeta, StorageError,
     StorageIOError, StoredMembership,
@@ -169,7 +172,8 @@ impl StateMachineSqlite {
             PathLockFile(path_lock_file),
         ) = Self::build_folders(data_dir, true).await;
 
-        Self::check_set_lock_file(&path_lock_file, &path_db, &mut db_exists).await;
+        let lock_file = Self::check_set_lock_file(&path_lock_file, &path_db, &mut db_exists)
+            .await;
 
         // Always start the writer first! -> creates mandatory tables
         let conn = Self::connect(
@@ -190,6 +194,7 @@ impl StateMachineSqlite {
             do_reset_metadata,
             #[cfg(feature = "backup")]
             local_backup_keep_for,
+            lock_file,
         );
 
         let read_pool = Self::connect_read_pool(
@@ -281,10 +286,47 @@ impl StateMachineSqlite {
         )
     }
 
-    async fn check_set_lock_file(path_lock_file: &str, path_db: &str, db_exists: &mut bool) {
-        let is_locked = fs::File::open(path_lock_file).await.is_ok();
+    /// Checks the state-machine lock file and returns it already holding the `fs4` advisory
+    /// lock, so the caller can hand it to the writer thread (which releases it on shutdown).
+    ///
+    /// The lock file doubles as a crash marker: we remove it on graceful shutdown, so its mere
+    /// presence means the previous run did not shut down cleanly. On top of that we take an `fs4`
+    /// advisory (flock) lock, which the OS releases automatically as soon as the last fd closes
+    /// or the process dies. A *held* lock therefore can only come from a live process - unlike
+    /// file existence, which also survives a crash. If the file is both present and held, another
+    /// process is still using this state machine, so we refuse to start on top of it instead of
+    /// silently deleting and rebuilding the DB.
+    async fn check_set_lock_file(
+        path_lock_file: &str,
+        path_db: &str,
+        db_exists: &mut bool,
+    ) -> std::fs::File {
+        // The lock file doubles as a crash marker: we remove it on graceful shutdown, so its mere
+        // presence means the previous run did not shut down cleanly.
+        let existed = std::fs::metadata(path_lock_file).is_ok();
 
-        if is_locked {
+        // Open (creating if needed) and try to take the advisory lock non-blocking. If another
+        // live process already holds it, `try_lock` reports `WouldBlock`.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path_lock_file)
+            .unwrap_or_else(|err| panic!("Cannot open lock file {path_lock_file}: {err}"));
+
+        match FileExt::try_lock(&file) {
+            Ok(()) => {}
+            Err(fs4::TryLockError::WouldBlock) => panic!(
+                "State machine lock file {path_lock_file} is held by another live process - \
+                 refusing to start on top of it"
+            ),
+            Err(fs4::TryLockError::Error(err)) => panic!(
+                "Error locking state machine lock file {path_lock_file}: {err}"
+            ),
+        }
+
+        if existed {
             #[cfg(feature = "auto-heal")]
             {
                 warn!(
@@ -311,9 +353,9 @@ impl StateMachineSqlite {
                 Node did not shut down gracefully - needs manual interaction",
                 path_lock_file
             );
-        } else if let Err(err) = fs::File::create(path_lock_file).await {
-            panic!("Error creating lock file {path_lock_file}: {err}");
         }
+
+        file
     }
 
     pub(crate) fn remove_lock_file(path: &str) {
@@ -446,7 +488,6 @@ impl StateMachineSqlite {
             // conn.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
         }
 
-        // TODO make configurable
         conn.set_prepared_statement_cache_capacity(prepared_statement_cache_capacity);
 
         Ok(())
@@ -832,7 +873,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<fs::File>, StorageError<NodeId>> {
         let path = format!("{}/temp", self.path_snapshots);
 
-        // clean up possible existing old data
+        // clean up possibly existing old data
         let _ = fs::remove_file(&path).await;
 
         match fs::File::create(path).await {
@@ -851,6 +892,20 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     ) -> Result<(), StorageError<NodeId>> {
         let src = format!("{}/temp", self.path_snapshots);
         let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
+
+        validate_db_backup_snapshot(src.clone())
+            .await
+            .map_err(|err| StorageError::IO {
+                source: StorageIOError::write_snapshot(
+                    Some(SnapshotSignature {
+                        last_log_id: meta.last_log_id,
+                        last_membership_log_id: *meta.last_membership.log_id(),
+                        snapshot_id: meta.snapshot_id.clone(),
+                    }),
+                    &err,
+                ),
+            })?;
+
         atomic_file_switch(src, &dest)
             .await
             .map_err(|err| StorageError::IO {
@@ -866,6 +921,10 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfigSqlite>>, StorageError<NodeId>> {
+        // `read_current_snapshot` only ever tries to read the snapshot with the highest ID, which
+        // is against the trait contract by definition. However, we only ever store a single
+        // snapshot anyway, so there is no need to even look for other ones. All snapshots expect
+        // the latest one are being cleaned up pretty much directly.
         match self.read_current_snapshot().await? {
             None => Ok(None),
             Some(snap) => {

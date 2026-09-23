@@ -140,6 +140,7 @@ pub fn spawn_writer(
     log_statements: bool,
     do_reset_metadata: bool,
     #[cfg(feature = "backup")] local_backup_keep_for: Duration,
+    lock_file: std::fs::File,
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(1);
 
@@ -712,6 +713,8 @@ CREATE TABLE IF NOT EXISTS _metadata
             error!("Error during 'PRAGMA optimize': {}", err);
         }
 
+        // release the advisory lock, then remove the crash-marker file
+        drop(lock_file);
         StateMachineSqlite::remove_lock_file(&path_lock_file);
 
         if let Some(ack) = shutdown_ack {
