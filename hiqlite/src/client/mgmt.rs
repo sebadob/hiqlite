@@ -151,6 +151,18 @@ impl Client {
         }
     }
 
+    /// Wait until the database Raft is healthy.
+    #[cfg(feature = "sqlite")]
+    pub async fn wait_until_healthy_db_timeout(&self, timeout: Duration) -> Result<(), Error> {
+        tokio::time::timeout(timeout, self.wait_until_healthy_db())
+            .await
+            .map_err(|_| {
+                Error::Timeout(format!(
+                    "Waiting for DB to become healthy timed out after {timeout:?}"
+                ))
+            })
+    }
+
     /// Wait until the cache Raft is healthy.
     #[cfg(feature = "cache")]
     pub async fn wait_until_healthy_cache(&self) {
@@ -166,6 +178,18 @@ impl Client {
                 }
             }
         }
+    }
+
+    /// Wait until the cache Raft is healthy.
+    #[cfg(feature = "cache")]
+    pub async fn wait_until_healthy_cache_timeout(&self, timeout: Duration) -> Result<(), Error> {
+        tokio::time::timeout(timeout, self.wait_until_healthy_cache())
+            .await
+            .map_err(|_| {
+                Error::Timeout(format!(
+                    "Waiting for Cache to become healthy timed out after {timeout:?}"
+                ))
+            })
     }
 
     /// Perform a graceful shutdown for this Raft node.
