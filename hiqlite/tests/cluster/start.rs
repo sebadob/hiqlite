@@ -23,15 +23,9 @@ fn tls_side(enabled: bool) -> Option<ServerTlsConfig> {
 }
 
 pub async fn start_test_cluster(combo: TlsCombo) -> Result<(Client, Client, Client), Error> {
-    let handle_client_1 = task::spawn(start_node_with_cache::<Cache>(
-        build_config(1, combo).await,
-    ));
-    let handle_client_2 = task::spawn(start_node_with_cache::<Cache>(
-        build_config(2, combo).await,
-    ));
-    let handle_client_3 = task::spawn(start_node_with_cache::<Cache>(
-        build_config(3, combo).await,
-    ));
+    let handle_client_1 = task::spawn(start_node_with_cache::<Cache>(build_config(1, combo).await));
+    let handle_client_2 = task::spawn(start_node_with_cache::<Cache>(build_config(2, combo).await));
+    let handle_client_3 = task::spawn(start_node_with_cache::<Cache>(build_config(3, combo).await));
 
     let client_1 = handle_client_1.await??;
     let client_2 = handle_client_2.await??;

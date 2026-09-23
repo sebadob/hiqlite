@@ -128,7 +128,14 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
 
         // Per the RaftLogStorage contract, `last_log_id` is the last present entry, or
         // `last_purged_log_id` when there is no entry at all.
-        let last_log_id = match self.logs.read().await.iter().last().map(|entry| entry.log_id) {
+        let last_log_id = match self
+            .logs
+            .read()
+            .await
+            .iter()
+            .last()
+            .map(|entry| entry.log_id)
+        {
             Some(id) => Some(id),
             None => last_purged_log_id,
         };
@@ -199,7 +206,10 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
         let truncate_from = (log_id.index - first_offset) as usize;
         // `truncate(log_id)` removes entries from `log_id` inclusive onward, so the cut point is
         // exactly the entry named by `log_id`. DeleteConflictLog always names a present entry.
-        debug_assert_eq!(logs.get(truncate_from).map(|e| e.log_id.index), Some(log_id.index));
+        debug_assert_eq!(
+            logs.get(truncate_from).map(|e| e.log_id.index),
+            Some(log_id.index)
+        );
 
         logs.truncate(truncate_from);
 

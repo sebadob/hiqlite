@@ -44,7 +44,10 @@ where
 }
 
 #[inline(always)]
-fn fmt_ok<S: Debug + Serialize + Encode>(headers: HeaderMap, payload: S) -> Result<Response, Error> {
+fn fmt_ok<S: Debug + Serialize + Encode>(
+    headers: HeaderMap,
+    payload: S,
+) -> Result<Response, Error> {
     if let Some(accept) = headers.get(ACCEPT)
         && accept == HeaderValue::from_static("application/json")
     {

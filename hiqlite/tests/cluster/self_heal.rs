@@ -1,4 +1,4 @@
-use crate::start::{build_config, TlsCombo};
+use crate::start::{TlsCombo, build_config};
 use crate::{Cache, TEST_DATA_DIR, cache, check, log};
 use futures_util::future::join_all;
 use hiqlite::{Client, Error, start_node_with_cache};

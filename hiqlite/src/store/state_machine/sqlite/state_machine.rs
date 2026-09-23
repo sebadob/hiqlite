@@ -172,8 +172,7 @@ impl StateMachineSqlite {
             PathLockFile(path_lock_file),
         ) = Self::build_folders(data_dir, true).await;
 
-        let lock_file = Self::check_set_lock_file(&path_lock_file, &path_db, &mut db_exists)
-            .await;
+        let lock_file = Self::check_set_lock_file(&path_lock_file, &path_db, &mut db_exists).await;
 
         // Always start the writer first! -> creates mandatory tables
         let conn = Self::connect(
@@ -321,9 +320,9 @@ impl StateMachineSqlite {
                 "State machine lock file {path_lock_file} is held by another live process - \
                  refusing to start on top of it"
             ),
-            Err(fs4::TryLockError::Error(err)) => panic!(
-                "Error locking state machine lock file {path_lock_file}: {err}"
-            ),
+            Err(fs4::TryLockError::Error(err)) => {
+                panic!("Error locking state machine lock file {path_lock_file}: {err}")
+            }
         }
 
         if existed {

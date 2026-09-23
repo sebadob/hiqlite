@@ -193,8 +193,13 @@ impl Client {
         V: Serialize,
     {
         // `put_bytes` below applies the cache rate limit itself
-        self.put_bytes(cache, key, serialize_serde(value).expect("Network payload serialization should always succeed"), ttl)
-            .await?;
+        self.put_bytes(
+            cache,
+            key,
+            serialize_serde(value).expect("Network payload serialization should always succeed"),
+            ttl,
+        )
+        .await?;
         Ok(())
     }
 
@@ -314,7 +319,13 @@ impl Client {
     {
         // `replace_bytes` below applies the cache rate limit itself
         match self
-            .replace_bytes(cache, key, serialize_serde(value).expect("Network payload serialization should always succeed"), ttl)
+            .replace_bytes(
+                cache,
+                key,
+                serialize_serde(value)
+                    .expect("Network payload serialization should always succeed"),
+                ttl,
+            )
             .await
         {
             Ok(value) => {
