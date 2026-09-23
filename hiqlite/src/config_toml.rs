@@ -193,8 +193,18 @@ impl NodeConfig {
 
         let tls_raft_key = t_str(&mut map, t_name, "tls_raft_key", "HQL_TLS_RAFT_KEY")?;
         let tls_raft_cert = t_str(&mut map, t_name, "tls_raft_cert", "HQL_TLS_RAFT_CERT")?;
-        let tls_raft_danger_tls_no_verify =
-            t_bool(&mut map, t_name, "tls_raft_danger_tls_no_verify", "")?.unwrap_or(false);
+        let tls_raft_danger_tls_no_verify = t_bool(
+            &mut map,
+            t_name,
+            "tls_raft_danger_tls_no_verify",
+            "HQL_TLS_RAFT_NO_VERIFY",
+        )?
+        .unwrap_or(false);
+
+        if tls_raft_key.is_some() != tls_raft_cert.is_some() {
+            return Err(Error::Config("Incomplete Raft TLS config given".into()));
+        }
+
         #[allow(clippy::unnecessary_unwrap)]
         let tls_raft = if tls_raft_key.is_some() && tls_raft_cert.is_some() {
             Some(ServerTlsConfig::Specific(ServerTlsConfigCerts {
@@ -210,8 +220,18 @@ impl NodeConfig {
 
         let tls_api_key = t_str(&mut map, t_name, "tls_api_key", "HQL_TLS_API_KEY")?;
         let tls_api_cert = t_str(&mut map, t_name, "tls_api_cert", "HQL_TLS_API_CERT")?;
-        let tls_api_danger_tls_no_verify =
-            t_bool(&mut map, t_name, "tls_api_danger_tls_no_verify", "")?.unwrap_or(false);
+        let tls_api_danger_tls_no_verify = t_bool(
+            &mut map,
+            t_name,
+            "tls_api_danger_tls_no_verify",
+            "HQL_TLS_API_NO_VERIFY",
+        )?
+        .unwrap_or(false);
+
+        if tls_api_key.is_some() != tls_api_cert.is_some() {
+            return Err(Error::Config("Incomplete API TLS config given".into()));
+        }
+
         #[allow(clippy::unnecessary_unwrap)]
         let tls_api = if tls_api_key.is_some() && tls_api_cert.is_some() {
             Some(ServerTlsConfig::Specific(ServerTlsConfigCerts {
@@ -267,7 +287,7 @@ impl NodeConfig {
                 "backup_keep_for_local",
                 "HQL_BACKUP_KEEP_FOR_LOCAL",
             )?
-            .unwrap_or(Duration::from_secs(30 * 24 * 3600));
+            .unwrap_or(Duration::from_secs(3 * 24 * 3600));
 
             let backup_config =
                 crate::backup::BackupConfig::new(backup_cron.as_ref(), backup_keep_for)
@@ -800,6 +820,14 @@ mod tests {
 
     fn table(s: &str) -> toml::Table {
         s.parse::<toml::Table>().unwrap()
+    }
+
+    #[tokio::test]
+    async fn parse_ref_config() {
+        // make sure it can be parsed properly. Any keys inside it that are unknown would panic.
+        NodeConfig::from_toml("../REFERENCE_CONFIG.toml", None, None, None)
+            .await
+            .unwrap();
     }
 
     #[test]
