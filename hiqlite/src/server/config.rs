@@ -170,8 +170,8 @@ data_dir = "{data_dir}"
 
 # The size of the internal cache for prepared statements.
 #
-# default: 1000
-#prepared_statement_cache_capacity = 1000
+# default: 1024
+#prepared_statement_cache_capacity = 1024
 
 # The size of the pooled connections for local database reads.
 #

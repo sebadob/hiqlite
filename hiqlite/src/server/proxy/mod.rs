@@ -17,9 +17,8 @@ mod stream;
 
 pub async fn start_proxy(config: Config) -> Result<(), Error> {
     if config.tls_config.is_some() {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .expect("default CryptoProvider installation to succeed");
+        // Can only fail if there is already a crypto provider instaleld, which we then can ignore.
+        let _ = rustls::crypto::ring::default_provider().install_default();
     }
 
     let tls_client_config = config.tls_config.as_ref().map(|c| c.client_config());
@@ -61,7 +60,8 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
 
     let addr_str = format!("0.0.0.0:{}", config.listen_port);
     info!("listening on {}", addr_str);
-    let addr = SocketAddr::from_str(&addr_str).expect("valid socket address");
+    let addr = SocketAddr::from_str(&addr_str)
+        .map_err(|err| Error::Config(format!("Invalid SocketAddr: {err:?}").into()))?;
 
     if let Some(config) = &config.tls_config {
         let tls_config = config.server_config(&addr_str).await;
