@@ -7,28 +7,47 @@ pub struct Migrations;
 
 impl Migrations {
     pub fn build<T: RustEmbed>() -> Vec<Migration> {
-        let mut files = T::iter()
-            .map(|name| {
-                let (id, _) = name
-                    .split_once('_')
-                    .expect("Migration file names must start with `<integer>_<migration_name>");
-                let id = id.parse::<u32>().expect(
-                    "Migration scripts must start with an increasing integer with \
-                    no gaps and starting at index 1",
-                );
-                (id, name)
-            })
-            .collect::<Vec<(u32, Cow<'static, str>)>>();
+        match Self::try_build::<T>() {
+            Ok(m) => m,
+            Err(err) => {
+                panic!("{err}");
+            }
+        }
+    }
 
+    pub fn try_build<T: RustEmbed>() -> Result<Vec<Migration>, Cow<'static, str>> {
+        let mut files = Vec::with_capacity(2);
+        for name in T::iter() {
+            match name.split_once('_') {
+                None => {
+                    return Err(
+                        "Migration file name format is: `<integer>_<migration_name>.sql`".into(),
+                    );
+                }
+                Some((id, _)) => match id.parse::<u32>() {
+                    Ok(id) => {
+                        files.push((id, name));
+                    }
+                    Err(_) => {
+                        return Err(
+                            "Migration scripts must start with an increasing integer with no \
+                                gaps and starting at index 1; \
+                                format: `<integer>_<migration_name>.sql`"
+                                .into(),
+                        );
+                    }
+                },
+            }
+        }
         if files.is_empty() {
-            return Vec::default();
+            return Ok(Vec::default());
         }
 
         files.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap());
         if let Some((first_id, _)) = files.first()
             && *first_id != 1
         {
-            panic!("Migrations must start at index 1");
+            return Err("Migrations must start at index 1".into());
         }
 
         let mut res: Vec<Migration> = Vec::with_capacity(files.len());
@@ -38,9 +57,13 @@ impl Migrations {
             let hash = hex::encode(data.metadata.sha256_hash());
             let content = data.data.to_vec();
 
-            let stripped = file_name
-                .strip_suffix(".sql")
-                .expect("Migration scripts must always end with .sql");
+            let stripped = match file_name.strip_suffix(".sql") {
+                Some(s) => s,
+                None => {
+                    return Err("Migration scripts must always end with .sql".into());
+                }
+            };
+            // was valid above already
             let (_, name) = stripped.split_once('_').unwrap();
 
             let migration = Migration {
@@ -52,17 +75,24 @@ impl Migrations {
 
             let len = res.len();
             if len > 0 && migration.id != (res[len - 1].id + 1) {
-                panic!(
-                    "Migration index has a gap: {} does not follow {}",
-                    migration.id,
-                    res[len - 1].id
-                );
+                let last_id = res[len - 1].id;
+                if migration.id == last_id {
+                    return Err(
+                        format!("Migration index has a duplicate id {}", migration.id).into(),
+                    );
+                } else {
+                    return Err(format!(
+                        "Migration index has a gap: {} does not follow {}",
+                        migration.id, last_id,
+                    )
+                    .into());
+                }
             }
 
             res.push(migration);
         }
 
-        res
+        Ok(res)
     }
 }
 
