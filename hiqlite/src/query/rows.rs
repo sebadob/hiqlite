@@ -711,3 +711,94 @@ impl TryFrom<ValueOwned> for uuid::Uuid {
         }
     }
 }
+
+#[cfg(all(test, feature = "macros"))]
+mod try_from_row_tests {
+    use super::*;
+    use crate::macros::TryFromRow;
+
+    #[derive(Debug, PartialEq, TryFromRow)]
+    struct Inner {
+        a: String,
+    }
+
+    #[derive(Debug, PartialEq, TryFromRow)]
+    struct Outer {
+        name: String,
+        #[column(from_i32)]
+        count: i32,
+        #[column(parse)]
+        big: u64,
+        #[column(skip)]
+        skipped: i64,
+        #[column(flatten)]
+        inner: Inner,
+    }
+
+    fn make_row(cols: &[(&str, ValueOwned)]) -> Row<'static> {
+        let columns = cols
+            .iter()
+            .map(|(name, value)| ColumnOwned {
+                name: (*name).to_string(),
+                value: value.clone(),
+            })
+            .collect();
+        Row::Owned(RowOwned { columns })
+    }
+
+    // Pin the target type so `TryFrom` resolves unambiguously (both `Inner` and `Outer`
+    // implement it).
+    fn try_outer(row: &mut Row<'_>) -> Result<Outer, Error> {
+        std::convert::TryFrom::try_from(row)
+    }
+
+    #[test]
+    fn try_from_row_maps_all_attribute_kinds() {
+        let mut row = make_row(&[
+            ("name", ValueOwned::Text("hi".into())),
+            ("count", ValueOwned::Integer(42)),
+            ("big", ValueOwned::Text(u64::MAX.to_string().into())),
+            ("skipped", ValueOwned::Integer(999)),
+            ("a", ValueOwned::Text("inner".into())),
+        ]);
+        let outer = try_outer(&mut row).unwrap();
+        assert_eq!(outer.name, "hi");
+        assert_eq!(outer.count, 42);
+        assert_eq!(outer.big, u64::MAX);
+        // `skip` is never read from the row, so it must stay at its default.
+        assert_eq!(outer.skipped, 0);
+        assert_eq!(outer.inner.a, "inner");
+    }
+
+    #[test]
+    fn try_from_row_i32_overflow_is_an_error_not_a_panic() {
+        let mut row = make_row(&[
+            ("name", ValueOwned::Text("hi".into())),
+            ("count", ValueOwned::Integer(i64::MAX)),
+            ("big", ValueOwned::Text("1".into())),
+            ("skipped", ValueOwned::Null),
+            ("a", ValueOwned::Text("inner".into())),
+        ]);
+        let err = try_outer(&mut row).unwrap_err();
+        assert!(
+            matches!(err, Error::Sqlite(_)),
+            "expected Sqlite error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn try_from_row_parse_failure_is_an_error() {
+        let mut row = make_row(&[
+            ("name", ValueOwned::Text("hi".into())),
+            ("count", ValueOwned::Integer(1)),
+            ("big", ValueOwned::Text("not-a-number".into())),
+            ("skipped", ValueOwned::Null),
+            ("a", ValueOwned::Text("inner".into())),
+        ]);
+        let err = try_outer(&mut row).unwrap_err();
+        assert!(
+            matches!(err, Error::Sqlite(_)),
+            "expected Sqlite error: {err:?}"
+        );
+    }
+}

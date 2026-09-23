@@ -103,6 +103,11 @@ pub struct NodeConfig {
     /// default: `IntervalMillis(200)`
     pub wal_sync: hiqlite_wal::LogSync,
     /// Maximum WAL size in bytes.
+    ///
+    /// Do not set too low, because entries that do not fit inside a single WAL file will create a
+    /// panic by default. WAL files do not grow. They will have this fixed size all the time. Set
+    /// to a reasonable size that matches queries. Optimal is if you have 2-4 WAL files around all
+    /// the time (after log roll-over).
     pub wal_size: u32,
     /// Set to `true` to store the cache WAL + Snapshots on disk instead of keeping them in memory.
     /// The Caches themselves will always be in-memory only. The default is `true`, which will
@@ -197,7 +202,7 @@ impl Default for NodeConfig {
             #[cfg(feature = "backup")]
             backup_config: backup::BackupConfig::default(),
             #[cfg(feature = "backup")]
-            backup_keep_for_local: Duration::from_secs(30 * 24 * 3600),
+            backup_keep_for_local: Duration::from_secs(3 * 24 * 3600),
             #[cfg(feature = "s3")]
             s3_config: None,
             #[cfg(feature = "dashboard")]
@@ -281,7 +286,7 @@ impl NodeConfig {
             .ok()
             .as_deref()
             .map(|v| parse_duration(v).expect("Cannot parse HQL_BACKUP_KEEP_FOR_LOCAL as Duration"))
-            .unwrap_or(Duration::from_secs(30 * 24 * 3600));
+            .unwrap_or(Duration::from_secs(3 * 24 * 3600));
 
         #[cfg(feature = "dashboard")]
         let insecure_cookie = env::var("HQL_INSECURE_COOKIE")

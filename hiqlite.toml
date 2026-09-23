@@ -1,3 +1,8 @@
+#################################################
+# This config is for development purposes only. #
+# Do NOT copy and paste values into production! #
+#################################################
+
 [hiqlite]
 # Can be set to 'k8s' to try to split off the node id from the hostname
 # when Hiqlite is running as a StatefulSet inside Kubernetes.

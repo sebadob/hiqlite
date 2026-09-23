@@ -4,12 +4,39 @@ use proc_macro2::{TokenStream, TokenTree};
 use quote::{ToTokens, quote};
 use syn::spanned::Spanned;
 use syn::{
-    Attribute, Data, DeriveInput, GenericArgument, LitStr, Meta, MetaList, PathArguments, Type,
+    Attribute, Data, DeriveInput, GenericArgument, Generics, Ident, LitStr, Meta, MetaList,
+    PathArguments, Type,
 };
 
-pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
+/// The validated derive input shared by the `FromRow` and `TryFromRow` derives.
+pub(crate) struct RowPlan {
+    pub name: Ident,
+    /// Owned copy of the input generics; each derive re-splits it for codegen.
+    pub generics: Generics,
+    /// Whether any field uses `parse`, so the generated code needs `FromStr` in scope.
+    pub with_from_str: bool,
+    pub fields: Vec<FieldSpec>,
+}
+
+/// A single resolved struct field.
+pub(crate) struct FieldSpec {
+    pub ident: Ident,
+    /// The field's declared type, for plain (attribute-less) column reads.
+    pub ty: Type,
+    pub attr: ColumnAttr,
+    /// Resolved column name: the `rename` if present, else the field name.
+    pub col_name: String,
+    pub rename: Option<LitStr>,
+    pub is_opt: bool,
+}
+
+/// Validates the derive input and resolves every field to its column attribute.
+///
+/// Shared by `FromRow` (panicking) and `TryFromRow` (non-panicking), so both enforce the same
+/// rules with the same error messages.
+pub(crate) fn plan_fields(input: DeriveInput) -> syn::Result<RowPlan> {
     let name = input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let generics = input.generics.clone();
 
     let Data::Struct(data) = input.data else {
         return Err(syn::Error::new(
@@ -21,7 +48,7 @@ pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
     let mut with_from_str = false;
     // (column name, field name) of every field that reads a column, for duplicate detection.
     let mut columns: Vec<(String, String)> = Vec::new();
-    let mut body = Vec::new();
+    let mut fields = Vec::new();
 
     for field in data.fields.iter() {
         let Some(id) = &field.ident else {
@@ -31,7 +58,7 @@ pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
             ));
         };
 
-        let ch = ColumnHandler::from(field.attrs.as_slice())?;
+        let ch = ColumnHandler::try_from(field.attrs.as_slice())?;
         let is_opt = is_field_ty_opt(&field.ty).unwrap_or(false);
         let col_name = ch
             .rename
@@ -53,23 +80,66 @@ pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
             columns.push((col_name.clone(), id.to_string()));
         }
 
-        let name = if let Some(rename) = &ch.rename {
+        match ch.attr {
+            ColumnAttr::FromI32 => check_unsigned_target(&field.ty, is_opt, "i32")?,
+            ColumnAttr::FromI64 => check_unsigned_target(&field.ty, is_opt, "i64")?,
+            _ => {}
+        }
+
+        if matches!(ch.attr, ColumnAttr::Parse) {
+            with_from_str = true;
+        }
+
+        fields.push(FieldSpec {
+            ident: id.clone(),
+            ty: field.ty.clone(),
+            attr: ch.attr,
+            col_name,
+            rename: ch.rename,
+            is_opt,
+        });
+    }
+
+    Ok(RowPlan {
+        name,
+        generics,
+        with_from_str,
+        fields,
+    })
+}
+
+pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
+    let plan = plan_fields(input)?;
+    let name = &plan.name;
+    let (impl_generics, ty_generics, where_clause) = plan.generics.split_for_impl();
+
+    let mut body = Vec::new();
+
+    for field in &plan.fields {
+        let id = &field.ident;
+        let col_name = &field.col_name;
+        let name = if let Some(rename) = &field.rename {
             rename.to_token_stream()
         } else {
             quote! {#col_name}
         };
 
-        let ts = match ch.attr {
+        let ts = match field.attr {
+            ColumnAttr::None => {
+                let ty = &field.ty;
+                quote! {
+                    #id: row.get::<#ty>(#name),
+                }
+            }
             ColumnAttr::Flatten => quote! {
                 #id: ::std::convert::TryFrom::try_from(&mut *row).expect("failed to flatten column"),
             },
             ColumnAttr::FromI32 => {
-                check_unsigned_target(&field.ty, is_opt, "i32")?;
                 let msg = format!("column '{col_name}' does not fit into i32");
                 let convert = quote! {
                     <i32 as ::std::convert::TryFrom<i64>>::try_from(i).expect(#msg).into()
                 };
-                if is_opt {
+                if field.is_opt {
                     quote! {
                         #id: row.get::<Option<i64>>(#name)
                             .map(|i| #convert),
@@ -84,8 +154,7 @@ pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
                 }
             }
             ColumnAttr::FromI64 => {
-                check_unsigned_target(&field.ty, is_opt, "i64")?;
-                if is_opt {
+                if field.is_opt {
                     quote! {
                         #id: row.get::<Option<i64>>(#name).map(|i| i.into()),
                     }
@@ -96,21 +165,20 @@ pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
                 }
             }
             ColumnAttr::Parse => {
-                with_from_str = true;
                 let msg = format!("failed to parse column '{col_name}'");
-                if is_opt {
+                if field.is_opt {
                     quote! {
                         #id: row.get::<Option<String>>(#name)
-                            .map(|s| s.parse().unwrap_or_else(|_| panic!(#msg))),
+                            .map(|s| s.parse().expect(#msg)),
                     }
                 } else {
                     quote! {
-                        #id: row.get::<String>(#name).parse().unwrap_or_else(|_| panic!(#msg)),
+                        #id: row.get::<String>(#name).parse().expect(#msg),
                     }
                 }
             }
             ColumnAttr::FromString => {
-                if is_opt {
+                if field.is_opt {
                     quote! {
                         #id: row.get::<Option<String>>(#name).map(|s| s.into()),
                     }
@@ -123,77 +191,39 @@ pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
             ColumnAttr::Skip => quote! {
                 #id: ::std::default::Default::default(),
             },
-            ColumnAttr::None => quote! {
-                #id: row.get(#name),
-            },
         };
 
         body.push(ts);
     }
 
-    let from_str_import = if with_from_str {
-        quote! {use ::std::str::FromStr;}
+    let from_str_import = if plan.with_from_str {
+        Some(quote! {
+            use ::std::str::FromStr;
+        })
     } else {
-        quote! {}
+        None
     };
 
     Ok(quote! {
-        impl #impl_generics From<&mut ::hiqlite::Row<'_>> for #name #ty_generics #where_clause {
+        impl #impl_generics ::std::convert::From<&mut ::hiqlite::Row<'_>> for #name #ty_generics #where_clause {
             #[inline]
             fn from(row: &mut ::hiqlite::Row<'_>) -> Self {
                 #from_str_import
-                Self {
-                    #(#body)*
-                }
+                Self { #(#body)* }
             }
         }
     })
 }
 
-fn check_unsigned_target(ty: &Type, is_opt: bool, kind: &str) -> syn::Result<()> {
-    let Some(target) = conversion_target_name(ty, is_opt) else {
-        return Ok(());
-    };
-    if matches!(target.as_str(), "u8" | "u16" | "u32" | "u64" | "usize") {
-        let supported = if kind == "i32" {
-            "i8, i16 and i32"
-        } else {
-            "i64 and i128"
-        };
-        return Err(syn::Error::new(
-            ty.span(),
-            format!(
-                "`from_{kind}` converts via `From<{kind}>`, which std only implements for {supported}; \
-                 for `{target}`, either drop the attribute and enable the `cast_ints` feature, or use `parse`"
-            ),
-        ));
-    }
-    Ok(())
-}
-
-/// Returns the name of the type a column value is converted into, with an `Option` wrapper
-/// stripped (e.g. `u8` for both `u8` and `Option<u8>`).
-fn conversion_target_name(ty: &Type, is_opt: bool) -> Option<String> {
-    let ty = if is_opt { option_inner(ty)? } else { ty };
-    let Type::Path(p) = ty else {
-        return None;
-    };
-    p.path.segments.last().map(|seg| seg.ident.to_string())
-}
-
-/// Returns the type argument of an `Option<T>` field type.
-fn option_inner(ty: &Type) -> Option<&Type> {
-    let Type::Path(p) = ty else {
-        return None;
-    };
-    let last = p.path.segments.last()?;
-    let PathArguments::AngleBracketed(args) = &last.arguments else {
-        return None;
-    };
-    args.args.iter().find_map(|arg| match arg {
-        GenericArgument::Type(t) => Some(t),
-        _ => None,
-    })
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum ColumnAttr {
+    None,
+    Skip,
+    Flatten,
+    Parse,
+    FromString,
+    FromI64,
+    FromI32,
 }
 
 struct ColumnHandler {
@@ -201,194 +231,242 @@ struct ColumnHandler {
     rename: Option<LitStr>,
 }
 
-impl ColumnHandler {
-    fn from(attrs: &[Attribute]) -> syn::Result<Self> {
-        let mut handler = Self {
-            attr: ColumnAttr::None,
-            rename: None,
-        };
-        for att in attrs {
-            if !att.path().is_ident("column") {
+impl TryFrom<&[Attribute]> for ColumnHandler {
+    type Error = syn::Error;
+
+    fn try_from(attrs: &[Attribute]) -> syn::Result<Self> {
+        let mut attr = ColumnAttr::None;
+        let mut rename: Option<LitStr> = None;
+        let mut column_span = None;
+
+        for a in attrs.iter() {
+            if !a.path().is_ident("column") {
                 continue;
             }
-            if handler.seen() {
+
+            if column_span.is_some() {
                 return Err(syn::Error::new(
-                    att.span(),
-                    "only one `#[column]` attribute per field is allowed; combine all options in a \
-                     single attribute",
+                    a.span(),
+                    "only one `#[column]` attribute per field is allowed; combine all options \
+                     in a single attribute",
                 ));
             }
-            let Meta::List(MetaList { tokens, .. }) = &att.meta else {
-                return Err(syn::Error::new(att.span(), "expected `#[column(...)]`"));
-            };
-            (handler.attr, handler.rename) = parse_column_list(tokens)?;
-        }
-        Ok(handler)
-    }
+            column_span = Some(a.span());
 
-    fn seen(&self) -> bool {
-        !matches!(self.attr, ColumnAttr::None) || self.rename.is_some()
+            let args = parse_column_list(a)?;
+            attr = args.keyword.unwrap_or(ColumnAttr::None);
+            rename = args.rename;
+        }
+
+        if let Some(span) = column_span
+            && attr == ColumnAttr::None
+            && rename.is_none()
+        {
+            return Err(syn::Error::new(
+                span,
+                "expected at least one column attribute, e.g. `rename = \"...\"` or a \
+                 conversion keyword",
+            ));
+        }
+
+        if matches!(attr, ColumnAttr::Skip | ColumnAttr::Flatten)
+            && let Some(rename) = rename.as_ref()
+        {
+            return Err(syn::Error::new(
+                rename.span(),
+                "`skip` and `flatten` cannot be combined with `rename`, the column is never read",
+            ));
+        }
+
+        Ok(Self { attr, rename })
     }
 }
 
-/// Parses the token list of a single `#[column(...)]` attribute.
+/// Parses a `#[column(...)]` attribute as a strict comma-separated list.
 ///
-/// Items are comma-separated (a trailing comma is fine), in any order: one conversion keyword
-/// (`skip`, `flatten`, `from_i32`, `from_i64`, `parse`, `from_string`) and/or
-/// `rename = "some_column"`. The stream must be fully consumed.
-fn parse_column_list(tokens: &TokenStream) -> syn::Result<(ColumnAttr, Option<LitStr>)> {
-    let mut stream = tokens.clone().into_iter();
-    let mut attr = ColumnAttr::None;
-    let mut rename: Option<LitStr> = None;
-    let mut items = 0u32;
+/// Supported entries: one conversion keyword (`skip`, `flatten`, `parse`, `from_string`,
+/// `from_i64`, `from_i32`) and/or `rename = "..."` in either order. A trailing comma is
+/// allowed; the whole stream must be consumed, so anything else is rejected.
+struct ColumnArgs {
+    keyword: Option<ColumnAttr>,
+    rename: Option<LitStr>,
+}
 
-    loop {
-        // One item: a bare keyword or `rename = "..."`.
-        let tree = match stream.next() {
-            Some(tree) => tree,
-            None => break,
-        };
-        let name = match &tree {
-            TokenTree::Ident(ident) => ident.to_string(),
-            other => {
-                return Err(syn::Error::new(
-                    tree.span(),
-                    format!("expected a column keyword or `rename`, found `{other}`"),
-                ));
-            }
-        };
-
-        if name == "rename" {
-            if rename.is_some() {
-                return Err(syn::Error::new(
-                    tree.span(),
-                    "`rename` may only be used once per field",
-                ));
-            }
-            if matches!(attr, ColumnAttr::Skip | ColumnAttr::Flatten) {
-                return Err(syn::Error::new(
-                    tree.span(),
-                    "`rename` cannot be combined with `skip` or `flatten`",
-                ));
-            }
-            // Expect `= "string literal"`.
-            let Some(eq) = stream.next() else {
-                return Err(syn::Error::new(tree.span(), "expected `=` after `rename`"));
-            };
-            if !matches!(&eq, TokenTree::Punct(p) if p.as_char() == '=') {
-                return Err(syn::Error::new(eq.span(), "expected `=` after `rename`"));
-            }
-            let Some(lit) = stream.next() else {
-                return Err(syn::Error::new(
-                    tree.span(),
-                    "expected a string literal after `rename =`",
-                ));
-            };
-            let TokenTree::Literal(lit) = &lit else {
-                return Err(syn::Error::new(
-                    lit.span(),
-                    "expected a string literal after `rename =`",
-                ));
-            };
-            match syn::parse_str::<syn::Lit>(&lit.to_string()) {
-                Ok(syn::Lit::Str(str_lit)) => rename = Some(str_lit),
-                Ok(_) => {
-                    return Err(syn::Error::new(
-                        lit.span(),
-                        "`rename` expects a string literal, e.g. `rename = \"my_column\"`",
-                    ));
-                }
-                Err(e) => return Err(syn::Error::new(lit.span(), e.to_string())),
-            }
-        } else {
-            let new_attr = match name.as_str() {
-                "skip" => ColumnAttr::Skip,
-                "flatten" => ColumnAttr::Flatten,
-                "from_i32" => ColumnAttr::FromI32,
-                "from_i64" => ColumnAttr::FromI64,
-                "parse" => ColumnAttr::Parse,
-                "from_string" => ColumnAttr::FromString,
-                other => {
-                    return Err(syn::Error::new(
-                        tree.span(),
-                        format!(
-                            "unknown column attribute '{other}', expected one of: flatten, from_i32, \
-                             from_i64, from_string, parse, rename = \"my_column\", skip"
-                        ),
-                    ));
-                }
-            };
-            if !matches!(attr, ColumnAttr::None) {
-                return Err(syn::Error::new(
-                    tree.span(),
-                    "only one conversion attribute per field is allowed; combine `rename` with it \
-                     instead",
-                ));
-            }
-            if matches!(new_attr, ColumnAttr::Skip | ColumnAttr::Flatten) && rename.is_some() {
-                return Err(syn::Error::new(
-                    tree.span(),
-                    "`skip` and `flatten` cannot be combined with `rename`",
-                ));
-            }
-            attr = new_attr;
-        }
-        items += 1;
-
-        // Separator: end of list or `,`.
-        match stream.next() {
-            None => break,
-            Some(TokenTree::Punct(p)) if p.as_char() == ',' => {}
-            Some(t) => {
-                return Err(syn::Error::new(
-                    t.span(),
-                    format!("expected `,` after column attribute `{name}`"),
-                ));
-            }
-        }
-    }
-
-    if items == 0 {
+fn parse_column_list(attr: &Attribute) -> syn::Result<ColumnArgs> {
+    let Meta::List(MetaList { path, tokens, .. }) = &attr.meta else {
         return Err(syn::Error::new(
-            tokens.span(),
-            "expected at least one column attribute",
+            attr.span(),
+            "expected `#[column(...)]` with a comma-separated list of attributes",
+        ));
+    };
+
+    if !path.is_ident("column") {
+        return Err(syn::Error::new(
+            path.span(),
+            "unexpected attribute, expected `column`",
         ));
     }
 
-    Ok((attr, rename))
-}
+    let mut keyword: Option<ColumnAttr> = None;
+    let mut rename: Option<LitStr> = None;
+    let mut tokens: Vec<TokenTree> = tokens.clone().into_iter().collect();
 
-#[derive(PartialEq)]
-enum ColumnAttr {
-    None,
-    Skip,
-    Flatten,
-    FromI32,
-    FromI64,
-    Parse,
-    FromString,
-}
-
-fn is_field_ty_opt(ty: &Type) -> Option<bool> {
-    let Type::Path(p) = ty else {
-        return None;
-    };
-    // Last segment must be `Option`.
-    if p.path.segments.last()?.ident != "Option" {
-        return None;
-    }
-    match p.path.segments.len() {
-        // Bare `Option<T>`.
-        1 => Some(true),
-        // `std::option::Option<T>` / `core::option::Option<T>`.
-        3 if matches!(
-            p.path.segments[0].ident.to_string().as_str(),
-            "std" | "core"
-        ) && p.path.segments[1].ident == "option" =>
-        {
-            Some(true)
+    while let Some(first) = tokens.first().cloned() {
+        match first {
+            TokenTree::Punct(p) if p.as_char() == ',' => {
+                // Comma separator or trailing comma.
+                tokens.remove(0);
+            }
+            TokenTree::Ident(ident) if ident == "rename" && rename.is_none() => {
+                tokens.remove(0);
+                let Some(eq) = tokens.first().cloned() else {
+                    return Err(syn::Error::new(ident.span(), "expected `=` after `rename`"));
+                };
+                if !matches!(&eq, TokenTree::Punct(p) if p.as_char() == '=') {
+                    return Err(syn::Error::new(eq.span(), "expected `=` after `rename`"));
+                }
+                tokens.remove(0);
+                let Some(lit) = tokens.first().cloned() else {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "expected a string literal after `rename =`",
+                    ));
+                };
+                match lit {
+                    TokenTree::Literal(l) => match syn::parse2::<LitStr>(l.to_token_stream()) {
+                        Ok(s) => rename = Some(s),
+                        Err(_) => {
+                            return Err(syn::Error::new(
+                                l.span(),
+                                "`rename` expects a string literal, e.g. \
+                                 `rename = \"my_column\"`",
+                            ));
+                        }
+                    },
+                    other => {
+                        return Err(syn::Error::new(
+                            other.span(),
+                            "`rename` expects a string literal, e.g. \
+                             `rename = \"my_column\"`",
+                        ));
+                    }
+                }
+                tokens.remove(0);
+            }
+            TokenTree::Ident(ident) if ident == "rename" => {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    "`rename` may only be used once per field",
+                ));
+            }
+            TokenTree::Ident(ident) if keyword.is_none() => {
+                tokens.remove(0);
+                let kw = ident.to_string();
+                keyword = Some(match kw.as_str() {
+                    "skip" => ColumnAttr::Skip,
+                    "flatten" => ColumnAttr::Flatten,
+                    "parse" => ColumnAttr::Parse,
+                    "from_string" => ColumnAttr::FromString,
+                    "from_i64" => ColumnAttr::FromI64,
+                    "from_i32" => ColumnAttr::FromI32,
+                    other => {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            format!("unknown column attribute '{other}'"),
+                        ));
+                    }
+                });
+            }
+            other => {
+                let found = other.to_string();
+                let is_keyword = matches!(&other, TokenTree::Ident(i) if [
+                    "skip", "flatten", "parse", "from_string", "from_i64", "from_i32"
+                ]
+                .contains(&i.to_string().as_str()));
+                let message = if keyword.is_some() && is_keyword {
+                    "only one conversion attribute per field is allowed; combine `rename` \
+                     with it instead"
+                        .to_string()
+                } else if keyword.is_some() || rename.is_some() {
+                    format!("expected `,` after column attribute, found `{found}`")
+                } else {
+                    format!(
+                        "expected a column attribute keyword or `rename = \"...\"`, \
+                         found `{found}`"
+                    )
+                };
+                return Err(syn::Error::new(other.span(), message));
+            }
         }
-        _ => None,
+    }
+
+    Ok(ColumnArgs { keyword, rename })
+}
+
+fn check_unsigned_target(ty: &Type, is_opt: bool, source: &str) -> syn::Result<()> {
+    let ty = if is_opt { option_inner(ty)? } else { ty };
+
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+    {
+        let name = segment.ident.to_string();
+        if ["u8", "u16", "u32", "u64", "usize"].contains(&name.as_str()) {
+            return Err(syn::Error::new(
+                ty.span(),
+                format!(
+                    "`{source}` cannot convert to the unsigned target `{name}` without a \
+                     possible lossy cast. Enable the `cast_ints` feature and drop the \
+                     attribute, or use `parse` instead."
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn option_inner(ty: &Type) -> syn::Result<&Type> {
+    let Type::Path(type_path) = ty else {
+        return Err(syn::Error::new(
+            ty.span(),
+            "expected `Option<T>` for an optional field",
+        ));
+    };
+
+    if type_path.path.segments.len() != 1 || type_path.path.segments[0].ident != "Option" {
+        return Err(syn::Error::new(
+            ty.span(),
+            "expected `Option<T>` for an optional field",
+        ));
+    }
+
+    let PathArguments::AngleBracketed(args) = &type_path.path.segments[0].arguments else {
+        return Err(syn::Error::new(
+            ty.span(),
+            "expected `Option<T>` for an optional field",
+        ));
+    };
+
+    match args.args.first() {
+        Some(GenericArgument::Type(inner)) => Ok(inner),
+        _ => Err(syn::Error::new(
+            ty.span(),
+            "expected `Option<T>` for an optional field",
+        )),
+    }
+}
+
+fn is_field_ty_opt(ty: &Type) -> syn::Result<bool> {
+    match ty {
+        Type::Path(type_path) => {
+            let path = &type_path.path;
+            if path.segments.len() == 1 && path.segments[0].ident == "Option" {
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+        _ => Ok(false),
     }
 }
 
@@ -397,14 +475,31 @@ mod tests {
     use super::*;
     use syn::parse_str;
 
-    fn generate(src: &str) -> String {
-        let input: DeriveInput = parse_str(src).unwrap();
+    fn generate(input: &str) -> String {
+        let input = parse_str::<DeriveInput>(input).unwrap();
         impl_from_row(input).unwrap().to_string()
     }
 
-    fn generate_err(src: &str) -> String {
-        let input: DeriveInput = parse_str(src).unwrap();
-        impl_from_row(input).unwrap_err().to_string()
+    fn generate_err(input: &str) -> String {
+        let input = parse_str::<DeriveInput>(input).unwrap();
+        match impl_from_row(input) {
+            Ok(ts) => panic!("expected error, got: {ts}"),
+            Err(err) => err.to_compile_error().to_string(),
+        }
+    }
+
+    #[test]
+    fn basic_mapping_uses_row_get_by_column_name() {
+        let out = generate(
+            r#"struct Test { #[column(rename = "name_db")] name: String, skip_me: bool }"#,
+        );
+        // `quote!` renders with spaces around `::`, so shape checks run on the compact form.
+        let compact = out.replace(' ', "");
+        assert!(
+            compact.contains("From<&mut::hiqlite::Row"),
+            "missing From impl: {out}"
+        );
+        assert!(out.contains("name_db"), "rename not honored: {out}");
     }
 
     #[test]
@@ -412,11 +507,10 @@ mod tests {
         let out = generate(
             r#"struct Test { #[column(from_i32)] a: i32, #[column(from_i32)] b: Option<i32> }"#,
         );
-        // token streams render with spaces around `::`
         let compact = out.replace(' ', "");
         assert!(
             compact.contains("TryFrom<i64>>::try_from"),
-            "missing try_from: {out}"
+            "missing try_from conversion: {out}"
         );
         assert!(
             !compact.contains("cmp::min"),
@@ -430,19 +524,6 @@ mod tests {
             out.contains("does not fit into i32"),
             "no panic message: {out}"
         );
-    }
-
-    #[test]
-    fn basic_mapping_uses_row_get_by_column_name() {
-        let out = generate(
-            r#"struct Test { #[column(rename = "name_db")] name: String, skip_me: bool }"#,
-        );
-        let compact = out.replace(' ', "");
-        assert!(
-            compact.contains("From<&mut::hiqlite::Row"),
-            "no From impl: {out}"
-        );
-        assert!(out.contains("name_db"), "rename not honored: {out}");
     }
 
     #[test]
@@ -484,6 +565,19 @@ mod tests {
     }
 
     #[test]
+    fn multiple_column_attrs_are_rejected() {
+        let err =
+            generate_err(r#"struct Test { #[column(from_i32)] #[column(rename = "a")] a: i16 }"#);
+        assert!(err.contains("only one `#[column]`"), "got: {err}");
+    }
+
+    #[test]
+    fn skip_cannot_be_combined_with_rename() {
+        let err = generate_err(r#"struct Test { #[column(skip, rename = "x")] a: i64 }"#);
+        assert!(err.contains("cannot be combined"), "got: {err}");
+    }
+
+    #[test]
     fn duplicate_columns_are_rejected() {
         let err = generate_err(
             r#"struct Test { #[column(rename = "x")] a: i64, b: i64, #[column(rename = "x")] c: String }"#,
@@ -492,21 +586,14 @@ mod tests {
     }
 
     #[test]
-    fn multiple_column_attrs_are_rejected() {
-        let err =
-            generate_err(r#"struct Test { #[column(from_i32)] #[column(rename = "a")] a: i16 }"#);
-        assert!(err.contains("only one `#[column]`"), "got: {err}");
-    }
-
-    #[test]
     fn tuple_struct_is_rejected() {
-        let err = generate_err("struct Test(i64);");
+        let err = generate_err(r#"struct Test(i64);"#);
         assert!(err.contains("named fields"), "got: {err}");
     }
 
     #[test]
     fn enum_input_is_rejected() {
-        let err = generate_err("enum Test { A }");
+        let err = generate_err(r#"enum Test { A }"#);
         assert!(err.contains("only be derived for a `struct`"), "got: {err}");
     }
 
@@ -516,12 +603,6 @@ mod tests {
         assert!(err.contains("cast_ints"), "got: {err}");
         let err = generate_err(r#"struct Test { #[column(from_i64)] b: Option<u64> }"#);
         assert!(err.contains("cast_ints"), "got: {err}");
-    }
-
-    #[test]
-    fn skip_cannot_be_combined_with_rename() {
-        let err = generate_err(r#"struct Test { #[column(skip, rename = "x")] a: i64 }"#);
-        assert!(err.contains("cannot be combined"), "got: {err}");
     }
 
     #[test]

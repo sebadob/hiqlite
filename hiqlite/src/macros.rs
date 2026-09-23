@@ -742,5 +742,5 @@ macro_rules! params {
     };
 }
 
-pub use hiqlite_derive::{CacheVariants, FromRow};
+pub use hiqlite_derive::{CacheVariants, FromRow, TryFromRow};
 pub use params;

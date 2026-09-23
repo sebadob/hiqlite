@@ -121,6 +121,49 @@ where
     .await?
 }
 
+#[inline(always)]
+pub(crate) async fn query_try_map<T, S>(
+    state: &Arc<AppState>,
+    sql: S,
+    params: Params,
+) -> Result<Vec<Result<T, Error>>, Error>
+where
+    T: for<'r> TryFrom<&'r mut rows::Row<'r>, Error = crate::Error> + Send + 'static,
+    S: Into<Cow<'static, str>>,
+{
+    let sql: Cow<'static, str> = sql.into();
+    if state.raft_db.log_statements {
+        info!("query_try_map_typed:\n{}\n{:?}", sql, params)
+    }
+
+    let conn = state.raft_db.read_pool.get().await?;
+    task::spawn_blocking(move || {
+        let mut stmt = conn.prepare_cached(sql.as_ref())?;
+
+        #[cfg(debug_assertions)]
+        writer::check_stmt_params_count(&stmt, &params, &sql);
+
+        let mut idx = 1;
+        #[allow(clippy::explicit_counter_loop)]
+        for param in params {
+            stmt.raw_bind_parameter(idx, param.into_sql())?;
+            idx += 1;
+        }
+
+        let mut rows = stmt.raw_query();
+        let mut res = Vec::new();
+        loop {
+            match rows.next() {
+                Ok(Some(row)) => res.push(T::try_from(&mut rows::Row::Borrowed(row))),
+                Ok(None) => break,
+                Err(err) => return Err(Error::Sqlite(err.to_string().into())),
+            }
+        }
+        Ok::<Vec<Result<T, Error>>, Error>(res)
+    })
+    .await?
+}
+
 #[inline]
 pub(crate) async fn query_map_one<T, S>(
     state: &Arc<AppState>,
@@ -144,6 +187,28 @@ where
 }
 
 #[inline]
+pub(crate) async fn query_try_map_one<T, S>(
+    state: &Arc<AppState>,
+    sql: S,
+    params: Params,
+) -> Result<Result<T, Error>, Error>
+where
+    T: for<'r> TryFrom<&'r mut rows::Row<'r>, Error = crate::Error> + Send + 'static,
+    S: Into<Cow<'static, str>>,
+{
+    let mut rows: Vec<Result<T, Error>> = query_try_map(state, sql, params).await?;
+    if rows.is_empty() {
+        Err(Error::QueryReturnedNoRows("no rows returned".into()))
+    } else if rows.len() > 1 {
+        Err(Error::Sqlite(
+            format!("cannot map {} rows into one", rows.len()).into(),
+        ))
+    } else {
+        Ok(rows.swap_remove(0))
+    }
+}
+
+#[inline]
 pub(crate) async fn query_map_optional<T, S>(
     state: &Arc<AppState>,
     sql: S,
@@ -154,6 +219,24 @@ where
     S: Into<Cow<'static, str>>,
 {
     let mut rows: Vec<T> = query_map(state, sql, params).await?;
+    if rows.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(rows.swap_remove(0)))
+    }
+}
+
+#[inline]
+pub(crate) async fn query_try_map_optional<T, S>(
+    state: &Arc<AppState>,
+    sql: S,
+    params: Params,
+) -> Result<Option<Result<T, Error>>, Error>
+where
+    T: for<'r> TryFrom<&'r mut rows::Row<'r>, Error = crate::Error> + Send + 'static,
+    S: Into<Cow<'static, str>>,
+{
+    let mut rows: Vec<Result<T, Error>> = query_try_map(state, sql, params).await?;
     if rows.is_empty() {
         Ok(None)
     } else {

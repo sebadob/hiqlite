@@ -136,6 +136,23 @@ when you are beyond the 10s timeout with a very long-running job. The `Lock` is 
 no sense that it derived `Clone`, because it will release as soon as one of them is dropped, which makes a clone pretty
 useless.
 
+#### `TryFromRow` Macro
+
+The `FromRow` macro `panic`s if there is a type mismatch between the returned data and the Rust `struct` you are trying
+to map the row to. I always favor a `panic` over an error in case of an unrecoverable error, but there were people
+asking for graceful errors in such a case. You can now optionally derive `TryFromRow` and use one of the new
+non-panicking query functions from the client:
+
+- `query_try_map`
+- `query_try_map_one`
+- `query_try_map_optional`
+
+These will behave exactly like the already existing counterparts without the `try`, with the only exception that they
+will return a `Result<T, hiqlite::Error>` for the value in case the mapping fails.
+
+> The other existing macros have been optimized quite a bit as well. They don't provide new functionality but way
+> better debugging capabilities.
+
 #### Rate-Limiting Fixes
 
 It was possible that the rate-limiting bucket inside the client got more permits than intended.

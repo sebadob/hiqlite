@@ -4,6 +4,11 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(doc, feature(doc_cfg))]
 
+// The derive macros (`FromRow`, `TryFromRow`) emit the absolute path `::hiqlite::...`. That
+// resolves for downstream users, but not from inside this crate; aliasing self makes the
+// generated code (and in-crate tests of it) resolve the same way.
+extern crate self as hiqlite;
+
 #[cfg(all(feature = "cast_ints", feature = "cast_ints_unchecked"))]
 compile_error!("features `cast_ints` and `cast_ints_unchecked` are mutually exclusive!");
 
