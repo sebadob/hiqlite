@@ -545,6 +545,7 @@ impl WalFile {
             use std::os::fd::AsRawFd;
 
             let file = self.file.as_ref().expect("file kept while mmap_mut");
+            // SAFETY: fs is valid, offset + nbytes = 0 means "whole file", flags are type-safe enum
             let res = unsafe {
                 libc::sync_file_range(file.as_raw_fd(), 0, 0, libc::SYNC_FILE_RANGE_WRITE)
             };

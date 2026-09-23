@@ -211,6 +211,12 @@ fn run(
                 let mut res = Ok(());
                 {
                     let mut active = wal.active();
+
+                    // There is no need to specifically catch a possibly closed channel and respond
+                    // with an error. If that channel is being closed mid-batch append, it means
+                    // openraft (and all other tasks) when down, and it dropped the whole log store.
+                    // If that ever happens, there is no one listening on the other end of your ack
+                    // and callback, which means no one would ever even get our result.
                     while let Ok(Some((id, bytes))) = rx.recv() {
                         if bytes.len() > data_len_limit {
                             // A single raft entry cannot span WAL files. By default an
@@ -274,10 +280,12 @@ fn run(
                     lock.active().clone_from_no_mmap(wal.active());
                 }
 
-                let res_cb = match &res {
+                let mut res_cb = match &res {
                     Ok(_) => Ok(()),
                     Err(err) => Err(io::Error::other(err.to_string())),
                 };
+                // We want to ack before flush for throughput. If anything goes wrong during flush,
+                // the openraft callback will get notified about it.
                 if let Err(err) = ack.send(res) {
                     // this should usually not happen, but it may during an incorrect shutdown
                     error!("error sending back ack after logs append: {err:?}");
@@ -287,11 +295,22 @@ fn run(
                 // blocking flush can clear that state again. `flush_async` merely starts the
                 // writeback, which is why `Action::Remove` and `Action::Vote` below still flush.
                 is_dirty = true;
-                if sync == LogSync::Immediate {
-                    flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
-                } else if sync == LogSync::ImmediateAsync {
-                    wal.active().flush_async()?;
+                match &sync {
+                    LogSync::Immediate => {
+                        if let Err(err) = flush_blocking(&mut wal, &mut buf, &mut is_dirty) {
+                            res_cb = Err(io::Error::other(err.to_string()));
+                        }
+                    }
+                    LogSync::ImmediateAsync => {
+                        if let Err(err) = wal.active().flush_async() {
+                            res_cb = Err(io::Error::other(err.to_string()));
+                        }
+                    }
+                    LogSync::IntervalMillis(_) => {
+                        // flushes from ticker task
+                    }
                 }
+
                 // openraft takes this callback as "these entries are on disk" and commits on
                 // a quorum of such acks. Only `Immediate` upholds that here: the async levels
                 // deliberately ack first and trade the writeback window for throughput.
