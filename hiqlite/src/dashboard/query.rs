@@ -23,10 +23,13 @@ pub(crate) async fn dashboard_query_dynamic(
 
     // we need to check if we can do a local select query or if it is
     // modifying and needs to go through the raft
-    let (sql_start, _) = sql.split_at(6);
-    let is_select = sql_start.starts_with("select")
-        || sql_start.starts_with("explain")
-        || sql_start.starts_with("pragma");
+    // TODO does not cover things with "with ... select"
+    //  -> is there any SQL parses we can re-use here?
+    let (sql_start, _) = sql.split_at(7);
+    let start_lower = sql_start.to_ascii_lowercase();
+    let is_select = start_lower.starts_with("select")
+        || start_lower.starts_with("explain")
+        || start_lower.starts_with("pragma");
 
     if is_select {
         let conn = state.raft_db.read_pool.get().await?;
