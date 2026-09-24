@@ -18,7 +18,7 @@ use tracing::{debug, error, info, warn};
 /// any issues. This is not a guarantee that a user cannot screw up, but it's a help. This function
 /// will do nothing if we have data that was running on the new version already, so it's very cheap
 /// to consistently call it on startup for the whole `v0.15` release.
-#[tracing::instrument]
+#[tracing::instrument(skip_all)]
 pub async fn check_migrate(config: &NodeConfig) -> Result<(), Error> {
     #[cfg(debug_assertions)]
     if !crate::APP_VERSION.starts_with("0.15.") {

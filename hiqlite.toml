@@ -231,8 +231,8 @@ secret_api = "SuperSecureSecret1337"
 # and-egg problem when you want to cold-start a cluster while
 # relying on `readinessProbe` checks.
 #
-# default: 30
-#health_check_delay = 30
+# default: '30s'
+#health_check_delay = '30s'
 
 # Set a newly joining node to stay a learner during startup reconciliation.
 # This is useful for read-only replicas that should not become voting
