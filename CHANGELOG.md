@@ -88,7 +88,8 @@ State Machine are fully compatible.
   is almost no real throughput penalty compared to `ImmediateAsync`, but you have way better consistency (even though
   more stress on your SSD).
 - The ENV var `HQL_TLS_{variant}_DANGER_TLS_NO_VERIFY` was renamed to `HQL_TLS_{variant}_NO_VERIFY`. Apart from that,
-  there is now a `REFERENCE_CONFIG.toml` in the crates root dir. It was updated and added into the tests.
+  there is now a `REFERENCE_CONFIG.toml` in the crates root dir. It was updated and added into the tests. You will also
+  be able to grab it directly from the crate, es it is embedded at compile time.
 - The MSRV for all crates was bumped to 1.95.
 
 ### Changes
@@ -113,12 +114,12 @@ new one and return the old value, if is existed, in an atomic operation.
 
 #### Cache Collision Safety
 
-Before, it was possible that cache entries into the exact same cache that ended on the exact same TTL (second precision)
-could overwrite each others TTL, leaving one of the entries in place until forever and never being cleaned up. The TTLs
-are still in second precision, but the internal KV handler works with microseconds. If it detects a collision, it
-simply advances the conflicting new TTL in 1-microsecond steps until it finds a free slot. This is not 100%
-collision-free of course, because if you insert 1.000.000 entries into the exact same cache that have the exact same
-calculated absolute TTL consistently, you would get an overflow, but that is
+It was possible that cache entries into the exact same cache that ended on the exact same TTL (second precision) could
+overwrite each others TTL, leaving one of the entries in place until forever and never being cleaned up. The TTLs are
+still in second precision, but the internal KV handler works with microseconds. If it detects a collision, it simply
+advances the conflicting new TTL in 1-microsecond steps until it finds a free slot. This is not 100% collision-free of
+course, because if you insert 1.000.000 entries into the exact same cache that have the exact same calculated absolute
+TTL consistently, you would get an overflow, but that is
 
 1. very unlikely
 2. easy to counter (use multiple caches)
