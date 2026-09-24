@@ -1,11 +1,12 @@
-use crate::Node;
 use crate::app_state::RaftType;
-use crate::helpers::{deserialize, get_raft_metrics};
+use crate::helpers::{deserialize, get_raft_metrics, serialize};
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{AppStateExt, Error, serialize_network, validate_secret};
+use crate::network::{AppStateExt, Error, validate_secret};
+use crate::{APP_VERSION, Node};
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
+use bincode_next::{Decode, Encode};
 use chrono::Utc;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use openraft::{ServerState, StoredMembership};
@@ -37,10 +38,6 @@ use crate::{
 
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
-#[cfg(feature = "listen_notify")]
-use axum::response::sse;
-#[cfg(feature = "listen_notify")]
-use futures_util::stream::Stream;
 
 pub async fn health(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
@@ -60,10 +57,8 @@ pub async fn health(state: AppStateExt) -> Result<(), Error> {
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 async fn check_health(state: &AppStateExt) -> Result<(), Error> {
-    if Utc::now().sub(state.app_start).num_seconds() < state.health_check_delay_secs as i64 {
-        info!(
-            "Early health check within the HQL_HEALTH_CHECK_DELAY_SECS timeframe - returning true"
-        );
+    if Utc::now().sub(state.health_check_delay) < state.app_start {
+        info!("Early health check within the HQL_HEALTH_CHECK_DELAY timeframe - returning true");
         return Ok(());
     }
 
@@ -119,7 +114,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                 return Err(Error::Error("sqlite raft is not running".into()));
             }
 
-            let metrics = get_raft_metrics(&state, &RaftType::Sqlite).await;
+            let metrics = get_raft_metrics(&state, &RaftType::Sqlite).await?;
             ensure_ready_member(
                 state.id,
                 state.learner_only,
@@ -152,7 +147,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                 return Err(Error::Error("cache raft is not running".into()));
             }
 
-            let metrics = get_raft_metrics(&state, &RaftType::Cache).await;
+            let metrics = get_raft_metrics(&state, &RaftType::Cache).await?;
             ensure_ready_member(
                 state.id,
                 state.learner_only,
@@ -260,6 +255,10 @@ pub async fn post_create_backup(state: AppStateExt, headers: HeaderMap) -> Resul
 
 pub async fn ping() {}
 
+pub async fn get_version() -> impl IntoResponse {
+    APP_VERSION
+}
+
 #[cfg(test)]
 mod tests {
     use super::ensure_ready_member;
@@ -335,18 +334,118 @@ mod tests {
 #[cfg(feature = "listen_notify")]
 pub async fn listen(
     state: AppStateExt,
-    headers: HeaderMap,
-) -> Result<sse::Sse<impl Stream<Item = Result<sse::Event, Error>>>, Error> {
-    validate_secret(&state, &headers)?;
+    ws: upgrade::IncomingUpgrade,
+) -> Result<impl IntoResponse, Error> {
+    let (response, socket) = ws.upgrade()?;
+    debug!("New /listen WebSocket connection");
 
-    let (tx, rx) = flume::bounded(1);
-    state
+    tokio::task::spawn(async move {
+        if let Err(err) = handle_listen_socket(state, socket).await {
+            error!("Error in /listen WebSocket connection: {}", err);
+        }
+    });
+
+    Ok(response)
+}
+
+#[cfg(feature = "listen_notify")]
+async fn handle_listen_socket(
+    state: AppStateExt,
+    socket: upgrade::UpgradeFut,
+) -> Result<(), fastwebsockets::WebSocketError> {
+    let mut ws = socket.await?;
+    ws.set_auto_close(true);
+
+    if let Err(err) = HandshakeSecret::server(&mut ws, state.secret_api.as_bytes()).await {
+        error!("Error during /listen WebSocket handshake: {}", err);
+        let _ = ws
+            .write_frame(Frame::close(1000, b"Invalid Handshake"))
+            .await;
+        return Ok(());
+    }
+
+    // Register this connection as a listener with the state machine.
+    let (tx_notify, rx_notify) = flume::unbounded();
+    if let Err(err) = state
         .raft_cache
         .tx_notify
-        .send_async(NotifyRequest::Listen(tx))
-        .await?;
+        .send_async(NotifyRequest::Listen(tx_notify))
+        .await
+    {
+        error!("Failed to register /listen listener: {}", err);
+        return Ok(());
+    }
 
-    Ok(sse::Sse::new(rx.into_stream()).keep_alive(sse::KeepAlive::default()))
+    let (rx, mut write) = ws.split(tokio::io::split);
+    // IMPORTANT: the reader is NOT CANCEL SAFE - it runs in its own task.
+    let mut read = FragmentCollectorRead::new(rx);
+
+    // The client pings for keepalive; echo the obligated sends (Pong / Close) back to the socket.
+    let (tx_obligated, rx_obligated) = flume::bounded::<(OpCode, Vec<u8>)>(1);
+    let handle_read = task::spawn(async move {
+        while let Ok(frame) = read
+            .read_frame(&mut |frame| {
+                let tx_obligated = tx_obligated.clone();
+                async move {
+                    if let Err(err) = tx_obligated
+                        .send_async((frame.opcode, frame.payload.to_vec()))
+                        .await
+                    {
+                        error!("/listen: failed to forward obligated frame: {}", err);
+                    }
+                    Ok::<(), Error>(())
+                }
+            })
+            .await
+        {
+            if frame.opcode == OpCode::Close {
+                break;
+            }
+        }
+    });
+
+    loop {
+        tokio::select! {
+            ev = rx_notify.recv_async() => match ev {
+                Ok((ts, data)) => {
+                    let bytes = match serialize(&(ts, data)) {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            error!("/listen: failed to serialize notification: {}", err);
+                            break;
+                        }
+                    };
+                    if write.write_frame(Frame::binary(Payload::Owned(bytes))).await.is_err() {
+                        debug!("/listen: write failed - closing");
+                        break;
+                    }
+                }
+                Err(_) => break,
+            },
+            ob = rx_obligated.recv_async() => match ob {
+                Ok((opcode, payload)) => {
+                    // The library produced this frame and expects us to send it verbatim: a Pong
+                    // in response to the client's keepalive Ping, or the echo of a Close frame.
+                    let frame = if opcode == OpCode::Pong {
+                        Frame::pong(Payload::Owned(payload))
+                    } else {
+                        Frame::close_raw(Payload::Owned(payload))
+                    };
+                    if write.write_frame(frame).await.is_err() {
+                        debug!("/listen: obligated frame write failed - closing");
+                        break;
+                    }
+                }
+                Err(_) => break,
+            },
+        }
+    }
+
+    handle_read.abort();
+    let _ = write.write_frame(Frame::close(1000, b"Done")).await;
+    debug!("/listen WebSocket connection exiting");
+
+    Ok(())
 }
 
 #[cfg(not(feature = "listen_notify"))]
@@ -398,13 +497,13 @@ pub async fn stream(
     Ok(response)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub(crate) struct ApiStreamRequest {
     pub(crate) request_id: usize,
     pub(crate) payload: ApiStreamRequestPayload,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub(crate) enum ApiStreamRequestPayload {
     #[cfg(feature = "sqlite")]
     Execute(Query),
@@ -415,7 +514,7 @@ pub(crate) enum ApiStreamRequestPayload {
     #[cfg(feature = "sqlite")]
     QueryConsistent(Query),
     #[cfg(feature = "sqlite")]
-    Batch(std::borrow::Cow<'static, str>),
+    Batch(#[bincode(with_serde)] std::borrow::Cow<'static, str>),
     #[cfg(feature = "sqlite")]
     Migrate(Vec<Migration>),
 
@@ -432,17 +531,17 @@ pub(crate) enum ApiStreamRequestPayload {
     KVGet(CacheRequest),
     #[cfg(feature = "dlock")]
     LockAwait(CacheRequest),
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     Notify(CacheRequest),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub(crate) struct ApiStreamResponse {
     pub(crate) request_id: usize,
     pub(crate) result: ApiStreamResponsePayload,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub(crate) enum ApiStreamResponsePayload {
     #[cfg(feature = "sqlite")]
     Execute(Result<usize, Error>),
@@ -468,13 +567,20 @@ pub(crate) enum ApiStreamResponsePayload {
     #[cfg(feature = "dlock")]
     Lock(Result<LockState, Error>),
 
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     Notify(Result<(), Error>),
 }
 
 #[derive(Debug)]
 pub(crate) enum WsWriteMsg {
     Payload(ApiStreamResponse),
+    /// A frame the WebSocket library generated and obligates us to send back to the peer:
+    /// a Pong in response to a Ping, or the echo of a Close frame. `payload` is the raw
+    /// payload of the corresponding inbound frame, `opcode` tells us which one it was.
+    ObligatedSend {
+        opcode: OpCode,
+        payload: Vec<u8>,
+    },
     Break,
 }
 
@@ -496,6 +602,7 @@ async fn handle_socket_concurrent(
     };
 
     let (tx_write, rx_write) = flume::bounded::<WsWriteMsg>(1);
+
     // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
     let (rx, mut write) = ws.split(tokio::io::split);
     // IMPORTANT: the reader is NOT CANCEL SAFE in v0.8!
@@ -505,10 +612,32 @@ async fn handle_socket_concurrent(
         while let Ok(req) = rx_write.recv_async().await {
             match req {
                 WsWriteMsg::Payload(resp) => {
-                    let bytes = serialize_network(&resp);
+                    let bytes = match serialize(&resp) {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            error!(
+                                "Error serializing response payload - closing connection: {}",
+                                err
+                            );
+                            break;
+                        }
+                    };
                     let frame = Frame::binary(Payload::Borrowed(&bytes));
                     if let Err(err) = write.write_frame(frame).await {
                         error!("Error during WebSocket write: {}", err);
+                        break;
+                    }
+                }
+                WsWriteMsg::ObligatedSend { opcode, payload } => {
+                    // The library generated this frame and expects us to send it verbatim.
+                    let frame = if opcode == OpCode::Pong {
+                        Frame::pong(Payload::Owned(payload))
+                    } else {
+                        // The only other obligated send the library produces is the Close echo.
+                        Frame::close_raw(Payload::Owned(payload))
+                    };
+                    if let Err(err) = write.write_frame(frame).await {
+                        error!("Error writing obligated WebSocket frame: {}", err);
                         break;
                     }
                 }
@@ -529,14 +658,25 @@ async fn handle_socket_concurrent(
     });
 
     while let Ok(frame) = read
-        .read_frame(&mut |frame| async move {
-            // TODO obligated sends should be auto ping / pong / close ? -> verify!
-            debug!(
-                "Received obligated send in stream client: OpCode: {:?}: {:?}",
-                frame.opcode.clone(),
-                frame.payload
-            );
-            Ok::<(), Error>(())
+        .read_frame(&mut |frame| {
+            // The library generates the obligated frame (Pong for Ping, Close echo) and
+            // expects us to send it back on the socket - forward it to the writer task.
+            let tx_write = tx_write.clone();
+            async move {
+                if let Err(err) = tx_write
+                    .send_async(WsWriteMsg::ObligatedSend {
+                        opcode: frame.opcode,
+                        payload: frame.payload.to_vec(),
+                    })
+                    .await
+                {
+                    error!(
+                        "Error forwarding obligated WebSocket frame to writer (OpCode {:?}): {}",
+                        frame.opcode, err
+                    );
+                }
+                Ok::<(), Error>(())
+            }
         })
         .await
     {
@@ -761,18 +901,54 @@ async fn handle_socket_concurrent(
 
                 #[cfg(feature = "cache")]
                 ApiStreamRequestPayload::KV(cache_req) => {
-                    match state.raft_cache.raft.client_write(cache_req).await {
-                        Ok(resp) => {
-                            let resp: CacheResponse = resp.data;
-                            ApiStreamResponse {
-                                request_id,
-                                result: ApiStreamResponsePayload::KV(Ok(resp)),
-                            }
-                        }
-                        Err(err) => ApiStreamResponse {
+                    // Bounds-check the cache index before committing to the raft log. Embedded
+                    // clients resolve indices locally, so an out-of-range index can only arrive
+                    // via a hand-crafted wire request; rejecting it here keeps the state
+                    // machine's `.get(idx).unwrap()` in `apply()` from panicking on it.
+                    let cache_idx = match cache_req {
+                        CacheRequest::Get { cache_idx, .. }
+                        | CacheRequest::Put { cache_idx, .. }
+                        | CacheRequest::GetRemove { cache_idx, .. }
+                        | CacheRequest::Replace { cache_idx, .. }
+                        | CacheRequest::Delete { cache_idx, .. }
+                        | CacheRequest::Clear { cache_idx, .. }
+                        | CacheRequest::ClearCounters { cache_idx, .. }
+                        | CacheRequest::CounterGet { cache_idx, .. }
+                        | CacheRequest::CounterSet { cache_idx, .. }
+                        | CacheRequest::CounterAdd { cache_idx, .. }
+                        | CacheRequest::CounterDel { cache_idx, .. } => Some(cache_idx),
+                        CacheRequest::ClearAll
+                        | CacheRequest::Notify(_)
+                        | CacheRequest::Lock(_)
+                        | CacheRequest::LockAwait(_)
+                        | CacheRequest::LockRelease(_)
+                        | CacheRequest::LockAlive(_) => None,
+                    };
+
+                    if let Some(cache_idx) = cache_idx
+                        && cache_idx >= state.raft_cache.tx_caches.len()
+                    {
+                        ApiStreamResponse {
                             request_id,
-                            result: ApiStreamResponsePayload::KV(Err(Error::from(err))),
-                        },
+                            result: ApiStreamResponsePayload::KV(Err(Error::new(format!(
+                                "cache index {cache_idx} out of range (0..{})",
+                                state.raft_cache.tx_caches.len()
+                            )))),
+                        }
+                    } else {
+                        match state.raft_cache.raft.client_write(cache_req).await {
+                            Ok(resp) => {
+                                let resp: CacheResponse = resp.data;
+                                ApiStreamResponse {
+                                    request_id,
+                                    result: ApiStreamResponsePayload::KV(Ok(resp)),
+                                }
+                            }
+                            Err(err) => ApiStreamResponse {
+                                request_id,
+                                result: ApiStreamResponsePayload::KV(Err(Error::from(err))),
+                            },
+                        }
                     }
                 }
 
@@ -783,18 +959,32 @@ async fn handle_socket_concurrent(
                         _ => unreachable!(),
                     };
 
-                    let (ack, rx) = tokio::sync::oneshot::channel();
-                    state
-                        .raft_cache
-                        .tx_caches
-                        .get(cache_idx)
-                        .unwrap()
-                        .send(CacheRequestHandler::Get((key, ack)))
-                        .expect("kv handler to always be running");
-                    let value = rx.await.expect("to always get an answer from kv handler");
-                    ApiStreamResponse {
-                        request_id,
-                        result: ApiStreamResponsePayload::KV(Ok(CacheResponse::Value(value))),
+                    // Bounds-check the cache index before touching the handler channel.
+                    // Embedded clients resolve indices locally, so an out-of-range index can
+                    // only arrive via a hand-crafted wire request; rejecting it here keeps the
+                    // state machine's `.get(idx).unwrap()` in `apply()` from panicking on it.
+                    if cache_idx >= state.raft_cache.tx_caches.len() {
+                        ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::KV(Err(Error::new(format!(
+                                "cache index {cache_idx} out of range (0..{})",
+                                state.raft_cache.tx_caches.len()
+                            )))),
+                        }
+                    } else {
+                        let (ack, rx) = tokio::sync::oneshot::channel();
+                        state
+                            .raft_cache
+                            .tx_caches
+                            .get(cache_idx)
+                            .unwrap()
+                            .send(CacheRequestHandler::Get { key, reply: ack })
+                            .expect("kv handler to always be running");
+                        let value = rx.await.expect("to always get an answer from kv handler");
+                        ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::KV(Ok(CacheResponse::Value(value))),
+                        }
                     }
                 }
 
@@ -821,7 +1011,7 @@ async fn handle_socket_concurrent(
                     }
                 }
 
-                #[cfg(feature = "listen_notify_local")]
+                #[cfg(feature = "listen_notify")]
                 ApiStreamRequestPayload::Notify(cache_req) => {
                     let (ts, data) = match cache_req {
                         CacheRequest::Notify((ts, data)) => (ts, data),

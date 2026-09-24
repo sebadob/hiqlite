@@ -1,0 +1,444 @@
+# You will see invalid values like e.g.:
+# data_dir = '{{ DATA_DIR }}'
+# When you encounter anything in {{ SOME_NAME }}, this is a templating
+# value. These are invalid as they are, and you need to use the correct
+# data type when editing this file manually. An example is usually right
+# above the line, just out-commented.
+
+[hiqlite]
+# Can be set to 'k8s' to try to split off the node id from the hostname
+# when Hiqlite is running as a StatefulSet inside Kubernetes.
+#
+# default: unset
+# overwritten by: HQL_NODE_ID_FROM
+#node_id_from = "k8s"
+
+# The node id must exist in the nodes, and there must always be
+# at least a node with ID 1
+# Will be ignored if `node_id_from = k8s`
+#
+# At least `node_id_from` or `node_id` are required.
+#
+# default: 0 (invalid)
+# overwritten by: HQL_NODE_ID
+node_id = 0
+
+# All cluster member nodes.
+# Each array value must have the following format:
+# `id addr_raft addr_api`
+# If given via ENV var, separate them by `\n`.
+#
+# default: ["1 localhost:8100 localhost:8200"]
+# overwritten by: HQL_NODES
+nodes = ["1 localhost:8100 localhost:8200"]
+
+# You can set the listen addresses for both the API and Raft servers.
+# These need to somewaht match the definition for the `nodes` above,
+# with the difference that a `node` address can be resolved via DNS,
+# while the listen addresses must be IP addresses.
+#
+# The default for both of these is "0.0.0.0" which makes them listen
+# on all interfaces.
+# overwritten by: HQL_LISTEN_ADDR_API
+#listen_addr_api = "0.0.0.0"
+# overwritten by: HQL_LISTEN_ADDR_RAFT
+#listen_addr_raft = "0.0.0.0"
+
+# The data dir hiqlite will store raft logs and state machine data in.
+# It must exist and be writable, unless hiqlite was built with the
+# `in-memory-snapshots` feature and runs a pure cache-only node (no SQLite)
+# with `cache_storage_disk = false`: that combination keeps everything
+# in-memory and never touches `data_dir`.
+# See also `cache_storage_disk`.
+#
+# default: data
+# overwritten by: HQL_DATA_DIR
+#data_dir = "data"
+#data_dir = "{{ DATA_DIR }}"
+
+# The file name of the SQLite database in the state machine folder.
+#
+# default: hiqlite.db
+# overwritten by: HQL_FILENAME_DB
+#filename_db = "hiqlite.db"
+
+# If set to `true`, all SQL statements will be logged for debugging
+# purposes.
+#
+# default: false
+# overwritten by: HQL_LOG_STATEMENTS
+log_statements = false
+
+# The size of the internal cache for prepared statements.
+#
+# default: 1024
+#prepared_statement_cache_capacity = 1024
+
+# The size of the pooled connections for local database reads.
+#
+# Do not confuse this with a pool size for network databases, as it
+# is much more efficient. You can't really translate between them,
+# because it depends on many things, but assuming a factor of 10 is
+# a good start. This means, if you needed a (read) pool size of 40
+# connections for something like a postgres before, you should start
+# at a `read_pool_size` of 4.
+#
+# Keep in mind that this pool is only used for reads and writes will
+# travel through the Raft and have their own dedicated connection.
+#
+# default: 4
+# overwritten by: HQL_READ_POOL_SIZE
+read_pool_size = 4
+
+# Setting for Raft Log syncing / flushing.
+#
+# This value is probably the most important, depending on your needs.
+# It has a huge impact on both performance and consistency.
+#
+# You can set 3 different levels:
+# - immediate
+# - immediate_async
+# - interval_<time_ms> (e.g. interval_200)
+#
+# If you run a single instance "Cluster", you most probably want
+# `immediate` to have the highest degree of consistency. If set
+# to `immediate`, the Raft will block until data has been flushed
+# to disk. This is especially important for a single instance
+# deployment because there is no way to recover state from other
+# nodes or re-sync a maybe corrupted WAL file.
+# `immediate` has a very huge negative impact on throughput, and
+# it puts a lot of stress on your disk, which is important to
+# consider for SSDs.
+#
+# `immediate_async` puts the same amount of stress on your SSD
+# and flushed all buffers to disk immediately after a single
+# Raft Log was saved. Unlike `immediate` however, it does not
+# wait for completion and directly returns `success` to the
+# Raft Engine. You have a bit less consistency guarantees in
+# exchange for basically the same throughput as with `interval`
+# syncing.
+#
+# The `interval_<ms>` option will not flush immediately. Flushes
+# will be triggered by an external ticker task top flush buffers
+# every <ms> ms, and then only if buffers are dirty, meaning if
+# any data has been updated since the last sync. This setting
+# has the highest throughput and puts the lowest amount of stress
+# on your SSD.
+# CAUTION: You probably never want to use this setting for a
+# single instance, since it may be the case that if you are
+# unlucky and your app crashes before buffers are synced, that
+# your WAL file might end up being corrupted. Even though very
+# unlikely in real world (can be force-produced though), you
+# would need to re-sync from a healthy cluster member in such
+# a case, if the automactic WAL repair does not succeed.
+#
+# default: 'interval_200'
+# overwritten by: HQL_LOG_SYNC
+log_sync = "interval_200"
+
+# Hiqlite WAL files will always have a fixed size, even when they
+# are still "empty", to reduce disk operations while writing. You
+# can set the WAL size in bytes. The default value is 2 MiB
+# (2 * 1024 * 1024), while the minimum size is 8 kiB.
+#
+# This value is probably a bit too low when you have huge queries
+# and lots of traffic. In combination with log roll-over (at 10k logs
+# by default), optimal is to have 2-4 WAL files around all the time.
+#
+# Note: Increasing this size for performance reasons only makes little
+# of a difference. WAL files are memory-mapped, and their full size is
+# acquired during creation. This means there is no performance loss
+# because it needs to be relocated on disk while it grows. As long
+# as your SQL queries fit comfortably inside it, you should be good.
+#
+# If you tune this value, do it in combination with `logs_until_snapshot`.
+#
+# value type: bytes
+# default: 2097152
+# overwritten by: HQL_WAL_SIZE
+#wal_size = 2097152
+
+# Set to `false` to store Cache WAL files + Snapshots in-memory only.
+# If you run a Cluster, a Node can re-sync cache data after a restart.
+# However, if you restart too quickly or shut down the whole cluster,
+# all your cached data will be gone.
+# In-memory only hugegly increases the throughput, though, so it
+# depends on your needs, what you should prefer.
+# With the `in-memory-snapshots` build feature, a pure cache-only deployment
+# (no SQLite) using `false` also keeps Snapshots in-memory, so `data_dir` is
+# never used and does not need to exist. Without that feature, Snapshots are
+# always written to `data_dir`.
+# See also `data_dir`.
+#
+# default: true
+# overwritten by: HQL_CACHE_STORAGE_DISK
+cache_storage_disk = true
+
+# Sets the limit when the Raft will trigger the creation of a new
+# state machine snapshot and purge all logs that are included in
+# the snapshot.
+# Higher values can achieve more throughput in write heavy
+# situations but will end up in more disk usage and longer
+# snapshot creations / log purges.
+#
+# If you tune this value, do it in combination with `wal_size`.
+#
+# default: 10000
+# overwritten by: HQL_LOGS_UNTIL_SNAPSHOT
+#logs_until_snapshot = 10000
+
+# The `tls_auto_certificates` will generate self-signed TLS
+# certificates for internal Raft and API traffic. Clients will
+# simply not validate the certificates for ease of use because
+# they don't have to. They do a 3-way handshake anyway, which
+# validates both client and server without the secret ever being
+# sent over the network.
+#
+# If you specify specific certificates with either `tls_raft_*` or
+# `tls_api_*`, they will be used instead.
+#
+# default: false
+# overwritten by: HQL_TLS_AUTO_CERTS
+tls_auto_certificates = false
+
+# If given, these keys / certificates will be used to establish
+# TLS connections between nodes.
+#
+# values are optional, overwritten by: HQL_TLS_{RAFT|API}_{KEY|CERT|NO_VERIFY}
+#tls_raft_key = "tls/key.pem"
+#tls_raft_cert = "tls/cert-chain.pem"
+#tls_raft_danger_tls_no_verify = true
+
+#tls_api_key = "tls/key.pem"
+#tls_api_cert = "tls/cert-chain.pem"
+#tls_api_danger_tls_no_verify = true
+
+# Optional path to a separate TOML secrets file. It must mirror this
+# config's structure (i.e. contain a `[hiqlite]` table, or your custom
+# table name) and hold only the secret values. Any secret-bearing option
+# below may then be set to the case-sensitive sentinel "$SECRETS", in
+# which case its real value is loaded by the same key name from this
+# file. This keeps the main config diffable and reviewable while secrets
+# are managed separately (systemd LoadCredential, Docker / Kubernetes
+# secrets, ...).
+#
+# Secret-bearing options:
+# - secret_raft
+# - secret_api
+# - s3_key
+# - s3_secret
+# - enc_keys
+# - enc_key_active
+# - password_dashboard
+#
+# default: not set
+# overwritten by: HQL_SECRETS_FILE
+#secrets_file = "/run/secrets/hiqlite.toml"
+
+# Secrets for Raft internal authentication as well as for the API.
+# These must be at least 16 characters long and you should provide
+# different ones for both variables.
+# May be set to "$SECRETS" to load from the `secrets_file` above.
+#
+# default: not set - required
+# overwritten by: HQL_SECRET_RAFT
+#secret_raft = "SuperSecureRaftSecret1337"
+secret_raft = "{{ SECRET_RAFT }}"
+# default: not set - required
+# overwritten by: HQL_SECRET_API
+#secret_api = "SuperSecureApiSecret1337"
+secret_api = "{{ SECRET_API }}"
+
+# Configures the initial delay in seconds that should be applied
+# to `<API>/health` checks. During the first X seconds after node
+# start, health checks will always return true to solve a chicken-
+# and-egg problem when you want to cold-start a cluster while
+# relying on `readinessProbe` checks.
+#
+# type: duration
+# default: "30s"
+# overwritten by: HQL_HEALTH_CHECK_DELAY
+#health_check_delay = "30s"
+
+# Set a newly joining node to stay a learner during startup reconciliation.
+# This is useful for read-only replicas that should not become voting
+# Raft members automatically. This does not demote an existing voter.
+#
+# default: false
+# overwritten by: HQL_LEARNER_ONLY
+#learner_only = false
+
+# When the auto-backup task should run.
+# Accepts cron syntax:
+# "sec min hour day_of_month month day_of_week year"
+#
+# default: "0 30 2 * * * *"
+# overwritten by: HQL_BACKUP_CRON
+backup_cron = "0 30 2 * * * *"
+
+# Backups older than the configured days will be cleaned up on S3
+# after the backup cron job `backup_cron`.
+#
+# type: duration
+# default: "30d"
+# overwritten by: HQL_BACKUP_KEEP_FOR
+backup_keep_for = "30d"
+
+# Backups older than the configured days will be cleaned up locally
+# after each `Client::backup()` and the cron job `HQL_BACKUP_CRON`.
+#
+# type: duration
+# default: "3d"
+# overwritten by: HQL_BACKUP_KEEP_FOR_LOCAL
+backup_keep_for_local = "3d"
+
+# If you ever need to restore from a backup, the process is simple.
+# 1. Have the cluster shut down. This is probably the case anyway, if
+#    you need to restore from a backup.
+# 2. Provide a backup file name on S3 storage with the
+#    `HQL_BACKUP_RESTORE` value with prefix `s3:` (encrypted), or a file
+#    on disk (plain sqlite file) with the prefix `file:`.
+# 3. Start up the cluster again.
+# 4. After the restart, make sure to remove the HQL_BACKUP_RESTORE
+#    env value.
+#
+# CAUTION: can only be set via ENV VAR temporarily
+#HQL_BACKUP_RESTORE=
+
+# The Hiqlite backup restore process checks the `_metadata` table
+# in backups as an integrity check. If you however want to "restore"
+# from an already existing default SQLite file, you can disable
+# this validation to make the restore process succeed anyway.
+# To do so, set `HQL_BACKUP_SKIP_VALIDATION=true`.
+#
+# CAUTION: can only be set via ENV VAR temporarily
+#HQL_BACKUP_SKIP_VALIDATION=
+
+# Access values for the S3 bucket where backups will be pushed to.
+# overwritten by: HQL_S3_URL
+#s3_url = "https://s3.example.com"
+# overwritten by: HQL_S3_BUCKET
+#s3_bucket = "my_bucket"
+# overwritten by: HQL_S3_REGION
+#s3_region = "my_region"
+# overwritten by: HQL_S3_PATH_STYLE
+#s3_path_style = true
+# overwritten by: HQL_S3_KEY
+#s3_key = "my_key"
+# overwritten by: HQL_S3_SECRET
+#s3_secret = "my_secret"
+
+# You need to define at least one valid encryption key.
+# These keys are used to encrypt the database backups that will
+# be pushed to S3 storage.
+#
+# The format must match (\n separated for env var, array in toml):
+# ENC_KEYS="
+# q6u26onRvXVG4427/M0NFQzhSSldCY01rckJNa1JYZ3g2NUFtSnNOVGdoU0E=
+# bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ=
+# "
+#
+# The first part until the first `/` is the key ID.
+# The ID must match '[a-zA-Z0-9]{2,20}'
+#
+# The key itself begins after the first `/` has been found.
+# The key must be exactly 32 bytes long, encoded as base64.
+#
+# You can find a more detailed explanation on how to generate
+# keys in the Rauthy documentation:
+# https://sebadob.github.io/rauthy/config/encryption.html
+#
+# You can provide multiple keys to make things like key
+# rotation work. Be careful with removing old keys. Make sure
+# that all secrets have been migrated beforehand.
+# You can find a utility in the Admin UI to do this for you.
+#
+# default: not set - mandatory value
+# overwritten by: ENC_KEYS
+#enc_keys = [
+#    # DO NOT USE THIS KEY! DEMO PURPOSES ONLY!
+#    "bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ=",
+#]
+enc_keys = ["{{ ENC_KEY }}"]
+
+# This identifies the key ID from the `ENC_KEYS` list, that
+# should actively be used for new encryptions.
+#
+# default: not set - mandatory value
+# overwritten by: ENC_KEY_ACTIVE
+#enc_key_active = "bVCyTsGaggVy5yqQ"
+enc_key_active = "{{ ENC_KEY_ACTIVE }}"
+
+# The password for the dashboard as b64 encoded Argon2ID hash.
+# If left empty, the Dashboard will not be exposed.
+#
+# overwritten by: HQL_PASSWORD_DASHBOARD
+# resolves to '123SuperMegaSafe' in this example
+#password_dashboard = "JGFyZ29uMmlkJHY9MTkkbT0zMix0PTIscD0xJE9FbFZURnAwU0V0bFJ6ZFBlSEZDT0EkTklCN0txTy8vanB4WFE5bUdCaVM2SlhraEpwaWVYOFRUNW5qdG9wcXkzQQ=="
+password_dashboard = "{{ PASSWORD_DASHBOARD }}"
+
+# Can be set to `true` during local dev and testing to issue
+# insecure cookies.
+#
+# default: false
+# overwritten by: HQL_INSECURE_COOKIE
+insecure_cookie = false
+
+# To guarantee the stabiliy of your Raft cluster, you can
+# rate-limit all write operations to the Raft (excluding
+# management overhead). This is in request per second. It
+# guarantees that the cluster can never be overwhelmed
+# because maybe the disks cannot keep up. Usually, when
+# this happens, you would see dropped or missing heartbeats
+# and errors that the leader is down, even when the cluster
+# is healthy.
+# The burst can usually be 2-2x the rps.
+#
+# default: not set
+# overwritten by: HQL_RL_CACHE_RPS
+#rate_limit_cache_rps = 50000
+# overwritten by: HQL_RL_CACHE_BURST
+#rate_limit_cache_burst = 100000
+# overwritten by: HQL_RL_DB_RPS
+#rate_limit_db_rps = 100000
+# overwritten by: HQL_RL_DB_BURST
+#rate_limit_db_burst = 200000
+
+# You can reset the Raft Logs + Metadata when set to
+# `true`. This can be helpful, if you e.g. run a single
+# instance "cluster" and encountered an unrecoverable
+# error at startup, like e.g. a corrupted Raft Logs volume.
+# If you have an HA cluster though, in such a situation,
+# a volume cleanup for the broken node and clean cluster
+# re-join + sync is always preferred and the safer option.
+#
+# Another situation where this option can be used, if you
+# want to trigger a Log ID roll-over and for some reason,
+# you either cannot or do not want to apply a backup to
+# achieve this. This may only be necessary if your Log ID
+# almost reached `18446744073709551615`, which in reality
+# will probably never happen in less than 10 years.
+# Applying a backup at that point is still the safer
+# option because it is not possible to make a mistake,
+# as long as you wait for it to finish.
+#
+# Be VERY CAREFUL with this option! If used incorrectly,
+# you can destroy a Raft cluster and end up with an
+# inconsistent state, so your only chance is to either
+# re-create the whole cluster or apply a backup.
+#
+# This option will leave the state machine in place,
+# but delete Raft WAL, Metadata and Snapshots!
+# Local backups will be left in place.
+#
+# This option should be seen as a last resort.
+# USE WITH CARE!
+#
+# !!!
+# This value only exists here for completeness.
+# You can only set it via ENV to be able to remove it
+# immediately again after a start.
+# !!!
+#
+# default: false
+#HQL_DANGER_RAFT_STATE_RESET=true

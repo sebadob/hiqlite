@@ -54,31 +54,38 @@ impl ServerTlsConfig {
         }
     }
 
-    pub fn from_env(variant: &str) -> Option<Self> {
+    pub fn from_env(variant: &str) -> Result<Option<Self>, Error> {
         let tls_auto_certificates = env::var("HQL_TLS_AUTO_CERTS")
             .map(|v| v.parse::<bool>().unwrap_or(false))
             .unwrap_or(false);
 
         let key = env::var(format!("HQL_TLS_{variant}_KEY")).ok();
         let cert = env::var(format!("HQL_TLS_{variant}_CERT")).ok();
-        let no_verify = env::var(format!("HQL_TLS_{variant}_DANGER_TLS_NO_VERIFY"))
+        let no_verify = env::var(format!("HQL_TLS_{variant}_NO_VERIFY"))
             .ok()
             .map(|v| {
                 v.parse::<bool>()
-                    .expect("Cannot parse HQL_TLS_*_DANGER_TLS_NO_VERIFY to bool")
+                    .expect("Cannot parse HQL_TLS_*_NO_VERIFY to bool")
             });
 
         #[allow(clippy::unnecessary_unwrap)]
         if key.is_some() && cert.is_some() {
-            Some(Self::Specific(ServerTlsConfigCerts {
+            Ok(Some(Self::Specific(ServerTlsConfigCerts {
                 key: key.unwrap().into(),
                 cert: cert.unwrap().into(),
                 danger_tls_no_verify: no_verify.unwrap_or(false),
-            }))
+            })))
+        } else if key.is_some() != cert.is_some() {
+            Err(Error::Config(
+                format!(
+                    "You must provide at least both HQL_TLS_{variant}_KEY + HQL_TLS_{variant}_CERT"
+                )
+                .into(),
+            ))
         } else if tls_auto_certificates {
-            Some(Self::TlsAutoCertificates)
+            Ok(Some(Self::TlsAutoCertificates))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -102,7 +109,13 @@ impl ServerTlsConfig {
             let key_pair = tokio::task::spawn_blocking(|| rcgen::KeyPair::generate().unwrap())
                 .await
                 .unwrap();
+            // Multiple test nodes can race here: if another task wins the `set`,
+            // it hands our key pair back and we simply use the winner's.
+            #[cfg(debug_assertions)]
+            let _ = KEY_PAIR.set(key_pair);
+            #[cfg(not(debug_assertions))]
             KEY_PAIR.set(key_pair).unwrap();
+
             KEY_PAIR.get().unwrap()
         };
 
@@ -150,20 +163,37 @@ impl ServerTlsConfig {
 }
 
 pub fn build_tls_config(tls_no_verify: bool) -> Arc<ClientConfig> {
-    #[allow(unused_mut)]
-    let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-    #[cfg(feature = "webpki-roots")]
-    root_store.add_parsable_certificates(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned());
-
     let config = if tls_no_verify {
         tokio_rustls::rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoTlsVerifier {}))
             .with_no_client_auth()
     } else {
-        tokio_rustls::rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth()
+        #[cfg(feature = "webpki-roots")]
+        let config = {
+            let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
+            root_store.add_parsable_certificates(
+                webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned(),
+            );
+            tokio_rustls::rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth()
+        };
+
+        #[cfg(not(feature = "webpki-roots"))]
+        let config = {
+            use rustls_platform_verifier::BuilderVerifierExt;
+
+            let arc_crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
+            tokio_rustls::rustls::ClientConfig::builder_with_provider(arc_crypto_provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_platform_verifier()
+                .expect("Cannot build Hiqlite TLS client with platform verifier. If not available, you can use the `webpki-roots` feature")
+                .with_no_client_auth()
+        };
+
+        config
     };
 
     Arc::new(config)

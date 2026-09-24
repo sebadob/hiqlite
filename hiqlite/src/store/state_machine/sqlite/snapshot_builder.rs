@@ -1,7 +1,8 @@
+use crate::helpers::deserialize_serde;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
-use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
+use crate::store::state_machine::sqlite::state_machine::{StateMachineData, StateMachineSqlite};
 use crate::store::state_machine::sqlite::writer::{SnapshotRequest, WriterRequest};
-use crate::{Node, NodeId};
+use crate::{Error, Node, NodeId};
 use openraft::{
     RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership,
 };
@@ -32,13 +33,12 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
 
         let snapshot_id = Uuid::now_v7();
 
+        // No need to do a temp file + atomic rename here. The write task does that already.
         let path = format!("{}/{}", self.path_snapshots, snapshot_id);
-        let path_temp = format!("{path}.temp");
         let (ack, rx) = oneshot::channel();
         let req = WriterRequest::Snapshot(SnapshotRequest {
             snapshot_id,
-            // last_membership: self.last_membership.clone(),
-            path: path_temp.clone(),
+            path: path.clone(),
             ack,
         });
         self.write_tx
@@ -47,11 +47,6 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
             .expect("Sender to always be listening");
 
         let resp = rx.await.expect("to always receive a snapshot response")?;
-        fs::copy(path_temp, &path)
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::write_state_machine(&err),
-            })?;
         let snapshot = fs::File::open(path).await.map_err(|err| StorageError::IO {
             source: StorageIOError::read_state_machine(&err),
         })?;

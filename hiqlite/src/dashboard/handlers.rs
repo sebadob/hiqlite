@@ -1,4 +1,4 @@
-use crate::dashboard::session::{Session, INSECURE_COOKIES};
+use crate::dashboard::session::{INSECURE_COOKIES, Session};
 use crate::dashboard::table::Table;
 use crate::dashboard::{query, session};
 use crate::network::AppStateExt;
@@ -9,7 +9,7 @@ use axum::extract::Path;
 use axum::http::header::LOCATION;
 use axum::http::{HeaderMap, Method};
 use axum::response::Response;
-use axum::{body, Form, Json};
+use axum::{Form, Json, body};
 use hyper::StatusCode;
 use openraft::RaftMetrics;
 use serde::Deserialize;

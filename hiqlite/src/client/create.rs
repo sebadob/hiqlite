@@ -66,9 +66,9 @@ impl Client {
             api_secret: None,
             request_id: AtomicUsize::new(0),
             tx_shutdown: Some(tx_shutdown),
-            #[cfg(feature = "listen_notify_local")]
+            #[cfg(feature = "listen_notify")]
             app_start: chrono::Utc::now().timestamp_micros(),
-            #[cfg(feature = "listen_notify_local")]
+            #[cfg(feature = "listen_notify")]
             rx_notify: None,
             #[cfg(feature = "cache")]
             rate_limit_cache: rate_limit_cache.as_ref().map(|c| AtomicU32::new(c.rps)),
@@ -160,14 +160,14 @@ impl Client {
         let (tx_client_cache, rx_client_cache) = flume::bounded(1);
 
         #[cfg(feature = "listen_notify")]
+        let (tx, ack_listen_notify) = tokio::sync::oneshot::channel();
+        #[cfg(feature = "listen_notify")]
         let rx_notify = Some(RemoteListener::spawn(
             leader_cache.clone(),
-            tls,
+            tls_config.clone(),
             api_secret.clone(),
+            Some(tx),
         ));
-
-        #[cfg(all(feature = "listen_notify_local", not(feature = "listen_notify")))]
-        let rx_notify = None;
 
         #[allow(unused_variables)]
         let (rate_limit_cache_await, rx_cache_await) =
@@ -195,9 +195,9 @@ impl Client {
             api_secret: Some(api_secret),
             request_id: AtomicUsize::new(0),
             tx_shutdown: None,
-            #[cfg(feature = "listen_notify_local")]
+            #[cfg(feature = "listen_notify")]
             app_start: chrono::Utc::now().timestamp_micros(),
-            #[cfg(feature = "listen_notify_local")]
+            #[cfg(feature = "listen_notify")]
             rx_notify,
             #[cfg(feature = "cache")]
             rate_limit_cache: rate_limit_cache.as_ref().map(|c| AtomicU32::new(c.rps)),
@@ -226,6 +226,7 @@ impl Client {
             rx_client_cache,
             RaftType::Cache,
         );
+
         #[cfg(feature = "sqlite")]
         slf.open_stream(
             api_secret_bytes,
@@ -240,6 +241,11 @@ impl Client {
         slf.spawn_rate_limit_ticker(rate_limit_cache, None, rx_cache_await, rx_db_await);
         #[cfg(all(not(feature = "cache"), feature = "sqlite"))]
         slf.spawn_rate_limit_ticker(None, rate_limit_db, rx_cache_await, rx_db_await);
+
+        #[cfg(feature = "listen_notify")]
+        ack_listen_notify.await.map_err(|_| {
+            Error::Timeout("Connecting to remote event listener stream timed out".to_string())
+        })?;
 
         Ok(slf)
     }

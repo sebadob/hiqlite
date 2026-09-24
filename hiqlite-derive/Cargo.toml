@@ -1,10 +1,10 @@
 [package]
 name = "hiqlite-derive"
-version = "0.14.0"
+version = "0.15.0-20260920"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-rust-version = "1.88"
+rust-version = "1.95"
 categories = ["database", "caching"]
 keywords = ["database", "sql", "sqlite", "raft", "cache"]
 description = "Macros for Hiqlite"

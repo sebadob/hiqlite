@@ -1,9 +1,11 @@
 use crate::config::RateLimitConfig;
+use crate::helpers::parse_duration;
 use crate::tls::{ServerTlsConfig, ServerTlsConfigCerts};
 use crate::{Error, Node, NodeConfig};
 use hiqlite_wal::LogSync;
 use std::borrow::Cow;
 use std::env;
+use std::time::Duration;
 use tokio::fs;
 use toml::Value;
 
@@ -148,7 +150,7 @@ impl NodeConfig {
         let log_statements =
             t_bool(&mut map, t_name, "log_statements", "HQL_LOG_STATEMENTS")?.unwrap_or(false);
         let prepared_statement_cache_capacity =
-            t_u16(&mut map, t_name, "prepared_statement_cache_capacity", "")?.unwrap_or(1000)
+            t_u16(&mut map, t_name, "prepared_statement_cache_capacity", "")?.unwrap_or(1024)
                 as usize;
         let read_pool_size =
             t_u16(&mut map, t_name, "read_pool_size", "HQL_READ_POOL_SIZE")?.unwrap_or(4) as usize;
@@ -159,7 +161,7 @@ impl NodeConfig {
             };
             sync
         } else {
-            LogSync::ImmediateAsync
+            LogSync::IntervalMillis(200)
         };
         let wal_size =
             t_u32(&mut map, t_name, "wal_size", "HQL_WAL_SIZE")?.unwrap_or(2 * 1024 * 1024);
@@ -191,8 +193,18 @@ impl NodeConfig {
 
         let tls_raft_key = t_str(&mut map, t_name, "tls_raft_key", "HQL_TLS_RAFT_KEY")?;
         let tls_raft_cert = t_str(&mut map, t_name, "tls_raft_cert", "HQL_TLS_RAFT_CERT")?;
-        let tls_raft_danger_tls_no_verify =
-            t_bool(&mut map, t_name, "tls_raft_danger_tls_no_verify", "")?.unwrap_or(false);
+        let tls_raft_danger_tls_no_verify = t_bool(
+            &mut map,
+            t_name,
+            "tls_raft_danger_tls_no_verify",
+            "HQL_TLS_RAFT_NO_VERIFY",
+        )?
+        .unwrap_or(false);
+
+        if tls_raft_key.is_some() != tls_raft_cert.is_some() {
+            return Err(Error::Config("Incomplete Raft TLS config given".into()));
+        }
+
         #[allow(clippy::unnecessary_unwrap)]
         let tls_raft = if tls_raft_key.is_some() && tls_raft_cert.is_some() {
             Some(ServerTlsConfig::Specific(ServerTlsConfigCerts {
@@ -208,8 +220,18 @@ impl NodeConfig {
 
         let tls_api_key = t_str(&mut map, t_name, "tls_api_key", "HQL_TLS_API_KEY")?;
         let tls_api_cert = t_str(&mut map, t_name, "tls_api_cert", "HQL_TLS_API_CERT")?;
-        let tls_api_danger_tls_no_verify =
-            t_bool(&mut map, t_name, "tls_raft_danger_tls_no_verify", "")?.unwrap_or(false);
+        let tls_api_danger_tls_no_verify = t_bool(
+            &mut map,
+            t_name,
+            "tls_api_danger_tls_no_verify",
+            "HQL_TLS_API_NO_VERIFY",
+        )?
+        .unwrap_or(false);
+
+        if tls_api_key.is_some() != tls_api_cert.is_some() {
+            return Err(Error::Config("Incomplete API TLS config given".into()));
+        }
+
         #[allow(clippy::unnecessary_unwrap)]
         let tls_api = if tls_api_key.is_some() && tls_api_cert.is_some() {
             Some(ServerTlsConfig::Specific(ServerTlsConfigCerts {
@@ -238,33 +260,39 @@ impl NodeConfig {
             )));
         };
 
-        let health_check_delay_secs =
-            t_u32(&mut map, t_name, "health_check_delay_secs", "")?.unwrap_or(30);
+        let health_check_delay = t_duration(
+            &mut map,
+            t_name,
+            "health_check_delay",
+            "HQL_HEALTH_CHECK_DELAY",
+        )?
+        .unwrap_or(Duration::from_secs(30));
         let learner_only =
             t_bool(&mut map, t_name, "learner_only", "HQL_LEARNER_ONLY")?.unwrap_or(false);
 
         #[cfg(feature = "backup")]
-        let (backup_config, backup_keep_days_local) = {
+        let (backup_config, backup_keep_for_local) = {
             let backup_cron =
                 if let Some(v) = t_str(&mut map, t_name, "backup_cron", "HQL_BACKUP_CRON")? {
                     Cow::from(v)
                 } else {
                     Cow::from("0 30 2 * * * *")
                 };
-            let backup_keep_days =
-                t_u16(&mut map, t_name, "backup_keep_days", "HQL_BACKUP_KEEP_DAYS")?.unwrap_or(30);
-            let backup_keep_days_local = t_u16(
+            let backup_keep_for =
+                t_duration(&mut map, t_name, "backup_keep_for", "HQL_BACKUP_KEEP_FOR")?
+                    .unwrap_or(Duration::from_secs(30 * 24 * 3600));
+            let backup_keep_for_local = t_duration(
                 &mut map,
                 t_name,
-                "backup_keep_days_local",
-                "HQL_BACKUP_KEEP_DAYS_LOCAL",
+                "backup_keep_for_local",
+                "HQL_BACKUP_KEEP_FOR_LOCAL",
             )?
-            .unwrap_or(30);
+            .unwrap_or(Duration::from_secs(3 * 24 * 3600));
 
             let backup_config =
-                crate::backup::BackupConfig::new(backup_cron.as_ref(), backup_keep_days)
+                crate::backup::BackupConfig::new(backup_cron.as_ref(), backup_keep_for)
                     .map_err(|err| Error::config(format!("Error building BackupConfig: {err}")))?;
-            (backup_config, backup_keep_days_local)
+            (backup_config, backup_keep_for_local)
         };
 
         #[cfg(feature = "s3")]
@@ -289,6 +317,7 @@ impl NodeConfig {
                 ))?;
 
             let config = crate::s3::S3Config::new(&url, bucket, region, key, secret, path_style)
+                .await
                 .map_err(|err| {
                     Error::config(format!(
                         "Cannot build S3Config from given S3 values in {t_name}: {err:?}"
@@ -403,14 +432,14 @@ impl NodeConfig {
             #[cfg(feature = "backup")]
             backup_config,
             #[cfg(feature = "backup")]
-            backup_keep_days_local,
+            backup_keep_for_local,
             #[cfg(feature = "s3")]
             s3_config,
             #[cfg(feature = "dashboard")]
             password_dashboard,
             #[cfg(feature = "dashboard")]
             insecure_cookie,
-            health_check_delay_secs,
+            health_check_delay,
             learner_only,
             #[cfg(feature = "cache")]
             rate_limit_cache,
@@ -430,8 +459,8 @@ fn check_empty(table: toml::Table, tbl_name: &str) -> Result<(), Error> {
         for key in table.keys() {
             if ![
                 "backup_cron",
-                "backup_keep_days",
-                "backup_keep_days_local",
+                "backup_keep_for",
+                "backup_keep_for_local",
                 "cache_storage_disk",
                 "s3_url",
                 "s3_bucket",
@@ -465,7 +494,7 @@ fn check_empty(table: toml::Table, tbl_name: &str) -> Result<(), Error> {
     }
 }
 
-fn t_bool(
+pub(crate) fn t_bool(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -489,6 +518,41 @@ fn t_bool(
         Ok(Some(b))
     } else {
         Ok(None)
+    }
+}
+
+/// When calling `.as_secs()` later on, it is guaranteed to be safe to downcast to an `i64`.
+fn t_duration(
+    map: &mut toml::Table,
+    parent: &str,
+    key: &str,
+    env_var: &str,
+) -> Result<Option<Duration>, Error> {
+    let value = map.remove(key);
+
+    if !env_var.is_empty()
+        && let Ok(v) = env::var(env_var)
+    {
+        return match parse_duration(&v) {
+            None => Err(Error::config(err_t(key, parent, "Duration"))),
+            Some(d) => Ok(Some(d)),
+        };
+    }
+
+    let Some(value) = value else { return Ok(None) };
+    match value {
+        Value::String(s) => match parse_duration(&s) {
+            None => Err(Error::config(err_t(key, parent, "Duration"))),
+            Some(d) => Ok(Some(d)),
+        },
+        Value::Integer(i) => {
+            if i < 0 {
+                Err(Error::config(err_t(key, parent, "Duration")))
+            } else {
+                Ok(Some(Duration::from_secs(i as u64)))
+            }
+        }
+        _ => Err(Error::config(err_t(key, parent, "Duration"))),
     }
 }
 
@@ -535,7 +599,7 @@ fn t_u64(
     }
 }
 
-fn t_u32(
+pub(crate) fn t_u32(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -550,7 +614,7 @@ fn t_u32(
         Ok(None)
     }
 }
-fn t_u16(
+pub(crate) fn t_u16(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -566,7 +630,7 @@ fn t_u16(
     }
 }
 
-fn t_str(
+pub(crate) fn t_str(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -590,7 +654,7 @@ fn t_str(
     }
 }
 
-fn t_str_vec(
+pub(crate) fn t_str_vec(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -634,7 +698,7 @@ const SECRETS_REF: &str = "$SECRETS";
 
 /// Like `t_str`, but resolves the `$SECRETS` sentinel against the optional `secrets` table,
 /// looking the real value up by the same `key`. Per-var error messages are preserved.
-fn t_str_secret(
+pub(crate) fn t_str_secret(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -662,7 +726,7 @@ fn t_str_secret(
 /// string (e.g. `enc_keys = "$SECRETS"`); the real value is then looked up by the same `key` in
 /// the `secrets` table, where it must be an array of strings.
 #[cfg(any(feature = "s3", feature = "dashboard"))]
-fn t_str_vec_secret(
+pub(crate) fn t_str_vec_secret(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -737,7 +801,7 @@ fn secret_vec_lookup(
     }
 }
 
-fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
+pub(crate) fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
     let value = map
         .remove(key)
         .ok_or(Error::config(format!("Expected type `Table` for {key}")))?;
@@ -757,6 +821,14 @@ mod tests {
 
     fn table(s: &str) -> toml::Table {
         s.parse::<toml::Table>().unwrap()
+    }
+
+    #[tokio::test]
+    async fn parse_ref_config() {
+        // make sure it can be parsed properly. Any keys inside it that are unknown would panic.
+        NodeConfig::from_toml("../REFERENCE_CONFIG.toml", None, None, None)
+            .await
+            .unwrap();
     }
 
     #[test]

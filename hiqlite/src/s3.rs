@@ -1,11 +1,12 @@
 use crate::Error;
+pub use cryptr::EncKeys;
 pub use cryptr::stream::s3::*;
 use cryptr::stream::writer::channel_writer::{ChannelReceiver, ChannelWriter};
-pub use cryptr::EncKeys;
 use cryptr::{EncValue, FileReader, FileWriter, S3Reader, S3Writer, StreamReader, StreamWriter};
 use std::env;
 use std::sync::Arc;
 use tokio::task;
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct S3Config {
@@ -13,7 +14,7 @@ pub struct S3Config {
 }
 
 impl S3Config {
-    pub fn new<S>(
+    pub async fn new<S>(
         endpoint: &str,
         bucket_name: S,
         region: S,
@@ -37,7 +38,16 @@ impl S3Config {
         let bucket = Bucket::new(endpoint, bucket_name.into(), region, credentials, options)
             .map_err(|err| Error::S3(err.to_string()))?;
 
-        // TODO try to list bucket and make sure access creds work fine
+        match bucket.head("").await {
+            Ok(_) => {
+                info!("S3 connection test successful");
+            }
+            Err(err) => {
+                return Err(Error::S3(format!(
+                    "Error testing S3 connection for backups: {err:?}"
+                )));
+            }
+        }
 
         Ok(Arc::new(Self { bucket }))
     }

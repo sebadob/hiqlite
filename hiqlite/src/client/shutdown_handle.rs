@@ -26,8 +26,10 @@ impl ShutdownHandle {
         let _ = self.rx_shutdown.changed().await;
         info!("ShutdownHandle received shutdown signal - shutting down the Raft node now");
 
+        // Must exceed the 9.5 s Kubernetes rolling-release pre-sleep inside
+        // `shutdown_execute`, leaving headroom for the ordered teardown itself.
         if time::timeout(
-            Duration::from_secs(15),
+            Duration::from_secs(20),
             Client::shutdown_execute(
                 &self.state,
                 #[cfg(feature = "cache")]

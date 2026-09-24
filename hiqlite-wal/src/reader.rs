@@ -252,8 +252,12 @@ mod tests {
 
         let tx = spawn(meta, Arc::new(RwLock::new(set)))?;
         let (ack, rx) = flume::bounded(2);
-        tx.send(Action::Logs { from: 2, until: 3, ack })
-            .expect("reader to always be listening");
+        tx.send(Action::Logs {
+            from: 2,
+            until: 3,
+            ack,
+        })
+        .expect("reader to always be listening");
 
         let mut got_err = false;
         while let Ok(msg) = rx.recv() {

@@ -48,11 +48,8 @@ impl Client {
     #[inline(always)]
     async fn execute_req(&self, sql: Query) -> Result<usize, Error> {
         if let Some(state) = self.is_leader_db_with_state().await {
-            let res = state
-                .raft_db
-                .raft
-                .client_write(QueryWrite::Execute(sql))
-                .await?;
+            let res =
+                Self::client_write_local(&state.raft_db.raft, QueryWrite::Execute(sql)).await?;
             let resp: Response = res.data;
             match resp {
                 Response::Execute(res) => res.result,

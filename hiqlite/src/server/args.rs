@@ -10,8 +10,11 @@ pub enum Args {
     /// load-balances requests to all cluster nodes.
     Proxy(ArgsProxy),
 
-    /// Generate a new default config with safe values for testing
+    /// Generate a new default server config with safe values for testing
     GenerateConfig(ArgsGenerate),
+
+    /// Generate a new default proxy config with safe values for testing
+    GenerateProxyConfig,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -35,8 +38,8 @@ pub struct ArgsConfig {
 
 #[derive(Debug, Clone, Parser)]
 pub struct ArgsProxy {
-    /// The optional config file name to parse. The proxy currently only supports ENV VAR config.
-    #[clap(short, long, default_value = "$HOME/.hiqlite/hiqlite.env")]
+    /// The optional config file name to parse
+    #[clap(short, long, default_value = "$HOME/.hiqlite/hiqlite-proxy.toml")]
     pub config_file: String,
 
     /// Server Log Level

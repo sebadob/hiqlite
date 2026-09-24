@@ -64,10 +64,9 @@ pub(crate) async fn start_raft_db(
         node_config.s3_config.clone(),
         do_reset_metadata,
         #[cfg(feature = "backup")]
-        node_config.backup_keep_days_local,
+        node_config.backup_keep_for_local,
     )
-    .await
-    .unwrap();
+    .await?;
 
     let is_startup_finished = Arc::new(AtomicBool::new(false));
     let sql_writer = state_machine_store.write_tx.clone();
@@ -92,8 +91,7 @@ pub(crate) async fn start_raft_db(
         log_store,
         state_machine_store,
     )
-    .await
-    .expect("Raft create failed");
+    .await?;
 
     init::init_pristine_node_1_db(
         &raft,
@@ -152,7 +150,7 @@ where
     let tx_caches = state_machine_store.tx_caches.clone();
     #[cfg(feature = "listen_notify")]
     let tx_notify = state_machine_store.tx_notify.clone();
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     let rx_notify = state_machine_store.rx_notify.clone();
 
     #[cfg(feature = "dlock")]
@@ -174,8 +172,7 @@ where
             log_store,
             state_machine_store,
         )
-        .await
-        .expect("Raft create failed");
+        .await?;
 
         (raft, Some(shutdown_handle))
     } else {
@@ -186,8 +183,7 @@ where
             logs::memory::LogStoreMemory::new(),
             state_machine_store,
         )
-        .await
-        .expect("Raft create failed");
+        .await?;
 
         (raft, None)
     };
@@ -212,7 +208,7 @@ where
         tx_caches,
         #[cfg(feature = "listen_notify")]
         tx_notify,
-        #[cfg(feature = "listen_notify_local")]
+        #[cfg(feature = "listen_notify")]
         rx_notify,
         #[cfg(feature = "dlock")]
         tx_dlock,

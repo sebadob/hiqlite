@@ -1,14 +1,31 @@
 use crate::{Cache, TEST_DATA_DIR, log};
+use hiqlite::tls::ServerTlsConfig;
 use hiqlite::{Client, Error, Node, NodeConfig, start_node_with_cache};
 use std::time::Duration;
 use tokio::{fs, task, time};
 
 pub const SECRET_API: &str = "qweqweqweqweqweqwe";
 
-pub async fn start_test_cluster() -> Result<(Client, Client, Client), Error> {
-    let handle_client_1 = task::spawn(start_node_with_cache::<Cache>(build_config(1).await));
-    let handle_client_2 = task::spawn(start_node_with_cache::<Cache>(build_config(2).await));
-    let handle_client_3 = task::spawn(start_node_with_cache::<Cache>(build_config(3).await));
+/// Which side of a (re)started cluster runs TLS. It is passed explicitly at every cluster start so
+/// a single test run can rotate through all plain/TLS combinations across the restarts in main.rs.
+#[derive(Clone, Copy)]
+pub struct TlsCombo {
+    pub api: bool,
+    pub raft: bool,
+}
+
+fn tls_side(enabled: bool) -> Option<ServerTlsConfig> {
+    if enabled {
+        Some(ServerTlsConfig::TlsAutoCertificates)
+    } else {
+        None
+    }
+}
+
+pub async fn start_test_cluster(combo: TlsCombo) -> Result<(Client, Client, Client), Error> {
+    let handle_client_1 = task::spawn(start_node_with_cache::<Cache>(build_config(1, combo).await));
+    let handle_client_2 = task::spawn(start_node_with_cache::<Cache>(build_config(2, combo).await));
+    let handle_client_3 = task::spawn(start_node_with_cache::<Cache>(build_config(3, combo).await));
 
     let client_1 = handle_client_1.await??;
     let client_2 = handle_client_2.await??;
@@ -37,14 +54,15 @@ pub fn nodes() -> Vec<Node> {
     ]
 }
 
-pub async fn build_config(node_id: u64) -> NodeConfig {
-    build_config_with_nodes(node_id, nodes(), TEST_DATA_DIR).await
+pub async fn build_config(node_id: u64, combo: TlsCombo) -> NodeConfig {
+    build_config_with_nodes(node_id, nodes(), TEST_DATA_DIR, combo).await
 }
 
 pub async fn build_config_with_nodes(
     node_id: u64,
     nodes: Vec<Node>,
     data_dir_base: &str,
+    combo: TlsCombo,
 ) -> NodeConfig {
     let dir_1 = format!("{data_dir_base}/node_1");
     let dir_2 = format!("{data_dir_base}/node_2");
@@ -73,11 +91,10 @@ pub async fn build_config_with_nodes(
     config.wal_size = 8 * 1024;
     config.raft_config = NodeConfig::default_raft_config(1000);
 
-    // TODO currently we can't test with TLS, because this depends on `axum_server`.
-    // This does not support graceful shutdown, which we need for testing from
-    // a single process
-    config.tls_raft = None;
-    config.tls_api = None;
+    // which side runs TLS is chosen by the caller via the passed combo so a plain/TLS combination
+    // can be exercised per cluster start without touching the node wiring
+    config.tls_raft = tls_side(combo.raft);
+    config.tls_api = tls_side(combo.api);
 
     config.secret_raft = "asdasdasdasdasdasd".to_string();
     config.secret_api = SECRET_API.to_string();

@@ -74,7 +74,13 @@ async fn test_cluster() {
 
 async fn exec_tests() -> Result<(), Error> {
     log("Starting cluster");
-    let (client_1, client_2, client_3) = start::start_test_cluster().await?;
+    // A distinct plain/TLS combination is passed at every restart below, so a single run rotates
+    // through all of them. This first start runs both sides over TLS.
+    let combo = start::TlsCombo {
+        api: true,
+        raft: true,
+    };
+    let (client_1, client_2, client_3) = start::start_test_cluster(combo).await?;
     log("Cluster has been started");
 
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
@@ -116,7 +122,7 @@ async fn exec_tests() -> Result<(), Error> {
     log("Distributed locks tests finished");
 
     log("Test remote-only client");
-    remote_only::test_remote_only_client().await?;
+    remote_only::test_remote_only_client(combo.api).await?;
     log("Remote-only client tests finished");
 
     log("Test shutdown and restart");
@@ -131,15 +137,17 @@ async fn exec_tests() -> Result<(), Error> {
     // logs sync task runs every 200ms -> needs to catch the closed channel
     time::sleep(Duration::from_millis(250)).await;
 
-    let (client_1, client_2, client_3) = start::start_test_cluster().await?;
+    // Restart with only the API side over TLS.
+    let (client_1, client_2, client_3) = start::start_test_cluster(start::TlsCombo {
+        api: true,
+        raft: false,
+    })
+    .await?;
     log("Cluster has been restarted");
 
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
     log("Cluster is healthy again");
 
-    // TODO if this next action comes too fast, there will be a WAL log ID mismatch
-    //  -> find out why and fix it
-    time::sleep(Duration::from_millis(1000)).await;
     cache::insert_test_value_cache(&client_1).await?;
 
     log("Make sure all data is ok");
@@ -176,8 +184,15 @@ async fn exec_tests() -> Result<(), Error> {
     log(format!(
         "Trying to start the cluster again after shutdown with restore from {restore_from} backup"
     ));
-    let (client_1, client_2, client_3) =
-        backup_restore::start_test_cluster_with_backup(restore_from == "file").await?;
+    // Restore with only the Raft side over TLS.
+    let (client_1, client_2, client_3) = backup_restore::start_test_cluster_with_backup(
+        restore_from == "file",
+        start::TlsCombo {
+            api: false,
+            raft: true,
+        },
+    )
+    .await?;
 
     log("Cluster has been started again");
 
@@ -201,8 +216,15 @@ async fn exec_tests() -> Result<(), Error> {
     time::sleep(Duration::from_millis(1000)).await;
 
     log("Trying to start the cluster again after shutdown with restore from local file backup");
-    let (client_1, client_2, client_3) =
-        backup_restore::start_test_cluster_with_backup(true).await?;
+    // Restore with both sides plain.
+    let (client_1, client_2, client_3) = backup_restore::start_test_cluster_with_backup(
+        true,
+        start::TlsCombo {
+            api: false,
+            raft: false,
+        },
+    )
+    .await?;
     log("Cluster has been started again");
 
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
@@ -222,7 +244,18 @@ async fn exec_tests() -> Result<(), Error> {
     time::sleep(Duration::from_millis(1000)).await;
 
     log("Start self-healing capabilities tests");
-    test_self_healing(client_1, client_2, client_3).await?;
+    // The cluster is still on the plain/plain combo from the local-file restore above, so every
+    // node restarted inside the self-heal section must match it.
+    test_self_healing(
+        client_1,
+        client_2,
+        client_3,
+        start::TlsCombo {
+            api: false,
+            raft: false,
+        },
+    )
+    .await?;
     log("Self-healing capabilities tests finished");
 
     Ok(())

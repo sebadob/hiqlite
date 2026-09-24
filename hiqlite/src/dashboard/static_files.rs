@@ -2,7 +2,7 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::Uri;
 use axum::{
-    http::{header, Response, StatusCode},
+    http::{Response, StatusCode, header},
     response,
 };
 use rust_embed::RustEmbed;
@@ -20,18 +20,9 @@ pub async fn handler(uri: Uri, req: Request) -> response::Response {
     let (_, path) = uri.path().split_at(1); // split off the first `/`
     let mime = mime_guess::from_path(path);
 
-    // if path.len() < 4 {
-    //     warn!("path: {}", path);
-    // }
-
     // skip encoding on already compressed data types
-    let path_ending = &path[path.len().saturating_sub(4)..];
-    let (path, encoding) = if path_ending == ".png"
-        || path_ending == ".ico"
-        || path_ending == ".jpg"
-        || path_ending == ".svg"
-        || path_ending == "jpeg"
-    {
+    let (_, path_ending) = path.rsplit_once(".").unwrap_or((path, ""));
+    let (path, encoding) = if ["ico", "jpg", "jpeg", "png", "svg"].contains(&path_ending) {
         (Cow::from(path), "none")
     } else {
         let accept_encoding = req

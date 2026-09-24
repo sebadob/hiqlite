@@ -1,6 +1,6 @@
 use crate::Error;
-use cryptr::utils::b64_decode;
 use cryptr::EncKeys;
+use cryptr::utils::b64_decode;
 use spow::pow::Pow;
 use std::env;
 use std::fmt::Debug;

@@ -7,8 +7,8 @@ use crate::wal::WalFileSet;
 use openraft::{LeaderId, LogId};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
-use std::thread;
 use std::time::Duration;
+use std::{io, thread};
 use thread_priority::ThreadPriority;
 use tokio::sync::oneshot;
 use tokio::time::Interval;
@@ -18,7 +18,7 @@ use tracing::{debug, error, warn};
 pub enum Action {
     Append {
         rx: flume::Receiver<Option<(u64, Vec<u8>)>>,
-        callback: Box<dyn FnOnce() + Send>,
+        callback: Box<dyn FnOnce(Result<(), io::Error>) + Send>,
         ack: oneshot::Sender<Result<(), Error>>,
     },
     Remove {
@@ -101,7 +101,7 @@ pub fn spawn(
     }
     let wal_locked = Arc::new(RwLock::new(set.clone_no_map()));
 
-    // TODO remove with version <= 0.13
+    // TODO remove with version > 0.14
     // This is a fix for a bug from previous versions. Can be removed in later ones,
     // it would be safe to do probably around version >= 0.13.
     if meta.read()?.last_purged_log_id.is_none()
@@ -211,6 +211,12 @@ fn run(
                 let mut res = Ok(());
                 {
                     let mut active = wal.active();
+
+                    // There is no need to specifically catch a possibly closed channel and respond
+                    // with an error. If that channel is being closed mid-batch append, it means
+                    // openraft (and all other tasks) when down, and it dropped the whole log store.
+                    // If that ever happens, there is no one listening on the other end of your ack
+                    // and callback, which means no one would ever even get our result.
                     while let Ok(Some((id, bytes))) = rx.recv() {
                         if bytes.len() > data_len_limit {
                             // A single raft entry cannot span WAL files. By default an
@@ -274,6 +280,12 @@ fn run(
                     lock.active().clone_from_no_mmap(wal.active());
                 }
 
+                let mut res_cb = match &res {
+                    Ok(_) => Ok(()),
+                    Err(err) => Err(io::Error::other(err.to_string())),
+                };
+                // We want to ack before flush for throughput. If anything goes wrong during flush,
+                // the openraft callback will get notified about it.
                 if let Err(err) = ack.send(res) {
                     // this should usually not happen, but it may during an incorrect shutdown
                     error!("error sending back ack after logs append: {err:?}");
@@ -283,15 +295,30 @@ fn run(
                 // blocking flush can clear that state again. `flush_async` merely starts the
                 // writeback, which is why `Action::Remove` and `Action::Vote` below still flush.
                 is_dirty = true;
-                if sync == LogSync::Immediate {
-                    flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
-                } else if sync == LogSync::ImmediateAsync {
-                    wal.active().flush_async()?;
+                match &sync {
+                    LogSync::Immediate => {
+                        if let Err(err) = flush_blocking(&mut wal, &mut buf, &mut is_dirty) {
+                            res_cb = Err(io::Error::other(err.to_string()));
+                        }
+                    }
+                    LogSync::ImmediateAsync => {
+                        if let Err(err) = wal.active().flush_async() {
+                            res_cb = Err(io::Error::other(err.to_string()));
+                        }
+                    }
+                    LogSync::IntervalMillis(_) => {
+                        // flushes from ticker task
+                    }
                 }
+
                 // openraft takes this callback as "these entries are on disk" and commits on
                 // a quorum of such acks. Only `Immediate` upholds that here: the async levels
                 // deliberately ack first and trade the writeback window for throughput.
-                callback();
+                // TODO check openraft how we should behave in this scenario. I guess, as
+                //  long as we don't callback(), the Raft will fully block. -> verify + double-check
+                //  Do we need to callback() when this batch is processed apart from the result, or
+                //  only ever if it fully succeeded?
+                callback(res_cb);
 
                 // Roll WAL pre-emptively if only very few space is left at this point, because
                 // if we just wrote some chunks, me probably have a very short break now until the
@@ -327,7 +354,10 @@ fn run(
                 // The flush has to block. `flush_async` only starts the writeback and returns,
                 // so a crash during the removal below can still land after the deletions and
                 // before the header reaches disk, which is the hole this guards against.
-                flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
+                if let Err(err) = flush_blocking(&mut wal, &mut buf, &mut is_dirty) {
+                    ack.send(Err(err)).unwrap();
+                    continue;
+                }
 
                 // Persist the purge frontier before deleting (too low = hole into deleted files;
                 // too high = extra files). Revert it again if the deletion fails below.
@@ -354,10 +384,9 @@ fn run(
                             // deletion failed: revert the frontier, but still report the error
                             let revert_res = {
                                 // `Metadata::write` re-locks the meta, so release the guard first
-                                let mut m = match meta.write() {
-                                    Ok(m) => m,
-                                    Err(poisoned) => poisoned.into_inner(),
-                                };
+                                let mut m = meta
+                                    .write()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                                 m.last_purged_log_id = previous_purged;
                                 drop(m);
                                 Metadata::write(meta.clone(), &wal.base_path)
@@ -499,7 +528,7 @@ mod tests {
             // the assertion is that the append is never acked.
             let _ = tx.send(Action::Append {
                 rx: entry_rx,
-                callback: Box::new(|| {}),
+                callback: Box::new(|_| ()),
                 ack: ack_tx,
             });
             let _ = entry_tx.send(Some((id, bytes)));

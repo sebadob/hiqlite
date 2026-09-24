@@ -24,6 +24,26 @@ use crate::store::state_machine::memory::state_machine::CacheRequest;
 #[cfg(feature = "sqlite")]
 use crate::{migration::Migration, store::state_machine::sqlite::state_machine::Query};
 
+/// Interval between client-initiated keepalive pings on the API WebSocket. The server auto-pongs
+/// every ping (fastwebsockets default), so a healthy idle connection always produces inbound
+/// traffic within this interval, and a half-open connection eventually fails these writes.
+const STREAM_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Maximum time without any frame from the server before the client declares the connection dead
+/// and reconnects. A healthy connection always receives the auto-pong of our keepalive pings, so
+/// this only trips on genuinely stalled connections. Must be a multiple of
+/// STREAM_KEEPALIVE_INTERVAL with margin.
+const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(35);
+
+/// Number of consecutive connection failures that retry at the fast (1 s) interval before the
+/// reconnect loop backs off to RECONNECT_SLOW_INTERVAL. A restarting node is only briefly
+/// unreachable, so a handful of quick attempts is enough; anything more just delays reconnection.
+const RECONNECT_FAST_RETRIES: u32 = 5;
+
+/// Interval between connection attempts once RECONNECT_FAST_RETRIES consecutive failures have been
+/// exhausted. Kept short on purpose so reconnection stays responsive; do not grow it further.
+const RECONNECT_SLOW_INTERVAL: Duration = Duration::from_secs(5);
+
 #[derive(Debug)]
 pub(crate) enum ClientStreamReq {
     // coming from the `DbClient`
@@ -53,7 +73,7 @@ pub(crate) enum ClientStreamReq {
     #[cfg(feature = "dlock")]
     LockAwait(ClientKVPayload),
 
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     Notify(ClientKVPayload),
 
     Shutdown,
@@ -61,6 +81,8 @@ pub(crate) enum ClientStreamReq {
     // coming from the WebSocket reader
     StreamResponse(ApiStreamResponse),
     CleanupBuffer,
+    /// keepalive ping/pong traffic from the server; proves the connection is alive
+    Liveness,
 
     // may come from `DbClient` or WebSocket reader
     LeaderChange((Option<u64>, Option<Node>)),
@@ -127,6 +149,7 @@ pub struct ClientKVPayload {
 enum WritePayload {
     Payload(Vec<u8>),
     Close,
+    Ping,
 }
 
 impl Client {
@@ -164,6 +187,7 @@ async fn client_stream(
     > = HashMap::new();
 
     let mut shutdown = false;
+    let mut failed_retries: u32 = 0;
 
     loop {
         let ws = match try_connect(
@@ -175,6 +199,7 @@ async fn client_stream(
         .await
         {
             Ok(ws) => {
+                failed_retries = 0;
                 info!(
                     "Client API WebSocket to {} opened successfully",
                     leader.read().await.1
@@ -187,7 +212,16 @@ async fn client_stream(
                     client.find_set_active_leader().await;
                 }
 
-                time::sleep(Duration::from_millis(1000)).await;
+                // Back off after RECONNECT_FAST_RETRIES consecutive fast (1 s) retries so a
+                // restarting node does not spam the log, but keep the window short so reconnection
+                // stays responsive.
+                let interval = if failed_retries < RECONNECT_FAST_RETRIES {
+                    Duration::from_millis(1000)
+                } else {
+                    RECONNECT_SLOW_INTERVAL
+                };
+                failed_retries += 1;
+                time::sleep(interval).await;
                 error!(
                     "Could not connect Client API WebSocket to {}: {}",
                     leader.read().await.1,
@@ -211,11 +245,48 @@ async fn client_stream(
         let handle_buf = cleanup_buffer_timeout(tx_read, 10);
         let mut awaiting_timeout = true;
 
+        // Liveness tracking: any frame from the server resets `last_frame`. A healthy connection
+        // always produces inbound traffic within STREAM_READ_TIMEOUT because we ping every
+        // STREAM_KEEPALIVE_INTERVAL and the server auto-pongs, even while requests are in flight.
+        let mut last_frame = time::Instant::now();
+        let mut keepalive = time::interval(STREAM_KEEPALIVE_INTERVAL);
+
         loop {
-            let res = select! {
-                res = rx_read.recv_async() => res,
-                res = rx_req.recv_async() => res,
+            let res: Option<Result<ClientStreamReq, flume::RecvError>> = select! {
+                res = rx_read.recv_async() => Some(res),
+                res = rx_req.recv_async() => Some(res),
+                _ = keepalive.tick() => {
+                    // Client-initiated ping: makes a half-open connection fail its writes, and the
+                    // server's auto-pong gives us inbound traffic to measure.
+                    if let Err(err) = tx_write.send_async(WritePayload::Ping).await {
+                        error!("Error sending keepalive ping to writer: {}", err);
+                        for (_, ack) in in_flight.drain() {
+                            let _ = ack.send(Err(Error::Connect(
+                                "Connection to Raft leader lost".into(),
+                            )));
+                        }
+                        break;
+                    }
+                    None
+                }
+                _ = time::sleep(STREAM_READ_TIMEOUT.saturating_sub(last_frame.elapsed())) => {
+                    error!(
+                        "No frames from server for {:?} - assuming dead connection, reconnecting",
+                        STREAM_READ_TIMEOUT
+                    );
+                    for (_, ack) in in_flight.drain() {
+                        let _ = ack.send(Err(Error::Connect(
+                            "Connection to Raft leader lost".into(),
+                        )));
+                    }
+                    break;
+                }
             };
+
+            let Some(res) = res else {
+                continue;
+            };
+
             let req = match res {
                 Ok(req) => req,
                 Err(err) => {
@@ -417,7 +488,7 @@ async fn client_stream(
                     ))
                 }
 
-                #[cfg(feature = "listen_notify_local")]
+                #[cfg(feature = "listen_notify")]
                 ClientStreamReq::Notify(ClientKVPayload {
                     request_id,
                     cache_req,
@@ -453,6 +524,7 @@ async fn client_stream(
                 }
 
                 ClientStreamReq::StreamResponse(resp) => {
+                    last_frame = time::Instant::now();
                     try_forward_response(
                         &mut in_flight,
                         &mut in_flight_buf,
@@ -460,6 +532,12 @@ async fn client_stream(
                         resp,
                     )
                     .await;
+                    None
+                }
+
+                ClientStreamReq::Liveness => {
+                    // keepalive pong from the server: connection is alive
+                    last_frame = time::Instant::now();
                     None
                 }
 
@@ -556,7 +634,7 @@ async fn client_stream(
                         "we should never receive ClientStreamReq::LockAwait from WS reader"
                     )
                 }
-                #[cfg(feature = "listen_notify_local")]
+                #[cfg(feature = "listen_notify")]
                 ClientStreamReq::Notify(_) => {
                     unreachable!("we should never receive ClientStreamReq::Notify from WS reader")
                 }
@@ -572,6 +650,9 @@ async fn client_stream(
                 ClientStreamReq::CleanupBuffer => {
                     // ignore - we are re-connecting anyway
                 }
+                ClientStreamReq::Liveness => {
+                    // ignore - we are re-connecting anyway
+                }
             }
         }
 
@@ -583,7 +664,8 @@ async fn client_stream(
         for (req_id, ack) in in_flight.drain() {
             in_flight_buf.insert(req_id, ack);
         }
-        assert!(in_flight.is_empty());
+        // drain() already empties the map, so this is a debug-only sanity check.
+        debug_assert!(in_flight.is_empty());
 
         debug!("client stream tasks killed - re-connecting now");
     }
@@ -693,8 +775,14 @@ async fn stream_reader(
                 }
             }
             OpCode::Close => break,
-            OpCode::Ping => {}
-            OpCode::Pong => {}
+            // keepalive traffic from the server (auto-pong of our pings): forward it as a liveness
+            // marker so the manager can enforce the read deadline. Ping frames are normally
+            // consumed by auto_pong and never reach here.
+            OpCode::Ping | OpCode::Pong => {
+                if let Err(err) = tx.send_async(ClientStreamReq::Liveness).await {
+                    error!("Error sending Liveness to Client Stream Manager: {:?}", err);
+                }
+            }
         }
     }
 
@@ -711,6 +799,14 @@ async fn stream_writer(
                 let frame = Frame::binary(Payload::from(bytes));
                 if let Err(err) = write.write_frame(frame).await {
                     error!("Client Stream error: {:?}", err);
+                    break;
+                }
+            }
+            WritePayload::Ping => {
+                // keepalive ping; the server auto-pongs it (fastwebsockets default)
+                let frame = Frame::new(true, OpCode::Ping, None, Payload::from(vec![]));
+                if let Err(err) = write.write_frame(frame).await {
+                    error!("Client Stream keepalive ping error: {:?}", err);
                     break;
                 }
             }
@@ -735,5 +831,12 @@ async fn try_connect(
         let lock = leader.read().await;
         (lock.0, lock.1.clone())
     };
-    web_socket_connect::try_connect(node_id, &addr, raft_type, tls_config, secret).await
+    web_socket_connect::try_connect(
+        node_id,
+        &addr,
+        &format!("/stream/{}", raft_type.as_str()),
+        tls_config,
+        secret,
+    )
+    .await
 }

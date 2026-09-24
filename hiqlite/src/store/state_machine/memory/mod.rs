@@ -1,16 +1,13 @@
-use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
 use crate::Node;
-#[cfg(feature = "in-memory-snapshots")]
-use std::io::Cursor;
+use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
 
-mod cache_ttl_handler;
 pub mod kv_handler;
 pub mod state_machine;
 
 #[cfg(feature = "dlock")]
 pub mod dlock_handler;
 
-#[cfg(feature = "listen_notify_local")]
+#[cfg(feature = "listen_notify")]
 pub mod notify_handler;
 
 // By default Cache Snapshots are streamed directly from file, which is zero-copy and
@@ -31,5 +28,5 @@ openraft::declare_raft_types!(
         D = CacheRequest,
         R = CacheResponse,
         Node = Node,
-        SnapshotData = Cursor<Vec<u8>>,
+        SnapshotData = std::io::Cursor<Vec<u8>>,
 );

@@ -1,4 +1,5 @@
 use crate::Error;
+use bincode_next::{Decode, Encode};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::error;
@@ -39,7 +40,7 @@ impl Row<'_> {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct RowOwned {
     pub(crate) columns: Vec<ColumnOwned>,
 }
@@ -53,7 +54,8 @@ impl RowOwned {
             let value = match info.typ {
                 ColumnType::Expr => {
                     // returned expressions can be any type we don't know in advance
-                    // TODO is there a nicer solution for this with the encapsulated type?
+                    // The chain below covers every SQLite storage class, so the final Null is
+                    // only reachable for a genuine SQL NULL.
                     if let Ok(text) = row.get::<_, String>(i) {
                         ValueOwned::Text(text)
                     } else if let Ok(i) = row.get::<_, i64>(i) {
@@ -67,13 +69,45 @@ impl RowOwned {
                     }
                 }
                 // ColumnType::Expr => row.get(i).map(ValueOwned::Text).unwrap_or(ValueOwned::Null),
-                ColumnType::Integer => row
-                    .get(i)
-                    .map(ValueOwned::Integer)
-                    .unwrap_or(ValueOwned::Null),
-                ColumnType::Real => row.get(i).map(ValueOwned::Real).unwrap_or(ValueOwned::Null),
-                ColumnType::Text => row.get(i).map(ValueOwned::Text).unwrap_or(ValueOwned::Null),
-                ColumnType::Blob => row.get(i).map(ValueOwned::Blob).unwrap_or(ValueOwned::Null),
+                // Typed columns: a genuine SQL NULL maps to Null; a stored value that cannot be
+                // converted is a type mismatch and must fail loudly instead of silently
+                // becoming Null.
+                ColumnType::Integer => match row.get::<_, Option<i64>>(i) {
+                    Ok(Some(v)) => ValueOwned::Integer(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Integer but the stored value \
+                         cannot be converted to i64: {err:?}",
+                        info.name
+                    ),
+                },
+                ColumnType::Real => match row.get::<_, Option<f64>>(i) {
+                    Ok(Some(v)) => ValueOwned::Real(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Real but the stored value \
+                         cannot be converted to f64: {err:?}",
+                        info.name
+                    ),
+                },
+                ColumnType::Text => match row.get::<_, Option<String>>(i) {
+                    Ok(Some(v)) => ValueOwned::Text(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Text but the stored value \
+                         cannot be converted to String: {err:?}",
+                        info.name
+                    ),
+                },
+                ColumnType::Blob => match row.get::<_, Option<Vec<u8>>>(i) {
+                    Ok(Some(v)) => ValueOwned::Blob(v),
+                    Ok(None) => ValueOwned::Null,
+                    Err(err) => panic!(
+                        "Column '{}' is declared as Blob but the stored value \
+                         cannot be converted to Vec<u8>: {err:?}",
+                        info.name
+                    ),
+                },
             };
 
             cols.push(ColumnOwned {
@@ -202,7 +236,7 @@ impl ColumnType {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct ColumnOwned {
     // TODO find a way to include all the column names only once at the very top level and
     // somehow get a reference of them into a `From<_>` impl, probably with a new Trait.
@@ -226,7 +260,7 @@ impl ColumnOwned {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub enum ValueOwned {
     Null,
     Integer(i64),
@@ -675,5 +709,96 @@ impl TryFrom<ValueOwned> for uuid::Uuid {
                 "Cannot only parse UUID from BLOB column".into(),
             )),
         }
+    }
+}
+
+#[cfg(all(test, feature = "macros"))]
+mod try_from_row_tests {
+    use super::*;
+    use crate::macros::TryFromRow;
+
+    #[derive(Debug, PartialEq, TryFromRow)]
+    struct Inner {
+        a: String,
+    }
+
+    #[derive(Debug, PartialEq, TryFromRow)]
+    struct Outer {
+        name: String,
+        #[column(from_i32)]
+        count: i32,
+        #[column(parse)]
+        big: u64,
+        #[column(skip)]
+        skipped: i64,
+        #[column(flatten)]
+        inner: Inner,
+    }
+
+    fn make_row(cols: &[(&str, ValueOwned)]) -> Row<'static> {
+        let columns = cols
+            .iter()
+            .map(|(name, value)| ColumnOwned {
+                name: (*name).to_string(),
+                value: value.clone(),
+            })
+            .collect();
+        Row::Owned(RowOwned { columns })
+    }
+
+    // Pin the target type so `TryFrom` resolves unambiguously (both `Inner` and `Outer`
+    // implement it).
+    fn try_outer(row: &mut Row<'_>) -> Result<Outer, Error> {
+        std::convert::TryFrom::try_from(row)
+    }
+
+    #[test]
+    fn try_from_row_maps_all_attribute_kinds() {
+        let mut row = make_row(&[
+            ("name", ValueOwned::Text("hi".into())),
+            ("count", ValueOwned::Integer(42)),
+            ("big", ValueOwned::Text(u64::MAX.to_string().into())),
+            ("skipped", ValueOwned::Integer(999)),
+            ("a", ValueOwned::Text("inner".into())),
+        ]);
+        let outer = try_outer(&mut row).unwrap();
+        assert_eq!(outer.name, "hi");
+        assert_eq!(outer.count, 42);
+        assert_eq!(outer.big, u64::MAX);
+        // `skip` is never read from the row, so it must stay at its default.
+        assert_eq!(outer.skipped, 0);
+        assert_eq!(outer.inner.a, "inner");
+    }
+
+    #[test]
+    fn try_from_row_i32_overflow_is_an_error_not_a_panic() {
+        let mut row = make_row(&[
+            ("name", ValueOwned::Text("hi".into())),
+            ("count", ValueOwned::Integer(i64::MAX)),
+            ("big", ValueOwned::Text("1".into())),
+            ("skipped", ValueOwned::Null),
+            ("a", ValueOwned::Text("inner".into())),
+        ]);
+        let err = try_outer(&mut row).unwrap_err();
+        assert!(
+            matches!(err, Error::Sqlite(_)),
+            "expected Sqlite error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn try_from_row_parse_failure_is_an_error() {
+        let mut row = make_row(&[
+            ("name", ValueOwned::Text("hi".into())),
+            ("count", ValueOwned::Integer(1)),
+            ("big", ValueOwned::Text("not-a-number".into())),
+            ("skipped", ValueOwned::Null),
+            ("a", ValueOwned::Text("inner".into())),
+        ]);
+        let err = try_outer(&mut row).unwrap_err();
+        assert!(
+            matches!(err, Error::Sqlite(_)),
+            "expected Sqlite error: {err:?}"
+        );
     }
 }

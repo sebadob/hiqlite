@@ -1,5 +1,169 @@
 # Changelog
 
+## UNRELEASED
+
+This version brings a huge number of tiny (and some big) bugfixes. The list is too long to write it down here
+meaningfully. In general: if you had any issue, this version probably fixes it.
+
+### BREAKING - VERY IMPORTANT
+
+**IF YOU DON'T FOLLOW THE STEPS BELOW, YOU MIGHT END UP WITH INCONSISTENT DATA!**
+
+You **MUST** clean up all **CACHE** files from an older version when you migrate to this one! Also, you **MUST NOT** do
+a **ROLLING RELEASE**. You will have short downtime with this upgrade. When you simply remove the cache data, and you
+have other cluster nodes running, the cleaned-up node will restart, join the existing cluster, and sync the just
+cleaned-up data. This **MUST NOT** happen!
+
+Your cache data that you need to delete before a **full, clean cluster restart** lives in:
+
+- `<data_dir>/logs_cache/`
+- `<data_dir>/state_machine_cache/`
+
+Hiqlite is trying to help and guard you as much as possible. There are safeguards and startup checks in place. You can
+either delete the data manually, or, when running inside a container where this can be very annoying, there are helper
+env vars that trigger an automation in code. However, these are **not enabled by default**! This is important because
+otherwise they will delete cache data on their own, which would be very unexpected. You can trigger the auto-cleanup by
+setting:
+
+```bash
+HQL_CACHE_WAL_AUTO_MIGRATE=true
+```
+
+If this is set, Hiqlite will check if the cleanup is necessary and if so, it will also try to connect to all configured
+cluster members to make sure they are other not running, or they are already running the new version properly. If you
+screwed up badly and somehow made it crash despite the safeguards (they try their best, but it's possible
+theoretically), there is another env var to trigger a forced cleanup, even when Hiqlite detects that it was started with
+the new version already. You can then set `HQL_CACHE_WAL_FORCE_MIGRATE=true`. But you **MUST** remove this var
+immediately after startup again, because apart from `HQL_CACHE_WAL_AUTO_MIGRATE`, it will trigger on each restart
+regardless!
+
+**CAUTION: If you decide to delete the cache data manually, the safeguards during startup that check for still running
+cluster nodes on old versions CANNOT TRIGGER correctly! They will assume you are starting a fresh cluster, which is
+always safe. If you do the manual version, you are responsible for guaranteeing a full cluster shutdown before
+restarting the first node with the new one!**
+
+This might be a bit annoying because you cannot do a rolling release, and you will have short downtime, but it will be
+worth it. The reason for this is an internal rework of the WAL file and some Raft types. Before, it was, for instance,
+not possible to change the enabled features when using the cache because it had the potential to screw up your Raft
+logs. A second reason is that the wire type for Raft networking was optimized as well. It made sense to do this in one
+batch so that you only have this downtime once.
+
+With this release, you can change defined features for an existing app later on without breaking any possibly existing
+Raft or WAL files. If you had features disabled, the logs will have placeholder indexes. They don't cost us anything
+expect for just a very few lines of "dead" code when unneeded, but we gain stability for that. All they do is basically
+skip some indices. Since we needed this breaking change anyway, we also added a few additional possible Raft messages
+in order (cleaner code and maintenance) to provide the new atomic cache operations mentioned below.
+
+In the end, it's just a cache. You only need to clear the cache and **NOT THE DATABASE**! The database WAL +
+State Machine are fully compatible.
+
+**Even though this migration is pretty easy, you should definitely create a backup right before you do this!**
+
+#### Other Breaking Changes
+
+- The following config vars have been renamed:
+  ```
+  health_check_delay_secs     -> health_check_delay
+  HQL_HEALTH_CHECK_DELAY_SECS -> HQL_HEALTH_CHECK_DELAY
+  backup_keep_days            -> backup_keep_for
+  HQL_BACKUP_KEEP_DAYS        -> HQL_BACKUP_KEEP_FOR
+  backup_keep_days_local      -> backup_keep_for_local
+  HQL_BACKUP_KEEP_DAYS_LOCAL  -> HQL_BACKUP_KEEP_FOR_LOCAL
+  ```
+  Apart from that, all these values are now of type `Duration`. This means you can either provide an Integer, and they
+  will be interpreted as seconds, or you provide them as a String like '120s', '2m', '3h', ..., and they will be parsed
+  with the given unit. The available units are: `s, m, h, d, w, y`.
+- The `listen_notify_local` feature was dropped and folded into `listen_notify`. The `*_local` feature only existed
+  to prevent the `eventsource-client` from being pulled in, which was needed for remote-only clients. The connection
+  type was reworked from SEE (b64 encoded text data) into raw binary over WebSocket, which is much faster and more
+  efficient.
+- The database type conversions now fail loudly with a `panic` when there is an explicit mismatch between the returned
+  type from the DB and the Rust type it should be converted into. These hat the potential before to become silent `NULL`
+  s. The new behavior highlights unrecoverable logic issues during development immediately.
+- It is not really a breaking change, but worth mentioning here: The default for `log_sync` was changed. The default
+  before was `ImmediateAsync`. This was too loose as a default. You commit buffers into the kernel, but you don't know
+  when the data is flushed to disk. The kernel was an internal ticker every 30 seconds, which is a long time. You data
+  was safe, of course, as long as you did not have a kernel panic, but that's not a good default. The new default is
+  `IntervalMillis(200)`. Data is still collected async in memory, but will be force-flushed every 200ms to disk. There
+  is almost no real throughput penalty compared to `ImmediateAsync`, but you have way better consistency (even though
+  more stress on your SSD).
+- The ENV var `HQL_TLS_{variant}_DANGER_TLS_NO_VERIFY` was renamed to `HQL_TLS_{variant}_NO_VERIFY`. Apart from that,
+  there is now a `REFERENCE_CONFIG.toml` in the crates root dir. It was updated and added into the tests. You will also
+  be able to grab it directly from the crate, es it is embedded at compile time.
+- `counters` is now part of the `full` feature.
+- The MSRV for all crates was bumped to 1.95.
+
+### Changes
+
+A lot of internal code has been reworked in terms of security, robustness, stability, future maintenance improvements.
+
+The `bincode` codec was replaced by the byte-compatible `bincode-next` serde adapter (faster, SIMD-accelerated
+decoding). On-disk and wire formats are unchanged; the legacy `bincode` crate is now a dev-dependency only. `bincode`
+itself was fine, but it was unmaintained, which did not look good during things like `cargo audit`.
+
+#### New Cache Functions
+
+In combination with the breaking change WAL rework mentioned above, a few new cache functions were added. These are:
+
+- `get_remove()`
+- `get_remove_bytes()`
+- `replace()`
+- `replace_bytes()`
+
+They are atomic functions, and they do what their name suggests. The `replace` fn's replace the current value with the
+new one and return the old value, if is existed, in an atomic operation.
+
+#### Cache Collision Safety
+
+It was possible that cache entries into the exact same cache that ended on the exact same TTL (second precision) could
+overwrite each others TTL, leaving one of the entries in place until forever and never being cleaned up. The TTLs are
+still in second precision, but the internal KV handler works with microseconds. If it detects a collision, it simply
+advances the conflicting new TTL in 1-microsecond steps until it finds a free slot. This is not 100% collision-free of
+course, because if you insert 1.000.000 entries into the exact same cache that have the exact same calculated absolute
+TTL consistently, you would get an overflow, but that is
+
+1. very unlikely
+2. easy to counter (use multiple caches)
+3. the current approach is the fastest and most efficient
+
+#### Distributed Lock Stability
+
+The distributed locks handler had some stability issues. It was possible that some locks could end up being stale
+and never woken when there was a conflict. This handler was completely reworked, and this should not happen anymore.
+
+Locks are now self-renewing: as long as the `Lock` handle is alive, the client sends a heartbeat that extends the lease
+on all cluster nodes. The hard timeout (10 s in release builds, 2 s in debug builds) now only applies to dead clients,
+so a held lock no longer expires while its owner is still running. The new `Lock` you get also provides a helper
+function `is_locked()` that you can use to double-check your lock is still hold, even if you have a network partition
+when you are beyond the 10s timeout with a very long-running job. The `Lock` is also not cloneable anymore. It made
+no sense that it derived `Clone`, because it will release as soon as one of them is dropped, which makes a clone pretty
+useless.
+
+#### `TryFromRow` Macro
+
+The `FromRow` macro `panic`s if there is a type mismatch between the returned data and the Rust `struct` you are trying
+to map the row to. I always favor a `panic` over an error in case of an unrecoverable error, but there were people
+asking for graceful errors in such a case. You can now optionally derive `TryFromRow` and use one of the new
+non-panicking query functions from the client:
+
+- `query_try_map()`
+- `query_try_map_one()`
+- `query_try_map_optional()`
+
+These will behave exactly like the already existing counterparts without the `try`, with the only exception that they
+will return a `Result<T, hiqlite::Error>` for the value in case the mapping fails.
+
+> The other existing macros have been optimized quite a bit as well. They don't provide new functionality but way
+> better debugging capabilities.
+
+#### Rate-Limiting Fixes
+
+It was possible that the rate-limiting bucket inside the client got more permits than intended.
+
+#### External State Machine
+
+If you already have an external state machine, you can now provide your own and re-use all Hiqlites parts.
+
 ## v0.14.0
 
 ### Breaking
@@ -491,7 +655,7 @@ Apart from that, internal dependencies like SQLite have been bumped and the Rust
 
 ## hiqlite v0.9.1
 
-Fixed a bug for local backup cleanup. In some situations, the `backup_keep_days_local` config variable was not read
+Fixed a bug for local backup cleanup. In some situations, the `backup_keep_for_local` config variable was not read
 properly, and in addition, the path for the cleanup could end up wrong as well. This made it possible that the local
 backup cleanup would not work at all in some situations.
 
@@ -754,7 +918,7 @@ Additionally, a new optional config variable has been added to set an initial de
 # and egg problem when you want to cold-start a cluster while
 # relying on `readinessProbe` checks.
 # default: 30
-HQL_HEALTH_CHECK_DELAY_SECS=30
+HQL_HEALTH_CHECK_DELAY=30
 ```
 
 ## v0.3.1

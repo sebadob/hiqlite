@@ -1,9 +1,9 @@
 use crate::network::HEADER_NAME_SECRET;
-use axum::http::{header, HeaderName, HeaderValue};
+use axum::http::{HeaderName, HeaderValue, header};
 use std::str::FromStr;
 use std::sync::Arc;
-use tower::layer::util::{Identity, Stack};
 use tower::ServiceBuilder;
+use tower::layer::util::{Identity, Stack};
 use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 

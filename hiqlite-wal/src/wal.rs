@@ -279,7 +279,8 @@ impl WalFile {
 
     #[inline]
     pub fn space_left(&self) -> u32 {
-        self.len_max.saturating_sub(self.data_end.unwrap_or_else(|| self.offset_logs() as u32))
+        self.len_max
+            .saturating_sub(self.data_end.unwrap_or_else(|| self.offset_logs() as u32))
     }
 
     /// Expects to have enough space left -> check MUST be done upfront
@@ -544,6 +545,7 @@ impl WalFile {
             use std::os::fd::AsRawFd;
 
             let file = self.file.as_ref().expect("file kept while mmap_mut");
+            // SAFETY: fd is valid, offset + nbytes = 0 means "whole file", flags are type-safe enum
             let res = unsafe {
                 libc::sync_file_range(file.as_raw_fd(), 0, 0, libc::SYNC_FILE_RANGE_WRITE)
             };
@@ -834,7 +836,9 @@ impl WalFileSet {
         // the `data_end` bounds check below is skipped for the last file, so it must be done
         // here for the first one - otherwise a corrupt header could pass startup checks
         if first.data_end.unwrap_or(0) > first.len_max {
-            return Err(Error::Integrity("WAL data offset bigger than file size".into()));
+            return Err(Error::Integrity(
+                "WAL data offset bigger than file size".into(),
+            ));
         }
         let mut wal_no = first.wal_no;
         let mut until = first.id_until;

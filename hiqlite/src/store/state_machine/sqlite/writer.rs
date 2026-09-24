@@ -1,4 +1,4 @@
-use crate::helpers::{deserialize, serialize};
+use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::migration::Migration;
 use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
 use crate::store::logs;
@@ -21,6 +21,7 @@ use rusqlite::{Batch, CachedStatement, Rows, Transaction};
 use std::borrow::Cow;
 use std::default::Default;
 use std::ops::Sub;
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 use thread_priority::ThreadPriority;
@@ -138,7 +139,8 @@ pub fn spawn_writer(
     path_lock_file: String,
     log_statements: bool,
     do_reset_metadata: bool,
-    #[cfg(feature = "backup")] local_backup_keep_days: u16,
+    #[cfg(feature = "backup")] local_backup_keep_for: Duration,
+    lock_file: std::fs::File,
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(1);
 
@@ -441,7 +443,9 @@ CREATE TABLE IF NOT EXISTS _metadata
                             if let Err(e) = txn.rollback() {
                                 error!("Error during txn rollback: {:?}", e);
                             }
-                            req.tx.send(Err(err)).expect("oneshot tx to never be dropped");
+                            req.tx
+                                .send(Err(err))
+                                .expect("oneshot tx to never be dropped");
                         } else {
                             match txn.commit() {
                                 Ok(()) => {
@@ -485,9 +489,13 @@ CREATE TABLE IF NOT EXISTS _metadata
                         }
 
                         if let Some(err) = err {
-                            req.tx.send(Err(err)).expect("oneshot tx to never be dropped");
+                            req.tx
+                                .send(Err(err))
+                                .expect("oneshot tx to never be dropped");
                         } else {
-                            req.tx.send(Ok(res)).expect("oneshot tx to never be dropped");
+                            req.tx
+                                .send(Ok(res))
+                                .expect("oneshot tx to never be dropped");
                         }
                     }
                 },
@@ -573,12 +581,13 @@ CREATE TABLE IF NOT EXISTS _metadata
                         .query_row("SELECT data FROM _metadata WHERE key = 'meta'", (), |row| {
                             let meta_bytes: Vec<u8> = row.get(0)?;
                             let metadata: StateMachineData =
-                                deserialize(&meta_bytes).expect("Metadata to deserialize ok");
+                                deserialize_serde(&meta_bytes).expect("Metadata to deserialize ok");
                             Ok(metadata)
                         })
                         .expect("Metadata query to always succeed");
 
-                    ack.send(Ok(())).expect("snapshot install listener to always exist");
+                    ack.send(Ok(()))
+                        .expect("snapshot install listener to always exist");
                 }
 
                 WriterRequest::MetadataRead(ack) => {
@@ -595,7 +604,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             // position - fail hard rather than guess
                             Ok(bytes) => {
                                 sm_data =
-                                    deserialize(&bytes).expect("Metadata to deserialize ok");
+                                    deserialize_serde(&bytes).expect("Metadata to deserialize ok");
                             }
                             Err(err) => {
                                 warn!("No metadata exists inside the DB yet");
@@ -603,13 +612,16 @@ CREATE TABLE IF NOT EXISTS _metadata
                         }
                     }
 
-                    ack.send(sm_data.clone()).expect("metadata read listener to always exist");
+                    ack.send(sm_data.clone())
+                        .expect("metadata read listener to always exist");
                 }
 
                 WriterRequest::MetadataMembership(req) => {
                     sm_data.last_membership = req.last_membership;
                     sm_data.last_applied_log_id = req.last_applied_log_id;
-                    req.ack.send(()).expect("membership ack listener to always exist");
+                    req.ack
+                        .send(())
+                        .expect("membership ack listener to always exist");
                 }
 
                 WriterRequest::Backup(req) => {
@@ -664,7 +676,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                     rt.spawn(async move {
                         if let Err(err) = crate::backup::backup_local_cleanup(
                             req.target_folder,
-                            local_backup_keep_days,
+                            local_backup_keep_for,
                         )
                         .await
                         {
@@ -701,6 +713,8 @@ CREATE TABLE IF NOT EXISTS _metadata
             error!("Error during 'PRAGMA optimize': {}", err);
         }
 
+        // release the advisory lock, then remove the crash-marker file
+        drop(lock_file);
         StateMachineSqlite::remove_lock_file(&path_lock_file);
 
         if let Some(ack) = shutdown_ack {
@@ -717,7 +731,7 @@ fn persist_metadata(
     conn: &rusqlite::Connection,
     metadata: &StateMachineData,
 ) -> Result<(), rusqlite::Error> {
-    let meta_bytes = serialize(metadata).unwrap();
+    let meta_bytes = serialize_serde(metadata).unwrap();
     let mut stmt = conn.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
     stmt.execute([meta_bytes])?;
     Ok(())
@@ -754,17 +768,31 @@ Got:      {}
 }
 
 #[inline]
-fn create_snapshot(conn: &rusqlite::Connection, path: String) -> Result<(), Error> {
+fn create_snapshot<P: Into<PathBuf>>(conn: &rusqlite::Connection, path: P) -> Result<(), Error> {
+    let mut path = path.into();
     // vacuum into a temp file and move it into place, so a crash can never leave a
     // partially written snapshot at the final path
-    let path_temp = format!("{path}~");
-    let q = format!("VACUUM main INTO '{path_temp}'");
+    let mut path_temp = path.clone();
+    path_temp.add_extension("tmp");
+    // escape single quotes so a folder name containing ' cannot break (or inject into) the SQL literal
+    let q = format!(
+        "VACUUM main INTO '{}'",
+        path_temp
+            .as_os_str()
+            .to_str()
+            .unwrap_or_default()
+            .replace('\'', "''")
+    );
     if let Err(err) = conn.execute(&q, ()) {
         let _ = std::fs::remove_file(&path_temp);
         return Err(Error::Sqlite(err.to_string().into()));
     }
+    std::fs::File::open(&path_temp)?.sync_data();
     std::fs::rename(&path_temp, &path)
         .map_err(|err| Error::Error(format!("rename snapshot into place: {err}").into()))?;
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_data();
+    }
     Ok(())
 }
 
@@ -791,7 +819,9 @@ fn create_backup(
     // vacuum into a temp file and move it into place, so a crash mid-backup can never leave
     // a partial file under the final backup name (restore would pick it up as valid)
     let path_temp = format!("{path_full}~");
-    if let Err(err) = conn.execute(&format!("VACUUM main INTO '{path_temp}'"), ()) {
+    // escape single quotes so a folder name containing ' cannot break (or inject into) the SQL literal
+    let path_sql = path_temp.replace('\'', "''");
+    if let Err(err) = conn.execute(&format!("VACUUM main INTO '{path_sql}'"), ()) {
         let _ = std::fs::remove_file(&path_temp);
         return Err(err.into());
     }

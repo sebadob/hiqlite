@@ -1,8 +1,7 @@
 use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientKVPayload, ClientStreamReq};
-use crate::helpers::deserialize;
+use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::network::api::ApiStreamResponsePayload;
-use crate::network::serialize_network;
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
 use crate::store::state_machine::memory::state_machine::{CacheRequest, CacheResponse};
 use crate::{CacheVariants, Client, Error};
@@ -83,7 +82,7 @@ impl Client {
         match self.get_bytes(cache, key).await {
             Ok(value) => {
                 if let Some(v) = value {
-                    Ok(Some(deserialize(&v)?))
+                    Ok(Some(deserialize_serde(&v)?))
                 } else {
                     Ok(None)
                 }
@@ -107,7 +106,10 @@ impl Client {
                 .tx_caches
                 .get(cache.hiqlite_cache_index())
                 .unwrap()
-                .send(CacheRequestHandler::Get((key.into(), ack)))
+                .send(CacheRequestHandler::Get {
+                    key: key.into(),
+                    reply: ack,
+                })
                 .expect("kv handler to always be running");
             let value = await_channel_response(rx).await?;
             Ok(value)
@@ -145,13 +147,13 @@ impl Client {
                 .tx_caches
                 .get(cache.hiqlite_cache_index())
                 .unwrap()
-                .send(CacheRequestHandler::SnapshotBuildCacheOnly(ack))
+                .send(CacheRequestHandler::SnapshotBuildCacheOnly { reply: ack })
                 .expect("kv handler to always be running");
             let snapshot = await_channel_response(rx).await?;
 
             let mut res = BTreeMap::new();
             for (k, v) in snapshot {
-                res.insert(k, deserialize(&v)?);
+                res.insert(k, deserialize_serde(&v)?);
             }
             Ok(res)
         } else {
@@ -190,10 +192,14 @@ impl Client {
         K: Into<Cow<'static, str>>,
         V: Serialize,
     {
-        self.rate_limit_cache().await?;
-
-        self.put_bytes(cache, key, serialize_network(value), ttl)
-            .await?;
+        // `put_bytes` below applies the cache rate limit itself
+        self.put_bytes(
+            cache,
+            key,
+            serialize_serde(value).expect("Network payload serialization should always succeed"),
+            ttl,
+        )
+        .await?;
         Ok(())
     }
 
@@ -216,7 +222,11 @@ impl Client {
                 cache_idx: cache.hiqlite_cache_index(),
                 key: key.into(),
                 value,
-                expires: ttl.map(|seconds| Utc::now().timestamp_micros().saturating_add(seconds.saturating_mul(1_000_000))),
+                expires: ttl.map(|seconds| {
+                    Utc::now()
+                        .timestamp_micros()
+                        .saturating_add(seconds.saturating_mul(1_000_000))
+                }),
             },
             false,
         )
@@ -255,10 +265,11 @@ impl Client {
         K: Into<Cow<'static, str>>,
         V: for<'a> Deserialize<'a>,
     {
+        // `get_remove_bytes` below applies the cache rate limit itself
         match self.get_remove_bytes(cache, key).await {
             Ok(value) => {
                 if let Some(v) = value {
-                    Ok(Some(deserialize(&v)?))
+                    Ok(Some(deserialize_serde(&v)?))
                 } else {
                     Ok(None)
                 }
@@ -308,12 +319,18 @@ impl Client {
     {
         // `replace_bytes` below applies the cache rate limit itself
         match self
-            .replace_bytes(cache, key, serialize_network(value), ttl)
+            .replace_bytes(
+                cache,
+                key,
+                serialize_serde(value)
+                    .expect("Network payload serialization should always succeed"),
+                ttl,
+            )
             .await
         {
             Ok(value) => {
                 if let Some(v) = value {
-                    Ok(Some(deserialize(&v)?))
+                    Ok(Some(deserialize_serde(&v)?))
                 } else {
                     Ok(None)
                 }
@@ -371,10 +388,10 @@ impl Client {
                 .tx_caches
                 .get(cache.hiqlite_cache_index())
                 .unwrap()
-                .send(CacheRequestHandler::CounterGet((
-                    key.into().to_string(),
-                    ack,
-                )))
+                .send(CacheRequestHandler::CounterGet {
+                    key: key.into().to_string(),
+                    reply: ack,
+                })
                 .expect("kv handler to always be running");
             let value = await_channel_response(rx).await?;
             Ok(value)
@@ -496,7 +513,7 @@ impl Client {
         is_remote_get: bool,
     ) -> Result<CacheResponse, Error> {
         if let Some(state) = self.is_leader_cache_with_state().await {
-            let res = state.raft_cache.raft.client_write(cache_req).await?;
+            let res = Self::client_write_local(&state.raft_cache.raft, cache_req).await?;
             Ok(res.data)
         } else {
             let (ack, rx) = oneshot::channel();
@@ -522,7 +539,7 @@ impl Client {
             let res = await_channel_response(rx).await??;
             match res {
                 ApiStreamResponsePayload::KV(res) => res,
-                #[cfg(any(feature = "sqlite", feature = "dlock", feature = "listen_notify_local"))]
+                #[cfg(any(feature = "sqlite", feature = "dlock", feature = "listen_notify"))]
                 _ => unreachable!(),
             }
         }

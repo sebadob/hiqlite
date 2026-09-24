@@ -1,5 +1,6 @@
+use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{AppStateExt, Error, serialize_network};
+use crate::network::{AppStateExt, Error};
 use axum::response::IntoResponse;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use openraft::error::{Fatal, InstallSnapshotError, RaftError};
@@ -10,18 +11,10 @@ use tokio::task;
 use tracing::{debug, error, warn};
 
 #[cfg(feature = "cache")]
-use crate::app_state::RaftType;
-#[cfg(feature = "cache")]
-use crate::helpers;
-#[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
-#[cfg(feature = "cache")]
-use std::collections::BTreeSet;
-
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
-use crate::helpers::deserialize;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
@@ -44,8 +37,6 @@ pub enum RaftStreamRequest {
     VoteCache((usize, VoteRequest<u64>)),
     #[cfg(feature = "cache")]
     SnapshotCache((usize, InstallSnapshotRequest<TypeConfigKV>)),
-    #[cfg(feature = "cache")]
-    RemoveMembershipCache(u64),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -75,6 +66,13 @@ pub enum RaftStreamResponsePayload {
 #[derive(Debug)]
 pub(crate) enum WsWriteMsg {
     Payload(Vec<u8>),
+    /// A frame the WebSocket library generated and obligates us to send back to the peer:
+    /// a Pong in response to a Ping, or the echo of a Close frame. `payload` is the raw
+    /// payload of the corresponding inbound frame, `opcode` tells us which one it was.
+    ObligatedSend {
+        opcode: OpCode,
+        payload: Vec<u8>,
+    },
     Break,
 }
 
@@ -167,6 +165,19 @@ async fn handle_socket(
                         break;
                     }
                 }
+                WsWriteMsg::ObligatedSend { opcode, payload } => {
+                    // The library generated this frame and expects us to send it verbatim.
+                    let frame = if opcode == OpCode::Pong {
+                        Frame::pong(Payload::Owned(payload))
+                    } else {
+                        // The only other obligated send the library produces is the Close echo.
+                        Frame::close_raw(Payload::Owned(payload))
+                    };
+                    if let Err(err) = write.write_frame(frame).await {
+                        error!("Error writing obligated WebSocket frame: {}", err);
+                        break;
+                    }
+                }
                 WsWriteMsg::Break => {
                     debug!("handle_socket -> server stream break message");
                     break;
@@ -179,14 +190,25 @@ async fn handle_socket(
     });
 
     while let Ok(frame) = read
-        .read_frame(&mut |frame| async move {
-            // TODO obligated sends should be auto ping / pong / close ? -> verify!
-            debug!(
-                "Received obligated send in stream client: OpCode: {:?}: {:?}",
-                frame.opcode.clone(),
-                frame.payload
-            );
-            Ok::<(), Error>(())
+        .read_frame(&mut |frame| {
+            // The library generates the obligated frame (Pong for Ping, Close echo) and
+            // expects us to send it back on the socket - forward it to the writer task.
+            let tx_write = tx_write.clone();
+            async move {
+                if let Err(err) = tx_write
+                    .send_async(WsWriteMsg::ObligatedSend {
+                        opcode: frame.opcode,
+                        payload: frame.payload.to_vec(),
+                    })
+                    .await
+                {
+                    error!(
+                        "Error forwarding obligated WebSocket frame to writer (OpCode {:?}): {}",
+                        frame.opcode, err
+                    );
+                }
+                Ok::<(), Error>(())
+            }
         })
         .await
     {
@@ -197,7 +219,7 @@ async fn handle_socket(
             }
             OpCode::Binary => {
                 let bytes = frame.payload.deref();
-                match deserialize::<RaftStreamRequest>(bytes) {
+                match deserialize_serde::<RaftStreamRequest>(bytes) {
                     Ok(req) => req,
                     Err(err) => {
                         error!("Error deserializing RaftStreamRequest: {:?}", err);
@@ -260,40 +282,16 @@ async fn handle_socket(
                 let res = state.raft_cache.raft.install_snapshot(req).await;
                 (request_id, RaftStreamResponsePayload::SnapshotCache(res))
             }
-
-            #[cfg(feature = "cache")]
-            RaftStreamRequest::RemoveMembershipCache(node_id) => {
-                debug!("Node drop membership request for Node: {}\n", node_id);
-
-                // we want to hold the lock until we finished to not end up with race conditions
-                let _lock = state.raft_lock.lock().await;
-
-                let metrics = helpers::get_raft_metrics(&state, &RaftType::Cache).await;
-                let members = metrics.membership_config;
-
-                let mut nodes_set = BTreeSet::new();
-                for (id, _node) in members.nodes() {
-                    if *id != node_id {
-                        nodes_set.insert(*id);
-                    }
-                }
-
-                if let Err(err) =
-                    helpers::change_membership(&state, &RaftType::Cache, nodes_set, false).await
-                {
-                    error!("Error removing remote Cache Member: {:?}", err);
-                }
-                break;
-            }
         };
 
         if let Err(err) = tx_write
-            .send_async(WsWriteMsg::Payload(serialize_network(
-                &RaftStreamResponse {
+            .send_async(WsWriteMsg::Payload(
+                serialize_serde(&RaftStreamResponse {
                     request_id,
                     payload,
-                },
-            )))
+                })
+                .expect("Network payload serialization should always succeed"),
+            ))
             .await
         {
             error!(

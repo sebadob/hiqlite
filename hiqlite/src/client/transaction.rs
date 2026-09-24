@@ -68,11 +68,9 @@ impl Client {
         queries: Vec<Query>,
     ) -> Result<Vec<Result<usize, Error>>, Error> {
         if let Some(state) = self.is_leader_db_with_state().await {
-            let res = state
-                .raft_db
-                .raft
-                .client_write(QueryWrite::Transaction(queries))
-                .await?;
+            let res =
+                Self::client_write_local(&state.raft_db.raft, QueryWrite::Transaction(queries))
+                    .await?;
             let resp: Response = res.data;
             match resp {
                 Response::Transaction(res) => res,

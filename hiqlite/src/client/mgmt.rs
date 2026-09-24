@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
-use crate::helpers::deserialize;
+use crate::helpers::deserialize_serde;
 use crate::network::HEADER_NAME_SECRET;
 use crate::{Client, Error};
 use openraft::ServerState;
@@ -76,8 +76,7 @@ impl Client {
 
         if res.status().is_success() {
             let bytes = res.bytes().await?;
-            let resp = deserialize(bytes.as_ref())?;
-            Ok(resp)
+            Ok(deserialize_serde(bytes.as_ref())?)
         } else {
             let err = res.json::<Error>().await?;
             Err(err)
@@ -152,6 +151,18 @@ impl Client {
         }
     }
 
+    /// Wait until the database Raft is healthy.
+    #[cfg(feature = "sqlite")]
+    pub async fn wait_until_healthy_db_timeout(&self, timeout: Duration) -> Result<(), Error> {
+        tokio::time::timeout(timeout, self.wait_until_healthy_db())
+            .await
+            .map_err(|_| {
+                Error::Timeout(format!(
+                    "Waiting for DB to become healthy timed out after {timeout:?}"
+                ))
+            })
+    }
+
     /// Wait until the cache Raft is healthy.
     #[cfg(feature = "cache")]
     pub async fn wait_until_healthy_cache(&self) {
@@ -169,6 +180,18 @@ impl Client {
         }
     }
 
+    /// Wait until the cache Raft is healthy.
+    #[cfg(feature = "cache")]
+    pub async fn wait_until_healthy_cache_timeout(&self, timeout: Duration) -> Result<(), Error> {
+        tokio::time::timeout(timeout, self.wait_until_healthy_cache())
+            .await
+            .map_err(|_| {
+                Error::Timeout(format!(
+                    "Waiting for Cache to become healthy timed out after {timeout:?}"
+                ))
+            })
+    }
+
     /// Perform a graceful shutdown for this Raft node.
     /// Works on local clients only and can't shut down remote nodes.
     ///
@@ -179,8 +202,10 @@ impl Client {
     /// upfront, but this has not been stabilized in this version.
     pub async fn shutdown(&self) -> Result<(), Error> {
         if let Some(state) = &self.inner.state {
+            // Must exceed the 9.5 s Kubernetes rolling-release pre-sleep inside
+            // `shutdown_execute`, leaving headroom for the ordered teardown itself.
             if tokio::time::timeout(
-                Duration::from_secs(15),
+                Duration::from_secs(20),
                 Self::shutdown_execute(
                     state,
                     #[cfg(feature = "cache")]
@@ -249,7 +274,32 @@ impl Client {
             is_single_instance = node_count == 1;
         }
 
-        state.is_shutting_down.store(true, Ordering::Relaxed);
+        // Only one caller performs the ordered teardown below. Concurrent callers (e.g. an app that
+        // calls `Client::shutdown()` at the same time a SIGTERM unblocks `ShutdownHandle::wait`)
+        // would otherwise double-run it: a second `raft.shutdown()`, a second cluster leave, and a
+        // second `WriterRequest::Shutdown` whose ack channel is already dropped (panicking the
+        // `.expect` below). The loser therefore waits for the winner to finish instead.
+        let is_runner = state
+            .is_shutting_down
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok();
+
+        if !is_runner {
+            // Wait until the winning caller signals completion by setting `tx_shutdown`, so a caller
+            // that returns from here can safely proceed (e.g. let the process exit). The outer 20s
+            // timeout in both entry points bounds this wait, so it cannot hang forever.
+            info!("Shutdown already in progress - waiting for it to complete");
+            if let Some(tx) = tx_shutdown {
+                let mut rx = tx.subscribe();
+                while !*rx.borrow() {
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            }
+            info!("Shutdown complete (waited on concurrent shutdown)");
+            return Ok(());
+        }
 
         // This pre-shutdown delay is not strictly necessary, but it makes rolling releases
         // smoother, especially with ephemeral storage. It also allows to set a ready check
@@ -315,7 +365,7 @@ impl Client {
             info!("Shutting down raft cache layer");
 
             // TODO as soon openraft-0.10 is out, we will be able to trigger a pre-emptive
-            //  leader switch, if this node is the leader. This will smoth out things even more.
+            //  leader switch, if this node is the leader. This will smooth out things even more.
 
             state
                 .raft_cache
@@ -348,7 +398,7 @@ impl Client {
             }
 
             // TODO as soon openraft-0.10 is out, we will be able to trigger a pre-emptive
-            //  leader switch, if this node is the leader. This will smoth out things even more.
+            //  leader switch if this node is the leader. This will smooth out things even more.
 
             state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
 

@@ -4,6 +4,9 @@ export TAG := `cat hiqlite/Cargo.toml | grep '^version =' | cut -d " " -f3 | xar
 export MSRV := `cat hiqlite/Cargo.toml | grep '^rust-version =' | cut -d " " -f3 | xargs`
 export USER := `echo "$(id -u):$(id -g)"`
 
+# Allows overwriting a dependency version if we pin it specifically.
+export CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE := 'allow'
+
 [private]
 default:
     @just -l
@@ -66,6 +69,7 @@ check:
     set -euxo pipefail
     clear
     cargo update
+    cargo fmt --check
     cargo clippy -- -D warnings
     cargo minimal-versions check -p hiqlite --features server
     cargo minimal-versions check -p hiqlite --no-default-features --features external-state-machine
@@ -96,7 +100,6 @@ clippy:
     cargo clippy --no-default-features --features in-memory-snapshots -- -D warnings
     cargo clippy --no-default-features --features counters -- -D warnings
     cargo clippy --no-default-features --features dlock -- -D warnings
-    cargo clippy --no-default-features --features listen_notify_local -- -D warnings
     cargo clippy --no-default-features --features listen_notify -- -D warnings
     cargo clippy --no-default-features --features sqlite,cache,webpki-roots -- -D warnings
 
@@ -109,6 +112,8 @@ clippy:
     cargo clippy --no-default-features --features sqlite,external-state-machine -- -D warnings
     cargo clippy --no-default-features --features full,external-state-machine -- -D warnings
     cargo clippy --features external-state-machine -- -D warnings
+
+    cargo clippy --no-default-features --features server -- -D warnings
 
 clippy-examples:
     #!/usr/bin/env bash
@@ -132,7 +137,7 @@ test test="":
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
-    cargo test --features cache,counters,dlock,listen_notify,macros,toml,external-state-machine {{ test }}
+    cargo test --features full,counters,external-state-machine,server {{ test }}
 
 # runs the full set of tests excluding backup to S3 tests
 test-no-s3:

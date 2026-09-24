@@ -43,7 +43,7 @@ and self-healing capabilities in case of any errors or problems.
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
-- fully encrypted backups to s3, cron job or manual
+- fully encrypted backups to s3, cron job, or manual
   (with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
 - restore from remote backup (with log index roll-over)
 - strongly consistent, replicated `EXECUTE` queries
@@ -101,7 +101,7 @@ considering that SQLite only allows a single writer at the same time.
 
 Test command (`-c` adjusted each time for different concurrency):
 
-```
+```bash
 cargo run --release -- cluster -c 4 -r 100000
 ```
 
@@ -113,9 +113,9 @@ AMD Ryzen 9950X, DDR5-5200 with highly optimized timings, M2 SSD Gen4
 
 | Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
 |-------------|----------------------|-----------------------------| 
-| 4           | ~40.000 / s          | ~710.000 / s                |
-| 16          | ~77.000 / s          | ~593.000 / s                |
-| 64          | ~102.000 / s         | ~528.000 / s                |
+| 4           | ~45.000 / s          | ~680.000 / s                |
+| 16          | ~78.000 / s          | ~602.000 / s                |
+| 64          | ~92.000 / s          | ~535.000 / s                |
 
 For a simple `SELECT`, we have 2 different metrics. By default, `hiqlite` caches all prepared statements. A simple
 `SELECT` with a fresh connection, which has not been prepared and cached yet, it took ~180-210 micros. Once the
@@ -127,16 +127,16 @@ measure these short ones).
 | Concurrency | 100k single PUT | single entry GET |
 |-------------|-----------------|------------------| 
 | 4           | ~51.000 / s     | ~6 micros        |
-| 16          | ~83.000 / s     |                  |
-| 64          | ~104.000 / s    |                  |
+| 16          | ~87.000 / s     |                  |
+| 64          | ~103.000 / s    |                  |
 
-**Cache (full in-memory):**
+**Cache (WAL in-memory):**
 
 | Concurrency | 100k single PUT |
 |-------------|-----------------| 
-| 4           | ~89.000 / s     |
-| 16          | ~268.000 / s    |
-| 64          | ~515.000 / s    |
+| 4           | ~103.000 / s    |
+| 16          | ~272.000 / s    |
+| 64          | ~500.000 / s    |
 
 ### Older Workstation
 
@@ -148,25 +148,25 @@ Note: These tests were not performed with the latest version yet. They are expec
 
 | Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
 |-------------|----------------------|-----------------------------| 
-| 4           | ~9.100 / s           | ~388.000 / s                |
-| 16          | ~17.200 / s          | ~335.000 / s                |
-| 64          | ~27.300 / s          | ~299.000 / s                |
+| 4           | ~11.000 / s          | ~391.000 / s                |
+| 16          | ~21.000 / s          | ~325.000 / s                |
+| 64          | ~28.000 / s          | ~282.000 / s                |
 
 **Cache (disk-backed):**
 
 | Concurrency | 100k single PUT | single entry GET |
 |-------------|-----------------|------------------| 
-| 4           | ~10.200 / s     | ~14 micros       |
-| 16          | ~22.100 / s     |                  |
-| 64          | ~29.100 / s     |                  |
+| 4           | ~13.000 / s     | ~12 micros       |
+| 16          | ~26.000 / s     |                  |
+| 64          | ~34.000 / s     |                  |
 
-**Cache (full in-memory):**
+**Cache (WAL in-memory):**
 
 | Concurrency | 100k single PUT |
 |-------------|-----------------| 
-| 4           | ~24.700 / s     |
-| 16          | ~78.800 / s     |
-| 64          | ~177.000 / s    |
+| 4           | ~24.000 / s     |
+| 16          | ~72.000 / s     |
+| 64          | ~160.000 / s    |
 
 ## Crate Features
 
@@ -294,9 +294,9 @@ You can lock any key, then do whatever you need, and as soon as the `Lock` you w
 released automatically.
 
 **Important:**
-In the current version, a distributed lock is only valid for max 10 seconds, to avoid issues with network segmentation
-or crashed nodes while they were holding some locks. If a lock is older than 10 seconds, it will be considered being
-"dead" in the current implementation to get rid of never-ending locks.
+Distributed locks have a hard timeout of 10 seconds (2s in debug builds), and they send heartbeats every 3 seconds
+(500ms in debug builds). A heartbeat extends the expiry. The hard timeout makes sure that a stale or crashed client
+can never hold a lock forever.
 
 ### `external-state-machine`
 
@@ -334,6 +334,7 @@ This feature enables the regular Hiqlite cluster features apart from the `server
 - auto-heal
 - backup
 - cache
+- counters
 - dashboard
 - dlock
 - listen_notify
@@ -343,10 +344,21 @@ This feature enables the regular Hiqlite cluster features apart from the `server
 - toml
 - webpki-roots
 
+### `in-memory-snapshots`
+
+By default, even if you set `cache_storage_disk = false` to keep the WAL in-memory, Cache snapshots will still be
+written to disk into a temp file. This means the `data_dir` must be writable. Snapshots are only necessary if a new node
+joins the Raft cluster, and then only the leader needs to stream the latest snapshot to the new node. This means in most
+cases, you never need them. Writing them into a temp file is the most efficient solution. However, with this feature,
+you can opt-in to keep snapshots in-memory as well. This will not need any disk at all (as long as you don't enable
+`sqlite` of course). This is costly, though, because you effectively double your memory requirements for each single
+cache entry.
+
 ### `jemalloc`
 
 This feature enables the `jemallocator` instead of using the default glibc `malloc`. It is a lot more performant, solves
-some issues with memory fragmentation and can be tuned for specific use cases. However, it does not work on Windows MSVC
+some issues with memory fragmentation, and can be tuned for specific use cases. However, it does not work on Windows
+MSVC
 targets and out of the box, without any tuning, it will use a bit more memory than default `malloc`.
 
 ### `listen_notify`
@@ -378,7 +390,7 @@ configured `s3` bucket.
 ### `server`
 
 This feature only exists to make it possible to run Hiqlite as a standalone DB / Cluster, if you really want this. It
-will build a binary which spins up a cluster with the given configuration, or you you can use it to install Hiqlite to
+will build a binary which spins up a cluster with the given configuration, or you can use it to install Hiqlite to
 spin up instances easily with
 
 `cargo install hiqlite --features server`
@@ -416,6 +428,26 @@ any volume attached to your container in that case.
 
 This feature will simply enable baked-in TLS ROOT CA's to be independent of any OS trust store, like for instance when
 you don't even have one inside your minimal docker container.
+
+## Panics
+
+Never `panic`king is NOT a goal of this crate. In fact, `panic` is very helpful and desired in certain scenarios. We
+want to handle errors gracefully where it makes sense, of course, but this crate will `panic` in situations where you
+encounter an unrecoverable error quite often. For instance, when you are trying to map a value from the DB row to a
+`struct`, and the types are incompatible by definition. This is a classic unrecoverable error. No matter how many times
+your application tries to do it, it will never work. For this reason, when you derive `FromRow` for instance, and you
+have a type mismatch with the DB, you will encounter a `panic`. This requires an actual code or database change, this is
+nothing temporary. A `panic` is the only logical thing you can throw here. It's fast, it's loud, you cannot miss it.
+When you only log some error in such cases, this is easily missed and requires a lot more time during debugging. When
+your process `panic`s, you know you screwed up.
+
+All situations that are recoverable, like e.g. a failed network request, will of course return proper `Result`s. If you
+ever encounter a `panic` and you think it's actually recoverable, please open an issue and explain the situation. In
+general, `panic`s are not bad, they are actually helpful and serve a purpose when used correctly, and they actually
+speed up development by yelling at you when you did something wrong.
+
+> In the example of the `FromRow` derive macro: If you actually want your conversions to handle errors gracefully,
+> you can always do your own `impl` for types and use `try_*` methods.
 
 ## Standalone Server / Cluster
 
@@ -456,10 +488,9 @@ can re-use the same config for multiple nodes.
 
 Take a look at the [examples](https://github.com/sebadob/hiqlite/tree/main/examples) or the example
 [config](https://github.com/sebadob/hiqlite/blob/main/config) to get an idea about the possible config values. The
-`NodeConfig` can be created programmatically or fully created either `from_toml()` or `from_env()` vars.
-For newly joining read-only replicas that should not become voting Raft members automatically
-during startup, set `learner_only = true` or `HQL_LEARNER_ONLY=true`. This does not demote an
-existing voter.
+`NodeConfig` can be created programmatically or fully created either `from_toml()` or `from_env()` vars. For newly
+joining read-only replicas that should not become voting Raft members automatically during startup, set
+`learner_only = true` or `HQL_LEARNER_ONLY=true`. This does not demote an existing voter.
 
 ### Cluster inside Kubernetes
 

@@ -1,18 +1,15 @@
 use crate::empty::Empty;
 use crate::server::args::{Args, LogLevel};
 use crate::server::proxy::config::Config;
-use crate::{Error, start_node_with_cache};
+use crate::{APP_VERSION, Error, start_node_with_cache};
 use clap::Parser;
 use tracing::info;
 
 mod args;
-mod cache;
 pub mod config;
 mod logging;
 mod password;
 mod proxy;
-
-pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub async fn server() -> Result<(), Error> {
     match Args::parse() {
@@ -31,7 +28,12 @@ pub async fn server() -> Result<(), Error> {
             logging::init_logging(&args.log_level, None);
             info!("Hiqlite Proxy v{}", APP_VERSION);
 
-            let config = Config::parse(args.config_file);
+            let config_path = if args.config_file == "$HOME/.hiqlite/hiqlite-proxy.toml" {
+                config::default_proxy_config_file_path()
+            } else {
+                args.config_file
+            };
+            let config = Config::from_toml(&config_path, None, None).await?;
             config.is_valid()?;
 
             proxy::start_proxy(config).await?;
@@ -40,6 +42,11 @@ pub async fn server() -> Result<(), Error> {
         Args::GenerateConfig(args) => {
             logging::init_logging(&LogLevel::Info, None);
             config::generate(args).await?;
+        }
+
+        Args::GenerateProxyConfig => {
+            logging::init_logging(&LogLevel::Info, None);
+            config::generate_proxy().await?;
         }
     }
 

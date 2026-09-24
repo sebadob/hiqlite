@@ -1,6 +1,6 @@
 use crate::backup::BACKUP_PATH_FILE;
 use crate::execute_query::TestData;
-use crate::start::build_config;
+use crate::start::{TlsCombo, build_config};
 use crate::{Cache, backup, log};
 use hiqlite::macros::params;
 use hiqlite::{Client, Error, start_node_with_cache};
@@ -9,6 +9,7 @@ use tokio::task;
 
 pub async fn start_test_cluster_with_backup(
     from_fs: bool,
+    combo: TlsCombo,
 ) -> Result<(Client, Client, Client), Error> {
     if from_fs {
         unsafe {
@@ -25,9 +26,9 @@ pub async fn start_test_cluster_with_backup(
         }
     }
 
-    let handle_client_2 = task::spawn(start_node_with_cache::<Cache>(build_config(2).await));
-    let handle_client_3 = task::spawn(start_node_with_cache::<Cache>(build_config(3).await));
-    let handle_client_1 = task::spawn(start_node_with_cache::<Cache>(build_config(1).await));
+    let handle_client_2 = task::spawn(start_node_with_cache::<Cache>(build_config(2, combo).await));
+    let handle_client_3 = task::spawn(start_node_with_cache::<Cache>(build_config(3, combo).await));
+    let handle_client_1 = task::spawn(start_node_with_cache::<Cache>(build_config(1, combo).await));
 
     let client_1 = handle_client_1.await??;
     let client_2 = handle_client_2.await??;

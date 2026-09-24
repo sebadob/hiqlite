@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const CHKSUM: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_CKSUM);
 
 macro_rules! crc {
-    ($input:expr) => {{
-        crate::utils::CHKSUM.checksum($input).to_le_bytes()
-    }};
+    ($input:expr) => {{ crate::utils::CHKSUM.checksum($input).to_le_bytes() }};
 }
 pub(crate) use crc;
 
@@ -35,17 +33,18 @@ pub fn bin_to_u32(buf: &[u8]) -> Result<u32, Error> {
 
 #[inline(always)]
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
-    Ok(bincode::serde::encode_to_vec(
+    Ok(bincode_next::serde::encode_to_vec(
         value,
-        bincode::config::standard(),
+        bincode_next::config::standard(),
     )?)
 }
 
-#[inline]
+#[inline(always)]
 pub fn deserialize<T>(bytes: &[u8]) -> Result<T, Error>
 where
     T: for<'a> Deserialize<'a>,
 {
-    let (res, _) = bincode::serde::decode_from_slice::<T, _>(bytes, bincode::config::standard())?;
+    let (res, _) =
+        bincode_next::serde::decode_from_slice::<T, _>(bytes, bincode_next::config::standard())?;
     Ok(res)
 }

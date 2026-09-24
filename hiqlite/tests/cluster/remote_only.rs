@@ -7,7 +7,7 @@ use hiqlite::{Client, Error, Lock};
 use std::time::Duration;
 use tokio::{task, time};
 
-pub async fn test_remote_only_client() -> Result<(), Error> {
+pub async fn test_remote_only_client(tls_api: bool) -> Result<(), Error> {
     log("Make sure remote clients work fine with any member node, even if none leader");
 
     let nodes = start::nodes()
@@ -17,8 +17,8 @@ pub async fn test_remote_only_client() -> Result<(), Error> {
 
     let client_1 = Client::remote(
         nodes.clone(),
-        false,
-        false,
+        tls_api,
+        true,
         SECRET_API.to_string(),
         false,
         None,
@@ -29,8 +29,8 @@ pub async fn test_remote_only_client() -> Result<(), Error> {
 
     let client_2 = Client::remote(
         nodes,
-        false,
-        false,
+        tls_api,
+        true,
         SECRET_API.to_string(),
         false,
         None,
@@ -106,7 +106,10 @@ async fn test_mixed_claim_atomicity(client: &Client) -> Result<(), Error> {
             .filter(|v| v.as_deref() == Some("atomic"))
             .count()
             + usize::from(r?.as_deref() == Some("atomic"));
-        assert!(claims <= 1, "the original value must be claimed at most once");
+        assert!(
+            claims <= 1,
+            "the original value must be claimed at most once"
+        );
 
         let v: Option<String> = client.get(Cache::One, key).await?;
         assert!(
@@ -121,7 +124,7 @@ async fn test_mixed_claim_atomicity(client: &Client) -> Result<(), Error> {
 }
 
 async fn check_client(client: &Client, id: u64) -> Result<(), Error> {
-    check::is_client_db_healthy(&client, Some(id)).await?;
+    check::is_client_db_healthy(client, Some(id)).await?;
 
     log(format!("Test remote client {} database", id));
 

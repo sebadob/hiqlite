@@ -100,7 +100,7 @@ where
             let (writer, _) = writer::spawn(
                 base_path,
                 lockfile,
-                LogSync::ImmediateAsync,
+                LogSync::IntervalMillis(200),
                 wal_size,
                 lock_exists,
                 meta,

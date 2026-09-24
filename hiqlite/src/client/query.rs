@@ -35,15 +35,19 @@ impl Client {
     }
 
     /// Execute a consistent query. This query will run on the leader node only and pause Raft
-    /// replication at a point, where all "current" logs have been applied to at least a quorum
+    /// replication at a point where all "current" logs have been applied to at least a quorum
     /// of all nodes. This means whatever result this query returns, at least hals of the nodes + 1
-    /// will have the exact same result, and it will be the same even if you would end up in a
-    /// network segmentation and loose half of your data directly afterward.
+    /// will have the exact same result, and it will be the same even if you end up in a network
+    /// segmentation and lose half of your data directly afterwards.
     ///
     /// This query is very expensive compared to the other ones. It needs network round-trips, pauses
-    /// the raft and allocates a lot more memory, because it is working with owned data rather than
+    /// the raft, and allocates a lot more memory, because it is working with owned data rather than
     /// with borrowed local one for quick mapping.
-    /// You should only use it, if you really need to.
+    /// You should only use it if you really need to.
+    ///
+    /// # Panics
+    ///
+    /// If the returned data from the DB does not match the requested output type.
     pub async fn query_consistent_map<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
     where
         T: for<'a, 'r> From<&'a mut crate::Row<'r>> + Send + 'static,
@@ -91,6 +95,10 @@ impl Client {
     ///     .query_map("SELECT * FROM test", params!())
     ///     .await?;
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// If the returned data from the DB does not match the requested output type.
     pub async fn query_map<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
     where
         T: for<'a, 'r> From<&'a mut crate::Row<'r>> + Send + 'static,
@@ -108,6 +116,28 @@ impl Client {
         }
     }
 
+    /// Non-panicking version of `query_map`.
+    pub async fn query_try_map<T, S>(
+        &self,
+        stmt: S,
+        params: Params,
+    ) -> Result<Vec<Result<T, Error>>, Error>
+    where
+        T: for<'a, 'r> TryFrom<&'a mut crate::Row<'r>, Error = crate::Error> + Send + 'static,
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.inner.state {
+            query::query_try_map(state, stmt, params).await
+        } else {
+            Ok(self
+                .query_remote(stmt, params, false)
+                .await?
+                .into_iter()
+                .map(|mut row| T::try_from(&mut row))
+                .collect())
+        }
+    }
+
     /// Works in the same way as `query_map()`, but returns only one result.
     ///
     /// Errors if not exactly a single row has been returned.
@@ -117,6 +147,10 @@ impl Client {
     ///     .query_map_one("SELECT * FROM test WHERE id = $1", params!("id1"))
     ///     .await?;
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// If the returned data from the DB does not match the requested output type.
     pub async fn query_map_one<T, S>(&self, stmt: S, params: Params) -> Result<T, Error>
     where
         T: for<'r> From<&'r mut crate::Row<'r>> + Send + 'static,
@@ -138,8 +172,38 @@ impl Client {
         }
     }
 
+    /// Non-panicking version of `query_map`.
+    pub async fn query_try_map_one<T, S>(
+        &self,
+        stmt: S,
+        params: Params,
+    ) -> Result<Result<T, Error>, Error>
+    where
+        T: for<'r> TryFrom<&'r mut crate::Row<'r>, Error = crate::Error> + Send + 'static,
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.inner.state {
+            query::query_try_map_one(state, stmt, params).await
+        } else {
+            let mut rows = self.query_remote(stmt, params, false).await?;
+            if rows.is_empty() {
+                Err(Error::QueryReturnedNoRows("No rows returned".into()))
+            } else if rows.len() > 1 {
+                Err(Error::Sqlite(
+                    format!("cannot map {} rows into one", rows.len()).into(),
+                ))
+            } else {
+                Ok(T::try_from(&mut rows.swap_remove(0)))
+            }
+        }
+    }
+
     /// Works in the same way as `query_map_one()`, but returns only one result as an `Option<T>`.
     /// If no rows have been returned (without database errors), you will get an `Ok(None)`.
+    ///
+    /// # Panics
+    ///
+    /// If the returned data from the DB does not match the requested output type.
     pub async fn query_map_optional<T, S>(
         &self,
         stmt: S,
@@ -157,6 +221,28 @@ impl Client {
                 Ok(None)
             } else {
                 Ok(Some(T::from(&mut rows.swap_remove(0))))
+            }
+        }
+    }
+
+    /// Non-panicking version of `query_map`.
+    pub async fn query_try_map_optional<T, S>(
+        &self,
+        stmt: S,
+        params: Params,
+    ) -> Result<Option<Result<T, Error>>, Error>
+    where
+        T: for<'r> TryFrom<&'r mut crate::Row<'r>, Error = crate::Error> + Send + 'static,
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.inner.state {
+            query::query_try_map_optional(state, stmt, params).await
+        } else {
+            let mut rows = self.query_remote(stmt, params, false).await?;
+            if rows.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(T::try_from(&mut rows.swap_remove(0))))
             }
         }
     }

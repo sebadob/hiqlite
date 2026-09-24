@@ -1,9 +1,9 @@
-use crate::helpers::{deserialize, serialize, set_path_access};
+use crate::helpers::{atomic_file_switch, deserialize_serde, serialize_serde, set_path_access};
 use crate::store::StorageResult;
-use crate::store::state_machine::memory::cache_ttl_handler::TtlRequest;
-use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
-use crate::store::state_machine::memory::{TypeConfigKV, cache_ttl_handler, kv_handler};
+use crate::store::state_machine::memory::kv_handler::{CacheRequestHandler, CacheSnapshot};
+use crate::store::state_machine::memory::{TypeConfigKV, kv_handler};
 use crate::{CacheVariants, Error, Node, NodeId};
+use bincode_next::{Decode, Encode};
 use chrono::Utc;
 use cryptr::utils::secure_random_alnum;
 use dotenvy::var;
@@ -33,7 +33,7 @@ use uuid::Uuid;
 
 #[cfg(feature = "dlock")]
 use crate::store::state_machine::memory::dlock_handler::{self, *};
-#[cfg(feature = "listen_notify_local")]
+#[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
 
 type Entry = openraft::Entry<TypeConfigKV>;
@@ -42,15 +42,9 @@ type SnapshotData = fs::File;
 #[cfg(feature = "in-memory-snapshots")]
 type SnapshotData = Cursor<Vec<u8>>;
 
-type SnapshotKVs = Vec<(BTreeMap<String, Vec<u8>>, BTreeMap<String, i64>)>;
-type SnapshotTTLs = Vec<BTreeMap<i64, String>>;
+type SnapshotKVs = Vec<CacheSnapshot>;
 type SnapshotLocks = Vec<u8>;
-type SnapshotDataContent = (
-    SnapshotMeta<NodeId, Node>,
-    SnapshotKVs,
-    SnapshotTTLs,
-    SnapshotLocks,
-);
+type SnapshotDataContent = (SnapshotMeta<NodeId, Node>, SnapshotKVs, SnapshotLocks);
 /// The latest snapshot kept in memory (`meta` + serialized bytes) for memory-only mode.
 #[cfg(feature = "in-memory-snapshots")]
 type MemSnapshot = (SnapshotMeta<NodeId, Node>, Vec<u8>);
@@ -59,7 +53,7 @@ type MemSnapshot = (SnapshotMeta<NodeId, Node>, Vec<u8>);
 // feature-independent: adding variants changes the serialized indices of
 // everything after them, which silently corrupts logs written with a different
 // feature set. New variants therefore go at the end of the enum.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub enum CacheRequest {
     Get {
         cache_idx: usize,
@@ -67,22 +61,26 @@ pub enum CacheRequest {
     },
     Put {
         cache_idx: usize,
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: Vec<u8>,
         expires: Option<i64>,
     },
     GetRemove {
         cache_idx: usize,
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
     Replace {
         cache_idx: usize,
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: Vec<u8>,
         expires: Option<i64>,
     },
     Delete {
         cache_idx: usize,
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
     Clear {
@@ -93,39 +91,45 @@ pub enum CacheRequest {
         cache_idx: usize,
     },
     ClearAll,
-    #[allow(dead_code)] // only constructed with the `listen_notify_local` feature
+    #[allow(dead_code)] // only constructed with the `listen_notify` feature
     Notify((i64, Vec<u8>)),
     #[allow(dead_code)] // only constructed with the `dlock` feature
-    Lock((Cow<'static, str>, Option<u64>)),
+    Lock(#[bincode(with_serde)] (Cow<'static, str>, Option<u64>)),
     #[allow(dead_code)] // only constructed with the `dlock` feature
-    LockAwait((Cow<'static, str>, u64)),
+    LockAlive(#[bincode(with_serde)] (Cow<'static, str>, u64)),
     #[allow(dead_code)] // only constructed with the `dlock` feature
-    LockRelease((Cow<'static, str>, u64)),
+    LockAwait(#[bincode(with_serde)] (Cow<'static, str>, u64)),
+    #[allow(dead_code)] // only constructed with the `dlock` feature
+    LockRelease(#[bincode(with_serde)] (Cow<'static, str>, u64)),
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterGet {
         cache_idx: usize,
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterSet {
         cache_idx: usize,
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: i64,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterAdd {
         cache_idx: usize,
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: i64,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterDel {
         cache_idx: usize,
+        #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub enum CacheResponse {
     Empty,
     Ok,
@@ -160,11 +164,10 @@ pub struct StateMachineMemory {
     snapshot_mem: RwLock<Option<MemSnapshot>>,
 
     pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
-    tx_ttls: Vec<flume::Sender<TtlRequest>>,
 
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     pub(crate) tx_notify: flume::Sender<NotifyRequest>,
-    #[cfg(feature = "listen_notify_local")]
+    #[cfg(feature = "listen_notify")]
     pub(crate) rx_notify: flume::Receiver<(i64, Vec<u8>)>,
 
     #[cfg(feature = "dlock")]
@@ -243,18 +246,85 @@ impl StateMachineMemory {
 
         // we will start a separate task for each given cache index
         let variants = C::hiqlite_cache_variants();
+
+        // Validate the cache indices at setup time so `apply()` can rely on `.get(idx)`
+        // never failing: the indices must be exactly 0..len (no gaps, no duplicates),
+        // otherwise a request for a missing index would panic the state machine deep
+        // inside raft apply.
+        {
+            let mut seen = vec![false; variants.len()];
+            for &(idx, _) in variants {
+                if idx >= variants.len() || seen[idx] {
+                    panic!(
+                        "cache variant index {} is out of range or duplicated \
+                         (expected exactly 0..{})",
+                        idx,
+                        variants.len()
+                    );
+                }
+                seen[idx] = true;
+            }
+        }
+
+        // Cross-restart cache-index compatibility check. The cache index is encoded
+        // positionally in persisted snapshots and in Raft log entries, so a re-order,
+        // insert-in-between, removal or rename of the enum would silently install data
+        // into the wrong cache. We persist the current enum's normalized form to
+        // `cache_index.meta` and compare it against any existing file on every startup:
+        // only a pure expansion at the end is allowed.
+        #[cfg(not(feature = "in-memory-snapshots"))]
+        {
+            let path_meta = format!("{path_sm}/cache_index.meta");
+            let stored = match fs::read_to_string(&path_meta).await {
+                Ok(stored) => {
+                    if !C::hiqlite_cache_compatible_with(&stored) {
+                        return Err(Error::Cache(
+                            format!(
+                                "cache index enum is incompatible with previously persisted \
+                                 data ({}):\n--- stored ---\n{}--- current ---\n{}",
+                                path_meta,
+                                stored,
+                                C::hiqlite_cache_variants_normalized()
+                            )
+                            .into(),
+                        ));
+                    }
+                    stored
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::default(),
+                Err(err) => {
+                    return Err(Error::Cache(
+                        format!("cannot read cache index metadata {path_meta}: {err}").into(),
+                    ));
+                }
+            };
+
+            // (Re)write the normalized form atomically so the file always reflects the
+            // current enum and a torn write can never leave a half-written fingerprint.
+            let normalized = C::hiqlite_cache_variants_normalized();
+            if stored.as_bytes() != normalized.as_bytes() {
+                let path_temp = format!("{path_meta}~");
+                {
+                    let mut file = fs::File::create(&path_temp).await.map_err(|err| {
+                        Error::Cache(format!("cannot create {path_temp}: {err}").into())
+                    })?;
+                    file.write_all(normalized.as_bytes()).await.map_err(|err| {
+                        Error::Cache(format!("cannot write {path_temp}: {err}").into())
+                    })?;
+                }
+                atomic_file_switch(path_temp, path_meta).await?;
+            }
+        }
+
         let mut tx_caches = Vec::with_capacity(variants.len());
-        let mut tx_ttls = Vec::with_capacity(variants.len());
         for (_, name) in variants {
-            let tx_cache = kv_handler::spawn(name);
-            tx_caches.push(tx_cache.clone());
-            tx_ttls.push(cache_ttl_handler::spawn(tx_cache));
+            tx_caches.push(kv_handler::spawn(name));
         }
 
         #[cfg(feature = "dlock")]
         let tx_dlock = dlock_handler::spawn();
 
-        #[cfg(feature = "listen_notify_local")]
+        #[cfg(feature = "listen_notify")]
         let (tx_notify, rx_notify) = notify_handler::spawn();
 
         let slf = Self {
@@ -265,10 +335,9 @@ impl StateMachineMemory {
             #[cfg(feature = "in-memory-snapshots")]
             snapshot_mem: RwLock::new(None),
             tx_caches,
-            tx_ttls,
-            #[cfg(feature = "listen_notify_local")]
+            #[cfg(feature = "listen_notify")]
             tx_notify,
-            #[cfg(feature = "listen_notify_local")]
+            #[cfg(feature = "listen_notify")]
             rx_notify,
             #[cfg(feature = "dlock")]
             tx_dlock,
@@ -298,7 +367,7 @@ impl StateMachineMemory {
         Ok(slf)
     }
 
-    /// Serializes the current cache state (caches, TTLs, locks) into a snapshot blob.
+    /// Serializes the current cache state (caches, locks) into a snapshot blob.
     /// Shared by the disk-backed (default) and in-memory (`in-memory-snapshots`) paths.
     // The error type is huge, but defined by the openraft trait.
     #[allow(clippy::result_large_err)]
@@ -307,29 +376,28 @@ impl StateMachineMemory {
     ) -> Result<(SnapshotMeta<NodeId, Node>, Vec<u8>), StorageError<NodeId>> {
         let data = self.data.read().await;
 
+        // Snapshot consistency: this read lock is held across the whole capture below, while
+        // `apply()` takes the write lock. No entry can therefore be applied between reading
+        // `last_applied_log_id` and round-tripping the caches/ttls/locks, so the snapshot
+        // contains exactly the effects of entries up to that log id; recovery re-applies only
+        // later ones (no gap, no double-apply). Do not drop the lock early when extending
+        // this function.
+
         // TODO should we include notifications in snapshots as well?
         //  -> unsure if it makes sense or not
 
-        let mut ttls = Vec::with_capacity(self.tx_ttls.len());
-        for tx in &self.tx_ttls {
-            let (ack, rx) = oneshot::channel();
-            tx.send(TtlRequest::SnapshotBuild(ack))
-                .expect("ttl handler to always be running");
-            let snap = rx
-                .await
-                .expect("to always receive an answer from ttl handler");
-            ttls.push(snap);
-        }
-
+        // One roundtrip per cache: the handler owns values and counters together, so a single
+        // SnapshotBuild returns both. Expiries live inside the entries and are rebuilt by the
+        // handler on install.
         let mut caches = Vec::with_capacity(self.tx_caches.len());
         for tx in &self.tx_caches {
             let (ack, rx) = oneshot::channel();
-            tx.send(CacheRequestHandler::SnapshotBuild(ack))
+            tx.send(CacheRequestHandler::SnapshotBuild { reply: ack })
                 .expect("kv handler to always be running");
-            let snap = rx
-                .await
-                .expect("to always receive an answer from kv handler");
-            caches.push(snap);
+            caches.push(
+                rx.await
+                    .expect("to always receive an answer from kv handler"),
+            );
         }
 
         #[cfg(feature = "dlock")]
@@ -341,7 +409,7 @@ impl StateMachineMemory {
             let locks = rx
                 .await
                 .expect("to always receive an answer from locks handler");
-            serialize(&locks).unwrap()
+            serialize_serde(&locks).unwrap()
         };
         #[cfg(not(feature = "dlock"))]
         let locks_bytes: Vec<u8> = Vec::default();
@@ -359,9 +427,9 @@ impl StateMachineMemory {
             snapshot_id,
         };
 
-        let snap: SnapshotDataContent = (meta.clone(), caches, ttls, locks_bytes);
+        let snap: SnapshotDataContent = (meta.clone(), caches, locks_bytes);
         let snapshot_bytes =
-            serialize(&snap).map_err(|err| StorageIOError::write_state_machine(&err))?;
+            serialize_serde(&snap).map_err(|err| StorageIOError::write_state_machine(&err))?;
 
         Ok((meta, snapshot_bytes))
     }
@@ -390,8 +458,7 @@ impl StateMachineMemory {
                 .map_err(|err| StorageIOError::write_state_machine(&err))?;
         }
 
-        // atomic move: a crash can never leave a partially written snapshot at the final path
-        fs::rename(&path_temp, &path)
+        atomic_file_switch(path_temp, &path)
             .await
             .map_err(|err| StorageIOError::write_state_machine(&err))?;
 
@@ -413,6 +480,8 @@ impl StateMachineMemory {
                 let name = fname.to_str().unwrap_or_default();
                 if !name.is_empty()
                     && name != id
+                    // skip the in-flight snapshot receive temp file (`begin_receiving_snapshot`)
+                    && !(name.ends_with("~") || name.ends_with("tmp") || name.ends_with("temp"))
                     && let Err(err) = fs::remove_file(format!("{dir}/{name}")).await
                 {
                     warn!("Error removing old snapshot {name}: {err:?}");
@@ -431,49 +500,41 @@ impl StateMachineMemory {
         meta: &SnapshotMeta<NodeId, Node>,
         bytes: &[u8],
     ) -> Result<(), StorageError<NodeId>> {
-        let (meta_snap, kvs, ttls, locks) = deserialize::<SnapshotDataContent>(bytes)
+        let (meta_snap, kvs, locks) = deserialize_serde::<SnapshotDataContent>(bytes)
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
         debug_assert_eq!(meta.snapshot_id, meta_snap.snapshot_id);
         debug_assert_eq!(meta.last_log_id, meta_snap.last_log_id);
         debug_assert_eq!(meta.last_membership, meta_snap.last_membership);
 
-        self.update_state_machine((meta_snap, kvs, ttls, locks))
-            .await;
+        self.update_state_machine((meta_snap, kvs, locks)).await;
 
         Ok(())
     }
 
     async fn update_state_machine(&self, content: SnapshotDataContent) {
-        let (meta, kvs, ttls, locks) = content;
+        let (meta, kvs, locks) = content;
 
         // make sure to hold the metadata lock the whole time
         let mut data = self.data.write().await;
 
-        for (idx, kv_data) in kvs.into_iter().enumerate() {
+        // One install per cache: values + counters travel together, mirroring the single
+        // roundtrip used in `build_snapshot_data`. Expiries live inside the entries and are
+        // rebuilt by the handler on install.
+        for (idx, snapshot) in kvs.into_iter().enumerate() {
             let (ack, rx) = oneshot::channel();
             self.tx_caches
                 .get(idx)
                 .unwrap()
-                .send(CacheRequestHandler::SnapshotInstall((kv_data, ack)))
+                .send(CacheRequestHandler::SnapshotInstall { snapshot, ack })
                 .expect("kv handler to always be running");
             rx.await
                 .expect("to always receive an answer from the kv handler");
         }
 
-        for (idx, kv_data) in ttls.into_iter().enumerate() {
-            let (ack, rx) = oneshot::channel();
-            self.tx_ttls
-                .get(idx)
-                .unwrap()
-                .send(TtlRequest::SnapshotInstall((kv_data, ack)))
-                .expect("ttl handler to always be running");
-            rx.await
-                .expect("to always receive an answer from the ttl handler");
-        }
-
         #[cfg(feature = "dlock")]
         {
-            let locks: HashMap<String, dlock_handler::LockQueue> = deserialize(&locks).unwrap();
+            let locks: HashMap<String, dlock_handler::LockQueue> =
+                deserialize_serde(&locks).unwrap();
             let (ack, rx) = oneshot::channel();
             self.tx_dlock
                 .send(LockRequest::SnapshotInstall((locks, ack)))
@@ -555,7 +616,7 @@ impl StateMachineMemory {
                     };
 
                     let last_name = latest_file_name.as_deref().unwrap_or_default();
-                    let Some((rest_, log_id_latest)) = name.rsplit_once('-') else {
+                    let Some((rest_, log_id_latest)) = last_name.rsplit_once('-') else {
                         warn!("Invalid filename in snapshots dir: {}", name);
                         continue;
                     };
@@ -594,7 +655,7 @@ impl StateMachineMemory {
 
         Ok(Some((
             path,
-            deserialize::<SnapshotDataContent>(&bytes)
+            deserialize_serde::<SnapshotDataContent>(&bytes)
                 .map_err(|e| StorageIOError::read_snapshot(None, &e))?,
         )))
     }
@@ -622,16 +683,27 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         // TODO -> we could take the lock only once at the start and be much faster with everything!
         let mut data = self.data.write().await;
 
+        // Note: We do not need to have a bounds-check on `cache_index` here:
+        // - when the request is coming over the network, we have a check in `network/api.rs`
+        // - when the request is direct without the network, it can only come from the same
+        //   `CacheVariants` enum that this handler is running on, because all client functions are
+        //   sealed and the user never provides the Integer manually.
+
         let mut last_applied_log_id = None;
         for entry in entries {
             last_applied_log_id = Some(entry.log_id);
 
-            // we are using sync sends -> unbounded channels
+            // we are using sync sends -> unbounded channels. Every `cache_idx` below is
+            // validated at setup time (see `new()`) and again at the API boundary
+            // (`network/api.rs`), so `.get(idx).unwrap()` cannot fail on valid requests.
             let resp_value = match entry.payload {
                 EntryPayload::Blank => CacheResponse::Empty,
 
                 EntryPayload::Normal(req) => match req {
                     CacheRequest::Get { .. } => {
+                        // `Get` is served locally by the client and never enters the raft log; if it
+                        // ever does (hand-crafted wire bytes), we want to fail loudly here rather
+                        // than silently drop the entry in favor of data consistency.
                         unreachable!("a CacheRequest::Get should never come through the Raft")
                     }
 
@@ -641,27 +713,18 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         value,
                         expires,
                     } => {
-                        if let Some(exp) = expires {
-                            self.tx_ttls
-                                .get(cache_idx)
-                                .unwrap()
-                                .send(TtlRequest::Ttl((exp, key.to_string())))
-                                .expect("cache ttl handler to always be running");
-                        } else {
-                            // the value was re-put without a TTL: drop any previously registered
-                            // expiry so it cannot delete the fresh value
-                            self.tx_ttls
-                                .get(cache_idx)
-                                .unwrap()
-                                .send(TtlRequest::Clear(key.to_string()))
-                                .expect("cache ttl handler to always be running");
-                        }
-
+                        // The per-cache handler owns values and expiries together, so the expiry
+                        // registration/drop and the value change happen atomically inside one
+                        // task: a stale expiry can never remove the freshly put value.
                         self.tx_caches
                             .get(cache_idx)
                             .unwrap()
-                            .send(CacheRequestHandler::Put((key.to_string(), value)))
-                            .expect("cache ttl handler to always be running");
+                            .send(CacheRequestHandler::Put {
+                                key: key.to_string(),
+                                value,
+                                expires,
+                            })
+                            .expect("kv handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -671,7 +734,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         self.tx_caches
                             .get(cache_idx)
                             .unwrap()
-                            .send(CacheRequestHandler::GetRemove((key.to_string(), ack)))
+                            .send(CacheRequestHandler::GetRemove {
+                                key: key.to_string(),
+                                reply: ack,
+                            })
                             .expect("kv handler to always be running");
 
                         // The kv handler runs on its own thread per cache and never takes the
@@ -686,26 +752,19 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         value,
                         expires,
                     } => {
-                        if let Some(exp) = expires {
-                            self.tx_ttls
-                                .get(cache_idx)
-                                .unwrap()
-                                .send(TtlRequest::Ttl((exp, key.to_string())))
-                                .expect("cache ttl handler to always be running");
-                        } else {
-                            // mirrors `Put`: a re-put without a TTL drops any registered expiry
-                            self.tx_ttls
-                                .get(cache_idx)
-                                .unwrap()
-                                .send(TtlRequest::Clear(key.to_string()))
-                                .expect("cache ttl handler to always be running");
-                        }
-
+                        // The expiry registration/drop and the value change happen atomically
+                        // inside the per-cache handler, so a stale expiry can never remove the
+                        // freshly replaced value.
                         let (ack, rx) = oneshot::channel();
                         self.tx_caches
                             .get(cache_idx)
                             .unwrap()
-                            .send(CacheRequestHandler::Replace((key.to_string(), value, ack)))
+                            .send(CacheRequestHandler::Replace {
+                                key: key.to_string(),
+                                value,
+                                expires,
+                                reply: ack,
+                            })
                             .expect("kv handler to always be running");
 
                         CacheResponse::Value(rx.await.expect("kv handler to always answer"))
@@ -715,8 +774,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         self.tx_caches
                             .get(cache_idx)
                             .unwrap()
-                            .send(CacheRequestHandler::Delete(key.to_string()))
-                            .expect("cache ttl handler to always be running");
+                            .send(CacheRequestHandler::Delete {
+                                key: key.to_string(),
+                            })
+                            .expect("kv handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -726,7 +787,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             .get(cache_idx)
                             .unwrap()
                             .send(CacheRequestHandler::Clear)
-                            .expect("cache ttl handler to always be running");
+                            .expect("kv handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -738,7 +799,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 .get(cache_idx)
                                 .unwrap()
                                 .send(CacheRequestHandler::ClearCounters)
-                                .expect("cache ttl handler to always be running");
+                                .expect("kv handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -749,17 +810,17 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                     CacheRequest::ClearAll => {
                         for tx in &self.tx_caches {
                             tx.send(CacheRequestHandler::Clear)
-                                .expect("cache ttl handler to always be running");
+                                .expect("kv handler to always be running");
                             #[cfg(feature = "counters")]
                             tx.send(CacheRequestHandler::ClearCounters)
-                                .expect("cache ttl handler to always be running");
+                                .expect("kv handler to always be running");
                         }
 
                         CacheResponse::Ok
                     }
 
                     CacheRequest::Notify(payload) => {
-                        #[cfg(feature = "listen_notify_local")]
+                        #[cfg(feature = "listen_notify")]
                         {
                             self.tx_notify
                                 .send(NotifyRequest::Notify(payload))
@@ -767,8 +828,8 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 .unwrap();
                             CacheResponse::Ok
                         }
-                        #[cfg(not(feature = "listen_notify_local"))]
-                        unreachable!("Notify requires the `listen_notify_local` feature")
+                        #[cfg(not(feature = "listen_notify"))]
+                        unreachable!("Notify requires the `listen_notify` feature")
                     }
 
                     CacheRequest::Lock((key, id)) => {
@@ -827,6 +888,26 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                         unreachable!("LockRelease requires the `dlock` feature")
                     }
 
+                    CacheRequest::LockAlive((key, id)) => {
+                        #[cfg(feature = "dlock")]
+                        {
+                            let (ack, rx) = oneshot::channel();
+
+                            self.tx_dlock
+                                .send(LockRequest::Alive(LockAlivePayload { key, id, ack }))
+                                // this channel can never be closed - we have both sides
+                                .unwrap();
+
+                            let state = rx
+                                .await
+                                .expect("To always get a response from dlock handler");
+
+                            CacheResponse::Lock(state)
+                        }
+                        #[cfg(not(feature = "dlock"))]
+                        unreachable!("LockAlive requires the `dlock` feature")
+                    }
+
                     CacheRequest::CounterGet { .. } => {
                         unreachable!("a CacheRequest::Get should never come through the Raft")
                     }
@@ -841,8 +922,11 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             self.tx_caches
                                 .get(cache_idx)
                                 .unwrap()
-                                .send(CacheRequestHandler::CounterSet((key.to_string(), value)))
-                                .expect("cache ttl handler to always be running");
+                                .send(CacheRequestHandler::CounterSet {
+                                    key: key.to_string(),
+                                    value,
+                                })
+                                .expect("kv handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -862,12 +946,12 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             self.tx_caches
                                 .get(cache_idx)
                                 .unwrap()
-                                .send(CacheRequestHandler::CounterAdd((
-                                    key.to_string(),
-                                    value,
-                                    ack,
-                                )))
-                                .expect("cache ttl handler to always be running");
+                                .send(CacheRequestHandler::CounterAdd {
+                                    key: key.to_string(),
+                                    delta: value,
+                                    reply: ack,
+                                })
+                                .expect("kv handler to always be running");
 
                             let v = rx.await.unwrap();
                             CacheResponse::CounterValue(Some(v))
@@ -882,8 +966,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             self.tx_caches
                                 .get(cache_idx)
                                 .unwrap()
-                                .send(CacheRequestHandler::CounterDel(key.to_string()))
-                                .expect("cache ttl handler to always be running");
+                                .send(CacheRequestHandler::CounterDel {
+                                    key: key.to_string(),
+                                })
+                                .expect("kv handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -915,7 +1001,9 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     async fn begin_receiving_snapshot(
         &mut self,
     ) -> Result<Box<SnapshotData>, StorageError<NodeId>> {
-        let path = format!("{}/temp", self.path_snapshots);
+        // `~`-suffixed name: both `read_current_snapshot` and the snapshot cleanup skip those,
+        // so an in-flight receive is never mistaken for a real (complete) snapshot.
+        let path = format!("{}/temp~", self.path_snapshots);
         info!("Saving incoming snapshot to {}", path);
 
         // clean up possible existing old data
@@ -947,17 +1035,15 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         // the streamed data already lives in the temp file created by `begin_receiving_snapshot`
         _snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
-        let src = format!("{}/temp", self.path_snapshots);
+        // the temp file created by `begin_receiving_snapshot` (see its `~` naming comment)
+        let src = format!("{}/temp~", self.path_snapshots);
         let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
-        fs::copy(&src, &dest)
+
+        atomic_file_switch(src, &dest)
             .await
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write(&err),
             })?;
-
-        fs::remove_file(src).await.map_err(|err| StorageError::IO {
-            source: StorageIOError::write(&err),
-        })?;
 
         let bytes = fs::read(dest)
             .await
@@ -1149,6 +1235,34 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base_dir);
     }
+
+    /// A disk-backed state machine must refuse to start when the persisted cache-index
+    /// fingerprint no longer matches the current enum (a rename here). This is the startup
+    /// safeguard that catches re-order / insert-in-between / removal / rename of the
+    /// `CacheVariants` enum across restarts; a pure expansion at the end is still accepted.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_rejects_incompatible_cache_index() {
+        let base_dir = std::env::temp_dir().join("hiqlite_cache_index_compat_test");
+        let _ = std::fs::remove_dir_all(&base_dir);
+        let base = base_dir.to_str().unwrap();
+
+        // TestCache's current enum is a single variant at index 0 named "One". A stored
+        // fingerprint claiming index 0 is something else is a rename -> incompatible.
+        std::fs::create_dir_all(format!("{base}/state_machine_cache")).unwrap();
+        std::fs::write(
+            format!("{base}/state_machine_cache/cache_index.meta"),
+            "0 SomethingElse\n",
+        )
+        .unwrap();
+
+        let res = StateMachineMemory::new::<TestCache>(base, false).await;
+        assert!(
+            matches!(res, Err(Error::Cache(_))),
+            "expected an incompatible cache index to be rejected at startup, got {res:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
 }
 
 #[cfg(test)]
@@ -1207,14 +1321,15 @@ mod serialized_enum_order {
         assert_eq!(idx(&CacheRequest::ClearAll), 7);
         assert_eq!(idx(&CacheRequest::Notify((0, vec![]))), 8);
         assert_eq!(idx(&CacheRequest::Lock((key(), None))), 9);
-        assert_eq!(idx(&CacheRequest::LockAwait((key(), 0))), 10);
-        assert_eq!(idx(&CacheRequest::LockRelease((key(), 0))), 11);
+        assert_eq!(idx(&CacheRequest::LockAlive((key(), 0))), 10);
+        assert_eq!(idx(&CacheRequest::LockAwait((key(), 0))), 11);
+        assert_eq!(idx(&CacheRequest::LockRelease((key(), 0))), 12);
         assert_eq!(
             idx(&CacheRequest::CounterGet {
                 cache_idx: 0,
                 key: key()
             }),
-            12
+            13
         );
         assert_eq!(
             idx(&CacheRequest::CounterSet {
@@ -1222,7 +1337,7 @@ mod serialized_enum_order {
                 key: key(),
                 value: 0
             }),
-            13
+            14
         );
         assert_eq!(
             idx(&CacheRequest::CounterAdd {
@@ -1230,14 +1345,103 @@ mod serialized_enum_order {
                 key: key(),
                 value: 0
             }),
-            14
+            15
         );
         assert_eq!(
             idx(&CacheRequest::CounterDel {
                 cache_idx: 0,
                 key: key()
             }),
-            15
+            16
         );
+    }
+}
+
+#[cfg(test)]
+mod cache_index_compatibility {
+    use crate::CacheVariants;
+
+    /// A fixed "current" enum used to exercise the compatibility check against a variety of
+    /// previously-persisted (stored) index maps. Only the associated functions are used, so
+    /// `hiqlite_cache_index` is never called at runtime here.
+    #[derive(Debug)]
+    enum Cur {
+        App,
+        AuthCodes,
+        Users,
+        MagicLinks,
+    }
+
+    impl CacheVariants for Cur {
+        fn hiqlite_cache_index(&self) -> usize {
+            match self {
+                Self::App => 0,
+                Self::AuthCodes => 1,
+                Self::Users => 2,
+                Self::MagicLinks => 3,
+            }
+        }
+
+        fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
+            &[
+                (0, "App"),
+                (1, "AuthCodes"),
+                (2, "Users"),
+                (3, "MagicLinks"),
+            ]
+        }
+    }
+
+    #[test]
+    fn normalized_form_is_stable_and_self_compatible() {
+        let normalized = Cur::hiqlite_cache_variants_normalized();
+        assert_eq!(normalized, "0 App\n1 AuthCodes\n2 Users\n3 MagicLinks\n");
+        // the on-disk fingerprint is always compatible with itself
+        assert!(Cur::hiqlite_cache_compatible_with(&normalized));
+    }
+
+    #[test]
+    fn expansion_at_the_end_is_allowed() {
+        // data was written when only the first three variants existed; `MagicLinks` was
+        // added at the end later -> every stored index still maps to the same name.
+        assert!(Cur::hiqlite_cache_compatible_with(
+            "0 App\n1 AuthCodes\n2 Users\n"
+        ));
+    }
+
+    #[test]
+    fn reorder_is_incompatible() {
+        // `Users` moved to index 1, pushing `AuthCodes` down -> data at index 1 would be
+        // installed into the wrong cache.
+        assert!(!Cur::hiqlite_cache_compatible_with(
+            "0 App\n1 Users\n2 AuthCodes\n3 MagicLinks\n"
+        ));
+    }
+
+    #[test]
+    fn insert_in_between_is_incompatible() {
+        // an older enum where `Users` sat at index 1 (no `AuthCodes` yet) -> inserting a
+        // variant in the middle shifts every following index.
+        assert!(!Cur::hiqlite_cache_compatible_with(
+            "0 App\n1 Users\n2 MagicLinks\n"
+        ));
+    }
+
+    #[test]
+    fn removal_or_rename_is_incompatible() {
+        // a stored index that no longer exists (out of range for the current enum) ...
+        assert!(!Cur::hiqlite_cache_compatible_with("0 App\n4 Sessions\n"));
+        // ... or the same index now carrying a different variant name.
+        assert!(!Cur::hiqlite_cache_compatible_with(
+            "0 App\n1 Tokens\n2 Users\n3 MagicLinks\n"
+        ));
+    }
+
+    #[test]
+    fn malformed_stored_lines_are_incompatible() {
+        // no space -> cannot split into index + name
+        assert!(!Cur::hiqlite_cache_compatible_with("App\n"));
+        // non-numeric index
+        assert!(!Cur::hiqlite_cache_compatible_with("x App\n"));
     }
 }
