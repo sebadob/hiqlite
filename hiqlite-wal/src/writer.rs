@@ -101,7 +101,7 @@ pub fn spawn(
     }
     let wal_locked = Arc::new(RwLock::new(set.clone_no_map()));
 
-    // TODO remove with version <= 0.13
+    // TODO remove with version > 0.14
     // This is a fix for a bug from previous versions. Can be removed in later ones,
     // it would be safe to do probably around version >= 0.13.
     if meta.read()?.last_purged_log_id.is_none()

@@ -60,10 +60,7 @@ impl Metadata {
 
     #[inline]
     pub fn write(meta: Arc<RwLock<Self>>, base_path: &str) -> Result<(), Error> {
-        let slf_bytes = {
-            let lock = meta.read()?;
-            serialize(lock.deref())?
-        };
+        let slf_bytes = serialize(meta.read()?.deref())?;
         Self::write_unchecked(&slf_bytes, base_path)
     }
 
@@ -81,7 +78,7 @@ impl Metadata {
         file.write_all(bytes)?;
         // make the data durable *before* the rename, so the rename cannot publish a
         // partially flushed file
-        file.sync_all()?;
+        file.sync_data()?;
         drop(file);
 
         // atomic replace: the rename alone publishes the new file, so readers/crash
@@ -89,9 +86,10 @@ impl Metadata {
         fs::rename(&tmp_path, &path)?;
 
         // best-effort: make the rename itself durable across power loss
+        // TODO we could keep this dir open in the writer and only pass a reference.
         #[cfg(unix)]
         if let Ok(dir) = File::open(base_path) {
-            let _ = dir.sync_all();
+            let _ = dir.sync_data();
         }
 
         Ok(())

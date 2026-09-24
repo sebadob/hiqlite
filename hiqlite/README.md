@@ -148,25 +148,25 @@ Note: These tests were not performed with the latest version yet. They are expec
 
 | Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
 |-------------|----------------------|-----------------------------| 
-| 4           | ~9.100 / s           | ~388.000 / s                |
-| 16          | ~17.200 / s          | ~335.000 / s                |
-| 64          | ~27.300 / s          | ~299.000 / s                |
+| 4           | ~11.000 / s          | ~391.000 / s                |
+| 16          | ~21.000 / s          | ~325.000 / s                |
+| 64          | ~28.000 / s          | ~282.000 / s                |
 
 **Cache (disk-backed):**
 
 | Concurrency | 100k single PUT | single entry GET |
 |-------------|-----------------|------------------| 
-| 4           | ~10.200 / s     | ~14 micros       |
-| 16          | ~22.100 / s     |                  |
-| 64          | ~29.100 / s     |                  |
+| 4           | ~13.000 / s     | ~12 micros       |
+| 16          | ~26.000 / s     |                  |
+| 64          | ~34.000 / s     |                  |
 
-**Cache (full in-memory):**
+**Cache (WAL in-memory):**
 
 | Concurrency | 100k single PUT |
 |-------------|-----------------| 
-| 4           | ~24.700 / s     |
-| 16          | ~78.800 / s     |
-| 64          | ~177.000 / s    |
+| 4           | ~24.000 / s     |
+| 16          | ~72.000 / s     |
+| 64          | ~160.000 / s    |
 
 ## Crate Features
 
