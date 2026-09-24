@@ -54,9 +54,8 @@ pub use migration::AppliedMigration;
 /// Re-export of the exact `rusqlite` version Hiqlite is built with.
 ///
 /// Use this instead of adding a separate `rusqlite` dependency to avoid
-/// version conflicts, e.g. when implementing a
-/// [`DeterministicSqliteOperation`](external_state_machine::DeterministicSqliteOperation)
-/// against the [`Transaction`](rusqlite::Transaction) type.
+/// version conflicts, e.g. when implementing a `DeterministicSqliteOperation`
+/// against the `rusqlite::Transaction` type.
 #[cfg(any(feature = "sqlite", feature = "external-state-machine"))]
 pub use rusqlite;
 

@@ -101,7 +101,7 @@ considering that SQLite only allows a single writer at the same time.
 
 Test command (`-c` adjusted each time for different concurrency):
 
-```
+```bash
 cargo run --release -- cluster -c 4 -r 100000
 ```
 
@@ -113,9 +113,9 @@ AMD Ryzen 9950X, DDR5-5200 with highly optimized timings, M2 SSD Gen4
 
 | Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
 |-------------|----------------------|-----------------------------| 
-| 4           | ~40.000 / s          | ~710.000 / s                |
-| 16          | ~77.000 / s          | ~593.000 / s                |
-| 64          | ~102.000 / s         | ~528.000 / s                |
+| 4           | ~45.000 / s          | ~680.000 / s                |
+| 16          | ~78.000 / s          | ~602.000 / s                |
+| 64          | ~92.000 / s          | ~535.000 / s                |
 
 For a simple `SELECT`, we have 2 different metrics. By default, `hiqlite` caches all prepared statements. A simple
 `SELECT` with a fresh connection, which has not been prepared and cached yet, it took ~180-210 micros. Once the
@@ -127,16 +127,16 @@ measure these short ones).
 | Concurrency | 100k single PUT | single entry GET |
 |-------------|-----------------|------------------| 
 | 4           | ~51.000 / s     | ~6 micros        |
-| 16          | ~83.000 / s     |                  |
-| 64          | ~104.000 / s    |                  |
+| 16          | ~87.000 / s     |                  |
+| 64          | ~103.000 / s    |                  |
 
-**Cache (full in-memory):**
+**Cache (WAL in-memory):**
 
 | Concurrency | 100k single PUT |
 |-------------|-----------------| 
-| 4           | ~89.000 / s     |
-| 16          | ~268.000 / s    |
-| 64          | ~515.000 / s    |
+| 4           | ~103.000 / s    |
+| 16          | ~272.000 / s    |
+| 64          | ~500.000 / s    |
 
 ### Older Workstation
 
@@ -343,6 +343,16 @@ This feature enables the regular Hiqlite cluster features apart from the `server
 - toml
 - webpki-roots
 
+### `in-memory-snapshots`
+
+By default, even if you set `cache_storage_disk = false` to keep the WAL in-memory, Cache snapshots will still be
+written to disk into a temp file. This means the `data_dir` must be writable. Snapshots are only necessary if a new node
+joins the Raft cluster, and then only the leader needs to stream the latest snapshot to the new node. This means in most
+cases, you never need them. Writing them into a temp file is the most efficient solution. However, with this feature,
+you can opt-in to keep snapshots in-memory as well. This will not need any disk at all (as long as you don't enable
+`sqlite` of course). This is costly, though, because you effectively double your memory requirements for each single
+cache entry.
+
 ### `jemalloc`
 
 This feature enables the `jemallocator` instead of using the default glibc `malloc`. It is a lot more performant, solves
@@ -379,7 +389,7 @@ configured `s3` bucket.
 ### `server`
 
 This feature only exists to make it possible to run Hiqlite as a standalone DB / Cluster, if you really want this. It
-will build a binary which spins up a cluster with the given configuration, or you you can use it to install Hiqlite to
+will build a binary which spins up a cluster with the given configuration, or you can use it to install Hiqlite to
 spin up instances easily with
 
 `cargo install hiqlite --features server`
@@ -477,10 +487,9 @@ can re-use the same config for multiple nodes.
 
 Take a look at the [examples](https://github.com/sebadob/hiqlite/tree/main/examples) or the example
 [config](https://github.com/sebadob/hiqlite/blob/main/config) to get an idea about the possible config values. The
-`NodeConfig` can be created programmatically or fully created either `from_toml()` or `from_env()` vars.
-For newly joining read-only replicas that should not become voting Raft members automatically
-during startup, set `learner_only = true` or `HQL_LEARNER_ONLY=true`. This does not demote an
-existing voter.
+`NodeConfig` can be created programmatically or fully created either `from_toml()` or `from_env()` vars. For newly
+joining read-only replicas that should not become voting Raft members automatically during startup, set
+`learner_only = true` or `HQL_LEARNER_ONLY=true`. This does not demote an existing voter.
 
 ### Cluster inside Kubernetes
 

@@ -74,15 +74,15 @@ stability and avoid increased memory usage.
 
 You can test rate-limiting with this example as well, e.g.:
 
-```
-cargo run --release -- single -c 1 -r 10000 \
+```bash
+cargo run --release -- single -c 1 -r 1000 \
     --cache-rps 100 \
     --cache-burst 200 \
     --db-rps 100 \
     --db-burst 200 
 ```
 
-```
+```bash
 cargo run --release -- cluster -c 64 -r 1000000 \
     --cache-rps 20000 \
     --db-rps 20000
@@ -92,6 +92,9 @@ cargo run --release -- cluster -c 64 -r 1000000 \
 > The reason is that you might want to test for stability with a very high number of rows to insert, so that the test
 > runs for multiple minutes, maybe. The current transactional insert tests are built in a way that they would exceed
 > WAL sizes very quickly.
+>
+> Also, when you rate-limit too heavily, it might happen that the cache GET tests fail after insert, simply because
+> they expired.
 
 ### CAUTION
 

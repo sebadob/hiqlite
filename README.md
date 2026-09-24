@@ -113,9 +113,9 @@ AMD Ryzen 9950X, DDR5-5200 with highly optimized timings, M2 SSD Gen4
 
 | Concurrency | 100k single `INSERT` | 100k transactional `INSERT` |
 |-------------|----------------------|-----------------------------| 
-| 4           | ~40.000 / s          | ~710.000 / s                |
-| 16          | ~77.000 / s          | ~593.000 / s                |
-| 64          | ~102.000 / s         | ~528.000 / s                |
+| 4           | ~45.000 / s          | ~680.000 / s                |
+| 16          | ~78.000 / s          | ~602.000 / s                |
+| 64          | ~92.000 / s          | ~535.000 / s                |
 
 For a simple `SELECT`, we have 2 different metrics. By default, `hiqlite` caches all prepared statements. A simple
 `SELECT` with a fresh connection, which has not been prepared and cached yet, it took ~180-210 micros. Once the
@@ -127,16 +127,16 @@ measure these short ones).
 | Concurrency | 100k single PUT | single entry GET |
 |-------------|-----------------|------------------| 
 | 4           | ~51.000 / s     | ~6 micros        |
-| 16          | ~83.000 / s     |                  |
-| 64          | ~104.000 / s    |                  |
+| 16          | ~87.000 / s     |                  |
+| 64          | ~103.000 / s    |                  |
 
-**Cache (full in-memory):**
+**Cache (WAL in-memory):**
 
 | Concurrency | 100k single PUT |
 |-------------|-----------------| 
-| 4           | ~89.000 / s     |
-| 16          | ~268.000 / s    |
-| 64          | ~515.000 / s    |
+| 4           | ~103.000 / s    |
+| 16          | ~272.000 / s    |
+| 64          | ~500.000 / s    |
 
 ### Older Workstation
 

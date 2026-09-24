@@ -398,7 +398,7 @@ impl Client {
             }
 
             // TODO as soon openraft-0.10 is out, we will be able to trigger a pre-emptive
-            //  leader switch, if this node is the leader. This will smoth out things even more.
+            //  leader switch if this node is the leader. This will smooth out things even more.
 
             state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
 

@@ -14,7 +14,7 @@ use tracing::{debug, warn};
 #[cfg(debug_assertions)]
 pub const LOCK_VALID_SECONDS: i64 = 2;
 #[cfg(not(debug_assertions))]
-const LOCK_VALID_SECONDS: i64 = 10;
+pub const LOCK_VALID_SECONDS: i64 = 10;
 /// How often a lock holder sends `LockAlive` heartbeats to extend its lease. Must stay well
 /// below `LOCK_VALID_SECONDS`. Shorter under `debug_assertions`, matching the shorter lease.
 #[cfg(debug_assertions)]
