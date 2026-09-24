@@ -15,6 +15,18 @@ use crate::dashboard::DashboardState;
 use crate::helpers::parse_duration;
 pub use openraft::Config as RaftConfig;
 
+/// This is an embedded reference config TOML file. It contains a few templating placeholders, but
+/// is a perfect start if you want to generate a custom config on disk.
+///
+/// Available placeholders are:
+/// - `{{ DATA_DIR }}`
+/// - `{{ SECRET_RAFT }}`
+/// - `{{ SECRET_API }}`
+/// - `{{ ENC_KEY }}`
+/// - `{{ ENC_KEY_ACTIVE }}`
+/// - `{{ PASSWORD_DASHBOARD }}`
+pub static REFERENCE_CONFIG: &str = include_str!("../../REFERENCE_CONFIG.toml");
+
 #[derive(Debug)]
 pub struct RateLimitConfig {
     pub rps: u32,

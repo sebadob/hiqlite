@@ -14,12 +14,11 @@ use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use serde::Serialize;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::{debug, error};
 
 pub type AppStateExt = axum::extract::State<Arc<AppStateProxy>>;
 
-static HEADER_NAME_SECRET: &str = "X-API-SECRET";
+const HEADER_NAME_SECRET: &str = "X-API-SECRET";
 
 pub async fn ping() {}
 
@@ -31,10 +30,13 @@ pub async fn listen(
     state: AppStateExt,
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
+    let permit = state.get_stream_permit().await?;
+
     let (response, socket) = ws.upgrade()?;
     debug!("New /listen WebSocket connection");
 
     tokio::task::spawn(async move {
+        let _permit = permit;
         if let Err(err) = handle_listen_socket(state, socket).await {
             error!("Error in /listen WebSocket connection: {}", err);
         }
@@ -145,19 +147,12 @@ pub async fn stream(
     state: AppStateExt,
     ws: upgrade::IncomingUpgrade,
 ) -> Result<impl IntoResponse, Error> {
-    let permit = tokio::time::timeout(
-        Duration::from_secs(10),
-        state.active_streams_permits.clone().acquire_owned(),
-    )
-    .await
-    .map_err(|_| Error::Timeout("Stream request timed out - max connections reached".to_string()))?
-    .map_err(|_| Error::Request("Server is shutting down".to_string()))?;
+    let permit = state.get_stream_permit().await?;
 
     let (response, socket) = ws.upgrade()?;
     tokio::task::spawn(async move {
         let _permit = permit;
         if let Err(err) = stream::handle_socket(state.clone(), socket).await {
-            // if let Err(err) = handle_socket_sequential(state, socket).await {
             error!("Error in websocket connection: {}", err);
         }
     });
@@ -186,19 +181,6 @@ pub(crate) async fn metrics(
 
     fmt_ok_serde(headers, &metrics)
 }
-
-// #[inline(always)]
-// fn fmt_ok<S: Debug + Serialize + Encode>(
-//     headers: HeaderMap,
-//     payload: S,
-// ) -> Result<Response, Error> {
-//     if let Some(accept) = headers.get(ACCEPT)
-//         && accept == HeaderValue::from_static("application/json")
-//     {
-//         return Ok(Json(payload).into_response());
-//     }
-//     Ok(serialize_network(&payload).into_response())
-// }
 
 /// Like [`fmt_ok`], but for openraft-owned payloads (e.g. `RaftMetrics`), which stay on the
 /// byte-identical serde adapter instead of native Encode/Decode.

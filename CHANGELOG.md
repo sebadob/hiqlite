@@ -3,8 +3,7 @@
 ## UNRELEASED
 
 This version brings a huge number of tiny (and some big) bugfixes. The list is too long to write it down here
-meaningfully. In general: if you had any issue, this version probably fixes it. The part that did not undergo a big
-rework yet is the server / proxy, which is usually not even used. That will come in the future.
+meaningfully. In general: if you had any issue, this version probably fixes it.
 
 ### BREAKING - VERY IMPORTANT
 
@@ -145,9 +144,9 @@ to map the row to. I always favor a `panic` over an error in case of an unrecove
 asking for graceful errors in such a case. You can now optionally derive `TryFromRow` and use one of the new
 non-panicking query functions from the client:
 
-- `query_try_map`
-- `query_try_map_one`
-- `query_try_map_optional`
+- `query_try_map()`
+- `query_try_map_one()`
+- `query_try_map_optional()`
 
 These will behave exactly like the already existing counterparts without the `try`, with the only exception that they
 will return a `Result<T, hiqlite::Error>` for the value in case the mapping fails.

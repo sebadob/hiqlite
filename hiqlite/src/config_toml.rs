@@ -494,7 +494,7 @@ fn check_empty(table: toml::Table, tbl_name: &str) -> Result<(), Error> {
     }
 }
 
-fn t_bool(
+pub(crate) fn t_bool(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -599,7 +599,7 @@ fn t_u64(
     }
 }
 
-fn t_u32(
+pub(crate) fn t_u32(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -614,7 +614,7 @@ fn t_u32(
         Ok(None)
     }
 }
-fn t_u16(
+pub(crate) fn t_u16(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -630,7 +630,7 @@ fn t_u16(
     }
 }
 
-fn t_str(
+pub(crate) fn t_str(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -654,7 +654,7 @@ fn t_str(
     }
 }
 
-fn t_str_vec(
+pub(crate) fn t_str_vec(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -698,7 +698,7 @@ const SECRETS_REF: &str = "$SECRETS";
 
 /// Like `t_str`, but resolves the `$SECRETS` sentinel against the optional `secrets` table,
 /// looking the real value up by the same `key`. Per-var error messages are preserved.
-fn t_str_secret(
+pub(crate) fn t_str_secret(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -726,7 +726,7 @@ fn t_str_secret(
 /// string (e.g. `enc_keys = "$SECRETS"`); the real value is then looked up by the same `key` in
 /// the `secrets` table, where it must be an array of strings.
 #[cfg(any(feature = "s3", feature = "dashboard"))]
-fn t_str_vec_secret(
+pub(crate) fn t_str_vec_secret(
     map: &mut toml::Table,
     parent: &str,
     key: &str,
@@ -801,7 +801,7 @@ fn secret_vec_lookup(
     }
 }
 
-fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
+pub(crate) fn t_table(map: &mut toml::Table, key: &str) -> Result<toml::Table, Error> {
     let value = map
         .remove(key)
         .ok_or(Error::config(format!("Expected type `Table` for {key}")))?;

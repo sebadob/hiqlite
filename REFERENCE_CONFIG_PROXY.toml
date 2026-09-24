@@ -1,0 +1,108 @@
+[hiqlite]
+# This is the reference config for the Hiqlite PROXY (`hiqlite proxy`),
+# which load-balances a single client connection point across all
+# cluster nodes. It only contains the subset of keys the proxy actually
+# understands; every key here also exists in `REFERENCE_CONFIG.toml`,
+# but node-only keys (like `node_id`, `data_dir`, Raft settings, ...)
+# must NOT be placed here, because the proxy rejects unknown keys on
+# startup.
+
+#  The listen address for client API connections.
+#
+# default: '0.0.0.0'
+# overwritten by: LISTEN_ADDR
+listen_addr = '0.0.0.0'
+
+# The port the proxy listens on for client API connections.
+#
+# default: 8200
+# overwritten by: LISTEN_PORT
+listen_port = 8200
+
+# The maximum number of concurrent API stream (WebSocket) connections
+# the proxy will accept. Each open stream holds a permit for its whole
+# lifetime, so this bounds how many clients can keep a long-lived
+# `/stream` open at once. It must be greater than zero.
+#
+# default: 20
+# overwritten by: HQL_PROXY_MAX_STREAM_CONNECTIONS
+max_stream_connections = 20
+
+# All cluster member nodes the proxy load-balances against.
+# Each array value must have the following format:
+# `id addr_raft addr_api`
+# The proxy only connects to the API address (`addr_api`) of each node,
+# so the Raft address is not used by the proxy itself - but it still
+# has to be present in the line. If given via ENV var, separate them by
+# `\n`.
+#
+# default: not set - required (at least one node)
+# overwritten by: HQL_NODES
+nodes = ["1 localhost:8100 localhost:8200"]
+
+# `tls_auto_certificates` will generate a self-signed TLS certificate
+# for the proxy's API traffic. Clients will simply not validate the
+# certificate for ease of use because they don't have to. They do a
+# 3-way handshake anyway, which validates both client and server
+# without the secret ever being sent over the network.
+#
+# If you specify specific certificates with `tls_api_*`, they will
+# be used instead.
+#
+# default: false
+# overwritten by: HQL_TLS_AUTO_CERTS
+tls_auto_certificates = false
+
+# If given, this key / certificate will be used to establish TLS
+# connections for the proxy's API. Both must be set together (or
+# both left unset).
+#
+# values are optional, overwritten by: HQL_TLS_API_{KEY|CERT|NO_VERIFY}
+#tls_api_key = "tls/key.pem"
+#tls_api_cert = "tls/cert-chain.pem"
+#tls_api_danger_tls_no_verify = true
+
+# Optional path to a separate TOML secrets file. It must mirror this
+# config's structure (i.e. contain a `[hiqlite]` table, or your
+# custom table name) and hold only the secret values. Any
+# secret-bearing option below may then be set to the case-sensitive
+# sentinel "$SECRETS", in which case its real value is loaded by the
+# same key name from this file. This keeps the main config diffable
+# and reviewable while secrets are managed separately (systemd
+# LoadCredential, Docker / Kubernetes secrets, ...).
+#
+# Secret-bearing options:
+# - secret_api
+# - enc_keys
+# - enc_key_active
+#
+# default: not set
+# overwritten by: HQL_SECRETS_FILE
+#secrets_file = "/run/secrets/hiqlite-proxy.toml"
+
+# Secret for the API. It must be at least 16 characters long.
+# May be set to "$SECRETS" to load from the `secrets_file` above.
+#
+# default: not set - required
+# overwritten by: HQL_SECRET_API
+secret_api = "SuperSecureApiSecret1337"
+
+# To guarantee the stability of your Raft cluster, you can
+# rate-limit all write operations to the Raft (excluding management
+# overhead). This is in request per second. It guarantees that the
+# cluster can never be overwhelmed because maybe the disks cannot
+# keep up. Usually, when this happens, you would see dropped or
+# missing heartbeats and errors that the leader is down, even when
+# the cluster is healthy.
+# The burst can usually be 2-2x the rps. If only the rps is set,
+# the burst defaults to the same value.
+#
+# default: not set
+# overwritten by: HQL_RL_CACHE_RPS
+#rate_limit_cache_rps = 50000
+# overwritten by: HQL_RL_CACHE_BURST
+#rate_limit_cache_burst = 100000
+# overwritten by: HQL_RL_DB_RPS
+#rate_limit_db_rps = 100000
+# overwritten by: HQL_RL_DB_BURST
+#rate_limit_db_burst = 200000

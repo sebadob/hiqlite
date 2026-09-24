@@ -58,7 +58,7 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
         .route("/version", get(handlers::get_version))
         .with_state(state.clone());
 
-    let addr_str = format!("0.0.0.0:{}", config.listen_port);
+    let addr_str = format!("{}:{}", config.listen_addr, config.listen_port);
     info!("listening on {}", addr_str);
     let addr = SocketAddr::from_str(&addr_str)
         .map_err(|err| Error::Config(format!("Invalid SocketAddr: {err:?}").into()))?;

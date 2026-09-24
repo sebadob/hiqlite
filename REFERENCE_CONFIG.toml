@@ -1,3 +1,10 @@
+# You will see invalid values like e.g.:
+# data_dir = '{{ DATA_DIR }}'
+# When you encounter anything in {{ SOME_NAME }}, this is a templating
+# value. These are invalid as they are, and you need to use the correct
+# data type when editing this file manually. An example is usually right
+# above the line, just out-commented.
+
 [hiqlite]
 # Can be set to 'k8s' to try to split off the node id from the hostname
 # when Hiqlite is running as a StatefulSet inside Kubernetes.
@@ -47,6 +54,7 @@ nodes = ["1 localhost:8100 localhost:8200"]
 # default: data
 # overwritten by: HQL_DATA_DIR
 #data_dir = "data"
+#data_dir = "{{ DATA_DIR }}"
 
 # The file name of the SQLite database in the state machine folder.
 #
@@ -234,10 +242,12 @@ tls_auto_certificates = false
 #
 # default: not set - required
 # overwritten by: HQL_SECRET_RAFT
-secret_raft = "SuperSecureRaftSecret1337"
+#secret_raft = "SuperSecureRaftSecret1337"
+secret_raft = "{{ SECRET_RAFT }}"
 # default: not set - required
 # overwritten by: HQL_SECRET_API
-secret_api = "SuperSecureApiSecret1337"
+#secret_api = "SuperSecureApiSecret1337"
+secret_api = "{{ SECRET_API }}"
 
 # Configures the initial delay in seconds that should be applied
 # to `<API>/health` checks. During the first X seconds after node
@@ -345,24 +355,27 @@ backup_keep_for_local = "3d"
 #
 # default: not set - mandatory value
 # overwritten by: ENC_KEYS
-enc_keys = [
-    # CHANGE THIS KEY! DEMO PURPOSES ONLY!
-    "bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ=",
-]
+#enc_keys = [
+#    # DO NOT USE THIS KEY! DEMO PURPOSES ONLY!
+#    "bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ=",
+#]
+enc_keys = ["{{ ENC_KEY }}"]
 
 # This identifies the key ID from the `ENC_KEYS` list, that
 # should actively be used for new encryptions.
 #
 # default: not set - mandatory value
 # overwritten by: ENC_KEY_ACTIVE
-enc_key_active = "bVCyTsGaggVy5yqQ"
+#enc_key_active = "bVCyTsGaggVy5yqQ"
+enc_key_active = "{{ ENC_KEY_ACTIVE }}"
 
 # The password for the dashboard as b64 encoded Argon2ID hash.
 # If left empty, the Dashboard will not be exposed.
 #
-# resolves to '123SuperMegaSafe' in this example
 # overwritten by: HQL_PASSWORD_DASHBOARD
-password_dashboard = "JGFyZ29uMmlkJHY9MTkkbT0zMix0PTIscD0xJE9FbFZURnAwU0V0bFJ6ZFBlSEZDT0EkTklCN0txTy8vanB4WFE5bUdCaVM2SlhraEpwaWVYOFRUNW5qdG9wcXkzQQ=="
+# resolves to '123SuperMegaSafe' in this example
+#password_dashboard = "JGFyZ29uMmlkJHY9MTkkbT0zMix0PTIscD0xJE9FbFZURnAwU0V0bFJ6ZFBlSEZDT0EkTklCN0txTy8vanB4WFE5bUdCaVM2SlhraEpwaWVYOFRUNW5qdG9wcXkzQQ=="
+password_dashboard = "{{ PASSWORD_DASHBOARD }}"
 
 # Can be set to `true` during local dev and testing to issue
 # insecure cookies.
