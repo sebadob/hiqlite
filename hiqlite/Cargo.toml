@@ -57,6 +57,7 @@ full = [
     "auto-heal",
     "backup",
     "cache",
+    "counters",
     "dashboard",
     "dlock",
     "listen_notify",

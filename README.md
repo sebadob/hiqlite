@@ -334,6 +334,7 @@ This feature enables the regular Hiqlite cluster features apart from the `server
 - auto-heal
 - backup
 - cache
+- counters
 - dashboard
 - dlock
 - listen_notify
