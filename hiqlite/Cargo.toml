@@ -18,6 +18,11 @@ doctest = false
 all-features = false
 features = ["full", "external-state-machine"]
 
+[[bench]]
+name = "bincode"
+path = "benches/bincode.rs"
+harness = false
+
 [features]
 default = ["auto-heal", "backup", "sqlite", "toml"]
 
@@ -111,21 +116,16 @@ __cluster = [
     "dep:http-body-util",
     "dep:hyper",
     "dep:hyper-util",
-    "dep:lazy_static",
-    "dep:lz4-sys",
     "dep:openraft",
     "dep:rcgen",
     "dep:reqwest",
     "dep:rust_decimal",
     "dep:rust-embed",
     "dep:rustls",
-    "dep:rustls-webpki",
     "dep:serde_json",
     "dep:serde_rusqlite",
     "dep:time",
     "dep:tokio-rustls",
-    "dep:tower-layer",
-    "dep:tower-service",
     "dep:url",
 ]
 
@@ -194,14 +194,7 @@ uuid.workspace = true
 webpki-root-certs = { workspace = true, optional = true }
 
 # make minimal versions happy
-lazy_static = { workspace = true, optional = true }
-lz4-sys = { workspace = true, optional = true }
 rust_decimal = { workspace = true, optional = true }
-tower-layer = { workspace = true, optional = true }
-tower-service = { workspace = true, optional = true }
-
-# Necessary to fix security issues in current versions.
-rustls-webpki = { workspace = true, optional = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
@@ -213,7 +206,3 @@ tokio = { workspace = true, features = ["full", "test-util", "tracing"] }
 tokio-test = "0.4.4"
 tracing-subscriber.workspace = true
 
-[[bench]]
-name = "bincode"
-path = "benches/bincode.rs"
-harness = false
