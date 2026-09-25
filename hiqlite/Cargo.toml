@@ -136,10 +136,10 @@ __cluster = [
 __profiling = ["dep:console-subscriber"]
 
 [dependencies]
-#hiqlite-derive = { version = "0.15", optional = true }
-hiqlite-derive = { path = "../hiqlite-derive", optional = true }
-#hiqlite-wal = { version = "0.15", optional = true }
-hiqlite-wal = { path = "../hiqlite-wal", optional = true }
+hiqlite-derive = { version = "0.15", optional = true }
+#hiqlite-derive = { path = "../hiqlite-derive", optional = true }
+hiqlite-wal = { version = "0.15", optional = true }
+#hiqlite-wal = { path = "../hiqlite-wal", optional = true }
 
 argon2 = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
