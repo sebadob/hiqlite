@@ -194,6 +194,15 @@ cache_storage_disk = true
 # validates both client and server without the secret ever being
 # sent over the network.
 #
+# Note: For direct API requests during cluster formation, the
+# secret will be sent as-is inside a header. This means if someone
+# is able to spoof a server, and you don't validate certificats, it
+# might be able to extract the `secret_api`. Reworking this into a
+# challenge-reponse in an efficient way is a future todo. On the
+# opther hand, if an attacker has the possibility to actually spoof
+# a node, it is most probably also possible to simply read the spoofed
+# nodes' config file directly.
+#
 # If you specify specific certificates with either `tls_raft_*` or
 # `tls_api_*`, they will be used instead.
 #
