@@ -1439,7 +1439,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiqlite"
-version = "0.15.0-20260920"
+version = "0.15.0"
 dependencies = [
  "axum",
  "axum-server",
@@ -1490,16 +1490,16 @@ dependencies = [
 
 [[package]]
 name = "hiqlite-derive"
-version = "0.15.0-20260920"
+version = "0.15.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.6",
 ]
 
 [[package]]
 name = "hiqlite-wal"
-version = "0.15.0-20260920"
+version = "0.15.0"
 dependencies = [
  "bincode-next",
  "byteorder",
@@ -3300,6 +3300,17 @@ name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e665b8803e7b1d2a727f4023456bbbbe74da67099c585258af0ad9c5013b9b99"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
+name = "syn"
+version = "3.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3ebcee"
 dependencies = [
  "proc-macro2",
  "quote",
