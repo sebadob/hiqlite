@@ -1,6 +1,6 @@
 # Changelog
 
-## UNRELEASED
+## v0.15.0
 
 This version brings a huge number of tiny (and some big) bugfixes. The list is too long to write it down here
 meaningfully. In general: if you had any issue, this version probably fixes it.
@@ -89,7 +89,7 @@ State Machine are fully compatible.
   more stress on your SSD).
 - The ENV var `HQL_TLS_{variant}_DANGER_TLS_NO_VERIFY` was renamed to `HQL_TLS_{variant}_NO_VERIFY`. Apart from that,
   there is now a `REFERENCE_CONFIG.toml` in the crates root dir. It was updated and added into the tests. You will also
-  be able to grab it directly from the crate, es it is embedded at compile time.
+  be able to grab it directly from the crate, es it is embedded at compile time (with the `config-embed` feature).
 - `counters` is now part of the `full` feature.
 - The MSRV for all crates was bumped to 1.95.
 

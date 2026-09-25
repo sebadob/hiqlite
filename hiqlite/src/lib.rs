@@ -33,8 +33,10 @@ use std::fmt::{Debug, Display};
 use crate::store::state_machine::sqlite::state_machine::Response;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use crate::{client::Client, error::Error};
+#[cfg(feature = "config-embed")]
+pub use config::REFERENCE_CONFIG;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
-pub use config::{NodeConfig, REFERENCE_CONFIG, RaftConfig, RateLimitConfig};
+pub use config::{NodeConfig, RaftConfig, RateLimitConfig};
 #[cfg(feature = "sqlite")]
 pub use query::cust_types::VecText;
 

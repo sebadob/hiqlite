@@ -1,6 +1,6 @@
 [package]
 name = "hiqlite"
-version = "0.15.0-20260920"
+version = "0.15.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -42,6 +42,7 @@ dashboard = [
 dlock = ["cache"]
 cast_ints = []
 cast_ints_unchecked = []
+config-embed = []
 # Opt-in state-machine engine for applications that already own consensus.
 # This reuses the SQLite connection, read-pool, restore, and single-writer
 # machinery without starting a Hiqlite Raft group.
@@ -83,6 +84,7 @@ server = [
     "dep:clap",
     "dep:home",
     "dep:tracing-subscriber",
+    "config-embed",
     "full",
     "listen_notify",
     "tokio/macros",
@@ -134,9 +136,9 @@ __cluster = [
 __profiling = ["dep:console-subscriber"]
 
 [dependencies]
-#hiqlite-derive = { version = "0.14", optional = true }
+#hiqlite-derive = { version = "0.15", optional = true }
 hiqlite-derive = { path = "../hiqlite-derive", optional = true }
-#hiqlite-wal = { version = "0.14" }
+#hiqlite-wal = { version = "0.15", optional = true }
 hiqlite-wal = { path = "../hiqlite-wal", optional = true }
 
 argon2 = { workspace = true, optional = true }
