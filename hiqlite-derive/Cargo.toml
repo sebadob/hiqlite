@@ -1,6 +1,6 @@
 [package]
 name = "hiqlite-derive"
-version = "0.15.0-20260920"
+version = "0.15.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -15,5 +15,5 @@ proc-macro = true
 
 [dependencies]
 proc-macro2 = { version = "1.0.90", features = [] }
-syn = { version = "2.0.90", features = [] }
+syn = { version = "3", features = [] }
 quote = "1.0.30"
