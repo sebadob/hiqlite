@@ -25,6 +25,7 @@ pub use openraft::Config as RaftConfig;
 /// - `{{ ENC_KEY }}`
 /// - `{{ ENC_KEY_ACTIVE }}`
 /// - `{{ PASSWORD_DASHBOARD }}`
+#[cfg(feature = "config-embed")]
 pub static REFERENCE_CONFIG: &str = include_str!("../../REFERENCE_CONFIG.toml");
 
 #[derive(Debug)]
