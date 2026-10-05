@@ -1,3 +1,4 @@
+use crate::network::tcp_socket::{create_listening_socket, ConfiguredStreamAcceptor};
 use crate::server::proxy::state::AppStateProxy;
 use crate::{Client, Error};
 use axum::Router;
@@ -63,15 +64,31 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
     let addr = SocketAddr::from_str(&addr_str)
         .map_err(|err| Error::Config(format!("Invalid SocketAddr: {err:?}").into()))?;
 
+    let listener = create_listening_socket(addr).map_err(|err| {
+        Error::Config(format!("Cannot bind listen address '{addr_str}': {err:?}").into())
+    })?;
+    let std_listener = listener
+        .into_std()
+        .expect("Converting a fresh, idle TCP listener to std should not fail");
+
     if let Some(config) = &config.tls_config {
         let tls_config = config.server_config(&addr_str).await;
 
-        axum_server::bind_rustls(addr, tls_config)
+        axum_server::from_tcp(std_listener)
+            // errors when the socket is blocking
+            .expect("properly configured TCP listener")
+            .acceptor(
+                axum_server::tls_rustls::RustlsAcceptor::new(tls_config)
+                    .acceptor(ConfiguredStreamAcceptor),
+            )
             .serve(router.into_make_service())
             .await
             .unwrap();
     } else {
-        axum_server::bind(addr)
+        axum_server::from_tcp(std_listener)
+            // errors when the socket is blocking
+            .expect("properly configured TCP listener")
+            .acceptor(ConfiguredStreamAcceptor)
             .serve(router.into_make_service())
             .await
             .unwrap();

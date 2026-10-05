@@ -1,4 +1,5 @@
 use crate::network::handshake::HandshakeSecret;
+use crate::network::tcp_socket::configure_tcp_stream;
 use crate::{Error, NodeId, tls};
 use axum::http::Request;
 use axum::http::header::{CONNECTION, UPGRADE};
@@ -73,9 +74,11 @@ async fn try_connect_stream(
         })?;
 
     debug!("Opening TcpStream to: {addr}");
-    let stream = TcpStream::connect(addr)
+    let mut stream = TcpStream::connect(addr)
         .await
         .map_err(|err| Error::Connect(err.to_string()))?;
+
+    configure_tcp_stream(&mut stream);
 
     let (mut ws, _) = if let Some(config) = tls_config {
         let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));

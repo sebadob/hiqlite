@@ -1,7 +1,9 @@
 use crate::app_state::AppState;
 use crate::network::raft_server;
+use crate::network::tcp_socket::{configure_tcp_stream, create_listening_socket, ConfiguredStreamAcceptor};
 use crate::network::{api, management};
 use crate::{CacheVariants, Client, Error, NodeConfig, init, split_brain_check, store};
+use axum::serve::ListenerExt;
 use axum::Router;
 use axum::routing::{get, post};
 use chrono::Utc;
@@ -10,7 +12,6 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task;
 use tracing::{debug, error, info};
@@ -172,23 +173,23 @@ where
 
     let shutdown = shutdown_signal(rx_shutdown.clone());
     if let Some(config) = &node_config.tls_raft {
-        let listener = task::spawn_blocking(move || std::net::TcpListener::bind(rpc_socket_addr))
-            .await
-            .unwrap()
-            .map_err(|err| {
-                Error::Config(format!("Cannot bind Raft listen address '{rpc_addr}': {err}").into())
-            })?;
-        listener
-            .set_nonblocking(true)
-            .expect("Cannot create non-blocking socket");
+        let listener = create_listening_socket(rpc_socket_addr).map_err(|err| {
+            Error::Config(format!("Cannot bind Raft listen address '{rpc_addr}': {err:?}").into())
+        })?;
+        let std_listener = listener
+            .into_std()
+            .expect("Converting a fresh, idle TCP listener to std should not fail");
 
         let config = config.server_config(&node_config.listen_addr_raft).await;
         let handle = axum_server::Handle::<std::net::SocketAddr>::new();
         let h_shutdown = handle.clone();
         task::spawn(Box::pin(async move {
-            axum_server::from_tcp_rustls(listener, config)
+            let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(config)
+                .acceptor(ConfiguredStreamAcceptor);
+            axum_server::from_tcp(std_listener)
                 // errors when the socket is blocking
-                .unwrap()
+                .expect("properly configured TCP listener")
+                .acceptor(acceptor)
                 .handle(handle)
                 .serve(router_internal.into_make_service())
                 .await
@@ -202,14 +203,17 @@ where
     } else {
         // Bind before spawning so that a bind failure fails startup loudly instead of
         // panicking inside the spawned task with a dropped JoinError.
-        let listener = TcpListener::bind(rpc_socket_addr).await.map_err(|err| {
-            Error::Config(format!("Cannot bind Raft listen address '{rpc_addr}': {err}").into())
+        let listener = create_listening_socket(rpc_socket_addr).map_err(|err| {
+            Error::Config(format!("Cannot bind Raft listen address '{rpc_addr}': {err:?}").into())
         })?;
         task::spawn(Box::pin(async move {
-            axum::serve(listener, router_internal.into_make_service())
-                .with_graceful_shutdown(shutdown)
-                .await
-                .map_err(|err| error!("Raft server stopped: {err}"))
+            axum::serve(
+                listener.tap_io(configure_tcp_stream),
+                router_internal.into_make_service(),
+            )
+            .with_graceful_shutdown(shutdown)
+            .await
+            .map_err(|err| error!("Raft server stopped: {err}"))
         }));
     };
 
@@ -278,23 +282,23 @@ where
 
     info!("api external listening on {api_addr}");
     if let Some(config) = &node_config.tls_api {
-        let listener = task::spawn_blocking(move || std::net::TcpListener::bind(api_socket_addr))
-            .await
-            .unwrap()
-            .map_err(|err| {
-                Error::Config(format!("Cannot bind API listen address '{api_addr}': {err}").into())
-            })?;
-        listener
-            .set_nonblocking(true)
-            .expect("Cannot create non-blocking socket");
+        let listener = create_listening_socket(api_socket_addr).map_err(|err| {
+            Error::Config(format!("Cannot bind API listen address '{api_addr}': {err:?}").into())
+        })?;
+        let std_listener = listener
+            .into_std()
+            .expect("Converting a fresh, idle TCP listener to std should not fail");
 
         let config = config.server_config(&node_config.listen_addr_api).await;
         let handle = axum_server::Handle::<std::net::SocketAddr>::new();
         let h_shutdown = handle.clone();
         task::spawn(Box::pin(async move {
-            axum_server::from_tcp_rustls(listener, config)
+            let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(config)
+                .acceptor(ConfiguredStreamAcceptor);
+            axum_server::from_tcp(std_listener)
                 // errors when the socket is blocking
                 .expect("properly configured TCP listener")
+                .acceptor(acceptor)
                 .handle(handle)
                 .serve(router_api.into_make_service())
                 .await
@@ -306,15 +310,18 @@ where
             h_shutdown.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
         });
     } else {
-        let listener = TcpListener::bind(api_socket_addr).await.map_err(|err| {
-            Error::Config(format!("Cannot bind API listen address '{api_addr}': {err}").into())
+        let listener = create_listening_socket(api_socket_addr).map_err(|err| {
+            Error::Config(format!("Cannot bind API listen address '{api_addr}': {err:?}").into())
         })?;
 
         task::spawn(Box::pin(async move {
-            axum::serve(listener, router_api.into_make_service())
-                .with_graceful_shutdown(shutdown_signal(rx_shutdown))
-                .await
-                .map_err(|err| error!("API server stopped: {err}"))
+            axum::serve(
+                listener.tap_io(configure_tcp_stream),
+                router_api.into_make_service(),
+            )
+            .with_graceful_shutdown(shutdown_signal(rx_shutdown))
+            .await
+            .map_err(|err| error!("API server stopped: {err}"))
         }));
     };
 
