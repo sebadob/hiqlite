@@ -169,6 +169,32 @@ enum WritePayload {
     Close,
 }
 
+/// A [`JoinHandle`] that aborts its task when dropped.
+///
+/// `ws_handler` owns the handles of the reader and writer tasks that hold the
+/// two halves of the WebSocket, and aborts them on its own reconnect path. That
+/// path never runs when `ws_handler` is itself aborted, and dropping a bare
+/// `JoinHandle` only detaches its task instead of cancelling it, so the two
+/// tasks would keep the socket open for good. Wrapping the handles propagates
+/// the cancellation: aborting `ws_handler` drops its locals, and dropping this
+/// guard aborts the task it holds.
+struct AbortOnDrop(JoinHandle<()>);
+
+impl AbortOnDrop {
+    /// Abort eagerly. Idempotent, so the explicit aborts on the reconnect path
+    /// and the later `Drop` do not conflict.
+    #[inline]
+    fn abort(&self) {
+        self.0.abort();
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 #[allow(clippy::type_complexity)]
 impl NetworkStreaming {
     #[allow(clippy::too_many_arguments)]
@@ -274,8 +300,14 @@ impl NetworkStreaming {
             // IMPORTANT: the reader is NOT CANCEL SAFE in v0.8!
             let read = FragmentCollectorRead::new(read);
 
-            let handle_read = task::spawn(Box::pin(Self::stream_reader(read, tx_read.clone())));
-            let handle_write = task::spawn(Box::pin(Self::stream_writer(write, rx_write)));
+            // Guarded: `ws_handler` may be aborted before it reaches the
+            // aborts below, and these must then cancel and not detach.
+            let handle_read = AbortOnDrop(task::spawn(Box::pin(Self::stream_reader(
+                read,
+                tx_read.clone(),
+            ))));
+            let handle_write =
+                AbortOnDrop(task::spawn(Box::pin(Self::stream_writer(write, rx_write))));
 
             loop {
                 let res = select! {
