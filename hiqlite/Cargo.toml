@@ -127,6 +127,7 @@ __cluster = [
     "dep:rustls",
     "dep:serde_json",
     "dep:serde_rusqlite",
+    "dep:socket2",
     "dep:time",
     "dep:tokio-rustls",
     "dep:url",
@@ -181,6 +182,7 @@ serde_json = { workspace = true, optional = true }
 serde_rusqlite = { workspace = true, optional = true }
 sha2.workspace = true
 spow = { workspace = true, optional = true }
+socket2 = { workspace = true, optional = true }
 thiserror.workspace = true
 thread-priority.workspace = true
 time = { workspace = true, optional = true }
