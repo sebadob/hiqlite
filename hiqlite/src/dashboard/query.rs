@@ -13,7 +13,12 @@ pub(crate) async fn dashboard_query_dynamic(
     state: AppStateExt,
     sql: String,
 ) -> Result<Vec<RowOwned>, Error> {
-    if sql.len() < 8 {
+    let start_lower = sql
+        .chars()
+        .take(7)
+        .map(|c| c.to_ascii_lowercase())
+        .collect::<String>();
+    if start_lower.len() < 7 {
         return Err(Error::BadRequest("invalid query".into()));
     }
 
@@ -24,9 +29,7 @@ pub(crate) async fn dashboard_query_dynamic(
     // we need to check if we can do a local select query or if it is
     // modifying and needs to go through the raft
     // TODO does not cover things with "with ... select"
-    //  -> is there any SQL parses we can re-use here?
-    let (sql_start, _) = sql.split_at(7);
-    let start_lower = sql_start.to_ascii_lowercase();
+    //  -> is there any lightweight SQL parser we can re-use here?
     let is_select = start_lower.starts_with("select")
         || start_lower.starts_with("explain")
         || start_lower.starts_with("pragma");
