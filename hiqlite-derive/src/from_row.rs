@@ -456,18 +456,21 @@ fn option_inner(ty: &Type) -> syn::Result<&Type> {
     }
 }
 
-fn is_field_ty_opt(ty: &Type) -> syn::Result<bool> {
-    match ty {
-        Type::Path(type_path) => {
-            let path = &type_path.path;
-            if path.segments.len() == 1 && path.segments[0].ident == "Option" {
-                Ok(true)
-            } else {
-                Ok(false)
-            }
-        }
-        _ => Ok(false),
+#[inline]
+fn is_field_ty_opt(ty: &Type) -> Option<bool> {
+    let Type::Path(ty) = ty else {
+        return Some(false);
+    };
+    let mut iter = ty.path.segments.iter();
+
+    let mut s = iter.next()?.ident.to_string();
+    if s == "std" || s == "core" {
+        s = iter.next()?.ident.to_string();
     }
+    if s == "option" {
+        s = iter.next()?.ident.to_string();
+    }
+    Some(s.as_str() == "Option")
 }
 
 #[cfg(test)]
