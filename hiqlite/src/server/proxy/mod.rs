@@ -64,7 +64,7 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
     let addr = SocketAddr::from_str(&addr_str)
         .map_err(|err| Error::Config(format!("Invalid SocketAddr: {err:?}").into()))?;
 
-    let listener = create_listening_socket(addr).map_err(|err| {
+    let listener = create_listening_socket(addr).await.map_err(|err| {
         Error::Config(format!("Cannot bind listen address '{addr_str}': {err:?}").into())
     })?;
     let std_listener = listener

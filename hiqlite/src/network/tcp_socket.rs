@@ -6,6 +6,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 pub use tokio::net::TcpListener;
+use tokio::task;
 use tracing::debug;
 
 fn standard_keepalive() -> TcpKeepalive {
@@ -15,40 +16,40 @@ fn standard_keepalive() -> TcpKeepalive {
         .with_retries(3)
 }
 
-pub fn create_listening_socket(addr: SocketAddr) -> Result<TcpListener, Error> {
-    let socket = if addr.is_ipv4() {
-        Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )?
-    } else {
-        Socket::new(
-            socket2::Domain::IPV6,
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )?
-    };
-    socket.set_reuse_address(true)?;
-    socket.set_nonblocking(true)?;
-    socket.set_tcp_nodelay(true)?;
+pub async fn create_listening_socket(addr: SocketAddr) -> Result<TcpListener, Error> {
+    task::spawn_blocking(move || {
+        let socket = if addr.is_ipv4() {
+            Socket::new(
+                socket2::Domain::IPV4,
+                socket2::Type::STREAM,
+                Some(socket2::Protocol::TCP),
+            )?
+        } else {
+            Socket::new(
+                socket2::Domain::IPV6,
+                socket2::Type::STREAM,
+                Some(socket2::Protocol::TCP),
+            )?
+        };
+        socket.set_reuse_address(true)?;
+        socket.set_nonblocking(true)?;
+        socket.set_tcp_nodelay(true)?;
 
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    {
-        socket.set_tcp_cork(false)?;
-        socket.set_priority(6)?;
-    }
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        {
+            socket.set_tcp_cork(false)?;
+            socket.set_priority(6)?;
+        }
 
-    let keepalive = standard_keepalive();
-    socket.set_tcp_keepalive(&keepalive)?;
-    socket.set_keepalive(true)?;
+        let keepalive = standard_keepalive();
+        socket.set_tcp_keepalive(&keepalive)?;
+        socket.set_keepalive(true)?;
 
-    socket.bind(&addr.into())?;
-    socket.listen(1024)?;
-
-    let listener = TcpListener::from_std(socket.into())?;
-
-    Ok(listener)
+        socket.bind(&addr.into())?;
+        socket.listen(1024)?;
+        Ok(TcpListener::from_std(socket.into())?)
+    })
+    .await?
 }
 
 pub fn configure_tcp_stream(stream: &mut tokio::net::TcpStream) {

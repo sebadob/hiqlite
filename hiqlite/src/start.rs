@@ -175,9 +175,13 @@ where
 
     let shutdown = shutdown_signal(rx_shutdown.clone());
     if let Some(config) = &node_config.tls_raft {
-        let listener = create_listening_socket(rpc_socket_addr).map_err(|err| {
-            Error::Config(format!("Cannot bind Raft listen address '{rpc_addr}': {err:?}").into())
-        })?;
+        let listener = create_listening_socket(rpc_socket_addr)
+            .await
+            .map_err(|err| {
+                Error::Config(
+                    format!("Cannot bind Raft listen address '{rpc_addr}': {err:?}").into(),
+                )
+            })?;
         let std_listener = listener
             .into_std()
             .expect("Converting a fresh, idle TCP listener to std should not fail");
@@ -205,9 +209,13 @@ where
     } else {
         // Bind before spawning so that a bind failure fails startup loudly instead of
         // panicking inside the spawned task with a dropped JoinError.
-        let listener = create_listening_socket(rpc_socket_addr).map_err(|err| {
-            Error::Config(format!("Cannot bind Raft listen address '{rpc_addr}': {err:?}").into())
-        })?;
+        let listener = create_listening_socket(rpc_socket_addr)
+            .await
+            .map_err(|err| {
+                Error::Config(
+                    format!("Cannot bind Raft listen address '{rpc_addr}': {err:?}").into(),
+                )
+            })?;
         task::spawn(Box::pin(async move {
             axum::serve(
                 listener.tap_io(configure_tcp_stream),
@@ -284,9 +292,13 @@ where
 
     info!("api external listening on {api_addr}");
     if let Some(config) = &node_config.tls_api {
-        let listener = create_listening_socket(api_socket_addr).map_err(|err| {
-            Error::Config(format!("Cannot bind API listen address '{api_addr}': {err:?}").into())
-        })?;
+        let listener = create_listening_socket(api_socket_addr)
+            .await
+            .map_err(|err| {
+                Error::Config(
+                    format!("Cannot bind API listen address '{api_addr}': {err:?}").into(),
+                )
+            })?;
         let std_listener = listener
             .into_std()
             .expect("Converting a fresh, idle TCP listener to std should not fail");
@@ -312,9 +324,13 @@ where
             h_shutdown.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
         });
     } else {
-        let listener = create_listening_socket(api_socket_addr).map_err(|err| {
-            Error::Config(format!("Cannot bind API listen address '{api_addr}': {err:?}").into())
-        })?;
+        let listener = create_listening_socket(api_socket_addr)
+            .await
+            .map_err(|err| {
+                Error::Config(
+                    format!("Cannot bind API listen address '{api_addr}': {err:?}").into(),
+                )
+            })?;
 
         task::spawn(Box::pin(async move {
             axum::serve(
