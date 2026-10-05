@@ -1,11 +1,13 @@
 use crate::app_state::AppState;
 use crate::network::raft_server;
-use crate::network::tcp_socket::{configure_tcp_stream, create_listening_socket, ConfiguredStreamAcceptor};
+use crate::network::tcp_socket::{
+    ConfiguredStreamAcceptor, configure_tcp_stream, create_listening_socket,
+};
 use crate::network::{api, management};
 use crate::{CacheVariants, Client, Error, NodeConfig, init, split_brain_check, store};
-use axum::serve::ListenerExt;
 use axum::Router;
 use axum::routing::{get, post};
+use axum::serve::ListenerExt;
 use chrono::Utc;
 use std::fmt::Debug;
 use std::net::SocketAddr;

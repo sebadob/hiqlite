@@ -1,4 +1,4 @@
-use crate::network::tcp_socket::{create_listening_socket, ConfiguredStreamAcceptor};
+use crate::network::tcp_socket::{ConfiguredStreamAcceptor, create_listening_socket};
 use crate::server::proxy::state::AppStateProxy;
 use crate::{Client, Error};
 use axum::Router;
