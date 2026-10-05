@@ -32,8 +32,12 @@ pub fn create_listening_socket(addr: SocketAddr) -> Result<TcpListener, Error> {
     socket.set_reuse_address(true)?;
     socket.set_nonblocking(true)?;
     socket.set_tcp_nodelay(true)?;
-    socket.set_tcp_cork(false)?;
-    socket.set_priority(6)?;
+
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    {
+        socket.set_tcp_cork(false)?;
+        socket.set_priority(6)?;
+    }
 
     let keepalive = standard_keepalive();
     socket.set_tcp_keepalive(&keepalive)?;
@@ -56,6 +60,7 @@ pub fn configure_tcp_stream(stream: &mut tokio::net::TcpStream) {
     if let Err(err) = socket_ref.set_tcp_keepalive(&standard_keepalive()) {
         debug!("Failed to configure TCP keepalive on TCP stream: {err}");
     }
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     if let Err(err) = socket_ref.set_priority(6) {
         debug!("Failed to set socket priority on TCP stream: {err}");
     }
