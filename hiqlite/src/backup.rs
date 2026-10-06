@@ -3,9 +3,7 @@ use crate::helpers::{
     atomic_file_switch, parse_duration, set_path_access, validate_db_backup_snapshot,
 };
 use crate::store::logs;
-use crate::store::state_machine::sqlite::state_machine::{
-    PathBackups, PathDb, PathLockFile, PathSnapshots, QueryWrite, StateMachineSqlite,
-};
+use crate::store::state_machine::sqlite::state_machine::{QueryWrite, StateMachineSqlite};
 use crate::{Client, Error, NodeConfig};
 use chrono::{DateTime, Utc};
 use std::env;
@@ -20,6 +18,8 @@ use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "s3")]
 use crate::s3::S3Config;
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::state_machine::StateMachineMemory;
 
 pub const BACKUP_DB_NAME: &str = "restore.sqlite";
 
@@ -301,11 +301,59 @@ pub(crate) async fn restore_backup_start(node_config: &NodeConfig) -> Result<boo
             return Ok(true);
         } else {
             warn!("Cleaning up existing files and start restore cluster join");
-            let _ = fs::remove_dir_all(node_config.data_dir.as_ref()).await;
+            cleanup_restore_data_dirs(&node_config.data_dir).await?;
         }
     }
 
     Ok(false)
+}
+
+/// Delete all state under `data_dir` that must not survive a backup restore: the SQLite DB
+/// (including its WAL sidecars), raft snapshots, lock file, both raft WALs and the cache data
+/// (+ its WAL, only present with the `cache` feature). Only these known paths are removed -
+/// never `data_dir` itself, which may be a direct container mount that cannot be deleted, and
+/// never anything unknown (e.g. the staged backup in `state_machine/backups`). Missing paths
+/// are fine; any other error is propagated, so a failed cleanup can never silently leave stale
+/// state behind.
+async fn cleanup_restore_data_dirs(data_dir: &str) -> Result<(), Error> {
+    let sqlite_paths = [
+        StateMachineSqlite::path_db(data_dir),
+        StateMachineSqlite::path_snapshots(data_dir),
+        StateMachineSqlite::path_lock_file(data_dir),
+        logs::logs_dir_db(data_dir),
+    ];
+    #[cfg(feature = "cache")]
+    let cache_paths = [
+        StateMachineMemory::path_sm(data_dir),
+        logs::logs_dir_cache(data_dir),
+    ];
+
+    for path in &sqlite_paths {
+        match fs::remove_dir_all(path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(Error::Sqlite(
+                    format!("Cannot remove old data dir {path}: {err}").into(),
+                ));
+            }
+        }
+    }
+
+    #[cfg(feature = "cache")]
+    for path in &cache_paths {
+        match fs::remove_dir_all(path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(Error::Cache(
+                    format!("Cannot remove old data dir {path}: {err}").into(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Apply the given backup from S3 storage.
@@ -325,13 +373,8 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
         ));
     }
 
-    let (
-        PathDb(path_db),
-        PathBackups(path_backups),
-        PathSnapshots(path_snapshots),
-        PathLockFile(path_lock_file),
-    ) = StateMachineSqlite::build_folders(&node_config.data_dir, false).await;
-    let path_logs = logs::logs_dir_db(&node_config.data_dir);
+    let path_db = StateMachineSqlite::path_db(&node_config.data_dir);
+    let path_backups = StateMachineSqlite::path_backups(&node_config.data_dir);
 
     fs::create_dir_all(&path_backups).await?;
     set_path_access(&path_backups, 0o700).await?;
@@ -368,11 +411,9 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     // Removing old dirs even before the backup is in its final place. Important to never end up
     // in an inconsistent state with a partly applied backups and maybe still existing old WAL data.
     // You apply the backup for a reason -> the current data is broken anyway. If anything fails
-    // between here and getting the backup into place, you start fresh anyway.
-    let _ = fs::remove_dir_all(&path_db).await;
-    let _ = fs::remove_dir_all(&path_snapshots).await;
-    let _ = fs::remove_dir_all(&path_lock_file).await;
-    let _ = fs::remove_dir_all(&path_logs).await;
+    // between here and getting the backup into place, you start fresh anyway. The staged backup
+    // in `state_machine/backups` has been validated already and is intentionally kept.
+    cleanup_restore_data_dirs(&node_config.data_dir).await?;
 
     fs::create_dir_all(&path_db).await?;
     set_path_access(&path_db, 0o700).await?;

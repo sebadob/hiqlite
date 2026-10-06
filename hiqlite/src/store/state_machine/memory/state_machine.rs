@@ -214,11 +214,15 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
 }
 
 impl StateMachineMemory {
+    pub(crate) fn path_sm(data_dir: &str) -> String {
+        format!("{data_dir}/state_machine_cache")
+    }
+
     pub(crate) async fn new<C>(base_path: &str, in_memory_only: bool) -> Result<Self, Error>
     where
         C: Debug + CacheVariants,
     {
-        let path_sm = format!("{base_path}/state_machine_cache");
+        let path_sm = Self::path_sm(base_path);
         let path_snapshots = format!("{path_sm}/snapshots");
 
         // Default: snapshots are always persisted, so `data_dir` is always required.
