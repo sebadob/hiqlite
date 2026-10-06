@@ -159,6 +159,14 @@ where
         backup::restore_backup_finish(&state).await;
     }
 
+    // Before starting the API servers, wait until each state machine has applied every log entry
+    // that is currently in its WAL; only then is the node's data up to date.
+    #[cfg(feature = "sqlite")]
+    store::catchup::wait_for_state_machine_catchup(&state.raft_db.raft, "sqlite").await;
+
+    #[cfg(feature = "cache")]
+    store::catchup::wait_for_state_machine_catchup(&state.raft_cache.raft, "cache").await;
+
     let (tx_shutdown, rx_shutdown) = tokio::sync::watch::channel(false);
 
     let router_internal = Router::new()
@@ -389,7 +397,6 @@ where
     let client = Client::new_local(
         state,
         tls_api_client_config,
-        #[cfg(feature = "cache")]
         tls_no_verify_api,
         #[cfg(feature = "sqlite")]
         tx_client_stream,
@@ -403,7 +410,6 @@ where
     )
     .await;
 
-    // TODO fix that and also start backup cron jobs with no S3 config
     #[cfg(feature = "backup")]
     backup::start_cron(
         client.clone(),

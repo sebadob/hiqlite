@@ -23,6 +23,11 @@ use std::clone::Clone;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use std::sync::atomic::Ordering;
 
+/// Maximum number of log entries a node may lag behind the cluster tip while still counting as
+/// "in sync". Followers are normally a bit behind the leader, so we never require an exact index
+/// match - instead callers wait until the gap drops to this bound or below.
+const CLUSTER_SYNC_ALLOWED_DIFF: u64 = 100;
+
 impl Client {
     /// Get cluster metrics for the database Raft.
     #[cfg(feature = "sqlite")]
@@ -190,6 +195,178 @@ impl Client {
                     "Waiting for Cache to become healthy timed out after {timeout:?}"
                 ))
             })
+    }
+
+    /// Wait until this node is in sync with the rest of the cluster.
+    /// Works on local clients only; for remote clients it waits forever, because a remote client
+    /// cannot know how far its server-side node has caught up.
+    ///
+    /// This is meant to be called after `start_node()` returned and before serving traffic: a
+    /// node that was offline for longer catches up in the background, and this function waits
+    /// until its state machine(s) are close enough to the cluster tip to serve reads again.
+    /// "Close enough" means within [`CLUSTER_SYNC_ALLOWED_DIFF`] log entries of the leader's last
+    /// log index - followers are normally a bit behind the leader, so we never require an exact
+    /// index match.
+    pub async fn wait_for_cluster_sync(&self) {
+        loop {
+            let mut in_sync = true;
+
+            #[cfg(feature = "sqlite")]
+            if let Err(err) = self.is_in_sync_db().await {
+                in_sync = false;
+                debug!("Waiting for cluster sync (DB): {err:?}");
+                info!("Waiting for cluster sync (DB)");
+            }
+
+            #[cfg(feature = "cache")]
+            if let Err(err) = self.is_in_sync_cache().await {
+                in_sync = false;
+                debug!("Waiting for cluster sync (Cache): {err:?}");
+                info!("Waiting for cluster sync (Cache)");
+            }
+
+            if in_sync {
+                info!("This node is now in sync with the cluster");
+                return;
+            }
+
+            time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Same as `wait_for_cluster_sync()`, but returns a timeout error after `timeout`.
+    pub async fn wait_for_cluster_sync_timeout(&self, timeout: Duration) -> Result<(), Error> {
+        if self.inner.state.is_none() {
+            return Err(Error::Error(
+                "Cluster sync check works on local clients only".into(),
+            ));
+        }
+
+        tokio::time::timeout(timeout, self.wait_for_cluster_sync())
+            .await
+            .map_err(|_| {
+                Error::Timeout(format!(
+                    "Waiting for the cluster to be in sync timed out after {timeout:?}"
+                ))
+            })
+    }
+
+    /// Check if this node's database state machine is in sync with the cluster.
+    /// Works on local clients only.
+    #[cfg(feature = "sqlite")]
+    async fn is_in_sync_db(&self) -> Result<(), Error> {
+        let state =
+            self.inner.state.as_ref().ok_or_else(|| {
+                Error::Error("Cluster sync check works on local clients only".into())
+            })?;
+
+        let our_metrics = state.raft_db.raft.metrics().borrow().clone();
+        our_metrics.running_state.clone()?;
+
+        // Our own state machine progress - what is actually servable to queries right now.
+        let applied = our_metrics.last_applied.map(|l| l.index).unwrap_or(0);
+        let own_last_log_index = our_metrics.last_log_index.unwrap_or(0);
+
+        // Keep the cached leader address up to date and fail loud on stale metrics, like
+        // `find_set_active_leader` does at startup.
+        Self::find_set_leader(our_metrics, &self.inner.leader_db).await?;
+
+        // The cluster tip is the leader's last log index. Followers are normally a bit behind
+        // it, so we compare against `CLUSTER_SYNC_ALLOWED_DIFF` instead of requiring an exact
+        // match.
+        let tip = if state.id == self.inner.leader_db.read().await.0 {
+            // We are the leader: our own log is the cluster tip.
+            own_last_log_index
+        } else {
+            let url = self
+                .build_addr("/cluster/metrics/sqlite", &self.inner.leader_db)
+                .await;
+            self.get_metrics_local(url)
+                .await?
+                .last_log_index
+                .unwrap_or(0)
+        };
+
+        if tip.saturating_sub(applied) <= CLUSTER_SYNC_ALLOWED_DIFF {
+            Ok(())
+        } else {
+            Err(Error::Connect(format!(
+                "DB state machine is {} log entries behind the cluster tip (allowed: {CLUSTER_SYNC_ALLOWED_DIFF})",
+                tip - applied
+            )))
+        }
+    }
+
+    /// Check if this node's cache state machine is in sync with the cluster.
+    /// Works on local clients only.
+    #[cfg(feature = "cache")]
+    async fn is_in_sync_cache(&self) -> Result<(), Error> {
+        let state =
+            self.inner.state.as_ref().ok_or_else(|| {
+                Error::Error("Cluster sync check works on local clients only".into())
+            })?;
+
+        let our_metrics = state.raft_cache.raft.metrics().borrow().clone();
+        our_metrics.running_state.clone()?;
+
+        // Our own state machine progress - what is actually servable to queries right now.
+        let applied = our_metrics.last_applied.map(|l| l.index).unwrap_or(0);
+        let own_last_log_index = our_metrics.last_log_index.unwrap_or(0);
+
+        // Keep the cached leader address up to date and fail loud on stale metrics, like
+        // `find_set_active_leader` does at startup.
+        Self::find_set_leader(our_metrics, &self.inner.leader_cache).await?;
+
+        // The cluster tip is the leader's last log index. Followers are normally a bit behind
+        // it, so we compare against `CLUSTER_SYNC_ALLOWED_DIFF` instead of requiring an exact
+        // match.
+        let tip = if state.id == self.inner.leader_cache.read().await.0 {
+            // We are the leader: our own log is the cluster tip.
+            own_last_log_index
+        } else {
+            let url = self
+                .build_addr("/cluster/metrics/cache", &self.inner.leader_cache)
+                .await;
+            self.get_metrics_local(url)
+                .await?
+                .last_log_index
+                .unwrap_or(0)
+        };
+
+        if tip.saturating_sub(applied) <= CLUSTER_SYNC_ALLOWED_DIFF {
+            Ok(())
+        } else {
+            Err(Error::Connect(format!(
+                "Cache state machine is {} log entries behind the cluster tip (allowed: {CLUSTER_SYNC_ALLOWED_DIFF})",
+                tip - applied
+            )))
+        }
+    }
+
+    // Fetch metrics from a node's API server over HTTP. Local clients use this to query the
+    // current leader's own metrics (they have no stored HTTP client or API secret, so we build
+    // them on demand here).
+    async fn get_metrics_local(&self, url: String) -> Result<RaftMetrics<NodeId, Node>, Error> {
+        let state = self
+            .inner
+            .state
+            .as_ref()
+            .expect("get_metrics_local should only be called with local state");
+
+        let client = crate::http_client::build_http_client(self.inner.tls_no_verify);
+        let res = client
+            .get(url)
+            .header(HEADER_NAME_SECRET, &state.secret_api)
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            let bytes = res.bytes().await?;
+            Ok(deserialize_serde(bytes.as_ref())?)
+        } else {
+            let err = res.json::<Error>().await?;
+            Err(err)
+        }
     }
 
     /// Perform a graceful shutdown for this Raft node.
