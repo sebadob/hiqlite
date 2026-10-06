@@ -662,14 +662,12 @@ impl WalFile {
     pub fn create_file(&mut self, buf: &mut Vec<u8>) -> Result<(), Error> {
         debug_assert!(buf.is_empty());
 
-        let file = File::create_new(&self.path)?;
-        file.set_len(self.len_max as u64)?;
-
         self.build_header(buf)?;
 
-        let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
-        (&mut mmap[..buf.len()]).write_all(buf)?;
-        mmap.flush_async()?;
+        let mut file = File::create_new(&self.path)?;
+        file.set_len(self.len_max as u64)?;
+        file.write_all(buf)?;
+        file.sync_data()?;
 
         Ok(())
     }

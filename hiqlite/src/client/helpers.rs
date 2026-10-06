@@ -181,7 +181,8 @@ impl Client {
         }
     }
 
-    async fn find_set_leader(
+    /// Resolve the current leader from cluster metrics and update the cached leader address.
+    pub(crate) async fn find_set_leader(
         metrics: RaftMetrics<NodeId, Node>,
         leader: &Arc<RwLock<(NodeId, String)>>,
     ) -> Result<(), Error> {

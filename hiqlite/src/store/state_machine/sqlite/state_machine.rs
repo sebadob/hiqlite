@@ -237,8 +237,20 @@ impl StateMachineSqlite {
         format!("{data_dir}/state_machine")
     }
 
-    fn path_db(data_dir: &str) -> String {
+    pub fn path_backups(data_dir: &str) -> String {
+        format!("{}/backups", Self::path_base(data_dir))
+    }
+
+    pub fn path_db(data_dir: &str) -> String {
         format!("{}/db", Self::path_base(data_dir))
+    }
+
+    pub fn path_snapshots(data_dir: &str) -> String {
+        format!("{}/snapshots", Self::path_base(data_dir))
+    }
+
+    pub fn path_lock_file(data_dir: &str) -> String {
+        format!("{}/lock", Self::path_base(data_dir))
     }
 
     pub async fn build_folders(
@@ -248,9 +260,9 @@ impl StateMachineSqlite {
         let path_base = Self::path_base(data_dir);
 
         let path_db = Self::path_db(data_dir);
-        let path_backups = format!("{path_base}/backups");
-        let path_snapshots = format!("{path_base}/snapshots");
-        let path_lock_file = format!("{path_base}/lock");
+        let path_backups = Self::path_backups(data_dir);
+        let path_snapshots = Self::path_snapshots(data_dir);
+        let path_lock_file = Self::path_lock_file(data_dir);
 
         if create {
             // this may error if we did already re-create it in a lock file recovery before

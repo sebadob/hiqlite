@@ -298,7 +298,13 @@ fn run(
                 match &sync {
                     LogSync::Immediate => {
                         if let Err(err) = flush_blocking(&mut wal, &mut buf, &mut is_dirty) {
-                            res_cb = Err(io::Error::other(err.to_string()));
+                            // If an immediate flush fails, we want to stop for data consistency.
+                            error!(
+                                "Error during immediate WAL file sync. Stopping Writer to preserve \
+                                data consistency. {err:?}"
+                            );
+                            callback(Err(io::Error::other(err.to_string())));
+                            break;
                         }
                     }
                     LogSync::ImmediateAsync => {
