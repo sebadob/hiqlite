@@ -1,5 +1,11 @@
 # Changelog
 
+## hiqlite-v0.15.2
+
+The new "internal wait for WAL sync" from `v0.15.1` had a flawed logic. It did not work as intended, and it always ran
+into the 30-second timeout, which made it pretty useless. It was removed again. You will have the new client functions
+`wait_for_cluster_sync` and `wait_for_cluster_sync_timeout`. They work as expected.
+
 ## hiqlite-v0.15.1
 
 ### Stale WebSocket Tasks
