@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn};
 /// WAL) is known; replaying the WAL into the state machine happens asynchronously, because openraft
 /// only applies logs after they are re-committed through the cluster. On slow disks this can take
 /// a while, so we must not start serving API requests or join the cluster before the node's data
-/// is up to date again. If replay has already finished by the time this runs, it returns without
+/// is up to date again. If a replay has already finished by the time this runs, it returns without
 /// waiting.
 pub(crate) async fn wait_for_state_machine_catchup<TC>(raft: &openraft::Raft<TC>, name: &str)
 where
@@ -24,7 +24,7 @@ where
     // report. A node that has logs in its WAL always reports `last_log_index` as `Some`, so any
     // other value on the channel is necessarily a real report and can be trusted.
     let caught_up = |m: &openraft::RaftMetrics<TC::NodeId, TC::Node>| {
-        // No logs in the WAL → nothing to apply. Otherwise the state machine must have applied at
+        // No logs in the WAL → nothing to apply. Otherwise, the state machine must have applied at
         // least up to the last log.
         m.last_log_index.is_none_or(|last_log| {
             m.last_applied
@@ -38,7 +38,7 @@ where
 
     let mut rx = raft.metrics();
 
-    // Fast path: replay runs in parallel with the rest of startup, so it may already be done. If a
+    // Fast path: replay runs in parallel with the rest of startup so it may already be done. If a
     // real report shows the state machine caught up, we can return without waiting at all.
     {
         let current = rx.borrow();
