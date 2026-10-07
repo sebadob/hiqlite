@@ -1286,7 +1286,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiqlite"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "axum",
  "axum-server",
@@ -1333,6 +1333,8 @@ dependencies = [
 [[package]]
 name = "hiqlite-derive"
 version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be90829544701f123b0e24f677f031260b1271a29cb1d2c84ed77d7ccda6e953"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1342,6 +1344,8 @@ dependencies = [
 [[package]]
 name = "hiqlite-wal"
 version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a1f05a46b9c4caed09a1b53a6e5fd5942979d6f28570bf8742d57bf4c148362"
 dependencies = [
  "bincode-next",
  "byteorder",
