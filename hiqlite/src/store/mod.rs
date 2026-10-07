@@ -32,8 +32,6 @@ use crate::{
     },
 };
 
-#[cfg(any(feature = "sqlite", feature = "cache"))]
-pub(crate) mod catchup;
 pub mod logs;
 pub mod state_machine;
 

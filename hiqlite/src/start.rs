@@ -227,15 +227,6 @@ where
         }));
     };
 
-    // Before starting the API server, wait until each state machine has applied every log entry
-    // that is currently in its WAL; only then is the node's data up to date.
-    // The internal Raft network is necessary though.
-    #[cfg(feature = "sqlite")]
-    store::catchup::wait_for_state_machine_catchup(&state.raft_db.raft, "sqlite").await;
-
-    #[cfg(feature = "cache")]
-    store::catchup::wait_for_state_machine_catchup(&state.raft_cache.raft, "cache").await;
-
     let default_routes = Router::new()
         .nest(
             "/cluster",
