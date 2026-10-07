@@ -208,6 +208,11 @@ impl Client {
     /// log index - followers are normally a bit behind the leader, so we never require an exact
     /// index match.
     pub async fn wait_for_cluster_sync(&self) {
+        // fast path: a single instance will always be in sync with itself
+        if self.inner.nodes.len() == 1 {
+            return;
+        }
+
         loop {
             let mut in_sync = true;
 
