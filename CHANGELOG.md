@@ -1,5 +1,48 @@
 # Changelog
 
+## hiqlite-v0.15.1
+
+### Stale WebSocket Tasks
+
+It was possible that WebSocket tasks become stale and therefore leak memory for the Raft-internal communication during
+Raft leader switches. This did not happen all the time, but it was kind of likely to happen. Everything is wrapped in
+task-aborting structs now, and we have additional TCP keepalives and timeouts for the underlying socket as an additional
+safety-net.
+
+This change should reduce idle memory consumption for very long-running clusters when you have a rather unstable
+network, or nodes, or frequent restarts.
+
+### Dashboard `panic`
+
+There was a reachable `panic` via the dashboard (after you authenticated), when you sent a query that would be invalid
+SQL with UTF-8 characters that span multiple bytes.
+
+### Startup Replay Check
+
+During startup, we have an additional check that waits until all possibly replayed WAL logs are applied to the state
+machine before starting the API. This prevents race conditions on systems with slow disks. There is also an additional
+function for the `hiqlite::Client` that can you can call after the startup to optionally wait for the node to be in sync
+with the rest of the cluster. After longer downtime of one of the nodes, it may take a few seconds to get all the
+missing information from the current leader. This function is `wait_for_cluster_sync` or
+`wait_for_cluster_sync_timeout`.
+
+### Disaster Recovery
+
+During the backup restore procedure with enabled `cache` feature, the cache data was not cleaned up properly on node 1.
+All other nodes did it as they should, but the node 1 logic forgot about the dirs and only cleaned up the DB state
+machine data. This means a disaster recovery with a cache needed a manual cleanup of the `data_dir` upfront. This is now
+handled automatically as expected.
+
+## hiqlite-derive-v0.15.1
+
+The `0.15.0` release introduced a regression where `Option<T>` types were not considered optional anymore because of
+their generic argument.
+
+## hiqlite-wal-0.15.1
+
+- When the writer task creates a new WAL file on roll-over, it is now flushed and synced to disk synchronously.
+- When a flush / sync fails with `SyncImmediate`, the writer now exists and stops working in favor of data consistency.
+
 ## v0.15.0
 
 This version brings a huge number of tiny (and some big) bugfixes. The list is too long to write it down here
