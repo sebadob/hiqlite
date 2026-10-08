@@ -151,7 +151,8 @@ where
     split_brain_check::spawn(
         state.clone(),
         node_config.nodes.clone(),
-        node_config.tls_api.is_some(),
+        tls_api,
+        tls_no_verify_api,
     );
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]

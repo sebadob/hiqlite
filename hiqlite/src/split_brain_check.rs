@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::helpers::deserialize_serde;
+use crate::http_client::build_http_client;
 use crate::network::HEADER_NAME_SECRET;
 use crate::{Error, Node};
 use openraft::{RaftMetrics, StoredMembership};
@@ -9,8 +10,13 @@ use std::time::Duration;
 use tokio::{task, time};
 use tracing::{debug, error, warn};
 
-pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
-    let handle = task::spawn(Box::pin(check_split_brain(state, nodes, tls)));
+pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool, tls_no_verify: bool) {
+    let handle = task::spawn(Box::pin(check_split_brain(
+        state,
+        nodes,
+        tls,
+        tls_no_verify,
+    )));
 
     // TODO just a safety net until everything runs super smooth and stable
     task::spawn(async move {
@@ -21,12 +27,13 @@ pub fn spawn(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
     });
 }
 
-async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
+async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool, tls_no_verify: bool) {
     let interval = env::var("HQL_SPLIT_BRAIN_INTERVAL")
         .as_deref()
         .unwrap_or("60")
         .parse::<u64>()
         .expect("Cannot parse HQL_SPLIT_BRAIN_INTERVAL as u64");
+    let client = build_http_client(tls_no_verify);
 
     loop {
         time::sleep(Duration::from_secs(interval)).await;
@@ -43,6 +50,7 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
 
                 if let Err(err) = check_compare_membership(
                     &state,
+                    &client,
                     &nodes,
                     membership,
                     leader_expected,
@@ -71,6 +79,7 @@ async fn check_split_brain(state: Arc<AppState>, nodes: Vec<Node>, tls: bool) {
 
                 if let Err(err) = check_compare_membership(
                     &state,
+                    &client,
                     &nodes,
                     membership,
                     leader_expected,
@@ -115,6 +124,7 @@ If however the missing node is currently offline or just starting up, you can ig
 
 async fn check_compare_membership(
     state: &Arc<AppState>,
+    client: &reqwest::Client,
     nodes: &[Node],
     membership: Arc<StoredMembership<u64, Node>>,
     leader_expected: u64,
@@ -132,7 +142,6 @@ async fn check_compare_membership(
 
     let scheme = if tls { "https" } else { "http" };
 
-    let client = reqwest::Client::new();
     for node in nodes_to_check {
         let url = format!("{}://{}/cluster/metrics/{}", scheme, node.addr_api, path);
         let res = client
