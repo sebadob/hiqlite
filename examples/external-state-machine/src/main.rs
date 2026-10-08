@@ -13,13 +13,12 @@
 //! entries in a total order.
 
 use hiqlite::external_state_machine::{
-    ApplyOutcome, CommitSequence, DeterministicSqliteOperation, ExternalApplyError, ExternalCommit,
-    ExternalSnapshot, ExternalSqlite, ExternalSqliteOptions, Sha256Digest,
+    ApplyOutcome, CommitSequence, DeterministicSqliteOperation, ExternalApplyError, ExternalCodec,
+    ExternalCommit, ExternalSnapshot, ExternalSqlite, ExternalSqliteOptions, Sha256Digest,
 };
 // Always use the re-exported `rusqlite` to avoid version conflicts with the
 // one Hiqlite is compiled against.
 use hiqlite::rusqlite::{self, params, Transaction};
-use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -42,12 +41,16 @@ const RECEIPT_SCHEMA: u64 = 1;
 
 /// The coordinate your consensus system uses to identify an entry. For Raft
 /// this is typically `(term, index)`. Hiqlite treats it as an opaque identity:
-/// it must be `Eq` + serde, but is never used for ordering.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// it must be `Eq` + `ExternalCodec`, but is never used for ordering.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Coordinate {
     term: u64,
     index: u64,
 }
+
+// Structs whose fields are all `ExternalCodec` get a stable binary encoding
+// with one line. The field order defines the persisted layout.
+hiqlite::external_codec!(Coordinate { term, index });
 
 /// The commands your application replicates through its own consensus.
 ///
@@ -139,11 +142,37 @@ impl MockLog {
 
 /// The response that is persisted alongside the mutation, so a lost reply can
 /// be recovered without re-executing the operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Receipt {
     SchemaCreated,
     Added { id: i64 },
     Completed { id: i64, already_done: bool },
+}
+
+/// Enums are encoded by hand: a tag followed by the variant's fields. Never
+/// reuse a tag for a different variant once receipts have been persisted.
+impl ExternalCodec for Receipt {
+    fn encode_into(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::SchemaCreated => 0u32.encode_into(out),
+            Self::Added { id } => (1u32, *id).encode_into(out),
+            Self::Completed { id, already_done } => (2u32, *id, *already_done).encode_into(out),
+        }
+    }
+
+    fn decode_from(input: &mut &[u8]) -> Result<Self, String> {
+        Ok(match u32::decode_from(input)? {
+            0 => Self::SchemaCreated,
+            1 => Self::Added {
+                id: i64::decode_from(input)?,
+            },
+            2 => Self::Completed {
+                id: i64::decode_from(input)?,
+                already_done: bool::decode_from(input)?,
+            },
+            tag => return Err(format!("unknown receipt tag {tag}")),
+        })
+    }
 }
 
 /// The operation Hiqlite executes inside a single SQLite transaction.
@@ -162,10 +191,17 @@ impl DeterministicSqliteOperation for TodoOperation {
     type Output = Receipt;
     type Error = rusqlite::Error;
 
-    /// Name + version of the receipt encoding. The default codec is Hiqlite's
-    /// bincode-next configuration; you can override `encode_receipt` /
-    /// `decode_receipt` if you want to own the format.
+    /// Name + version of the receipt encoding. Change it whenever the bytes
+    /// produced by `encode_receipt` change.
     const RECEIPT_CODEC: &'static str = "hiqlite-example-todos/receipt-v1";
+
+    fn encode_receipt(output: &Self::Output) -> Result<Vec<u8>, String> {
+        Ok(output.to_external_bytes())
+    }
+
+    fn decode_receipt(bytes: &[u8]) -> Result<Self::Output, String> {
+        Receipt::from_external_bytes(bytes)
+    }
 
     fn apply(self, txn: &Transaction<'_>) -> Result<Self::Output, Self::Error> {
         match self.0 {
