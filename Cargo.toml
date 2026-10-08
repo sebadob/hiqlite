@@ -84,22 +84,10 @@ reqwest = { version = "0.13.4", default-features = false, features = [
     "json",
     "rustls-no-provider",
 ] }
-rusqlite = { version = "0.40", features = [
-    "backup",
-    "bundled",
-    "cache",
-    "chrono",
-    "modern_sqlite",
-    "column_decltype",
-    "csvtab",
-    "functions",
-    "load_extension",
-    "serde_json",
-    "series",
-    "url",
-    "uuid",
-    "vtab",
-] }
+# Only the features shared by every rusqlite consumer live here. The regular
+# `sqlite` feature adds its full set in `hiqlite/Cargo.toml`, so that
+# `external-state-machine` does not force them on downstream rusqlite users.
+rusqlite = { version = "0.40", features = ["bundled"] }
 rust-embed = { version = "8.5.0", features = [] }
 rustls = { version = "0.23.37", default-features = false, features = [
     "logging", "prefer-post-quantum", "std", "tls12", "ring"
