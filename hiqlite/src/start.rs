@@ -4,7 +4,7 @@ use crate::network::tcp_socket::{
     ConfiguredStreamAcceptor, configure_tcp_stream, create_listening_socket,
 };
 use crate::network::{api, management};
-use crate::{CacheVariants, Client, Error, NodeConfig, init, split_brain_check, store};
+use crate::{CacheVariants, Client, Error, NodeConfig, init, store};
 use axum::Router;
 use axum::routing::{get, post};
 use axum::serve::ListenerExt;
@@ -146,14 +146,6 @@ where
         #[cfg(feature = "s3")]
         s3_config: node_config.s3_config.clone(),
     });
-
-    #[cfg(any(feature = "sqlite", feature = "cache"))]
-    split_brain_check::spawn(
-        state.clone(),
-        node_config.nodes.clone(),
-        tls_api,
-        tls_no_verify_api,
-    );
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     if backup_applied {
