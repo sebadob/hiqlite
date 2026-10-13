@@ -4,9 +4,9 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(doc, feature(doc_cfg))]
 
-// The derive macros (`FromRow`, `TryFromRow`) emit the absolute path `::hiqlite::...`. That
-// resolves for downstream users, but not from inside this crate; aliasing self makes the
-// generated code (and in-crate tests of it) resolve the same way.
+// The derive macros emit the absolute path `::hiqlite::...`. That resolves for downstream users,
+// but not from inside this crate. Aliasing self makes the generated code (and in-crate tests of it)
+// resolve the same way.
 extern crate self as hiqlite;
 
 #[cfg(all(feature = "cast_ints", feature = "cast_ints_unchecked"))]
@@ -92,15 +92,12 @@ mod store;
 mod backup;
 #[cfg(feature = "dashboard")]
 mod dashboard;
+#[cfg(feature = "macros")]
+pub mod macros;
 #[cfg(feature = "sqlite")]
 mod migration;
 #[cfg(feature = "sqlite")]
 mod query;
-#[cfg(any(feature = "sqlite", feature = "cache"))]
-mod split_brain_check;
-
-#[cfg(feature = "macros")]
-pub mod macros;
 
 /// Exports and types to set up a connection to an S3 storage bucket.
 /// Needs the feature `s3` enabled.
