@@ -1,5 +1,12 @@
 # Changelog
 
+## hiqlite-v0.15.3
+
+This version slims down the loaded dependencies when using the `external-state-machine`, and it removes the built-in
+split-brain check task. The split-brain-check was only used for very early debugging in production. By now, the Raft
+cluster management is super stable, and it's just not necessary anymore. It also logged lots of errors when you were
+using in-cluster TLS.
+
 ## hiqlite-v0.15.2
 
 The new "internal wait for WAL sync" from `v0.15.1` had a flawed logic. It did not work as intended, and it always ran
