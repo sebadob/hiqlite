@@ -286,9 +286,12 @@ fn run(
                 };
                 // We want to ack before flush for throughput. If anything goes wrong during flush,
                 // the openraft callback will get notified about it.
-                if let Err(err) = ack.send(res) {
-                    // this should usually not happen, but it may during an incorrect shutdown
-                    error!("error sending back ack after logs append: {err:?}");
+                if ack.send(res).is_err() {
+                    // this should usually not happen, but it may during an incorrect shutdown.
+                    // A closed ack channel means the log store owner is gone, so we must not
+                    // serve any further request; the exit path below flushes what was appended.
+                    error!("WAL writer ack channel closed after append - stopping writer");
+                    break;
                 }
 
                 // The WAL now holds bytes that are not known to be on disk, and only a
@@ -361,7 +364,12 @@ fn run(
                 // so a crash during the removal below can still land after the deletions and
                 // before the header reaches disk, which is the hole this guards against.
                 if let Err(err) = flush_blocking(&mut wal, &mut buf, &mut is_dirty) {
-                    ack.send(Err(err)).unwrap();
+                    if ack.send(Err(err)).is_err() {
+                        error!(
+                            "WAL writer ack channel closed after removal flush - stopping writer"
+                        );
+                        break;
+                    }
                     continue;
                 }
 
@@ -383,7 +391,10 @@ fn run(
                             lock.active = wal.active;
                             lock.clone_files_from_no_mmap(&wal.files);
                         }
-                        ack.send(Ok(())).unwrap();
+                        if ack.send(Ok(())).is_err() {
+                            error!("WAL writer ack channel closed after removal - stopping writer");
+                            break;
+                        }
                     }
                     Err(err) => {
                         if persist_purged {
@@ -403,7 +414,12 @@ fn run(
                                 );
                             }
                         }
-                        ack.send(Err(err)).unwrap();
+                        if ack.send(Err(err)).is_err() {
+                            error!(
+                                "WAL writer ack channel closed after failed removal - stopping writer"
+                            );
+                            break;
+                        }
                     }
                 }
             }
@@ -417,7 +433,10 @@ fn run(
                 meta.write()?.vote = Some(value);
                 let res = Metadata::write(meta.clone(), &wal.base_path);
 
-                ack.send(res).unwrap();
+                if ack.send(res).is_err() {
+                    error!("WAL writer ack channel closed after vote - stopping writer");
+                    break;
+                }
             }
             Action::Sync => {
                 // The ticker is the only flush in `IntervalMillis` mode and no append waits on
