@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Queries from "$lib/components/query/Queries.svelte";
+    import Queries from "#lib/components/query/Queries.svelte";
 </script>
 
 <svelte:head>

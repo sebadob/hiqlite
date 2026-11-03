@@ -2,9 +2,9 @@
     import {slide} from "svelte/transition";
 
     import type {FullAutoFill} from "svelte/elements";
-    import IconClipboard from "$lib/components/icons/IconClipboard.svelte";
-    import IconEyeSlash from "$lib/components/icons/IconEyeSlash.svelte";
-    import IconEye from "$lib/components/icons/IconEye.svelte";
+    import IconClipboard from "#lib/components/icons/IconClipboard.svelte";
+    import IconEyeSlash from "#lib/components/icons/IconEyeSlash.svelte";
+    import IconEye from "#lib/components/icons/IconEye.svelte";
 
     let {
         type = 'password',

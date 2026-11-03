@@ -1,9 +1,10 @@
 <script lang="ts">
-    import type {IRow as IRowQuery, SqlValue} from "$lib/types/query_results";
-    import DataTable from "$lib/components/data_table/DataTable.svelte";
-    import type {IColumn, IRow} from "$lib/components/data_table/data_table_types";
+    import type { IRow as IRowQuery } from '#lib/types/query_results.js';
+    import DataTable from '#lib/components/data_table/DataTable.svelte';
+    import { isNumericSqlValue, sqlValueDisplay } from '#lib/utils/sqlValue.js';
+    import type { IColumn, IRow } from '#lib/components/data_table/data_table_types.js';
 
-    let {rows = $bindable()}: { rows: IRowQuery[] } = $props();
+    let { rows = $bindable() }: { rows: IRowQuery[] } = $props();
 
     let columns: IColumn[] = $state([]);
     let rowsDt: IRow[][] = $state([]);
@@ -14,23 +15,23 @@
         let resRows: IRow[][] = [];
 
         if (rows.length > 0) {
-            for (let col of rows[0].columns) {
+            for (let i = 0; i < rows[0].columns.length; i++) {
                 cols.push({
-                    content: col.name,
+                    content: rows[0].columns[i].name,
                     initialWidth: '12rem',
                     // TODO this would be improved with iterating over a given set of results and grep
                     // the longest content in each column, but would be pretty resource intense on big tables.
                     // initialWidth: `${8 + col.name.length * .5}rem`,
-                    orderType: columnOrderType(col.value),
-                })
+                    orderType: columnOrderType(rows, i),
+                });
             }
 
             for (let r of rows) {
                 let cols = [];
                 for (let col of r.columns) {
                     cols.push({
-                        content: sqlInnerValue(col.value),
-                    })
+                        content: sqlValueDisplay(col.value),
+                    });
                 }
                 resRows.push(cols);
             }
@@ -40,31 +41,15 @@
         rowsDt = resRows;
     });
 
-    function buf2hex(buffer: ArrayBuffer) {
-        return [...new Uint8Array(buffer)]
-            .map(x => x.toString(16).padStart(2, '0'))
-            .join('');
-    }
-
-    function columnOrderType(value: SqlValue) {
-        if (value.hasOwnProperty('Integer') || value.hasOwnProperty('Real')) {
-            return 'number';
+    function columnOrderType(rows: IRowQuery[], index: number): 'number' | 'string' {
+        // A leading NULL carries no type information, so the first typed value decides.
+        for (let r of rows) {
+            let value = r.columns[index]?.value;
+            if (value !== undefined && isNumericSqlValue(value)) {
+                return 'number';
+            }
         }
         return 'string';
-    }
-
-    function sqlInnerValue(value: SqlValue) {
-        if ('Integer' in value) {
-            return value.Integer;
-        } else if ('Real' in value) {
-            return value.Real;
-        } else if ('Text' in value) {
-            return value.Text;
-        } else if ('Blob' in value) {
-            return `x'${buf2hex(value.Blob)}'`;
-        }
-
-        return 'NULL';
     }
 </script>
 

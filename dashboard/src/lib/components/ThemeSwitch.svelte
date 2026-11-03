@@ -1,6 +1,6 @@
 <script lang="ts">
     import {crossfade} from "svelte/transition";
-    import Button from "$lib/components/Button.svelte";
+    import Button from "#lib/components/Button.svelte";
 
     const storageIdx = 'darkMode';
     const [send, receive] = crossfade({});

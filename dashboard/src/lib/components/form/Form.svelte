@@ -1,5 +1,5 @@
 <script lang="ts">
-    import {handleRes} from "$lib/utils/fetch";
+    import {handleRes} from "#lib/utils/fetch.js";
     import type {Snippet} from "svelte";
 
     let {

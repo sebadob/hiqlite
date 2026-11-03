@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Metrics from "$lib/components/health/Metrics.svelte";
+    import Metrics from "#lib/components/health/Metrics.svelte";
 </script>
 
 <aside>

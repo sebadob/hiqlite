@@ -1,7 +1,8 @@
 <script lang="ts">
-    import type {IColumn, IRow, SqlValue} from "$lib/types/query_results";
+    import type { IColumn, IRow } from '#lib/types/query_results.js';
+    import { sqlValueDisplay } from '#lib/utils/sqlValue.js';
 
-    let {rows = $bindable()}: { rows: IRow[] } = $props();
+    let { rows = $bindable() }: { rows: IRow[] } = $props();
     $inspect(rows);
 
     let cols: IColumn[][] = $state([[]]);
@@ -25,27 +26,7 @@
         }
 
         cols = newCols;
-    })
-
-    function buf2hex(buffer: ArrayBuffer) {
-        return [...new Uint8Array(buffer)]
-            .map(x => x.toString(16).padStart(2, '0'))
-            .join('');
-    }
-
-    function sqlToStr(value: SqlValue) {
-        if ('Integer' in value) {
-            return value.Integer;
-        } else if ('Real' in value) {
-            return value.Real;
-        } else if ('Text' in value) {
-            return value.Text;
-        } else if ('Blob' in value) {
-            return `x'${buf2hex(value.Blob)}'`;
-        }
-
-        return 'NULL';
-    }
+    });
 </script>
 
 <div id="query-results">
@@ -58,7 +39,7 @@
             {#each col as c}
                 <div class="value">
                     <span>
-                        {sqlToStr(c.value)}
+                        {sqlValueDisplay(c.value)}
                     </span>
                 </div>
             {/each}
@@ -77,20 +58,21 @@
     }
 
     .col > div:nth-child(odd) {
-        background: rgba(0, 0, 0, .1);
+        background: rgba(0, 0, 0, 0.1);
     }
 
     .head {
-        background: rgba(0, 0, 0, .15);
+        background: rgba(0, 0, 0, 0.15);
     }
 
-    .head > b, .value > span {
-        margin: 0 .33rem;
+    .head > b,
+    .value > span {
+        margin: 0 0.33rem;
     }
 
     .col {
         display: flex;
         flex-direction: column;
-        border-right: 1px solid rgba(0, 0, 0, .1);
+        border-right: 1px solid rgba(0, 0, 0, 0.1);
     }
 </style>

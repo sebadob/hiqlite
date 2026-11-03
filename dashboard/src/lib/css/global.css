@@ -19,9 +19,25 @@ input, button, textarea, select {
     height: 7px;
 }
 
+::-webkit-scrollbar-track {
+    background: hsla(var(--bg-high), 0.25);
+    border-radius: 30px;
+}
+
 ::-webkit-scrollbar-thumb {
     background-color: hsl(var(--bg-high));
     border-radius: 30px;
+}
+
+::-webkit-scrollbar-button,
+::-webkit-scrollbar-corner {
+    display: none;
+    background: transparent;
+}
+
+body {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--bg-high)) hsla(var(--bg-high), 0.25);
 }
 
 /*!* BEGIN: TODO remove after components migration *!*/

@@ -1,6 +1,6 @@
 <script lang="ts">
-    import type {Snippet} from 'svelte';
-    import {page} from "$app/stores";
+    import type { Snippet } from 'svelte';
+    import { page } from '$app/state';
 
     let {
         href,
@@ -8,21 +8,21 @@
         selectedStep = false,
         hideUnderline = false,
         children,
-    }: {
-        href: string,
-        target?: string,
-        selectedStep?: boolean,
-        hideUnderline?: boolean,
-        children: Snippet,
-    } = $props();
+    }: { 
+        href: string;
+        target?: string;
+        selectedStep?: boolean;
+        hideUnderline?: boolean;
+        children: Snippet
+     } = $props();
 
     let ariaCurrentType: 'page' | 'time' | 'step' | 'location' | 'date' | undefined = $derived.by(() => {
         if (selectedStep) {
             return 'step';
         }
 
-        if ($page.route.id === href.split('?')[0]) {
-            return 'page'
+        if (page.route.id === href.split('?')[0]) {
+            return 'page';
         }
 
         return undefined;
@@ -32,10 +32,10 @@
 
 <span class="font-label">
     <a
-            class:hideUnderline
-            {href}
-            {target}
-            aria-current={ariaCurrentType}
+        class:hideUnderline
+        href={href}
+        target={target}
+        aria-current={ariaCurrentType}
     >
         {@render children()}
     </a>

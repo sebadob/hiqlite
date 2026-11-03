@@ -4,6 +4,8 @@ on-the-fly customizations to everything.
 */
 
 body {
+    color-scheme: light;
+
     /*
     Default colors
     HSL values without hsl() wrapper
@@ -36,6 +38,8 @@ Must be the same as in @media (prefers-color-scheme: dark) -> body
 */
 @media (prefers-color-scheme: light) {
     body.dark-theme {
+        color-scheme: dark;
+
         --text: 228, 2%, 70%;
         --text-high: 228, 8%, 90%;
         --bg: 208, 90%, 4%;
@@ -48,6 +52,8 @@ Must be the same as in @media (prefers-color-scheme: dark) -> body
 @media (prefers-color-scheme: dark) {
     /* defaults to dark theme */
     body {
+        color-scheme: dark;
+
         /*
         Default colors
         HSL values without hsl() wrapper
@@ -74,6 +80,8 @@ Must be the same as in @media (prefers-color-scheme: dark) -> body
     Must be the same as in body (non prefers-color-scheme: dark)
     */
     body.light-theme {
+        color-scheme: light;
+
         --text: 208, 10%, 40%;
         --text-high: 208, 20%, 20%;
         --bg: 228, 2%, 98%;

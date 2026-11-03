@@ -1,8 +1,8 @@
 <script lang="ts">
-    import type {INode, IRaftMetrics} from "$lib/types/raft_metrics";
+    import type {INode, IRaftMetrics} from "#lib/types/raft_metrics.js";
     import {onMount} from "svelte";
-    import Metric from "$lib/components/health/Metric.svelte";
-    import {fetchGet} from "$lib/utils/fetch";
+    import Metric from "#lib/components/health/Metric.svelte";
+    import {fetchGet} from "#lib/utils/fetch.js";
 
     let metrics: undefined | IRaftMetrics = $state();
     let members = $derived(metrics?.membership_config.membership.configs.join(', '));

@@ -1,18 +1,18 @@
 <script lang="ts">
-    import Button from "$lib/components/Button.svelte";
-    import A from "$lib/components/A.svelte";
-    import Pagination from "$lib/components/Pagination.svelte";
-    import Checkbox from "$lib/components/Checkbox.svelte";
-    import Popover from "$lib/components/Popover.svelte";
-    import CheckIcon from "$lib/components/CheckIcon.svelte";
-    import {untrack} from "svelte";
-    import type {IDataTable, IRow} from "$lib/components/data_table/data_table_types.ts";
-    import IconChevronDown from "$lib/components/icons/IconChevronDown.svelte";
-    import IconArrowUpDown from "$lib/components/icons/IconArrowUpDown.svelte";
-    import IconCog from "$lib/components/icons/IconCog.svelte";
-    import {copyToClip} from "$lib/utils/copyToClip";
-    import IconDotsHorizontal from "$lib/components/icons/IconDotsHorizontal.svelte";
-    import IconEye from "$lib/components/icons/IconEye.svelte";
+    import Button from '#lib/components/Button.svelte';
+    import A from '#lib/components/A.svelte';
+    import Pagination from '#lib/components/Pagination.svelte';
+    import Checkbox from '#lib/components/Checkbox.svelte';
+    import Popover from '#lib/components/Popover.svelte';
+    import CheckIcon from '#lib/components/CheckIcon.svelte';
+    import { untrack } from 'svelte';
+    import type { IDataTable, IRow } from '#lib/components/data_table/data_table_types.ts';
+    import IconChevronDown from '#lib/components/icons/IconChevronDown.svelte';
+    import IconArrowUpDown from '#lib/components/icons/IconArrowUpDown.svelte';
+    import IconCog from '#lib/components/icons/IconCog.svelte';
+    import { copyToClip } from '#lib/utils/copyToClip.js';
+    import IconDotsHorizontal from '#lib/components/icons/IconDotsHorizontal.svelte';
+    import IconEye from '#lib/components/icons/IconEye.svelte';
 
     let {
         caption,
@@ -37,7 +37,7 @@
         if (rows.length > 0 && columns.length !== rows[0].length) {
             console.error('`columns` and `entries` have different lengths');
         }
-    })
+    });
 
     const SELECT_WIDTH = '3rem';
     const OPTION_WIDTH = '2rem';
@@ -51,14 +51,16 @@
 
     let checkedAll = $state(false);
     let selectedRows = $state(Array(rows.length).fill(false));
-    let isAnySelected = $derived(selectedRows.find(r => r === true));
+    let isAnySelected = $derived(selectedRows.find((r) => r === true));
 
     let closePopoverSelect: undefined | (() => void) = $state();
     let closePopoverOption: (() => void)[] = $state([]);
 
     let orderDir: 'up' | 'down' = $state('up');
     let rowsPaginated: IRow[][] = $state([]);
-    let paginationDisabledLocal = $derived(paginationDisabled !== undefined ? paginationDisabled : rows.length < paginationPageSize);
+    let paginationDisabledLocal = $derived(
+        paginationDisabled !== undefined ? paginationDisabled : rows.length < paginationPageSize,
+    );
     let rowCount = $derived.by(() => {
         if (paginationDisabled || paginationDisabledLocal) {
             return rows.length;
@@ -72,7 +74,9 @@
         return 0;
     });
 
-    let refCols: (undefined | HTMLElement)[] = $state(Array(untrack(() => columnWidths.length)).fill(undefined));
+    let refCols: (undefined | HTMLElement)[] = $state(
+        Array(untrack(() => columnWidths.length)).fill(undefined),
+    );
     let refTBody: undefined | HTMLElement = $state();
     let resizingCol = 0;
     let highlightTr: undefined | number = $state();
@@ -103,7 +107,7 @@
             if (page === 1) {
                 from = 0;
             } else {
-                from = (page - 1) * pageSize
+                from = (page - 1) * pageSize;
             }
             let until = Math.min(page * pageSize, rows.length);
 
@@ -116,8 +120,11 @@
     });
 
     $effect(() => {
-        let len = paginationDisabled || paginationDisabledLocal ? rows.length : rowsPaginated.length || 0;
-        closePopoverOption = Array(len).fill(() => console.error('un-initialized popover close option'));
+        let len =
+            paginationDisabled || paginationDisabledLocal ? rows.length : rowsPaginated.length || 0;
+        closePopoverOption = Array(len).fill(() =>
+            console.error('un-initialized popover close option'),
+        );
     });
 
     $effect(() => {
@@ -140,7 +147,7 @@
 
             setTimeout(() => {
                 let elem = refTBody?.getElementsByClassName('highlight')[0];
-                elem?.scrollIntoView({behavior: 'smooth', block: 'center'});
+                elem?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }, 250);
         } else {
             highlightTr = undefined;
@@ -148,7 +155,7 @@
     });
 
     function buildInitialColumnWidths() {
-        let widths = columns.map(col => col.initialWidth);
+        let widths = columns.map((col) => col.initialWidth);
 
         let showColumnsUpdate = [...showColumns];
 
@@ -181,7 +188,9 @@
         }
 
         if (typ === 'string') {
-            rows.sort((a, b) => (a[col].content as string).localeCompare(b[col].content as string) * mod);
+            rows.sort(
+                (a, b) => (a[col].content as string).localeCompare(b[col].content as string) * mod,
+            );
         } else if (typ === 'number') {
             rows.sort((a, b) => ((a[col].content as number) - (b[col].content as number)) * mod);
         }
@@ -201,7 +210,7 @@
         if (ref) {
             updateColSize(ref.getBoundingClientRect().width);
             window.addEventListener('mousemove', onMove);
-            window.addEventListener('mouseup', onMouseUp, {once: true});
+            window.addEventListener('mouseup', onMouseUp, { once: true });
         } else {
             console.error('invalid ref from refCols in onMouseDown');
         }
@@ -232,40 +241,40 @@
 </script>
 
 <table
-        aria-colcount={columnWidths.length}
-        aria-rowcount={rowCount}
-        style:width
-        style:max-width={maxWidth}
+    aria-colcount={columnWidths.length}
+    aria-rowcount={rowCount}
+    style:width
+    style:max-width={maxWidth}
 >
     <thead>
-    <tr style:grid-template-columns={gridTemplateColumns()}>
-        {#if select && showColumns[0]}
-            <th class="headerCheckbox">
-                <Checkbox
+        <tr style:grid-template-columns={gridTemplateColumns()}>
+            {#if select && showColumns[0]}
+                <th class="headerCheckbox">
+                    <Checkbox
                         ariaLabel="Select All"
                         bind:checked={checkedAll}
                         borderColor="hsla(var(--text), .4)"
-                />
+                    />
 
-                <Popover
+                    <Popover
                         ariaLabel="Selected Options"
                         bind:close={closePopoverSelect}
                         btnDisabled={!isAnySelected}
                         btnInvisible
-                >
-                    {#snippet button()}
+                    >
+                        {#snippet button()}
                             <span class="btnSelect" data-disabled={!isAnySelected}>
-                                <IconChevronDown width="1rem"/>
+                                <IconChevronDown width="1rem" />
                             </span>
-                    {/snippet}
-                    {@render select(selectedRows, closePopoverSelect)}
-                </Popover>
-            </th>
-        {/if}
+                        {/snippet}
+                        {@render select(selectedRows, closePopoverSelect)}
+                    </Popover>
+                </th>
+            {/if}
 
-        {#each columns as column, i}
-            {#if showColumns[select ? i + 1 : i]}
-                <th bind:this={refCols[i]}>
+            {#each columns as column, i}
+                {#if showColumns[select ? i + 1 : i]}
+                    <th bind:this={refCols[i]}>
                         <span class="flex-1 label">
                             {#if column.orderType}
                                 <span class="orderText">
@@ -273,7 +282,7 @@
                                 </span>
                                 <Button invisible onclick={() => orderBy(i, column.orderType)}>
                                     <span class="iconOrder">
-                                        <IconArrowUpDown width="1rem"/>
+                                        <IconArrowUpDown width="1rem" />
                                     </span>
                                 </Button>
                             {:else}
@@ -283,123 +292,139 @@
                             {/if}
                         </span>
 
-                    <span class="relative">
-                        <span role="none" class="absolute sizeable" onmousedown={() => onMouseDown(i)}>
-                        </span>
-                    </span>
-                </th>
-            {/if}
-        {/each}
-
-        {#if options && showColumns[showColumns.length - 1]}
-            <th class="headerOptions">
-                <IconCog width="1.2rem"/>
-            </th>
-        {/if}
-    </tr>
-    </thead>
-
-    <tbody bind:this={refTBody}>
-    {#snippet renderRow(row: IRow[], i: number)}
-        <tr class:highlight={highlightTr === i} style:grid-template-columns={gridTemplateColumns()}>
-            {#if select && showColumns[0]}
-                <td class="checkbox">
-                    <Checkbox ariaLabel="Select Row" bind:checked={selectedRows[absoluteRowNo(i)]}/>
-                </td>
-            {/if}
-
-            {#each row as column, j}
-                {#if showColumns[select ? j + 1 : j]}
-                    <td>
-                        {#if columns[j]?.showAs === 'a'}
-                            <A href={column.href || ''}>
-                                    <span class="linkText nowrap" class:muted={column.muted}>
-                                        {column.content}
-                                    </span>
-                            </A>
-                        {:else if columns[j]?.showAs === 'a_blank'}
-                            <A href={column.href || ''} target="_blank">
-                                    <span class="linkText nowrap" class:muted={column.muted}>
-                                        {column.content}
-                                    </span>
-                            </A>
-                        {:else if columns[j]?.showAs === 'copyToClip'}
-                            <Button invisible onclick={() => copyToClip(column.content.toString())}>
-                                    <span class="copyToClip nowrap" class:muted={column.muted}>
-                                        {column.content}
-                                    </span>
-                            </Button>
-                        {:else if columns[j]?.showAs === 'check'}
-                                <span class="checkIcon nowrap" class:muted={column.muted}>
-                                    <CheckIcon checked={column.content}/>
-                                </span>
-                        {:else if column.onClick}
-                            <Button invisible onclick={ev => column.onClick?.(ev, absoluteRowNo(i))}>
-                                    <span class="onclick nowrap" class:muted={column.muted}>
-                                        {column.content}
-                                    </span>
-                            </Button>
-                        {:else}
-                            <span class="rawText nowrap" class:muted={column.muted}>
-                                {column.content}
+                        <span class="relative">
+                            <span
+                                role="none"
+                                class="absolute sizeable"
+                                onmousedown={() => onMouseDown(i)}
+                            >
                             </span>
-                        {/if}
-                    </td>
+                        </span>
+                    </th>
                 {/if}
             {/each}
 
             {#if options && showColumns[showColumns.length - 1]}
-                <td class="options">
-                    <Popover
+                <th class="headerOptions">
+                    <IconCog width="1.2rem" />
+                </th>
+            {/if}
+        </tr>
+    </thead>
+
+    <tbody bind:this={refTBody}>
+        {#snippet renderRow(row: IRow[], i: number)}
+            <tr
+                class:highlight={highlightTr === i}
+                style:grid-template-columns={gridTemplateColumns()}
+            >
+                {#if select && showColumns[0]}
+                    <td class="checkbox">
+                        <Checkbox
+                            ariaLabel="Select Row"
+                            bind:checked={selectedRows[absoluteRowNo(i)]}
+                        />
+                    </td>
+                {/if}
+
+                {#each row as column, j}
+                    {#if showColumns[select ? j + 1 : j]}
+                        <td>
+                            {#if columns[j]?.showAs === 'a'}
+                                <A href={column.href || ''}>
+                                    <span class="linkText nowrap" class:muted={column.muted}>
+                                        {column.content}
+                                    </span>
+                                </A>
+                            {:else if columns[j]?.showAs === 'a_blank'}
+                                <A href={column.href || ''} target="_blank">
+                                    <span class="linkText nowrap" class:muted={column.muted}>
+                                        {column.content}
+                                    </span>
+                                </A>
+                            {:else if columns[j]?.showAs === 'copyToClip'}
+                                <Button
+                                    invisible
+                                    onclick={() => copyToClip(column.content.toString())}
+                                >
+                                    <span class="copyToClip nowrap" class:muted={column.muted}>
+                                        {column.content}
+                                    </span>
+                                </Button>
+                            {:else if columns[j]?.showAs === 'check'}
+                                <span class="checkIcon nowrap" class:muted={column.muted}>
+                                    <CheckIcon checked={column.content} />
+                                </span>
+                            {:else if column.onClick}
+                                <Button
+                                    invisible
+                                    onclick={(ev: Event) => column.onClick?.(ev, absoluteRowNo(i))}
+                                >
+                                    <span class="onclick nowrap" class:muted={column.muted}>
+                                        {column.content}
+                                    </span>
+                                </Button>
+                            {:else}
+                                <span class="rawText nowrap" class:muted={column.muted}>
+                                    {column.content}
+                                </span>
+                            {/if}
+                        </td>
+                    {/if}
+                {/each}
+
+                {#if options && showColumns[showColumns.length - 1]}
+                    <td class="options">
+                        <Popover
                             ariaLabel="Options"
                             bind:close={closePopoverOption[i]}
                             btnInvisible
                             offsetLeft={offsetLeftOptions}
                             offsetTop={offsetTopOptions}
-                    >
-                        {#snippet button()}
+                        >
+                            {#snippet button()}
                                 <span class="btnOptions">
-                                    <IconDotsHorizontal/>
+                                    <IconDotsHorizontal />
                                 </span>
-                        {/snippet}
-                        {@render options(row, closePopoverOption[i])}
-                    </Popover>
-                </td>
-            {/if}
-        </tr>
-    {/snippet}
+                            {/snippet}
+                            {@render options(row, closePopoverOption[i])}
+                        </Popover>
+                    </td>
+                {/if}
+            </tr>
+        {/snippet}
 
-    {#if paginationDisabledLocal}
-        {#if selectedRows.length === rows.length}
-            {#each rows as row, i}
+        {#if paginationDisabledLocal}
+            {#if selectedRows.length === rows.length}
+                {#each rows as row, i}
+                    {@render renderRow(row, i)}
+                {/each}
+            {/if}
+        {:else}
+            {#each rowsPaginated as row, i}
                 {@render renderRow(row, i)}
             {/each}
         {/if}
-    {:else}
-        {#each rowsPaginated as row, i}
-            {@render renderRow(row, i)}
-        {/each}
-    {/if}
     </tbody>
 
     <caption class="flex space-between">
         <div class="flex">
             <Popover
-                    ariaLabel="Select Columns"
-                    offsetTop={`-${columnWidths.length * 1.4 + 3}rem`}
-                    btnInvisible
+                ariaLabel="Select Columns"
+                offsetTop={`-${columnWidths.length * 1.4 + 3}rem`}
+                btnInvisible
             >
                 {#snippet button()}
                     <div class="eye">
-                        <IconEye/>
+                        <IconEye />
                     </div>
                 {/snippet}
                 <div class="columnsSelect">
                     {#if select}
                         <div class="columnSelect">
                             <Checkbox
-                                    ariaLabel="Select Column: Select"
-                                    bind:checked={showColumns[0]}
+                                ariaLabel="Select Column: Select"
+                                bind:checked={showColumns[0]}
                             >
                                 Select
                             </Checkbox>
@@ -409,8 +434,8 @@
                     {#each columns as column, i}
                         <div class="columnSelect">
                             <Checkbox
-                                    ariaLabel={`Select Column: ${column.content}`}
-                                    bind:checked={showColumns[select ? i + 1 : i]}
+                                ariaLabel={`Select Column: ${column.content}`}
+                                bind:checked={showColumns[select ? i + 1 : i]}
                             >
                                 {column.content}
                             </Checkbox>
@@ -420,8 +445,8 @@
                     {#if options}
                         <div class="columnSelect">
                             <Checkbox
-                                    ariaLabel="Select Column: Options"
-                                    bind:checked={showColumns[showColumns.length - 1]}
+                                ariaLabel="Select Column: Options"
+                                bind:checked={showColumns[showColumns.length - 1]}
                             >
                                 Options
                             </Checkbox>
@@ -438,11 +463,11 @@
                 <div></div>
             {:else}
                 <Pagination
-                        items={rows}
-                        bind:itemsPaginated={rowsPaginated}
-                        bind:page
-                        bind:pageSize
-                        compact={paginationCompact}
+                    items={rows}
+                    bind:itemsPaginated={rowsPaginated}
+                    bind:page
+                    bind:pageSize
+                    compact={paginationCompact}
                 />
             {/if}
         </div>
@@ -451,10 +476,10 @@
 
 <style>
     caption {
-        padding-right: .5rem;
+        padding-right: 0.5rem;
         caption-side: bottom;
         text-align: left;
-        border-top: 1px solid hsla(var(--bg-high), .25);
+        border-top: 1px solid hsla(var(--bg-high), 0.25);
         overflow: clip;
     }
 
@@ -498,37 +523,40 @@
         transition: background 150ms;
     }
 
-    td, th {
+    td,
+    th {
         text-align: left;
-        padding: .1rem .5rem;
+        padding: 0.1rem 0.5rem;
     }
 
     th {
         position: relative;
-        bottom: -.15rem;
+        bottom: -0.15rem;
         display: flex;
         color: hsl(var(--text-high));
         font-weight: normal;
     }
 
     th .label {
-        overflow-x: scroll;
+        min-width: 0;
+        overflow: clip;
+        text-overflow: ellipsis;
     }
 
     tbody td {
         text-wrap: wrap;
         word-wrap: break-word;
         vertical-align: text-top;
-        overflow-x: scroll;
-        overflow-y: clip;
+        overflow: clip;
+        text-overflow: ellipsis;
     }
 
     tbody tr:nth-child(even) {
-        background: hsla(var(--bg-high), .2);
+        background: hsla(var(--bg-high), 0.2);
     }
 
     tbody tr:hover {
-        background: hsla(var(--accent), .33);
+        background: hsla(var(--accent), 0.33);
     }
 
     .btnOptions {
@@ -545,25 +573,25 @@
         transition: color 150ms;
     }
 
-    .btnSelect[data-disabled="true"] {
-        color: hsla(var(--text), .5);
+    .btnSelect[data-disabled='true'] {
+        color: hsla(var(--text), 0.5);
     }
 
     .caption {
-        transform: translateY(-.3rem);
+        transform: translateY(-0.3rem);
     }
 
     .checkbox {
-        transform: translateY(.22rem);
+        transform: translateY(0.22rem);
     }
 
     .checkIcon {
         position: relative;
-        bottom: -.1rem;
+        bottom: -0.1rem;
     }
 
     .columnsSelect {
-        padding: .5rem;
+        padding: 0.5rem;
     }
 
     .columnSelect {
@@ -573,17 +601,18 @@
 
     .copyToClip {
         position: relative;
-        bottom: .3rem;
+        bottom: 0.3rem;
         color: hsl(var(--text));
         font-size: 1rem;
         font-weight: normal;
         cursor: copy;
-        overflow: scroll;
+        overflow: clip;
+        text-overflow: ellipsis;
     }
 
     .eye {
-        margin: 0 .5rem 0 .5rem;
-        color: hsla(var(--text), .5);
+        margin: 0 0.5rem 0 0.5rem;
+        color: hsla(var(--text), 0.5);
         transition: all 150ms;
     }
 
@@ -594,25 +623,25 @@
     .headerCheckbox {
         display: grid;
         grid-template-columns: 1.3rem 1rem;
-        transform: translateY(.06rem);
+        transform: translateY(0.06rem);
     }
 
     .headerOptions {
         height: 100%;
         padding: 0;
         justify-content: center;
-        color: hsla(var(--text), .66);
-        transform: translateY(-.1rem);
+        color: hsla(var(--text), 0.66);
+        transform: translateY(-0.1rem);
     }
 
     .highlight {
-        background: hsla(var(--accent), .25) !important;
+        background: hsla(var(--accent), 0.25) !important;
     }
 
     .iconOrder {
         position: relative;
-        bottom: .15rem;
-        color: hsla(var(--text), .7);
+        bottom: 0.15rem;
+        color: hsla(var(--text), 0.7);
         transition: all 150ms;
     }
 
@@ -626,16 +655,16 @@
 
     .linkText {
         position: relative;
-        bottom: -.05rem;
+        bottom: -0.05rem;
     }
 
     .muted {
-        color: hsla(var(--text), .7);
+        color: hsla(var(--text), 0.7);
     }
 
     .onclick {
         position: relative;
-        top: -.5rem;
+        top: -0.5rem;
         color: hsl(var(--text));
         font-weight: normal;
         transition: color 150ms;
@@ -653,12 +682,12 @@
 
     .orderText {
         position: relative;
-        top: -.3rem;
+        top: -0.3rem;
     }
 
     .rawText {
         position: relative;
-        bottom: -.15rem;
+        bottom: -0.15rem;
     }
 
     .sizeable {
@@ -668,10 +697,10 @@
         background: transparent;
         cursor: col-resize;
         transition: all 150ms;
-        border-right: 1px solid hsla(var(--text), .15);
+        border-right: 1px solid hsla(var(--text), 0.15);
     }
 
     .sizeable:hover {
-        background: hsla(var(--text), .33);
+        background: hsla(var(--text), 0.33);
     }
 </style>

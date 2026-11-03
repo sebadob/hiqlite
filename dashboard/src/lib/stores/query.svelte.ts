@@ -1,4 +1,4 @@
-import type {IQuery} from "$lib/types/query";
+import type {IQuery} from "#lib/types/query.js";
 
 export const DEFAULT_QUERY = '-- comments will be ignored but only a single query is allowed\n' +
     '-- press CTRL + Enter to execute\n' +

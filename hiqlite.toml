@@ -326,9 +326,7 @@ backup_cron = "0 30 2 * * * *"
 #
 # default: not set - mandatory value
 # overwritten by: ENC_KEYS
-enc_keys = [
-    "bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ=",
-]
+enc_keys = ["bVCyTsGaggVy5yqQ/UzluN29DZW41M3hTSkx6Y3NtZmRuQkR2TnJxUTYzcjQ="]
 
 # This identifies the key ID from the `ENC_KEYS` list, that
 # should actively be used for new encryptions.

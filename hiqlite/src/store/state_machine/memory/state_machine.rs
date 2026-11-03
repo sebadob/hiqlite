@@ -305,8 +305,12 @@ impl StateMachineMemory {
 
             // (Re)write the normalized form atomically so the file always reflects the
             // current enum and a torn write can never leave a half-written fingerprint.
+            // A missing file is always (re)written, even when the fingerprint itself is
+            // empty: an enum with zero variants (the `hiqlite` server binary) produces the
+            // same normalized form as a fresh startup, and this file is the "cache data was
+            // started on >= v0.15" marker that `v0_15_auto_cache_migration` relies on.
             let normalized = C::hiqlite_cache_variants_normalized();
-            if stored.as_bytes() != normalized.as_bytes() {
+            if !fs::try_exists(&path_meta).await? || stored.as_bytes() != normalized.as_bytes() {
                 let path_temp = format!("{path_meta}~");
                 {
                     let mut file = fs::File::create(&path_temp).await.map_err(|err| {
@@ -1239,34 +1243,6 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base_dir);
     }
-
-    /// A disk-backed state machine must refuse to start when the persisted cache-index
-    /// fingerprint no longer matches the current enum (a rename here). This is the startup
-    /// safeguard that catches re-order / insert-in-between / removal / rename of the
-    /// `CacheVariants` enum across restarts; a pure expansion at the end is still accepted.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn startup_rejects_incompatible_cache_index() {
-        let base_dir = std::env::temp_dir().join("hiqlite_cache_index_compat_test");
-        let _ = std::fs::remove_dir_all(&base_dir);
-        let base = base_dir.to_str().unwrap();
-
-        // TestCache's current enum is a single variant at index 0 named "One". A stored
-        // fingerprint claiming index 0 is something else is a rename -> incompatible.
-        std::fs::create_dir_all(format!("{base}/state_machine_cache")).unwrap();
-        std::fs::write(
-            format!("{base}/state_machine_cache/cache_index.meta"),
-            "0 SomethingElse\n",
-        )
-        .unwrap();
-
-        let res = StateMachineMemory::new::<TestCache>(base, false).await;
-        assert!(
-            matches!(res, Err(Error::Cache(_))),
-            "expected an incompatible cache index to be rejected at startup, got {res:?}"
-        );
-
-        let _ = std::fs::remove_dir_all(&base_dir);
-    }
 }
 
 #[cfg(test)]
@@ -1447,5 +1423,81 @@ mod cache_index_compatibility {
         assert!(!Cur::hiqlite_cache_compatible_with("App\n"));
         // non-numeric index
         assert!(!Cur::hiqlite_cache_compatible_with("x App\n"));
+    }
+
+    /// A disk-backed state machine must refuse to start when the persisted fingerprint no
+    /// longer matches the current enum (a rename here). This is the startup safeguard that
+    /// catches re-order / insert-in-between / removal / rename of the `CacheVariants` enum
+    /// across restarts; a pure expansion at the end is still accepted.
+    #[cfg(not(feature = "in-memory-snapshots"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_rejects_incompatible_cache_index() {
+        let base_dir = std::env::temp_dir().join("hiqlite_cache_index_compat_test");
+        let _ = std::fs::remove_dir_all(&base_dir);
+        let base = base_dir.to_str().unwrap();
+
+        // `Cur` has `App` at index 0, so a stored fingerprint claiming index 0 to be
+        // something else is a rename -> incompatible.
+        std::fs::create_dir_all(format!("{base}/state_machine_cache")).unwrap();
+        std::fs::write(
+            format!("{base}/state_machine_cache/cache_index.meta"),
+            "0 SomethingElse\n",
+        )
+        .unwrap();
+
+        let res = super::StateMachineMemory::new::<Cur>(base, false).await;
+        assert!(
+            matches!(res, Err(crate::Error::Cache(_))),
+            "expected an incompatible cache index to be rejected at startup, got {res:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// The fingerprint file doubles as the "cache data was started on >= v0.15" marker that
+    /// `v0_15_auto_cache_migration::check_migrate` uses to tell a v0.14 data dir from a
+    /// current one. A zero-variant enum - the `Empty` type of the `hiqlite` server binary -
+    /// normalizes to the same string as a fresh startup, so it must still write the file,
+    /// otherwise every restart after the first would look like a legacy migration.
+    #[cfg(not(feature = "in-memory-snapshots"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_enum_still_writes_fingerprint_file() {
+        #[derive(Debug)]
+        enum NoVariants {}
+
+        impl CacheVariants for NoVariants {
+            fn hiqlite_cache_index(&self) -> usize {
+                unreachable!()
+            }
+
+            fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
+                &[]
+            }
+        }
+
+        let base_dir = std::env::temp_dir().join("hiqlite_cache_index_empty_enum_test");
+        let _ = std::fs::remove_dir_all(&base_dir);
+        let base = base_dir.to_str().unwrap();
+        let path_meta = format!("{base}/state_machine_cache/cache_index.meta");
+
+        super::StateMachineMemory::new::<NoVariants>(base, false)
+            .await
+            .expect("state machine to start");
+        assert!(
+            std::path::Path::new(&path_meta).try_exists().unwrap(),
+            "a zero-variant enum must write the fingerprint file"
+        );
+        assert_eq!(std::fs::read_to_string(&path_meta).unwrap(), "");
+
+        // a pure expansion at the end must update the fingerprint and stay compatible
+        super::StateMachineMemory::new::<Cur>(base, false)
+            .await
+            .expect("expanding a zero-variant enum to start");
+        assert_eq!(
+            std::fs::read_to_string(&path_meta).unwrap(),
+            "0 App\n1 AuthCodes\n2 Users\n3 MagicLinks\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&base_dir);
     }
 }

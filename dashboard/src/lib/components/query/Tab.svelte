@@ -1,5 +1,5 @@
 <script lang="ts">
-    import IconStop from "$lib/components/icons/IconStop.svelte";
+    import IconStop from "#lib/components/icons/IconStop.svelte";
 
     import type {Snippet} from "svelte";
 

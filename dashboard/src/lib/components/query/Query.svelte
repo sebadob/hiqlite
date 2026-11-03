@@ -1,17 +1,19 @@
 <script lang="ts">
-    import {fetchPostText} from "$lib/utils/fetch";
-    import type {IRow} from "$lib/types/query_results";
-    import type {IQuery} from "$lib/types/query";
-    import {AUTO_QUERY} from "$lib/stores/query.svelte.js";
-    import ResultsDataTable from "$lib/components/query/ResultsDataTable.svelte";
-    import Resizable from "$lib/components/Resizable.svelte";
+    import { fetchPostText } from "#lib/utils/fetch.js";
+    import type { IRow } from "#lib/types/query_results.js";
+    import type { IQuery } from "#lib/types/query.js";
+    import { AUTO_QUERY } from "#lib/stores/query.svelte.js";
+    import ResultsDataTable from "#lib/components/query/ResultsDataTable.svelte";
+    import Resizable from "#lib/components/Resizable.svelte";
 
-    let {query}: {
-        query: IQuery,
+    let {
+        query,
+    }: {
+        query: IQuery;
     } = $props();
     let rows: IRow[] = $state([]);
 
-    let error = $state('');
+    let error = $state("");
 
     let innerHeight: undefined | number = $state();
     let bottomQueryInput: undefined | number = $state();
@@ -19,35 +21,35 @@
         if (innerHeight && bottomQueryInput) {
             return `${innerHeight - bottomQueryInput}px`;
         }
-        return '100%';
+        return "100%";
     });
 
     $effect(() => {
         if (query.query.startsWith(AUTO_QUERY)) {
-            query.query = query.query.replace(`${AUTO_QUERY}\n`, '');
+            query.query = query.query.replace(`${AUTO_QUERY}\n`, "");
             execute();
         }
     });
 
     function onkeydown(ev: KeyboardEvent) {
-        if (ev.ctrlKey && ev.code === 'Enter') {
+        if ((ev.ctrlKey || ev.metaKey) && ev.code === "Enter") {
             execute();
         }
     }
 
     async function execute() {
         rows = [];
-        error = '';
+        error = "";
 
         let q = [];
         for (let line of query.query.split(/\r?\n/)) {
-            if (!line.startsWith('--')) {
+            if (!line.startsWith("--")) {
                 q.push(line);
             }
         }
-        let qry = q.join('\n');
+        let qry = q.join("\n");
 
-        let res = await fetchPostText('/query', qry);
+        let res = await fetchPostText("/query", qry);
         if (res.status === 200) {
             rows = await res.json();
         } else {
@@ -61,21 +63,16 @@
     }
 </script>
 
-<svelte:window bind:innerHeight/>
+<svelte:window bind:innerHeight />
 
-<Resizable
-        resizeBottom
-        minHeightPx={100}
-        initialHeightPx={300}
-        {onResizeBottom}
->
+<Resizable resizeBottom minHeightPx={100} initialHeightPx={300} {onResizeBottom}>
     <div
-            role="textbox"
-            tabindex="0"
-            class="query"
-            bind:innerText={query.query}
-            contenteditable
-            {onkeydown}
+        role="textbox"
+        tabindex="0"
+        class="query"
+        bind:innerText={query.query}
+        contenteditable
+        {onkeydown}
     ></div>
 </Resizable>
 
@@ -85,23 +82,19 @@
     </div>
 {/if}
 
-<div
-        id="query-results"
-        style:height={heightResults}
-        style:max-height={heightResults}
->
-    <ResultsDataTable bind:rows/>
+<div id="query-results" style:height={heightResults} style:max-height={heightResults}>
+    <ResultsDataTable bind:rows />
 </div>
 
 <style>
     #query-results {
-        border-top: 1px solid hsla(var(--bg-high), .66);
+        border-top: 1px solid hsla(var(--bg-high), 0.66);
     }
 
     .query {
-        padding: .25rem .5rem;
+        padding: 0.25rem 0.5rem;
         height: 100%;
-        background: hsla(var(--bg-high), .2);
+        background: hsla(var(--bg-high), 0.2);
         overflow: auto;
     }
 </style>

@@ -1,9 +1,9 @@
 <script lang="ts">
-    import Button from "$lib/components/Button.svelte";
-    import Options from "$lib/components/Options.svelte";
-    import {genKey} from "$lib/utils/genKey";
-    import IconBackspace from "$lib/components/icons/IconBackspace.svelte";
-    import IconMagnify from "$lib/components/icons/IconMagnify.svelte";
+    import Button from "#lib/components/Button.svelte";
+    import Options from "#lib/components/Options.svelte";
+    import {genKey} from "#lib/utils/genKey.js";
+    import IconBackspace from "#lib/components/icons/IconBackspace.svelte";
+    import IconMagnify from "#lib/components/icons/IconMagnify.svelte";
 
     let {
         value = $bindable(''),
