@@ -1,4 +1,4 @@
-import {storeSession} from "$lib/stores/session";
+import {storeSession} from "#lib/stores/session.js";
 
 // const HEADERS = {
 //     'Content-Type': 'application/json',

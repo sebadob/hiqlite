@@ -1,6 +1,6 @@
 <script lang="ts">
-    import Button from "$lib/components/Button.svelte";
-    import {genKey} from "$lib/utils/genKey";
+    import Button from "#lib/components/Button.svelte";
+    import {genKey} from "#lib/utils/genKey.js";
 
     import type {Snippet} from "svelte";
 

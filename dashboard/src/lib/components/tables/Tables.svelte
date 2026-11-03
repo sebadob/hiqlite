@@ -1,13 +1,13 @@
 <script lang="ts">
-    import {type ITable, ITableView} from "$lib/types/table";
-    import TableDetails from "$lib/components/tables/TableDetails.svelte";
-    import TableView from "$lib/components/tables/TableView.svelte";
-    import {fetchGet} from "$lib/utils/fetch";
-    import IconDocText from "$lib/components/icons/IconDocText.svelte";
-    import {AUTO_QUERY, QUERIES} from "$lib/stores/query.svelte.js";
-    import type {IQuery} from "$lib/types/query";
-    import {genKey} from "$lib/utils/genKey";
-    import Resizable from "$lib/components/Resizable.svelte";
+    import {type ITable, ITableView} from "#lib/types/table.js";
+    import TableDetails from "#lib/components/tables/TableDetails.svelte";
+    import TableView from "#lib/components/tables/TableView.svelte";
+    import {fetchGet} from "#lib/utils/fetch.js";
+    import IconDocText from "#lib/components/icons/IconDocText.svelte";
+    import {AUTO_QUERY, QUERIES} from "#lib/stores/query.svelte.js";
+    import type {IQuery} from "#lib/types/query.js";
+    import {genKey} from "#lib/utils/genKey.js";
+    import Resizable from "#lib/components/Resizable.svelte";
 
     let data: ITable[] = $state([]);
     let selectedTable: undefined | ITable = $state();

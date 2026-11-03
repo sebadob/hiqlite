@@ -8,6 +8,12 @@ declare global {
 		// interface PageState {}
 		// interface Platform {}
 	}
+
+	// SvelteKit 3 type-checks `vite.config.ts` and `playwright.config.ts`, which read
+	// `process.env`. Instead of adding `@types/node` we declare only what they use.
+	const process: {
+		env: Record<string, string | undefined>;
+	};
 }
 
 export {};

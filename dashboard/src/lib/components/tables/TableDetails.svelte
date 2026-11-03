@@ -1,5 +1,5 @@
 <script lang="ts">
-    import type {ITable} from "$lib/types/table";
+    import type {ITable} from "#lib/types/table.js";
     import {derived} from "svelte/store";
 
     let {table}: {

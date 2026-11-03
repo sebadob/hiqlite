@@ -1,18 +1,18 @@
 <script lang="ts">
-    import Button from "$lib/components/Button.svelte";
-    import A from "$lib/components/A.svelte";
-    import Pagination from "$lib/components/Pagination.svelte";
-    import Checkbox from "$lib/components/Checkbox.svelte";
-    import Popover from "$lib/components/Popover.svelte";
-    import CheckIcon from "$lib/components/CheckIcon.svelte";
+    import Button from "#lib/components/Button.svelte";
+    import A from "#lib/components/A.svelte";
+    import Pagination from "#lib/components/Pagination.svelte";
+    import Checkbox from "#lib/components/Checkbox.svelte";
+    import Popover from "#lib/components/Popover.svelte";
+    import CheckIcon from "#lib/components/CheckIcon.svelte";
     import {untrack} from "svelte";
-    import type {IDataTable, IRow} from "$lib/components/data_table/data_table_types.ts";
-    import IconChevronDown from "$lib/components/icons/IconChevronDown.svelte";
-    import IconArrowUpDown from "$lib/components/icons/IconArrowUpDown.svelte";
-    import IconCog from "$lib/components/icons/IconCog.svelte";
-    import {copyToClip} from "$lib/utils/copyToClip";
-    import IconDotsHorizontal from "$lib/components/icons/IconDotsHorizontal.svelte";
-    import IconEye from "$lib/components/icons/IconEye.svelte";
+    import type {IDataTable, IRow} from "#lib/components/data_table/data_table_types.ts";
+    import IconChevronDown from "#lib/components/icons/IconChevronDown.svelte";
+    import IconArrowUpDown from "#lib/components/icons/IconArrowUpDown.svelte";
+    import IconCog from "#lib/components/icons/IconCog.svelte";
+    import {copyToClip} from "#lib/utils/copyToClip.js";
+    import IconDotsHorizontal from "#lib/components/icons/IconDotsHorizontal.svelte";
+    import IconEye from "#lib/components/icons/IconEye.svelte";
 
     let {
         caption,
@@ -334,7 +334,7 @@
                                     <CheckIcon checked={column.content}/>
                                 </span>
                         {:else if column.onClick}
-                            <Button invisible onclick={ev => column.onClick?.(ev, absoluteRowNo(i))}>
+                            <Button invisible onclick={(ev: Event) => column.onClick?.(ev, absoluteRowNo(i))}>
                                     <span class="onclick nowrap" class:muted={column.muted}>
                                         {column.content}
                                     </span>

@@ -1,9 +1,9 @@
 <script lang="ts">
-    import Form from "$lib/components/form/Form.svelte";
-    import Button from "$lib/components/Button.svelte";
-    import InputPassword from "$lib/components/form/InputPassword.svelte";
-    import {API_PREFIX, fetchGet} from "$lib/utils/fetch";
-    import {storeSession} from "$lib/stores/session";
+    import Form from "#lib/components/form/Form.svelte";
+    import Button from "#lib/components/Button.svelte";
+    import InputPassword from "#lib/components/form/InputPassword.svelte";
+    import {API_PREFIX, fetchGet} from "#lib/utils/fetch.js";
+    import {storeSession} from "#lib/stores/session.js";
 
     const action = `${API_PREFIX}/session`;
 

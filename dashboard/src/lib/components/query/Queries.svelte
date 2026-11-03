@@ -1,9 +1,9 @@
 <script lang="ts">
-    import Query from "$lib/components/query/Query.svelte";
-    import Tab from "$lib/components/query/Tab.svelte";
-    import IconPlus from "$lib/components/icons/IconPlus.svelte";
-    import {genKey} from "$lib/utils/genKey";
-    import {DEFAULT_QUERY, DEFAULT_QUERY_FULL, QUERIES} from "$lib/stores/query.svelte.js";
+    import Query from "#lib/components/query/Query.svelte";
+    import Tab from "#lib/components/query/Tab.svelte";
+    import IconPlus from "#lib/components/icons/IconPlus.svelte";
+    import {genKey} from "#lib/utils/genKey.js";
+    import {DEFAULT_QUERY, DEFAULT_QUERY_FULL, QUERIES} from "#lib/stores/query.svelte.js";
 
     let tabSelected = $state(QUERIES[0].id);
     let querySelected = $derived(QUERIES.filter(q => q.id === tabSelected)[0]);

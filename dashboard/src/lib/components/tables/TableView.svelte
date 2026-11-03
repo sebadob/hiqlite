@@ -1,5 +1,5 @@
 <script lang="ts">
-    import {ITableView} from "$lib/types/table";
+    import {ITableView} from "#lib/types/table.js";
 
     let {view, viewSelected = $bindable()}: {
         view: ITableView,

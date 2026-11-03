@@ -1,5 +1,5 @@
 <script>
-    import ThemeSwitch from "$lib/components/ThemeSwitch.svelte";
+    import ThemeSwitch from "#lib/components/ThemeSwitch.svelte";
 </script>
 
 <div class="theme-switch">

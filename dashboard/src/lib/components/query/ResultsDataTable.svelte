@@ -1,7 +1,7 @@
 <script lang="ts">
-    import type {IRow as IRowQuery, SqlValue} from "$lib/types/query_results";
-    import DataTable from "$lib/components/data_table/DataTable.svelte";
-    import type {IColumn, IRow} from "$lib/components/data_table/data_table_types";
+    import type {IRow as IRowQuery, SqlValue} from "#lib/types/query_results.js";
+    import DataTable from "#lib/components/data_table/DataTable.svelte";
+    import type {IColumn, IRow} from "#lib/components/data_table/data_table_types.js";
 
     let {rows = $bindable()}: { rows: IRowQuery[] } = $props();
 

@@ -1,8 +1,8 @@
 <script lang="ts">
-    import Button from "$lib/components/Button.svelte";
+    import Button from "#lib/components/Button.svelte";
     import {untrack} from "svelte";
-    import Options from "$lib/components/Options.svelte";
-    import IconChevronRight from "$lib/components/icons/IconChevronRight.svelte";
+    import Options from "#lib/components/Options.svelte";
+    import IconChevronRight from "#lib/components/icons/IconChevronRight.svelte";
 
     const options = [5, 7, 10, 15, 20, 30, 50, 100];
 

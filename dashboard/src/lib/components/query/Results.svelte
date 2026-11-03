@@ -1,5 +1,5 @@
 <script lang="ts">
-    import type {IColumn, IRow, SqlValue} from "$lib/types/query_results";
+    import type {IColumn, IRow, SqlValue} from "#lib/types/query_results.js";
 
     let {rows = $bindable()}: { rows: IRow[] } = $props();
     $inspect(rows);
