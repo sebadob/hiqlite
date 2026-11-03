@@ -7,8 +7,10 @@ export interface IColumn {
     value: SqlValue,
 }
 
-export type SqlValue = { "Null": null }
-    | { "Integer": number }
-    | { "Real": number }
-    | { "Text": string }
-    | { "Blob": ArrayBuffer };
+/// Mirrors `ValueOwned` in the Rust crate: serde serializes unit variants as a plain
+/// string, so a SQL NULL arrives as "Null", not as an object.
+export type SqlValue = 'Null'
+    | { 'Integer': number }
+    | { 'Real': number }
+    | { 'Text': string }
+    | { 'Blob': number[] };
