@@ -1,5 +1,18 @@
 # Changelog
 
+## UNRELEASED
+
+### S3 Dependencies Leaking Into Feature Builds
+
+`cryptr`, and with it `s3-simple`, was compiled for nodes without any backup and without S3.
+`cryptr` was activated by the internal `__cluster` feature, which every `cache` and `sqlite` node
+enables, and the workspace dependency enabled cryptr's `s3` feature globally. Any build that
+compiled `cryptr` therefore compiled the whole S3 client. `cryptr` is now only enabled by
+`dashboard`, and cryptr's S3 streaming only by `s3`. A `cache`-only node compiles 37 crates less,
+a `sqlite`-only node 36, and a `dashboard`-only node no longer pulls the streaming and S3 stack.
+Nodes with `s3` or `backup` are unchanged, and so is the `default` feature set: backups are still
+part of it, so minimal nodes need `default-features = false`.
+
 ## hiqlite-v0.15.3
 
 This version slims down the loaded dependencies when using the `external-state-machine`, and it removes the built-in
@@ -339,7 +352,7 @@ impl From<&mut hiqlite::Row<'_>> for MyStruct {
 }
 ```
 
-This migration is easily done with 2 global *find and replace*:
+This migration is easily done with 2 global _find and replace_:
 
 - rename all `impl From<hiqlite::Row<'_>> for` to `impl From<&mut hiqlite::Row<'_>>`
 - rename all `fn from(mut row: hiqlite::Row<'_>) -> Self {` to `fn from(row: &mut hiqlite::Row<'_>) -> Self {`
@@ -1067,7 +1080,7 @@ Raft logs batch. This is a pretty big tradeoff but may be necessary in some situ
 # The default is `false`, and a flush + sync will be done in 200ms
 # intervals. Even if the application should crash, the OS will take
 # care of flushing left-over buffers to disk and no data will get
-# lost. If something worse happens, you might lose the last 200ms 
+# lost. If something worse happens, you might lose the last 200ms
 # of commits (on that node, not the whole cluster). This is only
 # important to know for single instance deployments. HA nodes will
 # sync data from other cluster members after a restart anyway.
@@ -1132,19 +1145,19 @@ places.
   3.1 https://www.sqlite.org/datatype3.html are applied. The "correct" SQLite type definitions will always be faster
   though and should always be preferred.
 - Additional type conversion for:
-    - `bool` - was missing, `true` is now an `INTEGER` of `1` and `0` for `false`
-    - `chrono::DateTime<Utc>`
-    - `chrono::DateTime<Local>`
-    - `chrono::DateTime<FixedOffset>`
-    - `chrono::NaiveDate`
-    - `chrono::NaiveTime`
-    - `chrono::NaiveDateTime`
-    - `serde_json::Value`
-      The additional `chrono` and `serde_json` types are stored as `TEXT` inside the DB for compatibility with the
-      underlying `rusqlite` crate. Using `INTEGER` for `chrono::Naive*` and `Utc` types would be faster more efficient,
-      which may be changed in the future. For now, all Date and Time-like types are converted to `TEXT`.  
-      *Note:* These auto type conversions only work when you implement the `From<hiqlite::Row>` and do not work with the
-      auto-conversion from deriving `serde::Deserialize`.
+  - `bool` - was missing, `true` is now an `INTEGER` of `1` and `0` for `false`
+  - `chrono::DateTime<Utc>`
+  - `chrono::DateTime<Local>`
+  - `chrono::DateTime<FixedOffset>`
+  - `chrono::NaiveDate`
+  - `chrono::NaiveTime`
+  - `chrono::NaiveDateTime`
+  - `serde_json::Value`
+    The additional `chrono` and `serde_json` types are stored as `TEXT` inside the DB for compatibility with the
+    underlying `rusqlite` crate. Using `INTEGER` for `chrono::Naive*` and `Utc` types would be faster more efficient,
+    which may be changed in the future. For now, all Date and Time-like types are converted to `TEXT`.  
+    _Note:_ These auto type conversions only work when you implement the `From<hiqlite::Row>` and do not work with the
+    auto-conversion from deriving `serde::Deserialize`.
 - `openraft` has been bumped to `v0.9.16` which solves some issues with a not-so-pretty rolling restart of Kubernetes
   StatefulSets for instance due to a race condition.
 - `HIQLITE_BACKUP_RESTORE` env var to restore from a backup has been renamed to `HQL_BACKUP_RESTORE` to match the other
@@ -1161,9 +1174,9 @@ This first release comes with the following features:
   machine
 - "magic" auto setup, no need to do any manual init or management for the Raft
 - self-healing - each node can automatically recover from:
-    - lost cached WAL buffer for the state machine
-    - complete loss of the state machine DB (SQLite)
-    - complete loss of the whole volume itself
+  - lost cached WAL buffer for the state machine
+  - complete loss of the state machine DB (SQLite)
+  - complete loss of the whole volume itself
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
@@ -1171,12 +1184,12 @@ This first release comes with the following features:
   (with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
 - restore from remote backup (with log index roll-over)
 - strongly consistent, replicated `EXECUTE` queries
-    - on a leader node, the client will not even bother with using networking
-    - on a non-leader node, it will automatically switch over to a network connection so the request is forwarded and
-      initiated on the current Raft leader
+  - on a leader node, the client will not even bother with using networking
+  - on a non-leader node, it will automatically switch over to a network connection so the request is forwarded and
+    initiated on the current Raft leader
 - strongly consistent, replicated `EXECUTE` queries with returning statement through the Raft
-    - you can either get a raw handle to the custom `RowOwned` struct
-    - or you can map the `RETURNING` statement to an existing struct
+  - you can either get a raw handle to the custom `RowOwned` struct
+  - or you can map the `RETURNING` statement to an existing struct
 - transaction executes
 - simple `String` batch executes
 - consistent read / select queries on leader
