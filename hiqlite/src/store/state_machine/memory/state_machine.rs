@@ -5,7 +5,6 @@ use crate::store::state_machine::memory::{TypeConfigKV, kv_handler};
 use crate::{CacheVariants, Error, Node, NodeId};
 use bincode_next::{Decode, Encode};
 use chrono::Utc;
-use cryptr::utils::secure_random_alnum;
 use dotenvy::var;
 use openraft::storage::RaftStateMachine;
 use openraft::{

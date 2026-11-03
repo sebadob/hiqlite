@@ -33,6 +33,7 @@ counters = ["cache"]
 dashboard = [
     "dep:argon2",
     "dep:axum-extra",
+    "dep:cryptr",
     "dep:mime_guess",
     "dep:spow",
     "dep:tower",
@@ -79,7 +80,8 @@ listen_notify = [
 ]
 macros = ["dep:hiqlite-derive"]
 toml = ["dep:toml"]
-s3 = ["backup"]
+# S3 access for backups. Enables cryptr's S3 streaming, and with it `s3-simple`.
+s3 = ["backup", "cryptr/s3"]
 server = [
     "dep:clap",
     "dep:home",
@@ -124,7 +126,6 @@ __cluster = [
     "dep:chrono",
     "dep:constant_time_eq",
     "dep:crossbeam",
-    "dep:cryptr",
     "dep:dotenvy",
     "dep:fastwebsockets",
     "dep:getrandom",
