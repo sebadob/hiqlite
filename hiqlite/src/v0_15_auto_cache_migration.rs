@@ -18,11 +18,13 @@ use tracing::{debug, error, info, warn};
 /// any issues. This is not a guarantee that a user cannot screw up, but it's a help. This function
 /// will do nothing if we have data that was running on the new version already, so it's very cheap
 /// to consistently call it on startup for the whole `v0.15` release.
+///
+/// Kept for one more release, the whole function must be removed together with `v0.17`.
 #[tracing::instrument(skip_all)]
 pub async fn check_migrate(config: &NodeConfig) -> Result<(), Error> {
     #[cfg(debug_assertions)]
-    if !crate::APP_VERSION.starts_with("0.15.") {
-        todo!("Clean up the whole check_migrate() function after v0.15 - it's not needed anymore");
+    if !(crate::APP_VERSION.starts_with("0.15.") || crate::APP_VERSION.starts_with("0.16.")) {
+        todo!("Clean up the whole check_migrate() function after v0.16 - it's not needed anymore");
     }
 
     #[cfg(feature = "in-memory-snapshots")]

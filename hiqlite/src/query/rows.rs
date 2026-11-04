@@ -246,10 +246,11 @@ pub struct ColumnOwned {
 
 impl ColumnOwned {
     #[inline(always)]
-    pub(crate) fn mapping_cols_from_stmt(
-        columns: Vec<rusqlite::Column>,
+    pub(crate) fn mapping_cols_from_stmt<'a>(
+        columns: impl ExactSizeIterator<Item = rusqlite::Column<'a>>,
+        params_len: usize,
     ) -> Result<Vec<ColumnInfo>, Error> {
-        let mut cols = Vec::with_capacity(columns.len());
+        let mut cols = Vec::with_capacity(params_len);
         for col in columns {
             cols.push(ColumnInfo {
                 name: col.name().to_string(),

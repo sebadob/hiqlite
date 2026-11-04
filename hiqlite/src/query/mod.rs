@@ -48,7 +48,7 @@ where
 
     task::spawn_blocking(move || {
         let mut stmt = conn.prepare_cached(sql.as_ref())?;
-        let columns = ColumnOwned::mapping_cols_from_stmt(stmt.columns())?;
+        let columns = ColumnOwned::mapping_cols_from_stmt(stmt.columns(), params.len())?;
 
         #[cfg(debug_assertions)]
         writer::check_stmt_params_count(&stmt, &params, &sql);

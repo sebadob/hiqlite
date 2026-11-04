@@ -1,6 +1,6 @@
 [package]
 name = "hiqlite"
-version = "0.15.3"
+version = "0.16.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -227,4 +227,3 @@ criterion.workspace = true
 tokio = { workspace = true, features = ["full", "test-util", "tracing"] }
 tokio-test = "0.4.4"
 tracing-subscriber.workspace = true
-

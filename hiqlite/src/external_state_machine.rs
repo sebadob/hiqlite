@@ -82,6 +82,7 @@ use rusqlite::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::cell::Cell;
 use std::fmt::{Debug, Display};
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -215,6 +216,10 @@ fn restore_snapshot(conn: &mut Connection, path: &Path) -> Result<(), rusqlite::
             let _ = progress;
         }),
     )
+}
+
+thread_local! {
+    static INTERNAL_SQLITE_PHASE: Cell<u32> = const { Cell::new(0) };
 }
 
 /// On-disk format version of external state-machine metadata and receipts.
@@ -1016,9 +1021,17 @@ where
         let (ack, rx) = oneshot::channel();
         let thunk = Box::new(move |conn: &mut Connection, state: &mut StoredState<C>| {
             let mut result = apply_operation::<C, O>(conn, state, commit, operation);
-            let poison = reconcile_after_apply::<C, O>(conn, state, result.is_err())
+            let mut poison = reconcile_after_apply::<C, O>(conn, state, result.is_err())
                 .err()
                 .map(|err| err.to_string());
+            if let Err(err) = conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>) {
+                let message = format!("cannot clear the operation guard: {err}");
+                poison = Some(
+                    poison
+                        .map(|prev| format!("{prev}; {message}"))
+                        .unwrap_or(message),
+                );
+            }
             if let Some(message) = poison.as_ref() {
                 result = Err(ExternalError::WriterPoisoned(message.clone()).into());
             }
@@ -1457,17 +1470,17 @@ where
         CommitClass::New => {}
     }
 
+    conn.authorizer(Some(external_operation_authorizer))
+        .map_err(ExternalError::from)?;
+    let phase = InternalSqlitePhase::enter();
     let transaction = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ExternalError::from)?;
-    transaction
-        .authorizer(Some(external_operation_authorizer))
-        .map_err(ExternalError::from)?;
-    let operation_result = operation.apply(&transaction);
-    transaction
-        .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
-        .map_err(ExternalError::from)?;
-    let output = operation_result.map_err(ExternalApplyError::Operation)?;
+    drop(phase);
+
+    let output = operation
+        .apply(&transaction)
+        .map_err(ExternalApplyError::Operation)?;
     let receipt = O::encode_receipt(&output).map_err(ExternalError::Serialization)?;
     if receipt.len() > state.max_receipt_bytes {
         return Err(ExternalError::ReceiptTooLarge {
@@ -1477,7 +1490,8 @@ where
         .into());
     }
     let receipt_digest = Sha256Digest::of(&receipt);
-    persist_new_commit(
+    let phase = InternalSqlitePhase::enter();
+    let persisted = persist_new_commit(
         &transaction,
         state,
         &commit,
@@ -1485,8 +1499,10 @@ where
         O::RECEIPT_CODEC,
         &receipt,
         receipt_digest,
-    )?;
-    transaction.commit().map_err(ExternalError::from)?;
+    )
+    .and_then(|()| transaction.commit().map_err(ExternalError::from));
+    drop(phase);
+    persisted?;
     update_state_after_commit(state, commit, ExternalEntryKind::Operation, receipt_digest);
     Ok(ApplyOutcome::Applied(output))
 }
@@ -1500,6 +1516,7 @@ where
     C: Clone + Debug + Eq + ExternalCodec,
     O: DeterministicSqliteOperation,
 {
+    let _phase = InternalSqlitePhase::enter();
     if !conn.is_autocommit() {
         conn.execute_batch("ROLLBACK")?;
     }
@@ -1516,8 +1533,39 @@ where
     Ok(())
 }
 
+/// Opens the [`external_operation_authorizer`] guard for Hiqlite's own
+/// transaction control statements and `_hiqlite_external_*` bookkeeping.
+///
+/// Only ever held while no caller code runs.
+struct InternalSqlitePhase;
+
+impl InternalSqlitePhase {
+    /// # Panics
+    ///
+    /// Panics in debug builds when phases are nested.
+    fn enter() -> Self {
+        let depth = INTERNAL_SQLITE_PHASE.with(|phase| {
+            let depth = phase.get();
+            phase.set(depth + 1);
+            depth
+        });
+        debug_assert_eq!(depth, 0, "internal SQLite phases must never nest");
+        Self
+    }
+}
+
+impl Drop for InternalSqlitePhase {
+    fn drop(&mut self) {
+        INTERNAL_SQLITE_PHASE.with(|phase| phase.set(phase.get().saturating_sub(1)));
+    }
+}
+
 fn external_operation_authorizer(context: AuthContext<'_>) -> Authorization {
     use Authorization::{Allow, Deny};
+
+    if INTERNAL_SQLITE_PHASE.with(|phase| phase.get() > 0) {
+        return Allow;
+    }
 
     let protected = |name: &str| name.starts_with("_hiqlite_external_");
     match context.action {
@@ -2342,7 +2390,7 @@ fn create_external_snapshot(conn: &Connection, path: &Path) -> Result<(), Extern
     temporary.push("~");
     let temporary = PathBuf::from(temporary);
     let _ = std::fs::remove_file(&temporary);
-    if let Err(err) = conn.backup("main", &temporary, None) {
+    if let Err(err) = conn.backup("main", &temporary, rusqlite::backup::NO_PROGRESS) {
         let _ = std::fs::remove_file(&temporary);
         return Err(err.into());
     }

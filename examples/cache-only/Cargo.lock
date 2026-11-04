@@ -1068,7 +1068,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiqlite"
-version = "0.15.3"
+version = "0.16.0"
 dependencies = [
  "axum",
  "axum-server",
@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "hiqlite-derive"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1122,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "hiqlite-wal"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "bincode-next",
  "byteorder",
@@ -1505,9 +1505,9 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.38.2"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "pkg-config",
  "vcpkg",
@@ -2032,9 +2032,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.40.2"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags",
  "fallible-iterator",
@@ -2337,9 +2337,9 @@ dependencies = [
 
 [[package]]
 name = "serde_rusqlite"
-version = "0.43.0"
+version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44f51ff08953caf83bbd0d9be7ee58d41f1d1adc19a2e84c43f83ca50258571e"
+checksum = "554f7555174fb6e1b86062e62fa7c086e88513d4067bc106ffba2db7b24fcca2"
 dependencies = [
  "rusqlite",
  "serde_core",
