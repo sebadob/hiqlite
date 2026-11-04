@@ -87,15 +87,16 @@ reqwest = { version = "0.13.4", default-features = false, features = [
 # Only the features shared by every rusqlite consumer live here. The regular
 # `sqlite` feature adds its full set in `hiqlite/Cargo.toml`, so that
 # `external-state-machine` does not force them on downstream rusqlite users.
-rusqlite = { version = "0.40", features = ["bundled"] }
+# 0.41.1 is newer than our 10 day `global-min-publish-age`; drop this pin once it ages out.
+rusqlite = { version = "0.41.0", features = ["bundled"] }
 rust-embed = { version = "8.5.0", features = [] }
-rustls = { version = "0.23.37", default-features = false, features = [
+rustls = { version = "0.23.46", default-features = false, features = [
     "logging", "prefer-post-quantum", "std", "tls12", "ring"
 ] }
 rustls-platform-verifier = "0.7"
 serde = { version = "1.0.114", features = ["derive"] }
 serde_json = "1.0.57"
-serde_rusqlite = "0.43"
+serde_rusqlite = "0.44"
 sha2 = { version = "0.11", features = [] }
 spow = { version = "0.7", features = ["server"] }
 socket2 = "0.6"
