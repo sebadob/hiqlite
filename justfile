@@ -258,7 +258,7 @@ release:
 
     just build-image
 
-# publish order: wal, core, macros - remember to update version in hiqlite-macros beforehand
+# publish order: wal, derive, core - remember to update version in hiqlite-macros beforehand
 publish-wal: verify-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
