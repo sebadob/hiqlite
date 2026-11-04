@@ -1,17 +1,24 @@
 # Changelog
 
-## UNRELEASED
+## v0.16.0
 
-### S3 Dependencies Leaking Into Feature Builds
+The `cryptr` and `s3-simple` dependencies were pulled in with no `backup` or `s3` targets enabled.
+This is not the case anymore.
 
-`cryptr`, and with it `s3-simple`, was compiled for nodes without any backup and without S3.
-`cryptr` was activated by the internal `__cluster` feature, which every `cache` and `sqlite` node
-enables, and the workspace dependency enabled cryptr's `s3` feature globally. Any build that
-compiled `cryptr` therefore compiled the whole S3 client. `cryptr` is now only enabled by
-`dashboard`, and cryptr's S3 streaming only by `s3`. A `cache`-only node compiles 37 crates less,
-a `sqlite`-only node 36, and a `dashboard`-only node no longer pulls the streaming and S3 stack.
-Nodes with `s3` or `backup` are unchanged, and so is the `default` feature set: backups are still
-part of it, so minimal nodes need `default-features = false`.
+The `external-state-machine` feature now comes with its own serialization codec. This mean it does
+not pull in `bincode-next` as a dependency anymore. It is byte-compatible with the bincode legacy
+config that was used up until now, so it's a drop-in replacement.
+
+Apart from that, this release basically only updates dependencies. The dashboard was migrated from
+SvelteKit2 to 3 because of security issues in SvelteKit2, and the underlying `rusqlite` and
+therefore SQLite was bumped to the latest version as well. Even though a `cargo update` was able to
+solve the latest `rustls` security issue in your main app, `hiqlite` pins this now to at least
+`0.23.46` to force it to the fixed version.
+
+The `external-state-machine` writer was adapted to the new `rusqlite` API. The SQLite authorizer
+guard around a caller operation is installed before the transaction is opened, with a short-lived
+internal phase for Hiqlite's own `BEGIN`/`COMMIT` and `_hiqlite_external_*` bookkeeping. Nothing
+changes for implementors of `DeterministicSqliteOperation`.
 
 ## hiqlite-v0.15.3
 
@@ -131,17 +138,17 @@ State Machine are fully compatible.
 #### Other Breaking Changes
 
 - The following config vars have been renamed:
-  ```
-  health_check_delay_secs     -> health_check_delay
-  HQL_HEALTH_CHECK_DELAY_SECS -> HQL_HEALTH_CHECK_DELAY
-  backup_keep_days            -> backup_keep_for
-  HQL_BACKUP_KEEP_DAYS        -> HQL_BACKUP_KEEP_FOR
-  backup_keep_days_local      -> backup_keep_for_local
-  HQL_BACKUP_KEEP_DAYS_LOCAL  -> HQL_BACKUP_KEEP_FOR_LOCAL
-  ```
-  Apart from that, all these values are now of type `Duration`. This means you can either provide an Integer, and they
-  will be interpreted as seconds, or you provide them as a String like '120s', '2m', '3h', ..., and they will be parsed
-  with the given unit. The available units are: `s, m, h, d, w, y`.
+    ```
+    health_check_delay_secs     -> health_check_delay
+    HQL_HEALTH_CHECK_DELAY_SECS -> HQL_HEALTH_CHECK_DELAY
+    backup_keep_days            -> backup_keep_for
+    HQL_BACKUP_KEEP_DAYS        -> HQL_BACKUP_KEEP_FOR
+    backup_keep_days_local      -> backup_keep_for_local
+    HQL_BACKUP_KEEP_DAYS_LOCAL  -> HQL_BACKUP_KEEP_FOR_LOCAL
+    ```
+    Apart from that, all these values are now of type `Duration`. This means you can either provide an Integer, and they
+    will be interpreted as seconds, or you provide them as a String like '120s', '2m', '3h', ..., and they will be parsed
+    with the given unit. The available units are: `s, m, h, d, w, y`.
 - The `listen_notify_local` feature was dropped and folded into `listen_notify`. The `*_local` feature only existed
   to prevent the `eventsource-client` from being pulled in, which was needed for remote-only clients. The connection
   type was reworked from SEE (b64 encoded text data) into raw binary over WebSocket, which is much faster and more
@@ -637,47 +644,47 @@ do so, it is important however to not have too high `periodSeconds`, and the `he
 apiVersion: v1
 kind: Service
 metadata:
-  name: hiqlite-headless
-  namespace: hiqlite
+    name: hiqlite-headless
+    namespace: hiqlite
 spec:
-  clusterIP: None
-  # only do that on the headless service
-  publishNotReadyAddresses: true
-  selector:
-    app: hiqlite
-  ports:
-    - name: raft
-      protocol: TCP
-      port: 8100
-      targetPort: 8100
-    - name: api
-      protocol: TCP
-      port: 8200
-      targetPort: 8200
+    clusterIP: None
+    # only do that on the headless service
+    publishNotReadyAddresses: true
+    selector:
+        app: hiqlite
+    ports:
+        - name: raft
+          protocol: TCP
+          port: 8100
+          targetPort: 8100
+        - name: api
+          protocol: TCP
+          port: 8200
+          targetPort: 8200
 ```
 
 Then you can make use of the new readiness check in the `StatefulSet`:
 
 ```yaml
 readinessProbe:
-  httpGet:
-    scheme: HTTP
-    port: 8200
-    path: /ready
-  initialDelaySeconds: 5
-  # Do not increase, otherwise a shutdown might start before k8s catches it.
-  periodSeconds: 3
-  # Require 2 failures because you may get one during a leader switch.
-  failureThreshold: 2
-livenessProbe:
-  httpGet:
-    scheme: HTTP
-    port: 8200
-    path: /health
-    initialDelaySeconds: 60
-    periodSeconds: 30
+    httpGet:
+        scheme: HTTP
+        port: 8200
+        path: /ready
+    initialDelaySeconds: 5
+    # Do not increase, otherwise a shutdown might start before k8s catches it.
+    periodSeconds: 3
     # Require 2 failures because you may get one during a leader switch.
     failureThreshold: 2
+livenessProbe:
+    httpGet:
+        scheme: HTTP
+        port: 8200
+        path: /health
+        initialDelaySeconds: 60
+        periodSeconds: 30
+        # Require 2 failures because you may get one during a leader switch.
+        failureThreshold: 2
 ```
 
 ### Bugfix
@@ -1145,19 +1152,19 @@ places.
   3.1 https://www.sqlite.org/datatype3.html are applied. The "correct" SQLite type definitions will always be faster
   though and should always be preferred.
 - Additional type conversion for:
-  - `bool` - was missing, `true` is now an `INTEGER` of `1` and `0` for `false`
-  - `chrono::DateTime<Utc>`
-  - `chrono::DateTime<Local>`
-  - `chrono::DateTime<FixedOffset>`
-  - `chrono::NaiveDate`
-  - `chrono::NaiveTime`
-  - `chrono::NaiveDateTime`
-  - `serde_json::Value`
-    The additional `chrono` and `serde_json` types are stored as `TEXT` inside the DB for compatibility with the
-    underlying `rusqlite` crate. Using `INTEGER` for `chrono::Naive*` and `Utc` types would be faster more efficient,
-    which may be changed in the future. For now, all Date and Time-like types are converted to `TEXT`.  
-    _Note:_ These auto type conversions only work when you implement the `From<hiqlite::Row>` and do not work with the
-    auto-conversion from deriving `serde::Deserialize`.
+    - `bool` - was missing, `true` is now an `INTEGER` of `1` and `0` for `false`
+    - `chrono::DateTime<Utc>`
+    - `chrono::DateTime<Local>`
+    - `chrono::DateTime<FixedOffset>`
+    - `chrono::NaiveDate`
+    - `chrono::NaiveTime`
+    - `chrono::NaiveDateTime`
+    - `serde_json::Value`
+      The additional `chrono` and `serde_json` types are stored as `TEXT` inside the DB for compatibility with the
+      underlying `rusqlite` crate. Using `INTEGER` for `chrono::Naive*` and `Utc` types would be faster more efficient,
+      which may be changed in the future. For now, all Date and Time-like types are converted to `TEXT`.  
+      _Note:_ These auto type conversions only work when you implement the `From<hiqlite::Row>` and do not work with the
+      auto-conversion from deriving `serde::Deserialize`.
 - `openraft` has been bumped to `v0.9.16` which solves some issues with a not-so-pretty rolling restart of Kubernetes
   StatefulSets for instance due to a race condition.
 - `HIQLITE_BACKUP_RESTORE` env var to restore from a backup has been renamed to `HQL_BACKUP_RESTORE` to match the other
@@ -1174,9 +1181,9 @@ This first release comes with the following features:
   machine
 - "magic" auto setup, no need to do any manual init or management for the Raft
 - self-healing - each node can automatically recover from:
-  - lost cached WAL buffer for the state machine
-  - complete loss of the state machine DB (SQLite)
-  - complete loss of the whole volume itself
+    - lost cached WAL buffer for the state machine
+    - complete loss of the state machine DB (SQLite)
+    - complete loss of the whole volume itself
 - automatic database migrations
 - fully authenticated networking
 - optional TLS everywhere for a zero-trust philosophy
@@ -1184,12 +1191,12 @@ This first release comes with the following features:
   (with [s3-simple](https://github.com/sebadob/s3-simple) + [cryptr](https://github.com/sebadob/cryptr))
 - restore from remote backup (with log index roll-over)
 - strongly consistent, replicated `EXECUTE` queries
-  - on a leader node, the client will not even bother with using networking
-  - on a non-leader node, it will automatically switch over to a network connection so the request is forwarded and
-    initiated on the current Raft leader
+    - on a leader node, the client will not even bother with using networking
+    - on a non-leader node, it will automatically switch over to a network connection so the request is forwarded and
+      initiated on the current Raft leader
 - strongly consistent, replicated `EXECUTE` queries with returning statement through the Raft
-  - you can either get a raw handle to the custom `RowOwned` struct
-  - or you can map the `RETURNING` statement to an existing struct
+    - you can either get a raw handle to the custom `RowOwned` struct
+    - or you can map the `RETURNING` statement to an existing struct
 - transaction executes
 - simple `String` batch executes
 - consistent read / select queries on leader
