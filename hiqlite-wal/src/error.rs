@@ -84,8 +84,24 @@ impl From<flume::SendError<reader::Action>> for Error {
     }
 }
 
+impl From<flume::SendError<Option<(u64, Vec<u8>)>>> for Error {
+    fn from(err: flume::SendError<Option<(u64, Vec<u8>)>>) -> Self {
+        Self::Internal(err.to_string().into())
+    }
+}
+
 impl From<oneshot::error::RecvError> for Error {
     fn from(err: oneshot::error::RecvError) -> Self {
         Self::Generic(err.to_string().into())
+    }
+}
+
+/// openraft 0.10 storage traits return `io::Error`, so the crate error needs to convert into it.
+impl From<Error> for io::Error {
+    fn from(err: Error) -> Self {
+        match err {
+            Error::IO(err) => err,
+            other => io::Error::other(other.to_string()),
+        }
     }
 }

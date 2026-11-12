@@ -16,16 +16,19 @@ use crate::store::{StorageResult, logs};
 use crate::{Error, Node, NodeId};
 use bincode_next::{Decode, Encode};
 use fs4::FileExt;
-use openraft::storage::{RaftStateMachine, SnapshotSignature};
-use openraft::{
-    EntryPayload, LogId, OptionalSend, Snapshot, SnapshotId, SnapshotMeta, StorageError,
-    StorageIOError, StoredMembership,
+use futures_util::{Stream, StreamExt};
+use openraft::storage::{EntryResponder, RaftStateMachine, Snapshot};
+use openraft::type_config::alias::{
+    EntryOf, LogIdOf, SnapshotMetaOf, SnapshotOf, StoredMembershipOf,
 };
+use openraft::{EntryPayload, OptionalSend};
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{OpenFlags, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::clone::Clone;
+use std::fmt;
+use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -34,7 +37,7 @@ use tokio::{fs, task, time};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-type Entry = openraft::Entry<TypeConfigSqlite>;
+type Entry = EntryOf<TypeConfigSqlite>;
 type SnapshotData = tokio::fs::File;
 
 // TODO uses a `Mutex<_>` inside. We could make this pool a lot
@@ -84,6 +87,12 @@ pub enum QueryWrite {
     RTT,
 }
 
+impl fmt::Display for QueryWrite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct Query {
     #[bincode(with_serde)]
@@ -120,14 +129,14 @@ pub struct ResponseBatch {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSnapshot {
-    pub meta: SnapshotMeta<NodeId, Node>,
+    pub meta: SnapshotMetaOf<TypeConfigSqlite>,
     pub path: String,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StateMachineData {
-    pub last_applied_log_id: Option<LogId<NodeId>>,
-    pub last_membership: StoredMembership<NodeId, Node>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
+    pub last_membership: StoredMembershipOf<TypeConfigSqlite>,
     pub last_snapshot_id: Option<String>,
 }
 
@@ -159,7 +168,7 @@ impl StateMachineSqlite {
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::s3::S3Config>>,
         do_reset_metadata: bool,
         #[cfg(feature = "backup")] local_backup_keep_for: Duration,
-    ) -> Result<StateMachineSqlite, Box<StorageError<NodeId>>> {
+    ) -> Result<StateMachineSqlite, io::Error> {
         // IMPORTANT: Do NOT change the order of the db exists check!
         // DB recovery will fail otherwise!
         let mut db_exists = Self::db_exists(data_dir, filename_db).await;
@@ -181,10 +190,7 @@ impl StateMachineSqlite {
             false,
             prepared_statement_cache_capacity,
         )
-        .await
-        .map_err(|err| StorageError::IO {
-            source: StorageIOError::write(&err),
-        })?;
+        .await?;
         let write_tx = writer::spawn_writer(
             conn,
             this_node,
@@ -202,10 +208,7 @@ impl StateMachineSqlite {
             prepared_statement_cache_capacity,
             read_pool_size,
         )
-        .await
-        .map_err(|err| StorageError::IO {
-            source: StorageIOError::read(&err),
-        })?;
+        .await?;
 
         let mut slf = Self {
             // data: state_machine_data,
@@ -527,21 +530,14 @@ impl StateMachineSqlite {
 
     // The error type is huge, but defined by the openraft trait.
     #[allow(clippy::result_large_err)]
-    async fn update_state_machine_(
-        &mut self,
-        snapshot_path: String,
-    ) -> Result<(), StorageError<NodeId>> {
+    async fn update_state_machine_(&mut self, snapshot_path: String) -> Result<(), io::Error> {
         let (tx, rx) = oneshot::channel();
         self.write_tx
             .send_async(WriterRequest::SnapshotApply((snapshot_path, tx)))
             .await
             .expect("SQLite Writer rx to always be listening");
 
-        rx.await
-            .expect("Snapshot installation to succeed")
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::write(&err),
-            })?;
+        rx.await.expect("Snapshot installation to succeed")?;
 
         Ok(())
     }
@@ -549,11 +545,7 @@ impl StateMachineSqlite {
     // The error type is huge, but defined by the openraft trait.
     #[allow(clippy::result_large_err)]
     async fn read_current_snapshot(&mut self) -> StorageResult<Option<StoredSnapshot>> {
-        let mut list = tokio::fs::read_dir(&self.path_snapshots)
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::read(&err),
-            })?;
+        let mut list = tokio::fs::read_dir(&self.path_snapshots).await?;
 
         let mut snapshot_id: Option<Uuid> = None;
         loop {
@@ -575,9 +567,7 @@ impl StateMachineSqlite {
                 }
             };
 
-            let meta = entry.metadata().await.map_err(|err| StorageError::IO {
-                source: StorageIOError::read(&err),
-            })?;
+            let meta = entry.metadata().await?;
             if meta.is_dir() {
                 warn!("Invalid folder in snapshots dir: {}", name);
                 continue;
@@ -602,11 +592,7 @@ impl StateMachineSqlite {
         let filename_db = id.to_string();
 
         // open a DB connection to read out the metadata
-        let conn = Self::connect(db_path, filename_db, false, 2)
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::write(&err),
-            })?;
+        let conn = Self::connect(db_path, filename_db, false, 2).await?;
 
         // let path_snapshot_clone = path_snapshot.clone();
         let path_dbg = path_snapshot.clone();
@@ -641,24 +627,16 @@ impl StateMachineSqlite {
 
             Ok::<StateMachineData, Error>(metadata)
         })
-        .await
-        .map_err(|err| StorageError::IO {
-            source: StorageIOError::write(&err),
-        })?;
+        .await?;
 
-        let metadata = metadata.map_err(|err| StorageError::IO {
-            source: StorageIOError::write(&err),
-        })?;
-        let snapshot_id = id.to_string();
-        assert_eq!(
-            Some(snapshot_id.as_str()),
-            metadata.last_snapshot_id.as_deref()
-        );
+        let metadata = metadata?;
 
-        let meta = SnapshotMeta {
+        // openraft 0.10 has no `snapshot_id` in `SnapshotMeta` anymore; the file name is the
+        // snapshot's identity on disk. `last_snapshot_id` stays in our metadata, but a snapshot
+        // installed from a peer keeps the sender's id there, so it is advisory only.
+        let meta = SnapshotMetaOf::<TypeConfigSqlite> {
             last_log_id: metadata.last_applied_log_id,
             last_membership: metadata.last_membership,
-            snapshot_id,
         };
         let snapshot = StoredSnapshot {
             meta,
@@ -670,18 +648,23 @@ impl StateMachineSqlite {
 }
 
 impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
+    type SnapshotData = tokio::fs::File;
     type SnapshotBuilder = SQLiteSnapshotBuilder;
 
     async fn applied_state(
         &mut self,
-    ) -> Result<(Option<LogId<NodeId>>, StoredMembership<NodeId, Node>), StorageError<NodeId>> {
+    ) -> Result<
+        (
+            Option<LogIdOf<TypeConfigSqlite>>,
+            StoredMembershipOf<TypeConfigSqlite>,
+        ),
+        io::Error,
+    > {
         let (ack, rx) = oneshot::channel();
         self.write_tx
             .send_async(WriterRequest::MetadataRead(ack))
             .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::read(&err),
-            })?;
+            .map_err(|err| io::Error::other(format!("sql writer channel closed: {err}")))?;
         let data = rx.await.expect("To always get Metadata from DB");
 
         debug!("applied_state: {:?}", data);
@@ -689,21 +672,15 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         Ok((data.last_applied_log_id, data.last_membership))
     }
 
-    async fn apply<I>(&mut self, entries: I) -> Result<Vec<Response>, StorageError<NodeId>>
+    async fn apply<Strm>(&mut self, mut entries: Strm) -> Result<(), io::Error>
     where
-        I: IntoIterator<Item = Entry> + OptionalSend,
-        I::IntoIter: OptionalSend,
+        Strm: Stream<Item = Result<EntryResponder<TypeConfigSqlite>, io::Error>>
+            + Unpin
+            + OptionalSend,
     {
-        let entries = entries.into_iter();
+        while let Some(item) = entries.next().await {
+            let (entry, responder) = item?;
 
-        let (bound_lower, bound_upper) = entries.size_hint();
-        let entries_len = bound_upper
-            .expect("We always expect an upper bound to entries in apply()")
-            - bound_lower
-            + 1;
-        let mut replies = Vec::with_capacity(entries_len);
-
-        for entry in entries {
             let last_applied_log_id = Some(entry.log_id);
 
             // TODO if we always collect 1 in-flight req in a temp var to always have 1 req prepared
@@ -846,7 +823,10 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                 EntryPayload::Membership(mem) => {
                     let (ack, rx) = oneshot::channel();
                     let req = WriterRequest::MetadataMembership(writer::MetaMembershipRequest {
-                        last_membership: StoredMembership::new(Some(entry.log_id), mem),
+                        last_membership: StoredMembershipOf::<TypeConfigSqlite>::new(
+                            Some(entry.log_id),
+                            mem,
+                        ),
                         last_applied_log_id,
                         ack,
                     });
@@ -862,10 +842,12 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                 }
             };
 
-            replies.push(resp);
+            if let Some(responder) = responder {
+                responder.send(resp);
+            }
         }
 
-        Ok(replies)
+        Ok(())
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
@@ -880,48 +862,21 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         }
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
-    async fn begin_receiving_snapshot(&mut self) -> Result<Box<fs::File>, StorageError<NodeId>> {
-        let path = format!("{}/temp", self.path_snapshots);
-
-        // clean up possibly existing old data
-        let _ = fs::remove_file(&path).await;
-
-        match fs::File::create(path).await {
-            Ok(file) => Ok(Box::new(file)),
-            Err(err) => Err(StorageError::IO {
-                source: StorageIOError::write(&err),
-            }),
-        }
-    }
-
+    // openraft 0.10 has no `begin_receiving_snapshot()` on the state machine anymore: the receiver
+    // of a snapshot is created by the network, and the data arrives through `install_snapshot()`.
     #[tracing::instrument(level = "trace", skip(self, _snapshot))]
     async fn install_snapshot(
         &mut self,
-        meta: &SnapshotMeta<NodeId, Node>,
-        _snapshot: Box<SnapshotData>,
-    ) -> Result<(), StorageError<NodeId>> {
+        _meta: &SnapshotMetaOf<TypeConfigSqlite>,
+        _snapshot: Self::SnapshotData,
+    ) -> Result<(), io::Error> {
         let src = format!("{}/temp", self.path_snapshots);
-        let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
+        // openraft 0.10 gives us no snapshot id to name the file with, so we pick our own.
+        let dest = format!("{}/{}", self.path_snapshots, Uuid::now_v7());
 
-        validate_db_backup_snapshot(src.clone())
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::write_snapshot(
-                    Some(SnapshotSignature {
-                        last_log_id: meta.last_log_id,
-                        last_membership_log_id: *meta.last_membership.log_id(),
-                        snapshot_id: meta.snapshot_id.clone(),
-                    }),
-                    &err,
-                ),
-            })?;
+        validate_db_backup_snapshot(src.clone()).await?;
 
-        atomic_file_switch(src, &dest)
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::write(&err),
-            })?;
+        atomic_file_switch(src, &dest).await?;
 
         self.update_state_machine_(dest).await?;
 
@@ -931,7 +886,7 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     #[tracing::instrument(level = "trace", skip(self))]
     async fn get_current_snapshot(
         &mut self,
-    ) -> Result<Option<Snapshot<TypeConfigSqlite>>, StorageError<NodeId>> {
+    ) -> Result<Option<SnapshotOf<TypeConfigSqlite, Self::SnapshotData>>, io::Error> {
         // `read_current_snapshot` only ever tries to read the snapshot with the highest ID, which
         // is against the trait contract by definition. However, we only ever store a single
         // snapshot anyway, so there is no need to even look for other ones. All snapshots expect
@@ -939,15 +894,11 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
         match self.read_current_snapshot().await? {
             None => Ok(None),
             Some(snap) => {
-                let file = fs::File::open(&snap.path)
-                    .await
-                    .map_err(|err| StorageError::IO {
-                        source: StorageIOError::read(&err),
-                    })?;
+                let file = fs::File::open(&snap.path).await?;
 
                 Ok(Some(Snapshot {
                     meta: snap.meta,
-                    snapshot: Box::new(file),
+                    snapshot: file,
                 }))
             }
         }
@@ -1465,33 +1416,40 @@ mod bincode_compat_native_simd {
 /// 2. **Codec 1:1** — the `bincode_next` serde adapter must emit *byte-identical* output to the
 ///    production codec on this exact wire type (and cross-decode it), proving the drop-in swap is
 ///    safe for the real payload, not just hand-built mirrors.
+///
+/// Only the append golden is a storage guarantee and must never move - a diff there means existing
+/// data dirs can't be kept and a data migration is needed. The vote and snapshot goldens pin the
+/// current shape after the accepted wire break of 0.10 (`VoteRequest` gained
+/// `leadership_transfer_from`), which is what stops 0.9 and 0.10 nodes from talking to each other.
 #[cfg(test)]
 mod raft_wire_goldens {
     use super::{Query, QueryWrite, TypeConfigSqlite};
     use crate::Node;
     use crate::migration::Migration;
-    use crate::network::raft_server::RaftStreamRequest;
+    use crate::network::raft_server::{RaftStreamRequest, SnapshotWireRequest};
+    use crate::network::{TypeConfigWire, WireSnapshotMeta, WireVote};
     use crate::store::state_machine::sqlite::param::Param;
     use std::borrow::Cow;
     use std::collections::BTreeMap;
 
-    use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest, VoteRequest};
-    use openraft::{
-        CommittedLeaderId, Entry, EntryPayload, LeaderId, LogId, Membership, SnapshotMeta, Vote,
+    use openraft::impls::leader_id_adv::LeaderId;
+    use openraft::raft::{AppendEntriesRequest, VoteRequest};
+    use openraft::type_config::alias::{
+        EntryOf, EntryPayloadOf, LogIdOf, MembershipOf, SnapshotMetaOf, StoredMembershipOf, VoteOf,
     };
 
     // Pinned golden references (see module docs). Regenerate with:
     //   cargo test -p hiqlite --offline --lib raft_wire_goldens::dump_wire_goldens -- --nocapture
     const GOLDEN_APPEND_DB: &str = "AAAAAAcAAAAAAAAABQAAAAAAAAABAAAAAAAAAAEBBAAAAAAAAAAAAAAAAAAAAAoAAAAAAAAACQAAAAAAAAAFAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAABQAAAAAAAAABAAAAAAAAAAEAAAAAAAAAAQAAAAAAAAArAAAAAAAAAElOU0VSVCBJTlRPIHQgKGEsIGIsIGMpIFZBTFVFUyAoPzEsID8yLCA/MykHAAAAAAAAAAAAAAABAAAA/////////38CAAAAAAAAAAAA+L8DAAAACgAAAAAAAAB0ZXh0IHBhcmFtBAAAAAQAAAAAAAAAAAECAwUAAAACAAAAAAAAAAMAAAAAAAAABgAAAAEAAAAAAAAAAwAAAAAAAABjb2wFAAAAAAAAAAEAAAAAAAAAAgAAAAAAAAABAAAAAQAAACsAAAAAAAAASU5TRVJUIElOVE8gdCAoYSwgYiwgYykgVkFMVUVTICg/MSwgPzIsID8zKQcAAAAAAAAAAAAAAAEAAAD/////////fwIAAAAAAAAAAAD4vwMAAAAKAAAAAAAAAHRleHQgcGFyYW0EAAAABAAAAAAAAAAAAQIDBQAAAAIAAAAAAAAAAwAAAAAAAAAGAAAAAQAAAAAAAAADAAAAAAAAAGNvbAUAAAAAAAAAAQAAAAAAAAADAAAAAAAAAAEAAAACAAAAAgAAAAAAAAArAAAAAAAAAElOU0VSVCBJTlRPIHQgKGEsIGIsIGMpIFZBTFVFUyAoPzEsID8yLCA/MykHAAAAAAAAAAAAAAABAAAA/////////38CAAAAAAAAAAAA+L8DAAAACgAAAAAAAAB0ZXh0IHBhcmFtBAAAAAQAAAAAAAAAAAECAwUAAAACAAAAAAAAAAMAAAAAAAAABgAAAAEAAAAAAAAAAwAAAAAAAABjb2wrAAAAAAAAAElOU0VSVCBJTlRPIHQgKGEsIGIsIGMpIFZBTFVFUyAoPzEsID8yLCA/MykHAAAAAAAAAAAAAAABAAAA/////////38CAAAAAAAAAAAA+L8DAAAACgAAAAAAAAB0ZXh0IHBhcmFtBAAAAAQAAAAAAAAAAAECAwUAAAACAAAAAAAAAAMAAAAAAAAABgAAAAEAAAAAAAAAAwAAAAAAAABjb2wFAAAAAAAAAAEAAAAAAAAABAAAAAAAAAABAAAAAwAAABcAAAAAAAAAQkVHSU47IFNFTEVDVCAxOyBDT01NSVQFAAAAAAAAAAEAAAAAAAAABQAAAAAAAAABAAAABAAAAAEAAAAAAAAAAQAAAAgAAAAAAAAAY3JlYXRlX3QCAAAAAAAAAGFiGgAAAAAAAABDUkVBVEUgVEFCTEUgdCAoYSBJTlRFR0VSKQUAAAAAAAAAAQAAAAAAAAAGAAAAAAAAAAEAAAAFAAAAAQAAAAAAAAAAAAAAAAAAAAUAAAAAAAAAAQAAAAAAAAAHAAAAAAAAAAEAAAAGAAAABQAAAAAAAAABAAAAAAAAAGMAAAAAAAAAAgAAAAEAAAAAAAAAAgAAAAAAAAABAAAAAAAAAAIAAAAAAAAAAgAAAAAAAAABAAAAAAAAAAEAAAAAAAAADgAAAAAAAAAxMjcuMC4wLjE6MzA4MQ4AAAAAAAAAMTI3LjAuMC4xOjMwODACAAAAAAAAAAIAAAAAAAAADgAAAAAAAAAxMjcuMC4wLjE6NDA4MQ4AAAAAAAAAMTI3LjAuMC4xOjQwODABBQAAAAAAAAABAAAAAAAAAAkAAAAAAAAA";
     const GOLDEN_VOTE_DB: &str =
-        "AQAAAAgAAAAAAAAAAwAAAAAAAAACAAAAAAAAAAABAgAAAAAAAAABAAAAAAAAAAUAAAAAAAAA";
-    const GOLDEN_SNAPSHOT_DB: &str = "AgAAAAkAAAAAAAAABgAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGwAAAAAAAABzbmFwc2hvdC1wYXlsb2FkLTAxMjM0NTY3ODkB";
+        "AQAAAAgAAAAAAAAAAwAAAAAAAAACAAAAAAAAAAABAgAAAAAAAAABAAAAAAAAAAUAAAAAAAAAAA==";
+    const GOLDEN_SNAPSHOT_DB: &str = "AgAAAAkAAAAAAAAABgAAAAAAAAABAAAAAAAAAAABBgAAAAAAAAABAAAAAAAAACoAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGwAAAAAAAABzbmFwc2hvdC1wYXlsb2FkLTAxMjM0NTY3ODkBAQ==";
 
     /// Minimal RFC 4648 standard-alphabet base64 encoder (with padding). No external dep.
     fn b64_encode(data: &[u8]) -> String {
         const ALPHA: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+        let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
         for chunk in data.chunks(3) {
             let b0 = chunk[0] as u32;
             let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -1568,17 +1526,29 @@ mod raft_wire_goldens {
             QueryWrite::RTT,
         ];
 
-        let mut entries: Vec<Entry<TypeConfigSqlite>> = vec![];
+        let mut entries: Vec<EntryOf<TypeConfigSqlite>> = vec![];
         // EntryPayload::Blank
-        entries.push(Entry {
-            log_id: LogId::new(CommittedLeaderId::new(5u64, 1u64), 0u64),
-            payload: EntryPayload::Blank,
+        entries.push(EntryOf::<TypeConfigSqlite> {
+            log_id: LogIdOf::<TypeConfigSqlite> {
+                leader_id: LeaderId {
+                    term: 5u64,
+                    node_id: 1u64,
+                },
+                index: 0u64,
+            },
+            payload: EntryPayloadOf::<TypeConfigSqlite>::Blank,
         });
         // EntryPayload::Normal carrying every QueryWrite variant.
         for (i, qw) in data_variants.into_iter().enumerate() {
-            entries.push(Entry {
-                log_id: LogId::new(CommittedLeaderId::new(5u64, 1u64), i as u64 + 1),
-                payload: EntryPayload::Normal(qw),
+            entries.push(EntryOf::<TypeConfigSqlite> {
+                log_id: LogIdOf::<TypeConfigSqlite> {
+                    leader_id: LeaderId {
+                        term: 5u64,
+                        node_id: 1u64,
+                    },
+                    index: i as u64 + 1,
+                },
+                payload: EntryPayloadOf::<TypeConfigSqlite>::Normal(qw),
             });
         }
         // EntryPayload::Membership (exercises the Membership/Node serialization layout).
@@ -1599,22 +1569,47 @@ mod raft_wire_goldens {
                 addr_api: "127.0.0.1:4080".into(),
             },
         );
-        let membership = Membership::<u64, Node>::from(nodes);
-        entries.push(Entry {
-            log_id: LogId::new(CommittedLeaderId::new(5u64, 1u64), 99u64),
-            payload: EntryPayload::Membership(membership),
+        let membership = MembershipOf::<TypeConfigSqlite>::new(
+            vec![std::collections::BTreeSet::from_iter([1u64, 2u64])],
+            nodes,
+        )
+        .unwrap();
+        entries.push(EntryOf::<TypeConfigSqlite> {
+            log_id: LogIdOf::<TypeConfigSqlite> {
+                leader_id: LeaderId {
+                    term: 5u64,
+                    node_id: 1u64,
+                },
+                index: 99u64,
+            },
+            payload: EntryPayloadOf::<TypeConfigSqlite>::Membership(membership),
         });
 
         RaftStreamRequest::AppendDB((
             7usize,
-            AppendEntriesRequest {
-                vote: Vote {
-                    leader_id: LeaderId::new(5u64, 1u64),
+            AppendEntriesRequest::<TypeConfigSqlite> {
+                vote: VoteOf::<TypeConfigSqlite> {
+                    leader_id: LeaderId {
+                        term: 5u64,
+                        node_id: 1u64,
+                    },
                     committed: true,
                 },
-                prev_log_id: Some(LogId::new(CommittedLeaderId::new(4u64, 0u64), 10u64)),
+                prev_log_id: Some(LogIdOf::<TypeConfigSqlite> {
+                    leader_id: LeaderId {
+                        term: 4u64,
+                        node_id: 0u64,
+                    },
+                    index: 10u64,
+                }),
                 entries,
-                leader_commit: Some(LogId::new(CommittedLeaderId::new(5u64, 1u64), 9u64)),
+                leader_commit: Some(LogIdOf::<TypeConfigSqlite> {
+                    leader_id: LeaderId {
+                        term: 5u64,
+                        node_id: 1u64,
+                    },
+                    index: 9u64,
+                }),
             },
         ))
     }
@@ -1622,30 +1617,57 @@ mod raft_wire_goldens {
     fn build_vote_db() -> RaftStreamRequest {
         RaftStreamRequest::VoteDB((
             8usize,
-            VoteRequest {
-                vote: Vote {
-                    leader_id: LeaderId::new(3u64, 2u64),
+            VoteRequest::<TypeConfigSqlite> {
+                vote: VoteOf::<TypeConfigSqlite> {
+                    leader_id: LeaderId {
+                        term: 3u64,
+                        node_id: 2u64,
+                    },
                     committed: false,
                 },
-                last_log_id: Some(LogId::new(CommittedLeaderId::new(2u64, 1u64), 5u64)),
+                last_log_id: Some(LogIdOf::<TypeConfigSqlite> {
+                    leader_id: LeaderId {
+                        term: 2u64,
+                        node_id: 1u64,
+                    },
+                    index: 5u64,
+                }),
+                leadership_transfer_from: None,
             },
         ))
     }
 
     fn build_snapshot_db() -> RaftStreamRequest {
-        RaftStreamRequest::SnapshotDB((
-            9usize,
-            InstallSnapshotRequest {
-                vote: Vote {
-                    leader_id: LeaderId::new(6u64, 1u64),
-                    committed: false,
+        RaftStreamRequest::SnapshotDB(SnapshotWireRequest {
+            request_id: 9usize,
+            vote: WireVote {
+                leader_id: LeaderId {
+                    term: 6u64,
+                    node_id: 1u64,
                 },
-                meta: SnapshotMeta::default(),
-                offset: 0u64,
-                data: b"snapshot-payload-0123456789".to_vec(),
-                done: true,
+                committed: false,
             },
-        ))
+            meta: WireSnapshotMeta {
+                last_log_id: Some(LogIdOf::<TypeConfigWire> {
+                    leader_id: LeaderId {
+                        term: 6u64,
+                        node_id: 1u64,
+                    },
+                    index: 42u64,
+                }),
+                last_membership: StoredMembershipOf::<TypeConfigWire>::new(
+                    None,
+                    MembershipOf::<TypeConfigWire>::new(
+                        vec![std::collections::BTreeSet::new()],
+                        BTreeMap::<u64, Node>::new(),
+                    )
+                    .unwrap(),
+                ),
+            },
+            data: b"snapshot-payload-0123456789".to_vec(),
+            first: true,
+            last: true,
+        })
     }
 
     /// Shared assertions for one wire variant (see module docs).

@@ -7,8 +7,8 @@
 //!   * `bincode2_serde_*`     — today's production codec (`bincode = "2"`, serde adapter)
 //!   * `bncode_next_serde_*`  — the byte-compatible drop-in candidate (serde adapter)
 //!   * `bncode_next_native_*` — bincode-next native SIMD derive (peak perf, u32-tag;
-//!                              byte-identical to the serde paths — this bench prints
-//!                              "bytes: identical" as empirical proof)
+//!     byte-identical to the serde paths — this bench prints "bytes: identical" as empirical
+//!     proof)
 //!
 //! `legacy` = LittleEndian + fixint (what hiqlite persists today); `standard` =
 //! LittleEndian + varint. Each group reports throughput in B/s against its own

@@ -17,10 +17,14 @@ use crate::store::state_machine::memory::dlock_handler::LockRequest;
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::{TypeConfigKV, kv_handler::CacheRequestHandler};
+use crate::store::state_machine::memory::{
+    TypeConfigKV, kv_handler::CacheRequestHandler, state_machine::StateMachineMemory,
+};
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::{
-    TypeConfigSqlite, state_machine::SqlitePool, writer::WriterRequest,
+    TypeConfigSqlite,
+    state_machine::{SqlitePool, StateMachineSqlite},
+    writer::WriterRequest,
 };
 #[cfg(any(feature = "backup", feature = "dashboard"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -88,10 +92,12 @@ impl AppState {
 
 #[cfg(feature = "sqlite")]
 pub struct StateRaftDB {
-    pub raft: openraft::Raft<TypeConfigSqlite>,
+    pub raft: openraft::Raft<TypeConfigSqlite, StateMachineSqlite>,
     pub shutdown_handle: hiqlite_wal::ShutdownHandle,
     pub sql_writer: flume::Sender<WriterRequest>,
     pub read_pool: SqlitePool,
+    /// Where the network layer assembles an incoming snapshot, for the state machine to read.
+    pub path_snapshots: String,
     pub log_statements: bool,
     pub is_raft_stopped: Arc<AtomicBool>,
     pub is_startup_finished: Arc<AtomicBool>,
@@ -99,7 +105,7 @@ pub struct StateRaftDB {
 
 #[cfg(feature = "cache")]
 pub struct StateRaftCache {
-    pub raft: openraft::Raft<TypeConfigKV>,
+    pub raft: openraft::Raft<TypeConfigKV, Arc<StateMachineMemory>>,
     pub tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     #[cfg(feature = "listen_notify")]
     pub tx_notify: flume::Sender<NotifyRequest>,
@@ -110,6 +116,8 @@ pub struct StateRaftCache {
     pub is_raft_stopped: Arc<AtomicBool>,
     pub is_startup_finished: Arc<AtomicBool>,
     pub shutdown_handle: Option<hiqlite_wal::ShutdownHandle>,
+    /// Where the network layer assembles an incoming snapshot, for the state machine to read.
+    pub path_snapshots: String,
     #[cfg(feature = "cache")]
     pub cache_storage_disk: bool,
 }

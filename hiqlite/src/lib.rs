@@ -25,6 +25,8 @@ pub use hiqlite_wal::LogSync;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use openraft::SnapshotPolicy;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
+pub use openraft::raft::ReadPolicy;
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use std::fmt::{Debug, Display};

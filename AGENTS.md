@@ -34,6 +34,10 @@ desired.
 
 Handle errors gracefully with a `Result` when they are temporary, but `panic` when they are unrecoverable.
 
+**Docs never link private items:** a doc comment must not use an intra-doc link for a private
+const, fn, type or module, because that link only resolves with `--document-private-items`. Write
+those names as a plain code span instead.
+
 ## Repository layout
 
 - `hiqlite/` main crate

@@ -1,9 +1,10 @@
+use crate::Error;
 use crate::dashboard::session::{INSECURE_COOKIES, Session};
 use crate::dashboard::table::Table;
 use crate::dashboard::{query, session};
 use crate::network::AppStateExt;
 use crate::query::rows::RowOwned;
-use crate::{Error, Node};
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use axum::body::Body;
 use axum::extract::Path;
 use axum::http::header::LOCATION;
@@ -12,6 +13,7 @@ use axum::response::Response;
 use axum::{Form, Json, body};
 use hyper::StatusCode;
 use openraft::RaftMetrics;
+use openraft::type_config::async_runtime::watch::WatchReceiver;
 use serde::Deserialize;
 use spow::pow::Pow;
 
@@ -115,8 +117,8 @@ pub async fn post_query(
     Ok(Json(res))
 }
 
-pub async fn get_metrics(state: AppStateExt, _: Session) -> Json<RaftMetrics<u64, Node>> {
-    let metrics = state.raft_db.raft.metrics().borrow().clone();
+pub async fn get_metrics(state: AppStateExt, _: Session) -> Json<RaftMetrics<TypeConfigSqlite>> {
+    let metrics = state.raft_db.raft.metrics().borrow_watched().clone();
     Json(metrics)
 }
 

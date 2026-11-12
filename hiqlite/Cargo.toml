@@ -28,7 +28,7 @@ default = ["auto-heal", "backup", "sqlite", "toml"]
 
 auto-heal = ["hiqlite-wal/auto-heal"]
 backup = ["dep:cron", "s3", "sqlite"]
-cache = ["__cluster", "openraft/loosen-follower-log-revert"]
+cache = ["__cluster"]
 counters = ["cache"]
 dashboard = [
     "dep:argon2",
@@ -128,6 +128,7 @@ __cluster = [
     "dep:crossbeam",
     "dep:dotenvy",
     "dep:fastwebsockets",
+    "dep:futures-util",
     "dep:getrandom",
     "dep:hex",
     "dep:hiqlite-wal",

@@ -15,5 +15,4 @@ openraft::declare_raft_types!(
         D = QueryWrite,
         R = Response,
         Node = Node,
-        SnapshotData = tokio::fs::File,
 );

@@ -167,19 +167,17 @@ pub(crate) async fn metrics(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    let metrics = match raft_type {
+    // Each group serializes its own metrics - the type is generic over the type config, so a
+    // shared one would mean a conversion on every request.
+    match raft_type {
         #[cfg(feature = "sqlite")]
-        RaftType::Sqlite => state.client.metrics_db().await?,
+        RaftType::Sqlite => fmt_ok_serde(headers, &state.client.metrics_db().await?),
         #[cfg(feature = "cache")]
-        RaftType::Cache => state.client.metrics_cache().await?,
-        RaftType::Unknown => {
-            return Err(Error::new(
-                "unknown raft type - neither `sqlite` nor `cache` feature enabled",
-            ));
-        }
-    };
-
-    fmt_ok_serde(headers, &metrics)
+        RaftType::Cache => fmt_ok_serde(headers, &state.client.metrics_cache().await?),
+        RaftType::Unknown => Err(Error::new(
+            "unknown raft type - neither `sqlite` nor `cache` feature enabled",
+        )),
+    }
 }
 
 /// Like [`fmt_ok`], but for openraft-owned payloads (e.g. `RaftMetrics`), which stay on the

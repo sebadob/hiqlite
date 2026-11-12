@@ -1,5 +1,67 @@
 # Changelog
 
+## UNRELEASED
+
+`openraft` was updated from 0.9 to 0.10.
+
+Persisted data is unchanged: the WAL logs and WAL metadata, the SQLite state machine's metadata and
+the snapshot files from 0.15/0.16 load as they are. Both directions are pinned by tests
+(`bincode_compat` and the wire goldens), so an existing data dir can simply be kept.
+
+Raft _network_ messages are not compatible anymore, so a rolling upgrade is not possible. Stop the
+whole cluster, update all nodes at once and start them again. A node that fails one of the new
+startup consistency checks has to be wiped and re-added as a learner. Expect a one-time leader term
+bump. Rollback is done by putting the previous (openraft 0.9 based) release back on the same data
+dirs.
+
+- `openraft/loosen-follower-log-revert` was a compile-time feature and is the `allow_log_reversion`
+  field on the `RaftConfig` now. It is only set for the cache group, SQLite keeps its stricter
+  behavior.
+- `raft_config` is validated at startup through `NodeConfig::is_valid()`, and
+  `send_snapshot_timeout` is gone. `NodeConfig::default_raft_config()` uses `..Default::default()`
+  because openraft's `Config` gained a lot of fields.
+- Source breaking: the `Error` enum's openraft variants are split per group (`RaftErrorDb` /
+  `RaftErrorKv` and friends), and the metrics functions return `RaftMetrics<TypeConfigSqlite>` /
+  `RaftMetrics<TypeConfigKV>` instead of `RaftMetrics<u64, Node>`.
+- The shared network paths don't convert between the two groups' types through a serialization round
+  trip anymore - for the types they carry there is nothing to convert, they are the same types. The
+  paths that do serialize whole metrics are split per group, so nothing is copied or parsed.
+- `openraft`'s `RaftLogStorage::purge` is inclusive, so a purge now also removes the entry it names
+  and the purge frontier lands one entry further than before. Only which entries are deleted
+  changes, the bytes on disk do not.
+- `get_log_state` on a fully purged log reports `last_log_id = last_purged_log_id`, which is
+  openraft's convention and what its new startup consistency check expects.
+- A read range that starts below the first entry, runs past the last one, or has no upper bound
+  (`0..`) is now answered with what is there instead of being rejected. The runtime never asked for
+  these; openraft's reference stores answer them, and its storage test suite asks for them.
+- When a purge removes the whole log, the last WAL file is emptied in place instead of deleted and
+  re-created. The reader task caches a mmap per file, and the re-created file recycled the
+  `wal_no`, so it kept reading the deleted file's contents.
+- The memory state machine's `install_snapshot` uses the data it is handed when nothing streamed
+  into the receive file, which is how openraft 0.10's storage test suite hands it over.
+- The memory state machine's old-snapshot cleanup isn't a spawned task anymore, it runs inline
+  after the write. It deleted from a directory listing while `read_current_snapshot` does the same
+  listing before it reads the file it picked, so the cleanup could delete exactly that file in
+  between and turn the read into a `NotFound`. A cleanup that can't read the directory now errors
+  instead of panicking its task.
+- openraft's storage test suite now runs against both cache log stores, the WAL and the in-memory
+  one, together with the memory state machine (`hiqlite/src/store/tests_openraft_suite.rs`), which
+  is what surfaced the behaviors above.
+- The in-memory log store accepts a purge point it holds no entries for - below its first entry
+  after a snapshot install, or past its tail - and just moves the recorded point.
+- `is_forward_to_leader()` still matches `ForwardToLeader` only, like in 0.9.
+- A graceful shutdown on the leader hands leadership to the voter with the greatest matching log
+  before it leaves, and waits for the handover up to one election timeout, so a shutdown doesn't
+  cost the cluster an election. Only the leader does anything, and a single node has nobody to hand
+  over to, so it shuts down exactly like before.
+- `wait_for_cluster_sync()`'s single-instance fast path only looked at the node list, which a local
+  client never has, so it never fired for an embedded single node. A local client now takes the
+  member count from its own Raft membership, like `shutdown_execute` does.
+- Source breaking: `query_consistent()` and `query_consistent_map()` take the `ReadPolicy` as an
+  argument instead of hardcoding `ReadIndex`, and `hiqlite::ReadPolicy` is a re-export of openraft's
+  enum so an app can name it. `ReadIndex` is the strong path, `LeaseRead` lets a leader answer on
+  its own lease and is the faster one.
+
 ## v0.16.0
 
 The `cryptr` and `s3-simple` dependencies were pulled in with no `backup` or `s3` targets enabled.

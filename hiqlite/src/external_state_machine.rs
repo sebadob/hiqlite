@@ -13,26 +13,26 @@
 //!
 //! # Commit and retry contract
 //!
-//! [`CommitSequence`](crate::external_state_machine::CommitSequence) is the
+//! [`CommitSequence`] is the
 //! only ordering key and must be dense. The native
 //! coordinate `C` is opaque exact identity; it requires `Eq`, never `Ord`.
 //! The caller supplies a SHA-256 digest of its versioned canonical command
 //! bytes. For every global entry it must call either
-//! [`ExternalSqlite::apply_committed`](crate::external_state_machine::ExternalSqlite::apply_committed)
+//! [`ExternalSqlite::apply_committed`]
 //! or
-//! [`ExternalSqlite::advance_committed`](crate::external_state_machine::ExternalSqlite::advance_committed).
+//! [`ExternalSqlite::advance_committed`].
 //! Retained exact retries compare the sequence, coordinate, command digest,
 //! schemas, entry kind, and receipt codec, then return the stored receipt
 //! without running the operation again. Older retries return
-//! [`ExternalError::ReceiptUnavailable`](crate::external_state_machine::ExternalError::ReceiptUnavailable).
+//! [`ExternalError::ReceiptUnavailable`].
 //!
-//! Coordinates are persisted through [`ExternalCodec`](crate::external_state_machine::ExternalCodec),
+//! Coordinates are persisted through [`ExternalCodec`],
 //! a dependency-free encoding that matches the legacy bincode layout used by
 //! earlier releases; most coordinates need only
 //! [`external_codec!`](crate::external_codec). Operation outputs are encoded by
-//! [`DeterministicSqliteOperation::encode_receipt`](crate::external_state_machine::DeterministicSqliteOperation::encode_receipt)
+//! [`DeterministicSqliteOperation::encode_receipt`]
 //! and its decoder, which the protocol owner implements. `C`, the selected output codec, and
-//! [`DeterministicSqliteOperation::RECEIPT_CODEC`](crate::external_state_machine::DeterministicSqliteOperation::RECEIPT_CODEC)
+//! [`DeterministicSqliteOperation::RECEIPT_CODEC`]
 //! must remain backward-decodable for every retained receipt and snapshot.
 //! `receipt_schema` is identity evidence for the caller; this first version
 //! does not dispatch decoders by schema.
@@ -43,12 +43,12 @@
 //! SQLite's WAL sync. `NORMAL` can lose an acknowledged tail after power loss,
 //! so the caller must replay from its durable log. `ReplayableOff` is explicit
 //! and any unclean OFF marker requires
-//! [`ExternalSqlite::rebuild_projection`](crate::external_state_machine::ExternalSqlite::rebuild_projection).
+//! [`ExternalSqlite::rebuild_projection`].
 //! Before a clean shutdown removes the durable marker, every mode is upgraded
 //! to FULL, checkpoints/truncates the WAL, closes SQLite, and syncs the database
 //! file (plus its directory on Unix). An OS advisory lock prevents two engine
 //! owners; restore-in-progress and malformed metadata are marked rebuild-only.
-//! [`ExternalSqlite::open`](crate::external_state_machine::ExternalSqlite::open)
+//! [`ExternalSqlite::open`]
 //! never deletes or auto-heals the database.
 //!
 //! # Snapshots
@@ -63,7 +63,7 @@
 //! format, page size, application/schema/frontier/receipts, byte length, and
 //! SHA-256, and contains no membership. The caller owns retention of every
 //! completed path returned by
-//! [`ExternalSqlite::build_snapshot`](crate::external_state_machine::ExternalSqlite::build_snapshot);
+//! [`ExternalSqlite::build_snapshot`];
 //! artifacts are
 //! not part of an outer manifest until the caller durably records them.
 //!
@@ -1533,7 +1533,7 @@ where
     Ok(())
 }
 
-/// Opens the [`external_operation_authorizer`] guard for Hiqlite's own
+/// Opens the `external_operation_authorizer` guard for Hiqlite's own
 /// transaction control statements and `_hiqlite_external_*` bookkeeping.
 ///
 /// Only ever held while no caller code runs.

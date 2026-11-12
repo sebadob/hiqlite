@@ -379,18 +379,19 @@ impl WalFile {
     ) -> Result<u32, Error> {
         debug_assert!(buf.is_empty());
         debug_assert!(id_until >= id_from);
+
+        // openraft's reference stores answer a range read that starts below the first entry they
+        // hold, and its storage test suite asks for one (index 0). Clamp to what we have instead of
+        // failing - nothing in the runtime has ever asked for a range below the first id.
+        let id_from = id_from.max(self.id_from);
+        if id_from > id_until || self.data_start.is_none() {
+            // the whole requested range sits below our first entry, or we hold nothing at all -
+            // an empty result, like openraft's reference stores give for it
+            return Ok(0);
+        }
+
         debug_assert!(self.data_start.is_some());
         debug_assert!(self.data_end.is_some());
-
-        if self.id_from > id_from {
-            return Err(Error::Generic(
-                format!(
-                    "`id_from` is below threshold - id_from: {id_from} / self.id_from: {}",
-                    self.id_from
-                )
-                .into(),
-            ));
-        }
         if self.id_until < id_until {
             return Err(Error::Generic("`id_until` is above threshold".into()));
         }
@@ -1045,13 +1046,19 @@ impl WalFileSet {
         let mut memo: Option<LogReadMemo> = None;
 
         if purge_front {
-            while !self.files.is_empty() && self.files.front().unwrap().id_until < id_until {
+            while self.files.len() > 1 && self.files.front().unwrap().id_until < id_until {
                 let file = self.files.pop_front().unwrap();
                 fs::remove_file(&file.path)?;
             }
-            if self.files.is_empty() {
-                self.add_file(wal_size, buf)?;
-                self.files.front_mut().unwrap().mmap_mut()?;
+            // the last file is never deleted, it is emptied in place (like the truncate case
+            // below) - deleting and re-creating it recycles its `wal_no`, and the reader task keeps
+            // reading the deleted file through the mmap it cached for it
+            if self.files.len() == 1 && self.files.front().unwrap().id_until < id_until {
+                let front = self.files.front_mut().unwrap();
+                front.id_from = id_until;
+                front.id_until = id_until;
+                front.data_start = None;
+                front.data_end = None;
             }
 
             let front = self.files.front_mut().unwrap();
@@ -1172,7 +1179,7 @@ mod tests {
         wal_disk.read_logs(1, 3, &mut memo, &mut logs)?;
         assert_eq!(logs.len(), 3);
 
-        let (id, data) = logs.get(0).unwrap();
+        let (id, data) = logs.first().unwrap();
         assert_eq!(id, &1);
         assert_eq!(data, d1);
         let (id, data) = logs.get(1).unwrap();
@@ -1186,7 +1193,7 @@ mod tests {
         logs.clear();
         wal_disk.read_logs(2, 3, &mut memo, &mut logs)?;
         assert_eq!(logs.len(), 2);
-        let (id, data) = logs.get(0).unwrap();
+        let (id, data) = logs.first().unwrap();
         assert_eq!(id, &2);
         assert_eq!(data, d2);
         let (id, data) = logs.get(1).unwrap();
@@ -1197,14 +1204,23 @@ mod tests {
         logs.clear();
         wal_disk.read_logs(2, 2, &mut memo, &mut logs)?;
         assert_eq!(logs.len(), 1);
-        let (id, data) = logs.get(0).unwrap();
+        let (id, data) = logs.first().unwrap();
         assert_eq!(id, &2);
         assert_eq!(data, d2);
 
         buf.clear();
         logs.clear();
         assert!(wal_disk.read_logs(1, 4, &mut memo, &mut logs).is_err());
-        assert!(wal_disk.read_logs(0, 2, &mut memo, &mut logs).is_err());
+
+        // a range that starts below the first id is clamped to it, like openraft's reference stores
+        wal_disk.read_logs(0, 2, &mut memo, &mut logs)?;
+        assert_eq!(logs.len(), 2);
+        let (id, data) = logs.first().unwrap();
+        assert_eq!(id, &1);
+        assert_eq!(data, d1);
+        let (id, data) = logs.get(1).unwrap();
+        assert_eq!(id, &2);
+        assert_eq!(data, d2);
 
         Ok(())
     }
@@ -1250,12 +1266,12 @@ mod tests {
         };
         buf.clear();
         set.add_file(MB2, &mut buf).unwrap();
-        assert_eq!(fs::exists(&path_h1)?, true);
-        assert_eq!(fs::exists(&path_h2)?, false);
+        assert!(fs::exists(&path_h1)?);
+        assert!(!fs::exists(&path_h2)?);
 
         buf.clear();
         set.add_file(MB2, &mut buf).unwrap();
-        assert_eq!(fs::exists(&path_h2)?, true);
+        assert!(fs::exists(&path_h2)?);
 
         Ok(())
     }
@@ -1529,6 +1545,51 @@ mod tests {
         let front = wal.files.front().unwrap();
         assert_eq!(front.id_from, 3);
         assert_eq!(front.data_start.unwrap() as usize, front.offset_logs());
+
+        Ok(())
+    }
+
+    /// An inclusive purge moves a file's front forward; reading the remaining range must still work
+    /// - the reader task does exactly that on `get_log_state`.
+    #[test]
+    fn purge_then_read_shifted_front() -> Result<(), Error> {
+        let base_path = format!("{PATH}/purge_then_read_shifted_front");
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+        let mut buf = Vec::with_capacity(8);
+
+        let mut wal = WalFileSet {
+            active: None,
+            base_path,
+            files: Default::default(),
+        };
+        wal.add_file(MB2, &mut buf)?;
+        wal.active().mmap_mut()?;
+
+        for id in 0..=10u64 {
+            buf.clear();
+            wal.active().append_log(id, b"data".as_slice(), &mut buf)?;
+        }
+
+        let mut memo: Option<LogReadMemo> = None;
+        let mut buf_logs = Vec::with_capacity(8);
+
+        // an inclusive purge of id 3 moves the front to 4
+        buf.clear();
+        buf_logs.clear();
+        wal.shift_delete_logs(0, 4, MB2, &mut buf, &mut buf_logs)?;
+        assert_eq!(wal.active().id_from, 4);
+
+        buf.clear();
+        buf_logs.clear();
+        wal.active().read_logs(10, 10, &mut memo, &mut buf_logs)?;
+        assert_eq!(buf_logs.len(), 1);
+        assert_eq!(buf_logs[0].0, 10);
+
+        buf.clear();
+        buf_logs.clear();
+        wal.active().read_logs(4, 10, &mut memo, &mut buf_logs)?;
+        assert_eq!(buf_logs.len(), 7);
 
         Ok(())
     }

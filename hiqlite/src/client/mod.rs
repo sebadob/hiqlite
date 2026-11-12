@@ -47,6 +47,7 @@ pub(crate) struct DbClient {
     pub(crate) leader_cache: Arc<RwLock<(NodeId, String)>>,
     #[cfg(feature = "sqlite")]
     pub(crate) leader_db: Arc<RwLock<(NodeId, String)>>,
+    /// This is always empty for local clients, and carries the actual nodes for remote clients.
     pub(crate) nodes: Vec<String>,
     pub(crate) client: Option<reqwest::Client>,
     #[cfg(feature = "cache")]

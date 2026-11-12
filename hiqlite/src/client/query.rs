@@ -4,6 +4,7 @@ use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::state_machine::Query;
 use crate::{Client, Error, Params, query};
+use openraft::raft::ReadPolicy;
 use serde::de::DeserializeOwned;
 use std::borrow::Cow;
 use tokio::sync::oneshot;
@@ -15,6 +16,14 @@ impl Client {
     /// will have the exact same result and it will be the same even if you would end up in a
     /// network segmentation and loose half of your data directly afterward.
     ///
+    /// The `read_policy` defines how the leader makes sure that it still is the leader, and that
+    /// those logs are committed, before it answers:
+    ///
+    /// - `ReadPolicy::ReadIndex` confirms it against a quorum of all nodes - the strong option
+    ///   and the one to pick when in doubt.
+    /// - `ReadPolicy::LeaseRead` trusts the leader's own leadership lease, which skips the network
+    ///   round-trip and is faster, but it is slightly weaker and sensitive to clock drift.
+    ///
     /// This query is very expensive compared to the other ones. It needs network roud-trips, pauses
     /// the raft and allocates a lot more memory, because it is working with owned data rather than
     /// with borrowed local one for quick mapping.
@@ -23,6 +32,7 @@ impl Client {
         &self,
         stmt: S,
         params: Params,
+        read_policy: ReadPolicy,
     ) -> Result<Vec<crate::Row<'_>>, Error>
     where
         S: Into<Cow<'static, str>>,
@@ -31,7 +41,8 @@ impl Client {
         // and the raft needs to be blocked.
         self.rate_limit_db().await?;
 
-        self.query_remote::<S>(stmt, params, true).await
+        self.query_remote::<S>(stmt, params, Some(read_policy))
+            .await
     }
 
     /// Execute a consistent query. This query will run on the leader node only and pause Raft
@@ -39,6 +50,9 @@ impl Client {
     /// of all nodes. This means whatever result this query returns, at least hals of the nodes + 1
     /// will have the exact same result, and it will be the same even if you end up in a network
     /// segmentation and lose half of your data directly afterwards.
+    ///
+    /// The `read_policy` defines how the leader makes sure that it still is the leader, and that
+    /// those logs are committed, before it answers - see `query_consistent()`.
     ///
     /// This query is very expensive compared to the other ones. It needs network round-trips, pauses
     /// the raft, and allocates a lot more memory, because it is working with owned data rather than
@@ -48,7 +62,12 @@ impl Client {
     /// # Panics
     ///
     /// If the returned data from the DB does not match the requested output type.
-    pub async fn query_consistent_map<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
+    pub async fn query_consistent_map<T, S>(
+        &self,
+        stmt: S,
+        params: Params,
+        read_policy: ReadPolicy,
+    ) -> Result<Vec<T>, Error>
     where
         T: for<'a, 'r> From<&'a mut crate::Row<'r>> + Send + 'static,
         S: Into<Cow<'static, str>>,
@@ -56,7 +75,7 @@ impl Client {
         self.rate_limit_db().await?;
 
         Ok(self
-            .query_remote(stmt, params, true)
+            .query_remote(stmt, params, Some(read_policy))
             .await?
             .into_iter()
             .map(|mut row| T::from(&mut row))
@@ -108,7 +127,7 @@ impl Client {
             query::query_map(state, stmt, params).await
         } else {
             Ok(self
-                .query_remote(stmt, params, false)
+                .query_remote(stmt, params, None)
                 .await?
                 .into_iter()
                 .map(|mut row| T::from(&mut row))
@@ -130,7 +149,7 @@ impl Client {
             query::query_try_map(state, stmt, params).await
         } else {
             Ok(self
-                .query_remote(stmt, params, false)
+                .query_remote(stmt, params, None)
                 .await?
                 .into_iter()
                 .map(|mut row| T::try_from(&mut row))
@@ -159,7 +178,7 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_map_one(state, stmt, params).await
         } else {
-            let mut rows = self.query_remote(stmt, params, false).await?;
+            let mut rows = self.query_remote(stmt, params, None).await?;
             if rows.is_empty() {
                 Err(Error::QueryReturnedNoRows("No rows returned".into()))
             } else if rows.len() > 1 {
@@ -185,7 +204,7 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_try_map_one(state, stmt, params).await
         } else {
-            let mut rows = self.query_remote(stmt, params, false).await?;
+            let mut rows = self.query_remote(stmt, params, None).await?;
             if rows.is_empty() {
                 Err(Error::QueryReturnedNoRows("No rows returned".into()))
             } else if rows.len() > 1 {
@@ -216,7 +235,7 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_map_optional(state, stmt, params).await
         } else {
-            let mut rows = self.query_remote(stmt, params, false).await?;
+            let mut rows = self.query_remote(stmt, params, None).await?;
             if rows.is_empty() {
                 Ok(None)
             } else {
@@ -238,7 +257,7 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_try_map_optional(state, stmt, params).await
         } else {
-            let mut rows = self.query_remote(stmt, params, false).await?;
+            let mut rows = self.query_remote(stmt, params, None).await?;
             if rows.is_empty() {
                 Ok(None)
             } else {
@@ -331,7 +350,7 @@ impl Client {
             .await?;
             Ok(rows.into_iter().map(crate::Row::Owned).collect())
         } else {
-            self.query_remote(stmt, params, false).await
+            self.query_remote(stmt, params, None).await
         }
     }
 
@@ -360,7 +379,7 @@ impl Client {
         &self,
         stmt: S,
         params: Params,
-        consistent: bool,
+        read_policy: Option<ReadPolicy>,
     ) -> Result<Vec<crate::Row<'_>>, Error>
     where
         S: Into<Cow<'static, str>>,
@@ -370,14 +389,17 @@ impl Client {
             params,
         };
 
-        let res = match self.query_remote_req(query.clone(), consistent).await {
+        let res = match self
+            .query_remote_req(query.clone(), read_policy.clone())
+            .await
+        {
             Ok(res) => Ok(res),
             Err(err) => {
                 if self
                     .was_leader_update_error(&err, &self.inner.leader_db, &self.inner.tx_client_db)
                     .await
                 {
-                    self.query_remote_req(query, consistent).await
+                    self.query_remote_req(query, read_policy).await
                 } else {
                     return Err(err);
                 }
@@ -393,22 +415,25 @@ impl Client {
     pub(crate) async fn query_remote_req(
         &self,
         query: Query,
-        consistent: bool,
+        read_policy: Option<ReadPolicy>,
     ) -> Result<Vec<RowOwned>, Error> {
         let (ack, rx) = oneshot::channel();
+        let request_id = self.new_request_id();
 
-        let payload = if consistent {
-            ClientStreamReq::QueryConsistent(ClientQueryPayload {
-                request_id: self.new_request_id(),
-                ack,
+        let payload = match read_policy {
+            Some(read_policy) => ClientStreamReq::QueryConsistent(
+                ClientQueryPayload {
+                    request_id,
+                    query,
+                    ack,
+                },
+                read_policy,
+            ),
+            None => ClientStreamReq::Query(ClientQueryPayload {
+                request_id,
                 query,
-            })
-        } else {
-            ClientStreamReq::Query(ClientQueryPayload {
-                request_id: self.new_request_id(),
                 ack,
-                query,
-            })
+            }),
         };
 
         self.inner
@@ -418,14 +443,8 @@ impl Client {
             .map_err(|err| Error::Error(err.to_string().into()))?;
         let res = await_channel_response(rx).await??;
         match res {
-            ApiStreamResponsePayload::Query(res) => {
-                assert!(!consistent);
-                res
-            }
-            ApiStreamResponsePayload::QueryConsistent(res) => {
-                assert!(consistent);
-                res
-            }
+            ApiStreamResponsePayload::Query(res)
+            | ApiStreamResponsePayload::QueryConsistent(res) => res,
             _ => unreachable!(),
         }
     }

@@ -1,6 +1,8 @@
 use crate::NodeId;
 use crate::app_state::{AppState, RaftType};
-use crate::network::{AppStateExt, Error, fmt_ok, fmt_ok_serde, get_payload, validate_secret};
+use crate::network::{
+    AppStateExt, Error, WireMembership, fmt_ok, fmt_ok_serde, get_payload, validate_secret,
+};
 use crate::{Node, helpers};
 use axum::body;
 use axum::body::Body;
@@ -8,9 +10,10 @@ use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::Response;
 use bincode_next::{Decode, Encode};
+use openraft::RaftTypeConfig;
 use openraft::ServerState;
-use openraft::StoredMembership;
-use openraft::error::{CheckIsLeaderError, ForwardToLeader, RaftError};
+use openraft::errors::{ForwardToLeader, LinearizableReadError, RaftError};
+use openraft::type_config::async_runtime::watch::WatchReceiver;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -112,13 +115,10 @@ pub(crate) async fn become_member(
     let payload = get_payload::<LearnerReq>(&headers, body)?;
     info!("{:?} Node membership request: {:?}", raft_type, payload);
 
-    let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
-    debug!("{:?} Members before add: {:?}", raft_type, metrics);
+    let view = helpers::get_raft_view(&state, &raft_type)?;
+    debug!("{:?} Members before add: {:?}", raft_type, view);
 
-    let is_voter = metrics
-        .membership_config
-        .voter_ids()
-        .any(|id| id == payload.node_id);
+    let is_voter = view.membership.voter_ids().any(|id| id == payload.node_id);
     if is_voter {
         info!(
             "Node {} is a voter already - nothing left to do",
@@ -127,10 +127,7 @@ pub(crate) async fn become_member(
         return fmt_ok(headers, ());
     }
 
-    let mut nodes_set = metrics
-        .membership_config
-        .voter_ids()
-        .collect::<BTreeSet<u64>>();
+    let mut nodes_set = view.membership.voter_ids().collect::<BTreeSet<u64>>();
     nodes_set.insert(payload.node_id);
 
     match helpers::change_membership(&state, &raft_type, nodes_set, true).await {
@@ -168,22 +165,51 @@ async fn are_we_leader(state: &Arc<AppState>, raft_type: &RaftType) -> Result<()
         if leader_id == state.id {
             Ok(())
         } else {
-            let metrics = helpers::get_raft_metrics(state, raft_type).await?;
-            let Some(leader) = metrics.membership_config.membership().get_node(&leader_id) else {
+            let view = helpers::get_raft_view(state, raft_type)?;
+            let Some(leader) = view.membership.membership().get_node(&leader_id) else {
                 return Err(Error::Error(
                     format!("Leader {leader_id} not found in membership config").into(),
                 ));
             };
 
-            let err = RaftError::APIError(CheckIsLeaderError::ForwardToLeader(ForwardToLeader {
-                leader_id: Some(leader_id),
-                leader_node: Some(leader.clone()),
-            }));
-            Err(Error::CheckIsLeaderError(Box::new(err)))
+            #[cfg(feature = "sqlite")]
+            if matches!(raft_type, RaftType::Sqlite) {
+                return Err(Error::CheckIsLeaderErrorDb(Box::new(leader_redirect::<
+                    crate::store::state_machine::sqlite::TypeConfigSqlite,
+                >(
+                    leader_id, leader
+                ))));
+            }
+            #[cfg(feature = "cache")]
+            if matches!(raft_type, RaftType::Cache) {
+                return Err(Error::CheckIsLeaderErrorKv(Box::new(leader_redirect::<
+                    crate::store::state_machine::memory::TypeConfigKV,
+                >(
+                    leader_id, leader
+                ))));
+            }
+
+            Err(Error::Error(
+                format!("Leader is {leader_id}, not us, and the Raft type is unknown").into(),
+            ))
         }
     } else {
         Err(Error::LeaderChange("Leader election in progress".into()))
     }
+}
+
+fn leader_redirect<C>(
+    leader_id: C::NodeId,
+    leader: &C::Node,
+) -> RaftError<C, LinearizableReadError<C>>
+where
+    C: RaftTypeConfig,
+{
+    RaftError::APIError(LinearizableReadError::ForwardToLeader(ForwardToLeader {
+        leader_id: Some(leader_id),
+        leader_node: Some(leader.clone()),
+        reason: Default::default(),
+    }))
 }
 
 pub(crate) async fn get_membership(
@@ -199,14 +225,12 @@ pub(crate) async fn get_membership(
         return Err(Error::Config("Raft node has not been initialized".into()));
     }
 
-    let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
-    let mut members = metrics.membership_config;
+    let mut members = helpers::get_raft_view(&state, &raft_type)?.membership;
 
     // it is possible to end up in a race condition on rolling releases
     if members.nodes().count() == 0 {
         time::sleep(Duration::from_millis(1000)).await;
-        let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
-        members = metrics.membership_config;
+        members = helpers::get_raft_view(&state, &raft_type)?.membership;
         debug!("Membership after 1000ms timeout: {:?}", members);
 
         // if we still have no members, return an error
@@ -240,8 +264,8 @@ pub(crate) async fn post_membership(
     // Take the shared raft_lock like the other membership endpoints so this full-set change
     // cannot race with join/leave flows that poll for their commit.
     let _lock = state.raft_lock.lock().await;
-    let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
-    let old_voters: BTreeSet<u64> = metrics.membership_config.voter_ids().collect();
+    let membership = helpers::get_raft_view(&state, &raft_type)?.membership;
+    let old_voters: BTreeSet<u64> = membership.voter_ids().collect();
 
     // A full-set change that drops this node (the leader) goes through openraft's two-step voter
     // removal. With `retain=false` the joint config already removes us from the node map, but we
@@ -312,21 +336,15 @@ pub async fn leave_cluster_exec(
 
     let lock = state.raft_lock.lock().await;
 
-    let metrics = helpers::get_raft_metrics(state, raft_type).await?;
-    let is_member = metrics
-        .membership_config
-        .nodes()
-        .any(|(id, _)| *id == payload.node_id);
+    let membership = helpers::get_raft_view(state, raft_type)?.membership;
+    let is_member = membership.nodes().any(|(id, _)| *id == payload.node_id);
 
     if is_member {
         warn!(
             "Node {} ({:?}) is a cluster member - removing it",
             payload.node_id, raft_type
         );
-        let is_voter = metrics
-            .membership_config
-            .voter_ids()
-            .any(|id| id == payload.node_id);
+        let is_voter = membership.voter_ids().any(|id| id == payload.node_id);
 
         if is_voter {
             warn!("Node {} ({:?}) is a Voter", payload.node_id, raft_type);
@@ -426,12 +444,12 @@ pub async fn leave_cluster_exec(
     }
 
     drop(lock);
-    let metrics = helpers::get_raft_metrics(state, raft_type).await?;
+    let membership = helpers::get_raft_view(state, raft_type)?.membership;
     info!(
         "Node {} ({:?}) has left the cluster: {:?}",
         payload.node_id,
         raft_type,
-        metrics.membership_config.membership()
+        membership.membership()
     );
 
     Ok(())
@@ -446,15 +464,27 @@ pub(crate) async fn metrics(
     validate_secret(&state, &headers)?;
 
     // Gate like the other management endpoints - for `RaftType::Unknown` (neither feature
-    // enabled), this is the only guard before `get_raft_metrics` would panic.
+    // enabled), this is the only guard before the per-group metrics below would panic.
     if helpers::is_raft_stopped(&state, &raft_type)
         || !helpers::is_raft_initialized(&state, &raft_type).await?
     {
         return Err(Error::Error("Raft is not initialized".into()));
     }
 
-    let metrics = helpers::get_raft_metrics(&state, &raft_type).await?;
-    fmt_ok_serde(headers, &metrics)
+    // The metrics struct is generic over the type config, so each group serializes its own.
+    match raft_type {
+        #[cfg(feature = "sqlite")]
+        RaftType::Sqlite => {
+            let metrics = state.raft_db.raft.metrics().borrow_watched().clone();
+            fmt_ok_serde(headers, &metrics)
+        }
+        #[cfg(feature = "cache")]
+        RaftType::Cache => {
+            let metrics = state.raft_cache.raft.metrics().borrow_watched().clone();
+            fmt_ok_serde(headers, &metrics)
+        }
+        RaftType::Unknown => Err(Error::Error("Unknown Raft type".into())),
+    }
 }
 
 /// Maximum time to wait for a membership change to be committed while holding `state.raft_lock`.
@@ -466,20 +496,20 @@ const MEMBERSHIP_COMMIT_TIMEOUT: Duration = Duration::from_secs(40);
 
 /// Poll metrics until `is_done` reports the membership change as committed.
 ///
-/// Bounded by [`MEMBERSHIP_COMMIT_TIMEOUT`] and re-checks leadership on every poll, because a
+/// Bounded by `MEMBERSHIP_COMMIT_TIMEOUT` and re-checks leadership on every poll, because a
 /// leader change mid-operation can lose the uncommitted entry. Callers must hold
 /// `state.raft_lock`.
 async fn wait_for_membership_commit(
     state: &Arc<AppState>,
     raft_type: &RaftType,
     what: &str,
-    mut is_done: impl FnMut(&StoredMembership<NodeId, Node>) -> bool,
+    mut is_done: impl FnMut(&WireMembership) -> bool,
 ) -> Result<(), Error> {
     let start = time::Instant::now();
 
     loop {
-        let metrics = helpers::get_raft_metrics(state, raft_type).await?;
-        if is_done(&metrics.membership_config) {
+        let membership = helpers::get_raft_view(state, raft_type)?.membership;
+        if is_done(&membership) {
             return Ok(());
         }
 
@@ -502,7 +532,7 @@ async fn wait_for_membership_commit(
 }
 
 /// Maximum time to wait for this node to actually step down after it removed itself from the
-/// membership (see [`wait_for_demotion`]). The demotion happens on the next heartbeat tick once
+/// membership (see `wait_for_demotion`). The demotion happens on the next heartbeat tick once
 /// the removal is applied, so this is a generous backstop, not an expected duration.
 const DEMOTION_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -522,8 +552,7 @@ async fn wait_for_demotion(state: &Arc<AppState>, raft_type: &RaftType) -> Resul
     let start = time::Instant::now();
 
     loop {
-        let metrics = helpers::get_raft_metrics(state, raft_type).await?;
-        if metrics.state != ServerState::Leader {
+        if helpers::get_raft_view(state, raft_type)?.state != ServerState::Leader {
             return Ok(());
         }
 

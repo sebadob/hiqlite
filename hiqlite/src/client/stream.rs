@@ -23,6 +23,8 @@ use crate::network::api::{ApiStreamRequest, ApiStreamRequestPayload};
 use crate::store::state_machine::memory::state_machine::CacheRequest;
 #[cfg(feature = "sqlite")]
 use crate::{migration::Migration, store::state_machine::sqlite::state_machine::Query};
+#[cfg(feature = "sqlite")]
+use openraft::raft::ReadPolicy;
 
 /// Interval between client-initiated keepalive pings on the API WebSocket. The server auto-pongs
 /// every ping (fastwebsockets default), so a healthy idle connection always produces inbound
@@ -56,7 +58,7 @@ pub(crate) enum ClientStreamReq {
     #[cfg(feature = "sqlite")]
     Query(ClientQueryPayload),
     #[cfg(feature = "sqlite")]
-    QueryConsistent(ClientQueryPayload),
+    QueryConsistent(ClientQueryPayload, ReadPolicy),
     #[cfg(feature = "sqlite")]
     Batch(ClientBatchPayload),
     #[cfg(feature = "sqlite")]
@@ -369,14 +371,20 @@ async fn client_stream(
                 }
 
                 #[cfg(feature = "sqlite")]
-                ClientStreamReq::QueryConsistent(ClientQueryPayload {
-                    request_id,
-                    query,
-                    ack,
-                }) => {
+                ClientStreamReq::QueryConsistent(
+                    ClientQueryPayload {
+                        request_id,
+                        query,
+                        ack,
+                    },
+                    read_policy,
+                ) => {
                     let req = ApiStreamRequest {
                         request_id,
-                        payload: ApiStreamRequestPayload::QueryConsistent(query),
+                        payload: ApiStreamRequestPayload::QueryConsistent(
+                            query,
+                            read_policy.into(),
+                        ),
                     };
                     Some((
                         WritePayload::Payload(serialize_network(&req)),
@@ -603,7 +611,7 @@ async fn client_stream(
                     )
                 }
                 #[cfg(feature = "sqlite")]
-                ClientStreamReq::QueryConsistent(_) => {
+                ClientStreamReq::QueryConsistent(_, _) => {
                     unreachable!(
                         "we should never receive ClientStreamReq::QueryConsistent from WS reader"
                     )

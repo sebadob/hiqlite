@@ -1,4 +1,5 @@
 hiqlite/tests/data_test
+hiqlite/tests/data_09_run
 examples/*/target
 target
 .idea

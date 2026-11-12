@@ -423,7 +423,6 @@ impl NodeConfig {
     }
 
     /// Provides good defaults for a `RaftConfig` inside a fast network.
-    #[allow(deprecated)] // allow to not need ..Default::default() and miss config updates
     pub fn default_raft_config(logs_until_snapshot: u64) -> RaftConfig {
         RaftConfig {
             cluster_name: "hiqlite".to_string(),
@@ -431,7 +430,6 @@ impl NodeConfig {
             election_timeout_max: 3000,
             heartbeat_interval: 500,
             install_snapshot_timeout: 10_000,
-            send_snapshot_timeout: 0,
             max_payload_entries: 128,
             replication_lag_threshold: logs_until_snapshot * 2,
             snapshot_policy: SnapshotPolicy::LogsSinceLast(logs_until_snapshot),
@@ -442,7 +440,7 @@ impl NodeConfig {
             enable_tick: true,
             enable_heartbeat: true,
             enable_elect: true,
-            // ..Default::default()
+            ..Default::default()
         }
     }
 
@@ -506,6 +504,11 @@ impl NodeConfig {
                 "password_dashboard should be at least 14 characters long".into(),
             ));
         }
+
+        self.raft_config
+            .clone()
+            .validate()
+            .map_err(|err| Error::Config(format!("'raft_config' is invalid: {err}").into()))?;
 
         if self.log_statements {
             warn!(
@@ -592,7 +595,7 @@ mod tests {
         );
         assert_eq!(c.data_dir, "data");
         assert_eq!(c.filename_db, "hiqlite.db");
-        assert_eq!(c.log_statements, true);
+        assert!(c.log_statements);
 
         assert_eq!(c.secret_raft, "SuperSecureSecret1337");
         assert_eq!(c.secret_api, "SuperSecureSecret1337");

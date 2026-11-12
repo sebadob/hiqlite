@@ -1,5 +1,4 @@
 use crate::Node;
-use crate::network::{RaftInitError, RaftSnapshotError, RaftWriteError};
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -7,7 +6,9 @@ use bincode_next::error::{DecodeError, EncodeError};
 use bincode_next::{Decode, Encode};
 use fastwebsockets::WebSocketError;
 use openraft::StorageError;
-use openraft::error::{CheckIsLeaderError, ClientWriteError, Fatal, RaftError};
+use openraft::errors::{
+    ClientWriteError, Fatal, InitializeError, LinearizableReadError, RaftError, StreamingError,
+};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::convert::Infallible;
@@ -18,9 +19,30 @@ use tracing::trace;
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 
+// openraft 0.10 makes its error types generic over the type config, so every payload type here is
+// one instantiation per group. The enum's shape must not depend on the feature set - peers are
+// built with different ones - so every variant exists in every build that has a Raft group, and a
+// group that isn't compiled in resolves to the wire instantiation. That is the one the network
+// layer pins its shared payloads to, and it is layout-identical to both groups because no openraft
+// error type has a field built from `D` or `R` - only from `NodeId`, `Node` and the macro defaults.
+// The alias guards in `network` keep that from drifting.
+#[cfg(feature = "sqlite")]
+type ConfigDb = crate::store::state_machine::sqlite::TypeConfigSqlite;
+#[cfg(not(feature = "sqlite"))]
+type ConfigDb = crate::network::TypeConfigWire;
+
+#[cfg(feature = "cache")]
+type ConfigKv = crate::store::state_machine::memory::TypeConfigKV;
+#[cfg(not(feature = "cache"))]
+type ConfigKv = crate::network::TypeConfigWire;
+
 // The serde derives stay for the JSON API path and cross-decode tooling; the native derives make
 // this type flow through `helpers::serialize` / `helpers::deserialize`. The openraft payload
 // fields we do not own are bridged through the byte-identical serde adapter via `with_serde`.
+// Peers are built with different feature sets, so the variant set is fixed and a group that isn't
+// compiled in keeps its variants with payloads on the crate-internal wire config - which is what
+// this lint is about, and that is the deal.
+#[allow(private_interfaces)]
 #[derive(Debug, Error, Serialize, Deserialize, Encode, Decode)]
 pub enum Error {
     #[error("BadRequest: {0}")]
@@ -34,10 +56,18 @@ pub enum Error {
     #[error("Channel: {0}")]
     Channel(String),
     /// Internal error when a leader-request is sent to a non-leader node
-    #[error("CheckIsLeaderError: {0}")]
-    CheckIsLeaderError(#[bincode(with_serde)] Box<RaftError<u64, CheckIsLeaderError<u64, Node>>>),
-    #[error("ClientWriteError: {0}")]
-    ClientWriteError(#[bincode(with_serde)] Box<RaftWriteError>),
+    #[error("CheckIsLeaderErrorDb: {0}")]
+    CheckIsLeaderErrorDb(
+        #[bincode(with_serde)] Box<RaftError<ConfigDb, LinearizableReadError<ConfigDb>>>,
+    ),
+    #[error("CheckIsLeaderErrorKv: {0}")]
+    CheckIsLeaderErrorKv(
+        #[bincode(with_serde)] Box<RaftError<ConfigKv, LinearizableReadError<ConfigKv>>>,
+    ),
+    #[error("ClientWriteErrorDb: {0}")]
+    ClientWriteErrorDb(#[bincode(with_serde)] Box<RaftError<ConfigDb, ClientWriteError<ConfigDb>>>),
+    #[error("ClientWriteErrorKv: {0}")]
+    ClientWriteErrorKv(#[bincode(with_serde)] Box<RaftError<ConfigKv, ClientWriteError<ConfigKv>>>),
     #[error("Config: {0}")]
     Config(#[bincode(with_serde)] Cow<'static, str>),
     #[error("Connect: {0}")]
@@ -45,13 +75,14 @@ pub enum Error {
     /// Sqlite constraint violation
     #[error("Connect: {0}")]
     ConstraintViolation(String),
-    #[cfg(any(feature = "dashboard", feature = "s3"))]
     #[error("Cryptr: {0}")]
     Cryptr(String),
     #[error("Error: {0}")]
     Error(#[bincode(with_serde)] Cow<'static, str>),
-    #[error("InitializeError: {0}")]
-    InitializeError(#[bincode(with_serde)] Box<RaftInitError>),
+    #[error("InitializeErrorDb: {0}")]
+    InitializeErrorDb(#[bincode(with_serde)] Box<RaftError<ConfigDb, InitializeError<ConfigDb>>>),
+    #[error("InitializeErrorKv: {0}")]
+    InitializeErrorKv(#[bincode(with_serde)] Box<RaftError<ConfigKv, InitializeError<ConfigKv>>>),
     /// Error informing about a Raft leader change
     #[error("LeaderChange: {0}")]
     LeaderChange(#[bincode(with_serde)] Cow<'static, str>),
@@ -65,23 +96,27 @@ pub enum Error {
     #[error("PrepareStatement: {0}")]
     PrepareStatement(#[bincode(with_serde)] Cow<'static, str>),
     /// Internal Raft error
-    #[error("RaftError: {0}")]
-    RaftError(#[bincode(with_serde)] Box<RaftError<u64>>),
-    #[error("RaftErrorFatal: {0}")]
+    #[error("RaftErrorDb: {0}")]
+    RaftErrorDb(#[bincode(with_serde)] Box<RaftError<ConfigDb>>),
+    #[error("RaftErrorKv: {0}")]
+    RaftErrorKv(#[bincode(with_serde)] Box<RaftError<ConfigKv>>),
+    #[error("RaftErrorFatalDb: {0}")]
+    RaftErrorFatalDb(#[bincode(with_serde)] Box<Fatal<ConfigDb>>),
+    #[error("RaftErrorFatalKv: {0}")]
+    RaftErrorFatalKv(#[bincode(with_serde)] Box<Fatal<ConfigKv>>),
     /// Internal Raft error
-    RaftErrorFatal(#[bincode(with_serde)] Box<Fatal<u64>>),
     #[error("RateLimit: {0}")]
     RateLimit(#[bincode(with_serde)] Cow<'static, str>),
     #[error("Request: {0}")]
     Request(String),
-    #[cfg(feature = "s3")]
     #[error("S3: {0}")]
     S3(String),
-    #[error("SnapshotError: {0}")]
-    SnapshotError(#[bincode(with_serde)] Box<RaftSnapshotError>),
+    #[error("SnapshotErrorDb: {0}")]
+    SnapshotErrorDb(#[bincode(with_serde)] Box<StreamingError<ConfigDb>>),
+    #[error("SnapshotErrorKv: {0}")]
+    SnapshotErrorKv(#[bincode(with_serde)] Box<StreamingError<ConfigKv>>),
     /// All kinds of SQLite database errors, mostly just a wrapper for the `rusqlite` error apart
     /// from `QueryReturnedNoRows`.
-    #[cfg(feature = "sqlite")]
     #[error("Sqlite: {0}")]
     Sqlite(#[bincode(with_serde)] Cow<'static, str>),
     #[error("Timeout: {0}")]
@@ -105,18 +140,25 @@ impl Error {
 
     /// Checks if the inner wrapped error is a `ForwardToLeader` error
     pub fn is_forward_to_leader(&self) -> Option<(Option<u64>, &Option<Node>)> {
-        if let Self::ClientWriteError(err) = self
+        if let Self::ClientWriteErrorDb(err) = self
             && let Some(err) = err.api_error()
+            && let ClientWriteError::ForwardToLeader(err) = err
         {
-            match err {
-                ClientWriteError::ForwardToLeader(err) => {
-                    return Some((err.leader_id, &err.leader_node));
-                }
-                ClientWriteError::ChangeMembershipError(_) => {}
-            }
+            return Some((err.leader_id, &err.leader_node));
+        }
+        if let Self::ClientWriteErrorKv(err) = self
+            && let Some(err) = err.api_error()
+            && let ClientWriteError::ForwardToLeader(err) = err
+        {
+            return Some((err.leader_id, &err.leader_node));
         }
 
-        if let Self::CheckIsLeaderError(err) = self
+        if let Self::CheckIsLeaderErrorDb(err) = self
+            && let Some(err) = err.forward_to_leader()
+        {
+            return Some((err.leader_id, &err.leader_node));
+        }
+        if let Self::CheckIsLeaderErrorKv(err) = self
             && let Some(err) = err.forward_to_leader()
         {
             return Some((err.leader_id, &err.leader_node));
@@ -138,15 +180,22 @@ impl IntoResponse for Error {
             Error::Bincode(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Cache(_) => StatusCode::BAD_REQUEST,
             Error::Channel(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::CheckIsLeaderError(_) => StatusCode::CONFLICT,
+            Error::CheckIsLeaderErrorDb(_) => StatusCode::CONFLICT,
+            Error::CheckIsLeaderErrorKv(_) => StatusCode::CONFLICT,
             Error::ConstraintViolation(_) => StatusCode::BAD_REQUEST,
-            #[cfg(any(feature = "dashboard", feature = "s3"))]
             Error::Cryptr(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::LeaderChange(_) => StatusCode::CONFLICT,
             Error::QueryParams(_) => StatusCode::BAD_REQUEST,
             Error::QueryReturnedNoRows(_) => StatusCode::NOT_FOUND,
             Error::PrepareStatement(_) => StatusCode::BAD_REQUEST,
-            Error::ClientWriteError(_) => {
+            Error::ClientWriteErrorDb(_) => {
+                if self.is_forward_to_leader().is_some() {
+                    StatusCode::PERMANENT_REDIRECT
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            }
+            Error::ClientWriteErrorKv(_) => {
                 if self.is_forward_to_leader().is_some() {
                     StatusCode::PERMANENT_REDIRECT
                 } else {
@@ -156,15 +205,17 @@ impl IntoResponse for Error {
             Error::Config(_) => StatusCode::BAD_REQUEST,
             Error::Connect(_) => StatusCode::SERVICE_UNAVAILABLE,
             Error::Error(_) => StatusCode::BAD_REQUEST,
-            Error::InitializeError(_) => StatusCode::BAD_REQUEST,
-            Error::RaftError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::RaftErrorFatal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::InitializeErrorDb(_) => StatusCode::BAD_REQUEST,
+            Error::InitializeErrorKv(_) => StatusCode::BAD_REQUEST,
+            Error::RaftErrorDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::RaftErrorKv(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::RaftErrorFatalDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::RaftErrorFatalKv(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
             Error::Request(_) => StatusCode::BAD_REQUEST,
-            #[cfg(feature = "s3")]
             Error::S3(_) => StatusCode::BAD_REQUEST,
-            Error::SnapshotError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            #[cfg(feature = "sqlite")]
+            Error::SnapshotErrorDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::SnapshotErrorKv(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Sqlite(_) => StatusCode::BAD_REQUEST,
             Error::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
             Error::Token(_) => StatusCode::UNAUTHORIZED,
@@ -217,52 +268,115 @@ impl From<reqwest::Error> for Error {
     }
 }
 
-impl From<RaftWriteError> for Error {
-    fn from(value: RaftWriteError) -> Self {
+#[cfg(feature = "sqlite")]
+impl From<RaftError<ConfigDb, ClientWriteError<ConfigDb>>> for Error {
+    fn from(value: RaftError<ConfigDb, ClientWriteError<ConfigDb>>) -> Self {
         trace!("ClientWriteError: {value}");
-        Self::ClientWriteError(Box::new(value))
+        Self::ClientWriteErrorDb(Box::new(value))
     }
 }
 
-impl From<RaftInitError> for Error {
-    fn from(value: RaftInitError) -> Self {
+#[cfg(feature = "cache")]
+impl From<RaftError<ConfigKv, ClientWriteError<ConfigKv>>> for Error {
+    fn from(value: RaftError<ConfigKv, ClientWriteError<ConfigKv>>) -> Self {
+        trace!("ClientWriteError: {value}");
+        Self::ClientWriteErrorKv(Box::new(value))
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl From<RaftError<ConfigDb, InitializeError<ConfigDb>>> for Error {
+    fn from(value: RaftError<ConfigDb, InitializeError<ConfigDb>>) -> Self {
         trace!("InitializeError: {value}");
-        Self::InitializeError(Box::new(value))
+        Self::InitializeErrorDb(Box::new(value))
     }
 }
 
-impl From<RaftSnapshotError> for Error {
-    fn from(value: RaftSnapshotError) -> Self {
+#[cfg(feature = "cache")]
+impl From<RaftError<ConfigKv, InitializeError<ConfigKv>>> for Error {
+    fn from(value: RaftError<ConfigKv, InitializeError<ConfigKv>>) -> Self {
+        trace!("InitializeError: {value}");
+        Self::InitializeErrorKv(Box::new(value))
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl From<StreamingError<ConfigDb>> for Error {
+    fn from(value: StreamingError<ConfigDb>) -> Self {
         trace!("SnapshotError: {value}");
-        Self::SnapshotError(Box::new(value))
+        Self::SnapshotErrorDb(Box::new(value))
     }
 }
 
-impl From<RaftError<u64>> for Error {
-    fn from(value: RaftError<u64>) -> Self {
+#[cfg(feature = "cache")]
+impl From<StreamingError<ConfigKv>> for Error {
+    fn from(value: StreamingError<ConfigKv>) -> Self {
+        trace!("SnapshotError: {value}");
+        Self::SnapshotErrorKv(Box::new(value))
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl From<RaftError<ConfigDb>> for Error {
+    fn from(value: RaftError<ConfigDb>) -> Self {
         trace!("RaftError: {value}");
-        Self::RaftError(Box::new(value))
+        Self::RaftErrorDb(Box::new(value))
     }
 }
 
-impl From<RaftError<u64, CheckIsLeaderError<u64, Node>>> for Error {
-    fn from(value: RaftError<u64, CheckIsLeaderError<u64, Node>>) -> Self {
+#[cfg(feature = "cache")]
+impl From<RaftError<ConfigKv>> for Error {
+    fn from(value: RaftError<ConfigKv>) -> Self {
+        trace!("RaftError: {value}");
+        Self::RaftErrorKv(Box::new(value))
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl From<RaftError<ConfigDb, LinearizableReadError<ConfigDb>>> for Error {
+    fn from(value: RaftError<ConfigDb, LinearizableReadError<ConfigDb>>) -> Self {
         trace!("CheckIsLeaderError: {value}");
-        Self::CheckIsLeaderError(Box::new(value))
+        Self::CheckIsLeaderErrorDb(Box::new(value))
     }
 }
 
-impl From<Fatal<u64>> for Error {
-    fn from(value: Fatal<u64>) -> Self {
-        trace!("RaftErrorFatal: {value}");
-        Self::RaftErrorFatal(Box::new(value))
+#[cfg(feature = "cache")]
+impl From<RaftError<ConfigKv, LinearizableReadError<ConfigKv>>> for Error {
+    fn from(value: RaftError<ConfigKv, LinearizableReadError<ConfigKv>>) -> Self {
+        trace!("CheckIsLeaderError: {value}");
+        Self::CheckIsLeaderErrorKv(Box::new(value))
     }
 }
 
-impl From<Box<StorageError<u64>>> for Error {
-    fn from(value: Box<StorageError<u64>>) -> Self {
+#[cfg(feature = "sqlite")]
+impl From<Fatal<ConfigDb>> for Error {
+    fn from(value: Fatal<ConfigDb>) -> Self {
         trace!("RaftErrorFatal: {value}");
-        Self::RaftErrorFatal(Box::new(Fatal::StorageError(*value)))
+        Self::RaftErrorFatalDb(Box::new(value))
+    }
+}
+
+#[cfg(feature = "cache")]
+impl From<Fatal<ConfigKv>> for Error {
+    fn from(value: Fatal<ConfigKv>) -> Self {
+        trace!("RaftErrorFatal: {value}");
+        Self::RaftErrorFatalKv(Box::new(value))
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl From<Box<StorageError<ConfigDb>>> for Error {
+    fn from(value: Box<StorageError<ConfigDb>>) -> Self {
+        trace!("RaftErrorFatal: {value}");
+        Self::RaftErrorFatalDb(Box::new(Fatal::StorageError(*value)))
+    }
+}
+
+#[cfg(feature = "cache")]
+impl From<Box<StorageError<ConfigKv>>> for Error {
+    fn from(value: Box<StorageError<ConfigKv>>) -> Self {
+        trace!("RaftErrorFatal: {value}");
+        Self::RaftErrorFatalKv(Box::new(Fatal::StorageError(*value)))
     }
 }
 
@@ -424,5 +538,13 @@ impl From<Infallible> for Error {
     fn from(value: Infallible) -> Self {
         trace!("Infallible: {value}");
         Self::Error(value.to_string().into())
+    }
+}
+
+/// Lets the storage traits of openraft 0.10, which are defined in terms of `io::Error`, carry
+/// our errors. The error kind is flattened to "other", openraft adds its own context on top.
+impl From<Error> for std::io::Error {
+    fn from(value: Error) -> Self {
+        Self::other(value.to_string())
     }
 }

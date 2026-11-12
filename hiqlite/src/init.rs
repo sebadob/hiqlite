@@ -1,9 +1,10 @@
 use crate::app_state::{AppState, RaftType};
 use crate::helpers::{deserialize_serde, serialize};
-use crate::network::HEADER_NAME_SECRET;
 use crate::network::management::{ClusterLeaveReq, LearnerReq};
+use crate::network::{HEADER_NAME_SECRET, WireMetrics};
 use crate::{Error, Node, NodeId, helpers};
-use openraft::{Membership, RaftMetrics};
+use openraft::Membership;
+use openraft::type_config::async_runtime::watch::WatchReceiver;
 use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,9 +13,13 @@ use tracing::{debug, error, warn};
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
+#[cfg(feature = "sqlite")]
+use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
 
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigKV;
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::state_machine::StateMachineMemory;
 
 use crate::http_client::build_http_client;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
@@ -81,7 +86,7 @@ pub async fn check_execute_reset(base_path: &str) -> Result<bool, Error> {
 /// Initializes a fresh node 1, if it has not been set up yet.
 #[cfg(feature = "sqlite")]
 pub async fn init_pristine_node_1_db(
-    raft: &openraft::Raft<TypeConfigSqlite>,
+    raft: &openraft::Raft<TypeConfigSqlite, StateMachineSqlite>,
     node_id: u64,
     nodes: &[Node],
     secret_api: &str,
@@ -115,7 +120,7 @@ pub async fn init_pristine_node_1_db(
 /// Initializes a fresh node 1, if it has not been set up yet.
 #[cfg(feature = "cache")]
 pub async fn init_pristine_node_1_cache(
-    raft: &openraft::Raft<TypeConfigKV>,
+    raft: &openraft::Raft<TypeConfigKV, Arc<StateMachineMemory>>,
     wal_on_disk: bool,
     node_id: u64,
     nodes: &[Node],
@@ -264,19 +269,19 @@ pub async fn become_cluster_member(
         // Only makes sense for actual HA deployments.
         if nodes.len() > 1 {
             time::sleep(Duration::from_secs(1)).await;
-            let mut metrics = helpers::get_raft_metrics(&state, raft_type).await?;
+            let mut metrics = helpers::get_raft_view(&state, raft_type)?;
             info!("Waiting for Raft Leader");
             for _ in 0..5 {
                 // Make sure that this node is not the current leader,
                 // which can happen after too quick restarts.
-                if let Some(id) = metrics.current_leader
+                if let Some(id) = metrics.leader_id
                     && id != this_node
                 {
                     info!("Current Raft Leader: {id}");
                     break;
                 }
                 time::sleep(Duration::from_millis(1000)).await;
-                metrics = helpers::get_raft_metrics(&state, raft_type).await?;
+                metrics = helpers::get_raft_view(&state, raft_type)?;
             }
         }
 
@@ -342,20 +347,14 @@ pub async fn become_cluster_member(
     // membership modification, we can get into a deadlock situation on the leader.
     // We want to wait until we are a commited Raft learner.
     {
-        let mut metrics = helpers::get_raft_metrics(&state, raft_type).await?;
+        let mut metrics = helpers::get_raft_view(&state, raft_type)?;
 
-        let mut are_we_learner = metrics
-            .membership_config
-            .nodes()
-            .any(|(id, _)| *id == state.id);
+        let mut are_we_learner = metrics.membership.nodes().any(|(id, _)| *id == state.id);
         while !are_we_learner {
             info!("Waiting until we are a replicated Raft Learner ...",);
             time::sleep(Duration::from_secs(1)).await;
-            metrics = helpers::get_raft_metrics(&state, raft_type).await?;
-            are_we_learner = metrics
-                .membership_config
-                .nodes()
-                .any(|(id, _)| *id == state.id);
+            metrics = helpers::get_raft_view(&state, raft_type)?;
+            are_we_learner = metrics.membership.nodes().any(|(id, _)| *id == state.id);
         }
         info!(
             "Node {}: Successfully became replicated {} raft learner",
@@ -396,22 +395,16 @@ pub async fn become_cluster_member(
     );
 
     {
-        let mut metrics = helpers::get_raft_metrics(&state, raft_type).await?;
+        let mut metrics = helpers::get_raft_view(&state, raft_type)?;
 
         // To smooth out startups, wait until this node has replicated its
         // own voter state logs.
-        let mut are_we_voter = metrics
-            .membership_config
-            .voter_ids()
-            .any(|id| id == state.id);
+        let mut are_we_voter = metrics.membership.voter_ids().any(|id| id == state.id);
         while !are_we_voter {
             info!("Waiting until we are a replicated Raft Voter ...",);
             time::sleep(Duration::from_secs(1)).await;
-            metrics = helpers::get_raft_metrics(&state, raft_type).await?;
-            are_we_voter = metrics
-                .membership_config
-                .voter_ids()
-                .any(|id| id == state.id);
+            metrics = helpers::get_raft_view(&state, raft_type)?;
+            are_we_voter = metrics.membership.voter_ids().any(|id| id == state.id);
         }
         info!(
             "Node {}: Successfully became a replicated {} raft member",
@@ -523,8 +516,7 @@ async fn try_become(
                             if leader_id == this_node {
                                 if !helpers::is_raft_initialized(state, raft_type).await? {
                                     let leader = helpers::get_raft_leader(state, raft_type).await;
-                                    let metrics =
-                                        helpers::get_raft_metrics(state, raft_type).await?;
+                                    let metrics = helpers::get_raft_view(state, raft_type)?;
 
                                     panic!(
                                         r#"
@@ -630,9 +622,7 @@ async fn is_remote_cluster_member(
                             time::sleep(Duration::from_secs(1)).await;
                             continue;
                         };
-                        let Ok(metrics) =
-                            deserialize_serde::<RaftMetrics<u64, Node>>(bytes.as_ref())
-                        else {
+                        let Ok(metrics) = deserialize_serde::<WireMetrics>(bytes.as_ref()) else {
                             error!(
                                 "Cannot deserialize remote metrics response from Node {}",
                                 node.id
@@ -827,7 +817,7 @@ pub async fn leave_remote_cluster(
 
             if res.status().is_success() {
                 let bytes = res.bytes().await?;
-                let metrics = deserialize_serde::<RaftMetrics<u64, Node>>(bytes.as_ref())?;
+                let metrics = deserialize_serde::<WireMetrics>(bytes.as_ref())?;
                 let is_member = metrics
                     .membership_config
                     .nodes()
@@ -859,11 +849,11 @@ pub async fn leave_remote_cluster(
 #[cfg(feature = "sqlite")]
 async fn is_initialized_timeout_sqlite(
     node_id: u64,
-    raft: &openraft::Raft<TypeConfigSqlite>,
+    raft: &openraft::Raft<TypeConfigSqlite, StateMachineSqlite>,
 ) -> Result<bool, Error> {
     let has_any_nodes = || {
         raft.metrics()
-            .borrow()
+            .borrow_watched()
             .membership_config
             .membership()
             .nodes()
@@ -897,11 +887,11 @@ async fn is_initialized_timeout_sqlite(
 #[cfg(feature = "cache")]
 async fn is_initialized_timeout_cache(
     node_id: u64,
-    raft: &openraft::Raft<TypeConfigKV>,
+    raft: &openraft::Raft<TypeConfigKV, Arc<StateMachineMemory>>,
 ) -> Result<bool, Error> {
     let has_any_nodes = || {
         raft.metrics()
-            .borrow()
+            .borrow_watched()
             .membership_config
             .membership()
             .nodes()

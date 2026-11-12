@@ -2,6 +2,7 @@ use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::migration::Migration;
 use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
 use crate::store::logs;
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine;
 use crate::store::state_machine::sqlite::state_machine::{
     Params, StateMachineData, StateMachineSqlite, StoredSnapshot,
@@ -9,10 +10,10 @@ use crate::store::state_machine::sqlite::state_machine::{
 use crate::store::state_machine::sqlite::transaction_env::{
     TransactionEnv, TransactionParamContext,
 };
-use crate::{AppliedMigration, Error, Node, NodeId, Param};
+use crate::{AppliedMigration, Error, NodeId, Param};
 use chrono::Utc;
 use flume::RecvError;
-use openraft::{LogId, SnapshotMeta, StorageError, StorageIOError, StoredMembership};
+use openraft::type_config::alias::{LogIdOf, StoredMembershipOf};
 use rusqlite::backup::Progress;
 use rusqlite::fallible_iterator::FallibleIterator;
 use rusqlite::fallible_streaming_iterator::FallibleStreamingIterator;
@@ -20,6 +21,7 @@ use rusqlite::types::Value;
 use rusqlite::{Batch, CachedStatement, Rows, Transaction};
 use std::borrow::Cow;
 use std::default::Default;
+use std::io;
 use std::ops::Sub;
 use std::path::PathBuf;
 use std::thread;
@@ -56,7 +58,7 @@ pub enum Query {
 pub struct SqlExecute {
     pub sql: Cow<'static, str>,
     pub params: Params,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub tx: oneshot::Sender<Result<usize, Error>>,
 }
 
@@ -64,28 +66,28 @@ pub struct SqlExecute {
 pub struct SqlExecuteReturning {
     pub sql: Cow<'static, str>,
     pub params: Params,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub tx: oneshot::Sender<Result<Vec<Result<RowOwned, Error>>, Error>>,
 }
 
 #[derive(Debug)]
 pub struct SqlTransaction {
     pub queries: Vec<state_machine::Query>,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub tx: oneshot::Sender<Result<Vec<Result<usize, Error>>, Error>>,
 }
 
 #[derive(Debug)]
 pub struct SqlBatch {
     pub sql: Cow<'static, str>,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub tx: oneshot::Sender<Result<Vec<Result<usize, Error>>, Error>>,
 }
 
 #[derive(Debug)]
 pub struct Migrate {
     pub migrations: Vec<Migration>,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub tx: oneshot::Sender<Result<(), Error>>,
 }
 
@@ -93,7 +95,7 @@ pub struct Migrate {
 pub struct SnapshotRequest {
     pub snapshot_id: Uuid,
     pub path: String,
-    pub ack: oneshot::Sender<Result<SnapshotResponse, StorageError<NodeId>>>,
+    pub ack: oneshot::Sender<Result<SnapshotResponse, io::Error>>,
 }
 
 #[derive(Debug)]
@@ -110,8 +112,8 @@ pub struct MetaPersistRequest {
 
 #[derive(Debug)]
 pub struct MetaMembershipRequest {
-    pub last_membership: StoredMembership<NodeId, Node>,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_membership: StoredMembershipOf<TypeConfigSqlite>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub ack: oneshot::Sender<()>,
 }
 
@@ -122,13 +124,13 @@ pub struct BackupRequest {
     pub ts: i64,
     #[cfg(feature = "s3")]
     pub s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub ack: oneshot::Sender<Result<(), Error>>,
 }
 
 #[derive(Debug)]
 pub struct RTTRequest {
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub ack: oneshot::Sender<()>,
 }
 
@@ -543,9 +545,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                         }
                         Err(err) => {
                             error!("Error creating new snapshot: {:?}", err);
-                            ack.send(Err(StorageError::IO {
-                                source: StorageIOError::write(&err),
-                            }))
+                            ack.send(Err(err.into()))
                         }
                     }
                     .expect("snapshot listener to always exists");
@@ -881,7 +881,7 @@ fn create_backup(
 fn migrate(
     conn: &mut rusqlite::Connection,
     mut migrations: Vec<Migration>,
-    last_applied_log_id: Option<LogId<NodeId>>,
+    last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
 ) -> Result<(), Error> {
     // The migration `ts` must be identical on all nodes: the wall clock would diverge, the
     // raft log id is deterministic.

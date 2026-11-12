@@ -2,8 +2,10 @@ use crate::app_state::AppState;
 use crate::query::rows::{ColumnOwned, RowOwned};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine::SqlitePool;
+use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
 use crate::{Error, Params};
 use openraft::Raft;
+use openraft::raft::ReadPolicy;
 use serde::de::DeserializeOwned;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -17,16 +19,17 @@ pub mod cust_types;
 pub mod rows;
 
 pub(crate) async fn query_consistent_local<S>(
-    raft: &Raft<TypeConfigSqlite>,
+    raft: &Raft<TypeConfigSqlite, StateMachineSqlite>,
     log_statements: bool,
     read_pool: SqlitePool,
     stmt: S,
     params: Params,
+    read_policy: ReadPolicy,
 ) -> Result<Vec<RowOwned>, Error>
 where
     S: Into<Cow<'static, str>>,
 {
-    let _ = raft.ensure_linearizable().await?;
+    let _ = raft.ensure_linearizable(read_policy).await?;
     query_owned_local(log_statements, read_pool, stmt, params).await
 }
 

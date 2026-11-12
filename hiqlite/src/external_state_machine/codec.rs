@@ -190,7 +190,7 @@ tuple_codec!(A, B);
 tuple_codec!(A, B, C);
 tuple_codec!(A, B, C, D);
 
-/// Implements [`ExternalCodec`](crate::external_state_machine::ExternalCodec)
+/// Implements [`ExternalCodec`]
 /// for a struct by encoding the listed fields in order.
 ///
 /// List every field exactly once, in declaration order, to stay byte-compatible

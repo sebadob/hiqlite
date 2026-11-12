@@ -53,7 +53,6 @@ impl Client {
             leader_cache,
             #[cfg(feature = "sqlite")]
             leader_db,
-            // TODO do we even still need this for a local client? -> all raft messages should use internal API ?
             nodes: Vec::default(),
             client: None,
             #[cfg(feature = "cache")]

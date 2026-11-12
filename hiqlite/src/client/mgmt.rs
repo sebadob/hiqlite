@@ -1,9 +1,13 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
 use crate::helpers::deserialize_serde;
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+use crate::helpers::{shutdown_transfer_deadline, transfer_leadership_before_shutdown};
 use crate::network::HEADER_NAME_SECRET;
 use crate::{Client, Error};
+use openraft::RaftTypeConfig;
 use openraft::ServerState;
+use openraft::type_config::async_runtime::watch::WatchReceiver;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -12,10 +16,12 @@ use tracing::{debug, info};
 
 #[cfg(feature = "cache")]
 use crate::network::management::{self, ClusterLeaveReq};
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::TypeConfigKV;
+#[cfg(feature = "sqlite")]
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::writer::WriterRequest;
-#[cfg(any(feature = "sqlite", feature = "cache"))]
-use crate::{Node, NodeId};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use openraft::RaftMetrics;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
@@ -31,9 +37,9 @@ const CLUSTER_SYNC_ALLOWED_DIFF: u64 = 100;
 impl Client {
     /// Get cluster metrics for the database Raft.
     #[cfg(feature = "sqlite")]
-    pub async fn metrics_db(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
+    pub async fn metrics_db(&self) -> Result<RaftMetrics<TypeConfigSqlite>, Error> {
         if let Some(state) = &self.inner.state {
-            let metrics = state.raft_db.raft.metrics().borrow().clone();
+            let metrics = state.raft_db.raft.metrics().borrow_watched().clone();
             Ok(metrics)
         } else {
             let url = self
@@ -45,9 +51,9 @@ impl Client {
 
     /// Get cluster metrics for the cache Raft.
     #[cfg(feature = "cache")]
-    pub async fn metrics_cache(&self) -> Result<RaftMetrics<NodeId, Node>, Error> {
+    pub async fn metrics_cache(&self) -> Result<RaftMetrics<TypeConfigKV>, Error> {
         if let Some(state) = &self.inner.state {
-            let metrics = state.raft_cache.raft.metrics().borrow().clone();
+            let metrics = state.raft_cache.raft.metrics().borrow_watched().clone();
             Ok(metrics)
         } else {
             let url = self
@@ -58,7 +64,10 @@ impl Client {
     }
 
     // This is separated from the `self.send_with_retry_db()` to avoid recursion on leader unreachable
-    async fn get_metrics_remote(&self, url: String) -> Result<RaftMetrics<NodeId, Node>, Error> {
+    async fn get_metrics_remote<C>(&self, url: String) -> Result<RaftMetrics<C>, Error>
+    where
+        C: RaftTypeConfig,
+    {
         // This should never be called if we have a local client with its own replicated data
         debug_assert!(
             self.inner.state.is_none(),
@@ -199,17 +208,53 @@ impl Client {
 
     /// Wait until this node is in sync with the rest of the cluster.
     /// Works on local clients only; for remote clients it waits forever, because a remote client
-    /// cannot know how far its server-side node has caught up.
+    /// cannot know how far its server-side node has caught up. A single instance returns right
+    /// away, as it is always in sync with itself.
     ///
     /// This is meant to be called after `start_node()` returned and before serving traffic: a
     /// node that was offline for longer catches up in the background, and this function waits
     /// until its state machine(s) are close enough to the cluster tip to serve reads again.
-    /// "Close enough" means within [`CLUSTER_SYNC_ALLOWED_DIFF`] log entries of the leader's last
+    /// "Close enough" means within `CLUSTER_SYNC_ALLOWED_DIFF` log entries of the leader's last
     /// log index - followers are normally a bit behind the leader, so we never require an exact
     /// index match.
     pub async fn wait_for_cluster_sync(&self) {
-        // fast path: a single instance will always be in sync with itself
-        if self.inner.nodes.len() == 1 {
+        // Fast path: a single instance will always be in sync with itself.
+        // The node list only belongs to a remote client, so a local client takes the member count
+        // from its own Raft membership, like `shutdown_execute` does.
+        #[allow(unused_mut)]
+        let mut single_instance = true;
+
+        if let Some(state) = &self.inner.state {
+            #[cfg(feature = "sqlite")]
+            {
+                let members = state
+                    .raft_db
+                    .raft
+                    .metrics()
+                    .borrow_watched()
+                    .membership_config
+                    .nodes()
+                    .count();
+                single_instance &= members == 1;
+            }
+
+            #[cfg(feature = "cache")]
+            {
+                let members = state
+                    .raft_cache
+                    .raft
+                    .metrics()
+                    .borrow_watched()
+                    .membership_config
+                    .nodes()
+                    .count();
+                single_instance &= members == 1;
+            }
+        } else {
+            single_instance = self.inner.nodes.len() == 1;
+        }
+
+        if single_instance {
             return;
         }
 
@@ -265,7 +310,7 @@ impl Client {
                 Error::Error("Cluster sync check works on local clients only".into())
             })?;
 
-        let our_metrics = state.raft_db.raft.metrics().borrow().clone();
+        let our_metrics = state.raft_db.raft.metrics().borrow_watched().clone();
         our_metrics.running_state.clone()?;
 
         // Our own state machine progress - what is actually servable to queries right now.
@@ -286,7 +331,7 @@ impl Client {
             let url = self
                 .build_addr("/cluster/metrics/sqlite", &self.inner.leader_db)
                 .await;
-            self.get_metrics_local(url)
+            self.get_metrics_local::<TypeConfigSqlite>(url)
                 .await?
                 .last_log_index
                 .unwrap_or(0)
@@ -311,7 +356,7 @@ impl Client {
                 Error::Error("Cluster sync check works on local clients only".into())
             })?;
 
-        let our_metrics = state.raft_cache.raft.metrics().borrow().clone();
+        let our_metrics = state.raft_cache.raft.metrics().borrow_watched().clone();
         our_metrics.running_state.clone()?;
 
         // Our own state machine progress - what is actually servable to queries right now.
@@ -332,7 +377,7 @@ impl Client {
             let url = self
                 .build_addr("/cluster/metrics/cache", &self.inner.leader_cache)
                 .await;
-            self.get_metrics_local(url)
+            self.get_metrics_local::<TypeConfigKV>(url)
                 .await?
                 .last_log_index
                 .unwrap_or(0)
@@ -351,7 +396,10 @@ impl Client {
     // Fetch metrics from a node's API server over HTTP. Local clients use this to query the
     // current leader's own metrics (they have no stored HTTP client or API secret, so we build
     // them on demand here).
-    async fn get_metrics_local(&self, url: String) -> Result<RaftMetrics<NodeId, Node>, Error> {
+    async fn get_metrics_local<C>(&self, url: String) -> Result<RaftMetrics<C>, Error>
+    where
+        C: RaftTypeConfig,
+    {
         let state = self
             .inner
             .state
@@ -437,7 +485,7 @@ impl Client {
                 .raft_cache
                 .raft
                 .metrics()
-                .borrow()
+                .borrow_watched()
                 .membership_config
                 .nodes()
                 .count();
@@ -449,7 +497,7 @@ impl Client {
                 .raft_db
                 .raft
                 .metrics()
-                .borrow()
+                .borrow_watched()
                 .membership_config
                 .nodes()
                 .count();
@@ -491,9 +539,14 @@ impl Client {
             time::sleep(Duration::from_millis(9500)).await;
         }
 
+        // The handovers of this shutdown share one budget, so a build with both groups doesn't stall
+        // for two election timeouts. The group that goes first still gets its whole timeout.
+        #[cfg(any(feature = "sqlite", feature = "cache"))]
+        let transfer_deadline = shutdown_transfer_deadline(state);
+
         #[cfg(feature = "cache")]
         {
-            let mut metrics = state.raft_cache.raft.metrics().borrow().clone();
+            let mut metrics = state.raft_cache.raft.metrics().borrow_watched().clone();
 
             for _ in 0..5 {
                 if metrics.current_leader.is_some() {
@@ -501,7 +554,7 @@ impl Client {
                 }
                 info!("Delaying cache cluster leave because of no existing leader");
                 time::sleep(Duration::from_secs(1)).await;
-                metrics = state.raft_cache.raft.metrics().borrow().clone();
+                metrics = state.raft_cache.raft.metrics().borrow_watched().clone();
             }
 
             if !state.raft_cache.cache_storage_disk {
@@ -546,8 +599,12 @@ impl Client {
 
             info!("Shutting down raft cache layer");
 
-            // TODO as soon openraft-0.10 is out, we will be able to trigger a pre-emptive
-            //  leader switch, if this node is the leader. This will smooth out things even more.
+            transfer_leadership_before_shutdown(
+                state,
+                &crate::app_state::RaftType::Cache,
+                transfer_deadline,
+            )
+            .await;
 
             state
                 .raft_cache
@@ -569,7 +626,7 @@ impl Client {
                     .raft_db
                     .raft
                     .metrics()
-                    .borrow()
+                    .borrow_watched()
                     .current_leader
                     .is_some()
                 {
@@ -579,8 +636,12 @@ impl Client {
                 time::sleep(Duration::from_secs(1)).await;
             }
 
-            // TODO as soon openraft-0.10 is out, we will be able to trigger a pre-emptive
-            //  leader switch if this node is the leader. This will smooth out things even more.
+            transfer_leadership_before_shutdown(
+                state,
+                &crate::app_state::RaftType::Sqlite,
+                transfer_deadline,
+            )
+            .await;
 
             state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
 

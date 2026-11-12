@@ -2,6 +2,7 @@ use crate::start::{TlsCombo, build_config};
 use crate::{Cache, TEST_DATA_DIR, cache, check, log};
 use futures_util::future::join_all;
 use hiqlite::{Client, Error, start_node_with_cache};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio::{fs, time};
@@ -25,6 +26,22 @@ pub async fn test_self_healing(
     } else {
         client_2 = modify_cache_restart_after_purge(client_2, 2, combo).await?;
     };
+    check::is_client_db_healthy(&client_1, Some(1)).await?;
+    check::is_client_db_healthy(&client_2, Some(2)).await?;
+    check::is_client_db_healthy(&client_3, Some(3)).await?;
+    log("Client has self-healed successfully");
+
+    // A record with a broken CRC rolls the WAL back to the last healthy one, which means the
+    // leader has to re-replicate a log range it already counted as matching for that node.
+    log("Check recovery from a corrupted WAL record (auto-heal)");
+    let client_healed = if !is_leader(&client_1, 1).await? {
+        client_1 = shutdown_corrupt_wal_restart(client_1, &client_2, 1, combo).await?;
+        &client_1
+    } else {
+        client_2 = shutdown_corrupt_wal_restart(client_2, &client_1, 2, combo).await?;
+        &client_2
+    };
+    check::is_client_db_healthy(client_healed, None).await?;
     check::is_client_db_healthy(&client_1, Some(1)).await?;
     check::is_client_db_healthy(&client_2, Some(2)).await?;
     check::is_client_db_healthy(&client_3, Some(3)).await?;
@@ -211,8 +228,6 @@ async fn shutdown_remove_all_restart(
         "Re-starting client {} after full data deletion",
         node_id
     ));
-    // TODO the start node sometimes gets stuck here, only after full data deletion
-    // no way found to reproduce it so far, probably some race condition in db cluster join.
     let client = start_node_with_cache::<Cache>(build_config(node_id, combo).await).await?;
     time::sleep(Duration::from_millis(150)).await;
 
@@ -255,6 +270,89 @@ async fn shutdown_remove_sm_db_restart(
 //     Ok(client)
 // }
 
+async fn shutdown_corrupt_wal_restart(
+    client: Client,
+    reference: &Client,
+    node_id: u64,
+    combo: TlsCombo,
+) -> Result<Client, Error> {
+    log(format!("Shutting down client {}", node_id));
+    client.shutdown().await?;
+    time::sleep(Duration::from_secs(1)).await;
+
+    let mut wal_files: Vec<PathBuf> = Vec::new();
+    let mut dir = fs::read_dir(folder_logs(node_id)).await?;
+    while let Some(entry) = dir.next_entry().await? {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "wal") {
+            wal_files.push(path);
+        }
+    }
+    wal_files.sort();
+    let wal_path = wal_files
+        .last()
+        .cloned()
+        .expect("the node has at least one WAL file");
+
+    let mut buf = fs::read(&wal_path).await?;
+    // the record layout is: log id (8), CRC (4), data length (4), data
+    const RECORD_HEADER_LEN: usize = 8 + 4 + 4;
+    // magic no (7), version (1), id_from (8), id_until (8), data_start (4), data_end (4) - and
+    // the first record starts right at the end of that header
+    let mut offset = 7 + 1 + 8 + 8 + 4 + 4;
+
+    // step over the first record, so the healing rolls back to it and not to an empty log
+    assert!(
+        offset + RECORD_HEADER_LEN <= buf.len(),
+        "the WAL must have at least 2 records"
+    );
+    let data_len = u32::from_be_bytes(
+        buf[offset + 12..offset + RECORD_HEADER_LEN]
+            .try_into()
+            .expect("4 bytes"),
+    ) as usize;
+    assert!(data_len > 0, "the first WAL record must have data");
+    offset += RECORD_HEADER_LEN + data_len;
+    assert!(
+        offset + RECORD_HEADER_LEN < buf.len(),
+        "the WAL must have at least 2 records"
+    );
+
+    // flip the first byte of the second record's data, which breaks its CRC
+    buf[offset + RECORD_HEADER_LEN] ^= 0xFF;
+    log(format!(
+        "Corrupting the second WAL record of {}",
+        wal_path.display()
+    ));
+    fs::write(&wal_path, &buf).await?;
+
+    // a leftover lock file is what makes the WAL run its deep integrity check on startup
+    let path_lock_file = format!("{}/lock.hql", folder_logs(node_id));
+    log(format!(
+        "Mocking crashed instance - lock file not correctly cleaned up {}",
+        path_lock_file
+    ));
+    fs::File::create_new(path_lock_file).await?;
+
+    log(format!("Re-starting client {}", node_id));
+    let client = start_node_with_cache::<Cache>(build_config(node_id, combo).await).await?;
+    time::sleep(Duration::from_millis(150)).await;
+
+    // the leader must re-replicate the range that the integrity check rolled back
+    let expected = reference.metrics_db().await?.last_log_index;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while client.metrics_db().await?.last_log_index != expected && Instant::now() < deadline {
+        time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(
+        client.metrics_db().await?.last_log_index,
+        expected,
+        "the leader must re-replicate the log range the WAL rolled back on node {node_id}"
+    );
+
+    Ok(client)
+}
+
 async fn is_leader(client: &Client, node_id: u64) -> Result<bool, Error> {
     if let Some(leader) = client.metrics_db().await?.current_leader {
         Ok(leader == node_id)
@@ -267,9 +365,9 @@ fn folder_base(node_id: u64) -> String {
     format!("{}/node_{}", TEST_DATA_DIR, node_id)
 }
 
-// fn folder_logs(node_id: u64) -> String {
-//     format!("{}/logs", folder_base(node_id))
-// }
+fn folder_logs(node_id: u64) -> String {
+    format!("{}/logs", folder_base(node_id))
+}
 
 fn folder_state_machine(node_id: u64) -> String {
     format!("{}/state_machine", folder_base(node_id))

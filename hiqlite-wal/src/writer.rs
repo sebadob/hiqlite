@@ -4,7 +4,6 @@ use crate::log_store_impl::{deserialize, serialize};
 use crate::metadata::Metadata;
 use crate::reader::LogReadMemo;
 use crate::wal::WalFileSet;
-use openraft::{LeaderId, LogId};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -115,12 +114,10 @@ pub fn spawn(
         front.mmap()?;
         front.read_logs(front.id_from, front.id_until, &mut memo, &mut buf)?;
         let (_, bytes) = buf.first().unwrap();
-        let log: openraft::log_id::LogId<u64> = deserialize(bytes)?;
-        let log_id: openraft::log_id::LogId<u64> = LogId {
-            leader_id: LeaderId {
-                term: log.leader_id.term,
-                node_id: log.leader_id.node_id,
-            },
+        let log: openraft::LogId<openraft::impls::leader_id_adv::LeaderId<u64, u64>> =
+            deserialize(bytes)?;
+        let log_id = openraft::LogId {
+            leader_id: log.leader_id,
             index: log.index - 1,
         };
         front.mmap_drop();
@@ -481,7 +478,7 @@ mod tests {
         let (entry_tx, entry_rx) = flume::bounded(1);
         tx.send(Action::Append {
             rx: entry_rx,
-            callback: Box::new(|| {}),
+            callback: Box::new(|_| {}),
             ack: ack_tx,
         })
         .unwrap();

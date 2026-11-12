@@ -6,6 +6,7 @@ use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{QueryWrite, StateMachineSqlite};
 use crate::{Client, Error, NodeConfig};
 use chrono::{DateTime, Utc};
+use openraft::type_config::async_runtime::watch::WatchReceiver;
 use std::env;
 use std::ops::Sub;
 use std::path::Path;
@@ -478,7 +479,7 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
 
     let last_log;
     loop {
-        let metrics = state.raft_db.raft.metrics().borrow().clone();
+        let metrics = state.raft_db.raft.metrics().borrow_watched().clone();
         if let Some(last_applied) = metrics.last_applied
             && last_applied.index >= reqs
         {
@@ -498,7 +499,14 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
     }
 
     // wait until snapshot has been built
-    while state.raft_db.raft.metrics().borrow().snapshot.is_none() {
+    while state
+        .raft_db
+        .raft
+        .metrics()
+        .borrow_watched()
+        .snapshot
+        .is_none()
+    {
         info!("Waiting for snapshot build to finish");
         time::sleep(Duration::from_millis(100)).await;
     }
