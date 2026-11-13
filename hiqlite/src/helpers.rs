@@ -490,7 +490,7 @@ pub async fn validate_db_backup_snapshot(path: String) -> Result<(), Error> {
 #[cfg(all(test, feature = "cache"))]
 mod tests {
     use super::*;
-    use crate::store::state_machine::memory::TypeConfigKV;
+    use crate::store::state_machine::memory::TypeConfigCache;
     use openraft::impls::leader_id_adv::LeaderId;
     use openraft::type_config::alias::{LogIdOf, MembershipOf, StoredMembershipOf};
     use std::collections::BTreeMap;
@@ -500,7 +500,7 @@ mod tests {
         leader: Option<u64>,
         voters: &[u64],
         matched: &[(u64, u64)],
-    ) -> openraft::RaftMetrics<TypeConfigKV> {
+    ) -> openraft::RaftMetrics<TypeConfigCache> {
         let nodes = voters
             .iter()
             .map(|id| {
@@ -515,7 +515,7 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
 
-        let membership = MembershipOf::<TypeConfigKV>::new(
+        let membership = MembershipOf::<TypeConfigCache>::new(
             vec![BTreeSet::from_iter(voters.iter().copied())],
             nodes,
         )
@@ -524,7 +524,7 @@ mod tests {
         let mut metrics = openraft::RaftMetrics::new_initial(our_id);
         metrics.current_leader = leader;
         metrics.membership_config =
-            Arc::new(StoredMembershipOf::<TypeConfigKV>::new(None, membership));
+            Arc::new(StoredMembershipOf::<TypeConfigCache>::new(None, membership));
         metrics.replication = Some(
             matched
                 .iter()
@@ -534,8 +534,8 @@ mod tests {
         metrics
     }
 
-    fn log_id(term: u64, leader: u64, index: u64) -> LogIdOf<TypeConfigKV> {
-        LogIdOf::<TypeConfigKV> {
+    fn log_id(term: u64, leader: u64, index: u64) -> LogIdOf<TypeConfigCache> {
+        LogIdOf::<TypeConfigCache> {
             leader_id: LeaderId {
                 term,
                 node_id: leader,

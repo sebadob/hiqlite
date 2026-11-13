@@ -9,7 +9,7 @@
 use crate::CacheVariants;
 use crate::store::logs::logs_dir_cache;
 use crate::store::logs::memory::LogStoreMemory;
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::TypeConfigCache;
 use crate::store::state_machine::memory::state_machine::StateMachineMemory;
 use hiqlite_wal::{LogStore, LogSync};
 use openraft::StorageError;
@@ -38,7 +38,7 @@ impl CacheVariants for TestCache {
     }
 }
 
-type Wal = LogStore<TypeConfigKV>;
+type Wal = LogStore<TypeConfigCache>;
 
 type Mem = LogStoreMemory;
 
@@ -71,12 +71,12 @@ impl Builder {
     }
 }
 
-impl StoreBuilder<TypeConfigKV, Wal, Sm, ()> for Builder {
-    async fn build(&self) -> Result<((), Wal, Sm), StorageError<TypeConfigKV>> {
+impl StoreBuilder<TypeConfigCache, Wal, Sm, ()> for Builder {
+    async fn build(&self) -> Result<((), Wal, Sm), StorageError<TypeConfigCache>> {
         let (base, sm) = self.sm().await;
 
         let wal =
-            LogStore::<TypeConfigKV>::start(logs_dir_cache(&base), LogSync::Immediate, WAL_SIZE)
+            LogStore::<TypeConfigCache>::start(logs_dir_cache(&base), LogSync::Immediate, WAL_SIZE)
                 .await
                 .unwrap();
 
@@ -84,8 +84,8 @@ impl StoreBuilder<TypeConfigKV, Wal, Sm, ()> for Builder {
     }
 }
 
-impl StoreBuilder<TypeConfigKV, Mem, Sm, ()> for Builder {
-    async fn build(&self) -> Result<((), Mem, Sm), StorageError<TypeConfigKV>> {
+impl StoreBuilder<TypeConfigCache, Mem, Sm, ()> for Builder {
+    async fn build(&self) -> Result<((), Mem, Sm), StorageError<TypeConfigCache>> {
         let (_base, sm) = self.sm().await;
 
         Ok(((), Mem::new(), sm))
@@ -96,9 +96,9 @@ impl StoreBuilder<TypeConfigKV, Mem, Sm, ()> for Builder {
 /// suites can run in parallel.
 async fn run_suite<L>(dir_name: &str)
 where
-    L: RaftLogStorage<TypeConfigKV>,
-    Sm: RaftStateMachine<TypeConfigKV>,
-    Builder: StoreBuilder<TypeConfigKV, L, Sm, ()>,
+    L: RaftLogStorage<TypeConfigCache>,
+    Sm: RaftStateMachine<TypeConfigCache>,
+    Builder: StoreBuilder<TypeConfigCache, L, Sm, ()>,
 {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -113,7 +113,7 @@ where
         next: AtomicUsize::new(0),
     };
 
-    Suite::<TypeConfigKV, L, Sm, Builder, ()>::test_all(builder)
+    Suite::<TypeConfigCache, L, Sm, Builder, ()>::test_all(builder)
         .await
         .unwrap();
 }

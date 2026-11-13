@@ -1,5 +1,5 @@
 use crate::store::StorageResult;
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::TypeConfigCache;
 use openraft::OptionalSend;
 use openraft::storage::{IOFlushed, LogState, RaftLogReader, RaftLogStorage};
 use openraft::type_config::alias::{EntryOf, LogIdOf, VoteOf};
@@ -11,12 +11,12 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 
-type Logs = Arc<RwLock<VecDeque<EntryOf<TypeConfigKV>>>>;
+type Logs = Arc<RwLock<VecDeque<EntryOf<TypeConfigCache>>>>;
 
 #[derive(Debug, Clone)]
 struct LogData {
-    last_purged: Option<LogIdOf<TypeConfigKV>>,
-    vote: Option<VoteOf<TypeConfigKV>>,
+    last_purged: Option<LogIdOf<TypeConfigCache>>,
+    vote: Option<VoteOf<TypeConfigCache>>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,11 +41,11 @@ impl LogStoreMemory {
     }
 }
 
-impl RaftLogReader<TypeConfigKV> for LogStoreMemory {
+impl RaftLogReader<TypeConfigCache> for LogStoreMemory {
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
         range: RB,
-    ) -> StorageResult<Vec<EntryOf<TypeConfigKV>>> {
+    ) -> StorageResult<Vec<EntryOf<TypeConfigCache>>> {
         let start = match range.start_bound() {
             Bound::Included(i) => *i,
             Bound::Excluded(i) => *i + 1,
@@ -104,15 +104,15 @@ impl RaftLogReader<TypeConfigKV> for LogStoreMemory {
         Ok(res)
     }
 
-    async fn read_vote(&mut self) -> StorageResult<Option<VoteOf<TypeConfigKV>>> {
+    async fn read_vote(&mut self) -> StorageResult<Option<VoteOf<TypeConfigCache>>> {
         Ok(self.data.lock().await.vote)
     }
 }
 
-impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
+impl RaftLogStorage<TypeConfigCache> for LogStoreMemory {
     type LogReader = Self;
 
-    async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfigKV>> {
+    async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfigCache>> {
         let last_purged_log_id = self.data.lock().await.last_purged;
 
         // Per the RaftLogStorage contract, `last_log_id` is the last present entry, or
@@ -149,7 +149,7 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
     // }
 
     #[tracing::instrument(level = "trace", skip(self))]
-    async fn save_vote(&mut self, vote: &VoteOf<TypeConfigKV>) -> Result<(), io::Error> {
+    async fn save_vote(&mut self, vote: &VoteOf<TypeConfigCache>) -> Result<(), io::Error> {
         let mut lock = self.data.lock().await;
         lock.vote = Some(*vote);
         Ok(())
@@ -159,10 +159,10 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
     async fn append<I>(
         &mut self,
         entries: I,
-        callback: IOFlushed<TypeConfigKV>,
+        callback: IOFlushed<TypeConfigCache>,
     ) -> StorageResult<()>
     where
-        I: IntoIterator<Item = EntryOf<TypeConfigKV>> + OptionalSend,
+        I: IntoIterator<Item = EntryOf<TypeConfigCache>> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
         {
@@ -180,7 +180,7 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
     #[tracing::instrument(level = "debug", skip(self))]
     async fn truncate_after(
         &mut self,
-        last_log_id: Option<LogIdOf<TypeConfigKV>>,
+        last_log_id: Option<LogIdOf<TypeConfigCache>>,
     ) -> StorageResult<()> {
         // keep everything up to and including `last_log_id`, drop the rest; `None` means all
         let from = match last_log_id {
@@ -207,7 +207,7 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    async fn purge(&mut self, log_id: LogIdOf<TypeConfigKV>) -> Result<(), io::Error> {
+    async fn purge(&mut self, log_id: LogIdOf<TypeConfigCache>) -> Result<(), io::Error> {
         {
             let mut logs = self.logs.write().await;
 

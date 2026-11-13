@@ -12,7 +12,7 @@ use tracing::{debug, error, warn};
 
 use crate::network::{WireSnapshotMeta, WireVote};
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::TypeConfigCache;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
@@ -37,13 +37,13 @@ pub enum RaftStreamRequest {
     TransferLeaderDB((usize, TransferLeaderRequest<TypeConfigSqlite>)),
 
     #[cfg(feature = "cache")]
-    AppendCache((usize, AppendEntriesRequest<TypeConfigKV>)),
+    AppendCache((usize, AppendEntriesRequest<TypeConfigCache>)),
     #[cfg(feature = "cache")]
-    VoteCache((usize, VoteRequest<TypeConfigKV>)),
+    VoteCache((usize, VoteRequest<TypeConfigCache>)),
     #[cfg(feature = "cache")]
     SnapshotCache(SnapshotWireRequest),
     #[cfg(feature = "cache")]
-    TransferLeaderCache((usize, TransferLeaderRequest<TypeConfigKV>)),
+    TransferLeaderCache((usize, TransferLeaderRequest<TypeConfigCache>)),
 }
 
 /// One chunk of a streamed snapshot. openraft hands the network the snapshot data instead
@@ -77,13 +77,15 @@ pub enum RaftStreamResponsePayload {
     TransferLeaderDB(Result<TransferLeaderResponse<TypeConfigSqlite>, RaftError<TypeConfigSqlite>>),
 
     #[cfg(feature = "cache")]
-    AppendCache(Result<AppendEntriesResponse<TypeConfigKV>, RaftError<TypeConfigKV>>),
+    AppendCache(Result<AppendEntriesResponse<TypeConfigCache>, RaftError<TypeConfigCache>>),
     #[cfg(feature = "cache")]
-    VoteCache(Result<VoteResponse<TypeConfigKV>, RaftError<TypeConfigKV>>),
+    VoteCache(Result<VoteResponse<TypeConfigCache>, RaftError<TypeConfigCache>>),
     #[cfg(feature = "cache")]
-    SnapshotCache(Result<SnapshotResponse<TypeConfigKV>, StreamingError<TypeConfigKV>>),
+    SnapshotCache(Result<SnapshotResponse<TypeConfigCache>, StreamingError<TypeConfigCache>>),
     #[cfg(feature = "cache")]
-    TransferLeaderCache(Result<TransferLeaderResponse<TypeConfigKV>, RaftError<TypeConfigKV>>),
+    TransferLeaderCache(
+        Result<TransferLeaderResponse<TypeConfigCache>, RaftError<TypeConfigCache>>,
+    ),
 }
 
 #[derive(Debug)]
@@ -400,7 +402,7 @@ async fn snapshot_chunk_db(
 async fn snapshot_chunk_cache(
     state: &AppStateExt,
     req: SnapshotWireRequest,
-) -> Result<SnapshotResponse<TypeConfigKV>, StreamingError<TypeConfigKV>> {
+) -> Result<SnapshotResponse<TypeConfigCache>, StreamingError<TypeConfigCache>> {
     let receiver = receiver_file(&state.raft_cache.path_snapshots, "temp~", &req)
         .await
         .map_err(|err| StreamingError::Unreachable(Unreachable::new(&err)))?;
@@ -423,7 +425,7 @@ async fn snapshot_chunk_cache(
         )
     };
 
-    let snapshot = SnapshotOf::<TypeConfigKV, _> {
+    let snapshot = SnapshotOf::<TypeConfigCache, _> {
         meta: req.meta,
         snapshot: data,
     };

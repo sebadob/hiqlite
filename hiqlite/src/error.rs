@@ -32,9 +32,9 @@ type ConfigDb = crate::store::state_machine::sqlite::TypeConfigSqlite;
 type ConfigDb = crate::network::TypeConfigWire;
 
 #[cfg(feature = "cache")]
-type ConfigKv = crate::store::state_machine::memory::TypeConfigKV;
+type ConfigCache = crate::store::state_machine::memory::TypeConfigCache;
 #[cfg(not(feature = "cache"))]
-type ConfigKv = crate::network::TypeConfigWire;
+type ConfigCache = crate::network::TypeConfigWire;
 
 // The serde derives stay for the JSON API path and cross-decode tooling; the native derives make
 // this type flow through `helpers::serialize` / `helpers::deserialize`. The openraft payload
@@ -60,14 +60,16 @@ pub enum Error {
     CheckIsLeaderErrorDb(
         #[bincode(with_serde)] Box<RaftError<ConfigDb, LinearizableReadError<ConfigDb>>>,
     ),
-    #[error("CheckIsLeaderErrorKv: {0}")]
-    CheckIsLeaderErrorKv(
-        #[bincode(with_serde)] Box<RaftError<ConfigKv, LinearizableReadError<ConfigKv>>>,
+    #[error("CheckIsLeaderErrorCache: {0}")]
+    CheckIsLeaderErrorCache(
+        #[bincode(with_serde)] Box<RaftError<ConfigCache, LinearizableReadError<ConfigCache>>>,
     ),
     #[error("ClientWriteErrorDb: {0}")]
     ClientWriteErrorDb(#[bincode(with_serde)] Box<RaftError<ConfigDb, ClientWriteError<ConfigDb>>>),
-    #[error("ClientWriteErrorKv: {0}")]
-    ClientWriteErrorKv(#[bincode(with_serde)] Box<RaftError<ConfigKv, ClientWriteError<ConfigKv>>>),
+    #[error("ClientWriteErrorCache: {0}")]
+    ClientWriteErrorCache(
+        #[bincode(with_serde)] Box<RaftError<ConfigCache, ClientWriteError<ConfigCache>>>,
+    ),
     #[error("Config: {0}")]
     Config(#[bincode(with_serde)] Cow<'static, str>),
     #[error("Connect: {0}")]
@@ -81,8 +83,10 @@ pub enum Error {
     Error(#[bincode(with_serde)] Cow<'static, str>),
     #[error("InitializeErrorDb: {0}")]
     InitializeErrorDb(#[bincode(with_serde)] Box<RaftError<ConfigDb, InitializeError<ConfigDb>>>),
-    #[error("InitializeErrorKv: {0}")]
-    InitializeErrorKv(#[bincode(with_serde)] Box<RaftError<ConfigKv, InitializeError<ConfigKv>>>),
+    #[error("InitializeErrorCache: {0}")]
+    InitializeErrorCache(
+        #[bincode(with_serde)] Box<RaftError<ConfigCache, InitializeError<ConfigCache>>>,
+    ),
     /// Error informing about a Raft leader change
     #[error("LeaderChange: {0}")]
     LeaderChange(#[bincode(with_serde)] Cow<'static, str>),
@@ -98,12 +102,12 @@ pub enum Error {
     /// Internal Raft error
     #[error("RaftErrorDb: {0}")]
     RaftErrorDb(#[bincode(with_serde)] Box<RaftError<ConfigDb>>),
-    #[error("RaftErrorKv: {0}")]
-    RaftErrorKv(#[bincode(with_serde)] Box<RaftError<ConfigKv>>),
+    #[error("RaftErrorCache: {0}")]
+    RaftErrorCache(#[bincode(with_serde)] Box<RaftError<ConfigCache>>),
     #[error("RaftErrorFatalDb: {0}")]
     RaftErrorFatalDb(#[bincode(with_serde)] Box<Fatal<ConfigDb>>),
-    #[error("RaftErrorFatalKv: {0}")]
-    RaftErrorFatalKv(#[bincode(with_serde)] Box<Fatal<ConfigKv>>),
+    #[error("RaftErrorFatalCache: {0}")]
+    RaftErrorFatalCache(#[bincode(with_serde)] Box<Fatal<ConfigCache>>),
     /// Internal Raft error
     #[error("RateLimit: {0}")]
     RateLimit(#[bincode(with_serde)] Cow<'static, str>),
@@ -113,8 +117,8 @@ pub enum Error {
     S3(String),
     #[error("SnapshotErrorDb: {0}")]
     SnapshotErrorDb(#[bincode(with_serde)] Box<StreamingError<ConfigDb>>),
-    #[error("SnapshotErrorKv: {0}")]
-    SnapshotErrorKv(#[bincode(with_serde)] Box<StreamingError<ConfigKv>>),
+    #[error("SnapshotErrorCache: {0}")]
+    SnapshotErrorCache(#[bincode(with_serde)] Box<StreamingError<ConfigCache>>),
     /// All kinds of SQLite database errors, mostly just a wrapper for the `rusqlite` error apart
     /// from `QueryReturnedNoRows`.
     #[error("Sqlite: {0}")]
@@ -146,7 +150,7 @@ impl Error {
         {
             return Some((err.leader_id, &err.leader_node));
         }
-        if let Self::ClientWriteErrorKv(err) = self
+        if let Self::ClientWriteErrorCache(err) = self
             && let Some(err) = err.api_error()
             && let ClientWriteError::ForwardToLeader(err) = err
         {
@@ -158,7 +162,7 @@ impl Error {
         {
             return Some((err.leader_id, &err.leader_node));
         }
-        if let Self::CheckIsLeaderErrorKv(err) = self
+        if let Self::CheckIsLeaderErrorCache(err) = self
             && let Some(err) = err.forward_to_leader()
         {
             return Some((err.leader_id, &err.leader_node));
@@ -181,7 +185,7 @@ impl IntoResponse for Error {
             Error::Cache(_) => StatusCode::BAD_REQUEST,
             Error::Channel(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::CheckIsLeaderErrorDb(_) => StatusCode::CONFLICT,
-            Error::CheckIsLeaderErrorKv(_) => StatusCode::CONFLICT,
+            Error::CheckIsLeaderErrorCache(_) => StatusCode::CONFLICT,
             Error::ConstraintViolation(_) => StatusCode::BAD_REQUEST,
             Error::Cryptr(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::LeaderChange(_) => StatusCode::CONFLICT,
@@ -195,7 +199,7 @@ impl IntoResponse for Error {
                     StatusCode::INTERNAL_SERVER_ERROR
                 }
             }
-            Error::ClientWriteErrorKv(_) => {
+            Error::ClientWriteErrorCache(_) => {
                 if self.is_forward_to_leader().is_some() {
                     StatusCode::PERMANENT_REDIRECT
                 } else {
@@ -206,16 +210,16 @@ impl IntoResponse for Error {
             Error::Connect(_) => StatusCode::SERVICE_UNAVAILABLE,
             Error::Error(_) => StatusCode::BAD_REQUEST,
             Error::InitializeErrorDb(_) => StatusCode::BAD_REQUEST,
-            Error::InitializeErrorKv(_) => StatusCode::BAD_REQUEST,
+            Error::InitializeErrorCache(_) => StatusCode::BAD_REQUEST,
             Error::RaftErrorDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::RaftErrorKv(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::RaftErrorCache(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::RaftErrorFatalDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::RaftErrorFatalKv(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::RaftErrorFatalCache(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
             Error::Request(_) => StatusCode::BAD_REQUEST,
             Error::S3(_) => StatusCode::BAD_REQUEST,
             Error::SnapshotErrorDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::SnapshotErrorKv(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::SnapshotErrorCache(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Sqlite(_) => StatusCode::BAD_REQUEST,
             Error::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
             Error::Token(_) => StatusCode::UNAUTHORIZED,
@@ -277,10 +281,10 @@ impl From<RaftError<ConfigDb, ClientWriteError<ConfigDb>>> for Error {
 }
 
 #[cfg(feature = "cache")]
-impl From<RaftError<ConfigKv, ClientWriteError<ConfigKv>>> for Error {
-    fn from(value: RaftError<ConfigKv, ClientWriteError<ConfigKv>>) -> Self {
+impl From<RaftError<ConfigCache, ClientWriteError<ConfigCache>>> for Error {
+    fn from(value: RaftError<ConfigCache, ClientWriteError<ConfigCache>>) -> Self {
         trace!("ClientWriteError: {value}");
-        Self::ClientWriteErrorKv(Box::new(value))
+        Self::ClientWriteErrorCache(Box::new(value))
     }
 }
 
@@ -293,10 +297,10 @@ impl From<RaftError<ConfigDb, InitializeError<ConfigDb>>> for Error {
 }
 
 #[cfg(feature = "cache")]
-impl From<RaftError<ConfigKv, InitializeError<ConfigKv>>> for Error {
-    fn from(value: RaftError<ConfigKv, InitializeError<ConfigKv>>) -> Self {
+impl From<RaftError<ConfigCache, InitializeError<ConfigCache>>> for Error {
+    fn from(value: RaftError<ConfigCache, InitializeError<ConfigCache>>) -> Self {
         trace!("InitializeError: {value}");
-        Self::InitializeErrorKv(Box::new(value))
+        Self::InitializeErrorCache(Box::new(value))
     }
 }
 
@@ -309,10 +313,10 @@ impl From<StreamingError<ConfigDb>> for Error {
 }
 
 #[cfg(feature = "cache")]
-impl From<StreamingError<ConfigKv>> for Error {
-    fn from(value: StreamingError<ConfigKv>) -> Self {
+impl From<StreamingError<ConfigCache>> for Error {
+    fn from(value: StreamingError<ConfigCache>) -> Self {
         trace!("SnapshotError: {value}");
-        Self::SnapshotErrorKv(Box::new(value))
+        Self::SnapshotErrorCache(Box::new(value))
     }
 }
 
@@ -325,10 +329,10 @@ impl From<RaftError<ConfigDb>> for Error {
 }
 
 #[cfg(feature = "cache")]
-impl From<RaftError<ConfigKv>> for Error {
-    fn from(value: RaftError<ConfigKv>) -> Self {
+impl From<RaftError<ConfigCache>> for Error {
+    fn from(value: RaftError<ConfigCache>) -> Self {
         trace!("RaftError: {value}");
-        Self::RaftErrorKv(Box::new(value))
+        Self::RaftErrorCache(Box::new(value))
     }
 }
 
@@ -341,10 +345,10 @@ impl From<RaftError<ConfigDb, LinearizableReadError<ConfigDb>>> for Error {
 }
 
 #[cfg(feature = "cache")]
-impl From<RaftError<ConfigKv, LinearizableReadError<ConfigKv>>> for Error {
-    fn from(value: RaftError<ConfigKv, LinearizableReadError<ConfigKv>>) -> Self {
+impl From<RaftError<ConfigCache, LinearizableReadError<ConfigCache>>> for Error {
+    fn from(value: RaftError<ConfigCache, LinearizableReadError<ConfigCache>>) -> Self {
         trace!("CheckIsLeaderError: {value}");
-        Self::CheckIsLeaderErrorKv(Box::new(value))
+        Self::CheckIsLeaderErrorCache(Box::new(value))
     }
 }
 
@@ -357,10 +361,10 @@ impl From<Fatal<ConfigDb>> for Error {
 }
 
 #[cfg(feature = "cache")]
-impl From<Fatal<ConfigKv>> for Error {
-    fn from(value: Fatal<ConfigKv>) -> Self {
+impl From<Fatal<ConfigCache>> for Error {
+    fn from(value: Fatal<ConfigCache>) -> Self {
         trace!("RaftErrorFatal: {value}");
-        Self::RaftErrorFatalKv(Box::new(value))
+        Self::RaftErrorFatalCache(Box::new(value))
     }
 }
 
@@ -373,10 +377,10 @@ impl From<Box<StorageError<ConfigDb>>> for Error {
 }
 
 #[cfg(feature = "cache")]
-impl From<Box<StorageError<ConfigKv>>> for Error {
-    fn from(value: Box<StorageError<ConfigKv>>) -> Self {
+impl From<Box<StorageError<ConfigCache>>> for Error {
+    fn from(value: Box<StorageError<ConfigCache>>) -> Self {
         trace!("RaftErrorFatal: {value}");
-        Self::RaftErrorFatalKv(Box::new(Fatal::StorageError(*value)))
+        Self::RaftErrorFatalCache(Box::new(Fatal::StorageError(*value)))
     }
 }
 

@@ -7,7 +7,7 @@ Hiqlite uses [openraft](https://github.com/datafuselabs/openraft) for the Raft i
 building blocks for a Raft application without the implementations for storage and network. Hiqlite comes with `sqlite`
 feature enabled by default, which will provide a Raft Logs Storage (`hiqlite-wal`) and a State Machine based on SQLite
 via `rusqlite` under the hood. If you activate the `cache` feature, the Raft Logs Storage will be an in-memory
-`VecDeque` and multiple in-memory KV Stores based on in-memory `BTreeMap`s.
+`VecDeque` and multiple in-memory Stores based on in-memory `BTreeMap`s.
 The network connections between nodes are realised with multiplexing WebSockets. The Raft internal network is also
 running on a separate HTTP server to be able to either run the replication traffic on a fully separated network for
 better load distribution and security, or to just not expose any internal endpoints to the public.

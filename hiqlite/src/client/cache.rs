@@ -1,5 +1,5 @@
 use crate::client::helpers::await_channel_response;
-use crate::client::stream::{ClientKVPayload, ClientStreamReq};
+use crate::client::stream::{ClientCachePayload, ClientStreamReq};
 use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::memory::kv_handler::CacheRequestHandler;
@@ -110,7 +110,7 @@ impl Client {
                     key: key.into(),
                     reply: ack,
                 })
-                .expect("kv handler to always be running");
+                .expect("cache handler to always be running");
             let value = await_channel_response(rx).await?;
             Ok(value)
         } else {
@@ -148,7 +148,7 @@ impl Client {
                 .get(cache.hiqlite_cache_index())
                 .unwrap()
                 .send(CacheRequestHandler::SnapshotBuildCacheOnly { reply: ack })
-                .expect("kv handler to always be running");
+                .expect("cache handler to always be running");
             let snapshot = await_channel_response(rx).await?;
 
             let mut res = BTreeMap::new();
@@ -392,7 +392,7 @@ impl Client {
                     key: key.into().to_string(),
                     reply: ack,
                 })
-                .expect("kv handler to always be running");
+                .expect("cache handler to always be running");
             let value = await_channel_response(rx).await?;
             Ok(value)
         } else {
@@ -518,13 +518,13 @@ impl Client {
         } else {
             let (ack, rx) = oneshot::channel();
             let payload = if is_remote_get {
-                ClientStreamReq::KVGet(ClientKVPayload {
+                ClientStreamReq::CacheGet(ClientCachePayload {
                     request_id: self.new_request_id(),
                     cache_req,
                     ack,
                 })
             } else {
-                ClientStreamReq::KV(ClientKVPayload {
+                ClientStreamReq::Cache(ClientCachePayload {
                     request_id: self.new_request_id(),
                     cache_req,
                     ack,
@@ -538,7 +538,7 @@ impl Client {
                 .map_err(|err| Error::Error(err.to_string().into()))?;
             let res = await_channel_response(rx).await??;
             match res {
-                ApiStreamResponsePayload::KV(res) => res,
+                ApiStreamResponsePayload::Cache(res) => res,
                 #[cfg(any(feature = "sqlite", feature = "dlock", feature = "listen_notify"))]
                 _ => unreachable!(),
             }

@@ -1,5 +1,5 @@
 use crate::client::helpers::await_channel_response;
-use crate::client::stream::{ClientKVPayload, ClientStreamReq};
+use crate::client::stream::{ClientCachePayload, ClientStreamReq};
 use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::memory::state_machine::CacheRequest;
@@ -364,7 +364,7 @@ impl Client {
             let (ack, rx) = oneshot::channel();
             self.inner
                 .tx_client_cache
-                .send_async(ClientStreamReq::Notify(ClientKVPayload {
+                .send_async(ClientStreamReq::Notify(ClientCachePayload {
                     request_id: self.new_request_id(),
                     cache_req,
                     ack,

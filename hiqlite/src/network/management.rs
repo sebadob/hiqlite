@@ -182,10 +182,10 @@ async fn are_we_leader(state: &Arc<AppState>, raft_type: &RaftType) -> Result<()
             }
             #[cfg(feature = "cache")]
             if matches!(raft_type, RaftType::Cache) {
-                return Err(Error::CheckIsLeaderErrorKv(Box::new(leader_redirect::<
-                    crate::store::state_machine::memory::TypeConfigKV,
+                return Err(Error::CheckIsLeaderErrorCache(Box::new(leader_redirect::<
+                    crate::store::state_machine::memory::TypeConfigCache,
                 >(
-                    leader_id, leader
+                    leader_id, leader,
                 ))));
             }
 

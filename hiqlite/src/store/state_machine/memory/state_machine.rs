@@ -1,7 +1,7 @@
 use crate::helpers::{atomic_file_switch, deserialize_serde, serialize_serde, set_path_access};
 use crate::store::StorageResult;
 use crate::store::state_machine::memory::kv_handler::{CacheRequestHandler, CacheSnapshot};
-use crate::store::state_machine::memory::{TypeConfigKV, kv_handler};
+use crate::store::state_machine::memory::{TypeConfigCache, kv_handler};
 use crate::{CacheVariants, Error};
 use bincode_next::{Decode, Encode};
 use chrono::Utc;
@@ -34,14 +34,14 @@ use crate::store::state_machine::memory::dlock_handler::{self, *};
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
 
-type Entry = EntryOf<TypeConfigKV>;
+type Entry = EntryOf<TypeConfigCache>;
 
 type SnapshotKVs = Vec<CacheSnapshot>;
 type SnapshotLocks = Vec<u8>;
-type SnapshotDataContent = (SnapshotMetaOf<TypeConfigKV>, SnapshotKVs, SnapshotLocks);
+type SnapshotDataContent = (SnapshotMetaOf<TypeConfigCache>, SnapshotKVs, SnapshotLocks);
 /// The latest snapshot kept in memory (`meta` + serialized bytes) for memory-only mode.
 #[cfg(feature = "in-memory-snapshots")]
-type MemSnapshot = (SnapshotMetaOf<TypeConfigKV>, Vec<u8>);
+type MemSnapshot = (SnapshotMetaOf<TypeConfigCache>, Vec<u8>);
 
 // The variant order is part of the raft log format and must stay stable and
 // feature-independent: adding variants changes the serialized indices of
@@ -142,8 +142,8 @@ pub enum CacheResponse {
 
 #[derive(Debug, Default)]
 pub struct StateMachineData {
-    last_applied_log_id: Option<LogIdOf<TypeConfigKV>>,
-    last_membership: StoredMembershipOf<TypeConfigKV>,
+    last_applied_log_id: Option<LogIdOf<TypeConfigCache>>,
+    last_membership: StoredMembershipOf<TypeConfigCache>,
 }
 
 /// This is a full in-memory state machine acting as a cache.
@@ -174,7 +174,7 @@ pub struct StateMachineMemory {
     pub(crate) tx_dlock: flume::Sender<LockRequest>,
 }
 
-impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
+impl RaftSnapshotBuilder<TypeConfigCache> for Arc<StateMachineMemory> {
     #[cfg(not(feature = "in-memory-snapshots"))]
     type SnapshotData = fs::File;
     #[cfg(feature = "in-memory-snapshots")]
@@ -183,7 +183,7 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
     #[cfg(not(feature = "in-memory-snapshots"))]
     async fn build_snapshot(
         &mut self,
-    ) -> Result<SnapshotOf<TypeConfigKV, Self::SnapshotData>, io::Error> {
+    ) -> Result<SnapshotOf<TypeConfigCache, Self::SnapshotData>, io::Error> {
         let (meta, snapshot_bytes) = self.build_snapshot_data().await?;
         let path = self.persist_snapshot(&meta, &snapshot_bytes).await?;
 
@@ -198,7 +198,7 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
     #[cfg(feature = "in-memory-snapshots")]
     async fn build_snapshot(
         &mut self,
-    ) -> Result<SnapshotOf<TypeConfigKV, Self::SnapshotData>, io::Error> {
+    ) -> Result<SnapshotOf<TypeConfigCache, Self::SnapshotData>, io::Error> {
         let (meta, snapshot_bytes) = self.build_snapshot_data().await?;
 
         // In memory-only mode we keep the snapshot in memory and never touch `data_dir`,
@@ -229,7 +229,7 @@ impl StateMachineMemory {
     /// `SnapshotMeta`, so we keep our own: a timestamp plus the last applied log id. Both the
     /// snapshot reads and the cleanup pick the "newest" one by name, so the timestamp must stay
     /// the leading, fixed-width part.
-    fn snapshot_file_name(meta: &SnapshotMetaOf<TypeConfigKV>) -> String {
+    fn snapshot_file_name(meta: &SnapshotMetaOf<TypeConfigCache>) -> String {
         let now = Utc::now().timestamp();
         match &meta.last_log_id {
             Some(last) => format!("{}-{}-{}", now, last.leader_id, last.index),
@@ -400,7 +400,7 @@ impl StateMachineMemory {
     #[allow(clippy::result_large_err)]
     async fn build_snapshot_data(
         &self,
-    ) -> Result<(SnapshotMetaOf<TypeConfigKV>, Vec<u8>), io::Error> {
+    ) -> Result<(SnapshotMetaOf<TypeConfigCache>, Vec<u8>), io::Error> {
         let data = self.data.read().await;
 
         // Snapshot consistency: this read lock is held across the whole capture below, while
@@ -420,10 +420,10 @@ impl StateMachineMemory {
         for tx in &self.tx_caches {
             let (ack, rx) = oneshot::channel();
             tx.send(CacheRequestHandler::SnapshotBuild { reply: ack })
-                .expect("kv handler to always be running");
+                .expect("cache handler to always be running");
             caches.push(
                 rx.await
-                    .expect("to always receive an answer from kv handler"),
+                    .expect("to always receive an answer from cache handler"),
             );
         }
 
@@ -441,7 +441,7 @@ impl StateMachineMemory {
         #[cfg(not(feature = "dlock"))]
         let locks_bytes: Vec<u8> = Vec::default();
 
-        let meta = SnapshotMetaOf::<TypeConfigKV> {
+        let meta = SnapshotMetaOf::<TypeConfigCache> {
             last_log_id: data.last_applied_log_id,
             last_membership: data.last_membership.clone(),
         };
@@ -459,7 +459,7 @@ impl StateMachineMemory {
     #[allow(clippy::result_large_err)]
     async fn persist_snapshot(
         &self,
-        meta: &SnapshotMetaOf<TypeConfigKV>,
+        meta: &SnapshotMetaOf<TypeConfigCache>,
         snapshot_bytes: &[u8],
     ) -> Result<String, io::Error> {
         let name = Self::snapshot_file_name(meta);
@@ -510,7 +510,7 @@ impl StateMachineMemory {
     #[allow(clippy::result_large_err)]
     async fn apply_snapshot_bytes(
         &self,
-        meta: &SnapshotMetaOf<TypeConfigKV>,
+        meta: &SnapshotMetaOf<TypeConfigCache>,
         bytes: &[u8],
     ) -> Result<(), io::Error> {
         let (meta_snap, kvs, locks) = deserialize_serde::<SnapshotDataContent>(bytes)
@@ -538,9 +538,9 @@ impl StateMachineMemory {
                 .get(idx)
                 .unwrap()
                 .send(CacheRequestHandler::SnapshotInstall { snapshot, ack })
-                .expect("kv handler to always be running");
+                .expect("cache handler to always be running");
             rx.await
-                .expect("to always receive an answer from the kv handler");
+                .expect("to always receive an answer from the cache handler");
         }
 
         #[cfg(feature = "dlock")]
@@ -665,7 +665,7 @@ impl StateMachineMemory {
     }
 }
 
-impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
+impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
     #[cfg(not(feature = "in-memory-snapshots"))]
     type SnapshotData = fs::File;
     #[cfg(feature = "in-memory-snapshots")]
@@ -677,8 +677,8 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         &mut self,
     ) -> Result<
         (
-            Option<LogIdOf<TypeConfigKV>>,
-            StoredMembershipOf<TypeConfigKV>,
+            Option<LogIdOf<TypeConfigCache>>,
+            StoredMembershipOf<TypeConfigCache>,
         ),
         io::Error,
     > {
@@ -688,7 +688,9 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
 
     async fn apply<Strm>(&mut self, mut entries: Strm) -> Result<(), io::Error>
     where
-        Strm: Stream<Item = Result<EntryResponder<TypeConfigKV>, io::Error>> + Unpin + OptionalSend,
+        Strm: Stream<Item = Result<EntryResponder<TypeConfigCache>, io::Error>>
+            + Unpin
+            + OptionalSend,
     {
         let mut data = self.data.write().await;
 
@@ -734,7 +736,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 value,
                                 expires,
                             })
-                            .expect("kv handler to always be running");
+                            .expect("cache handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -748,12 +750,12 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 key: key.to_string(),
                                 reply: ack,
                             })
-                            .expect("kv handler to always be running");
+                            .expect("cache handler to always be running");
 
-                        // The kv handler runs on its own thread per cache and never takes the
+                        // The cache handler runs on its own thread per cache and never takes the
                         // state-machine lock, so awaiting its answer while `data` is held is
                         // deadlock-free. The removal is a raft log entry, applied on all nodes.
-                        CacheResponse::Value(rx.await.expect("kv handler to always answer"))
+                        CacheResponse::Value(rx.await.expect("cache handler to always answer"))
                     }
 
                     CacheRequest::Replace {
@@ -775,9 +777,9 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 expires,
                                 reply: ack,
                             })
-                            .expect("kv handler to always be running");
+                            .expect("cache handler to always be running");
 
-                        CacheResponse::Value(rx.await.expect("kv handler to always answer"))
+                        CacheResponse::Value(rx.await.expect("cache handler to always answer"))
                     }
 
                     CacheRequest::Delete { cache_idx, key } => {
@@ -787,7 +789,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             .send(CacheRequestHandler::Delete {
                                 key: key.to_string(),
                             })
-                            .expect("kv handler to always be running");
+                            .expect("cache handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -797,7 +799,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             .get(cache_idx)
                             .unwrap()
                             .send(CacheRequestHandler::Clear)
-                            .expect("kv handler to always be running");
+                            .expect("cache handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -809,7 +811,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 .get(cache_idx)
                                 .unwrap()
                                 .send(CacheRequestHandler::ClearCounters)
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -820,10 +822,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                     CacheRequest::ClearAll => {
                         for tx in &self.tx_caches {
                             tx.send(CacheRequestHandler::Clear)
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
                             #[cfg(feature = "counters")]
                             tx.send(CacheRequestHandler::ClearCounters)
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
                         }
 
                         CacheResponse::Ok
@@ -936,7 +938,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                     key: key.to_string(),
                                     value,
                                 })
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -961,7 +963,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                     delta: value,
                                     reply: ack,
                                 })
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
 
                             let v = rx.await.unwrap();
                             CacheResponse::CounterValue(Some(v))
@@ -979,7 +981,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 .send(CacheRequestHandler::CounterDel {
                                     key: key.to_string(),
                                 })
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -990,7 +992,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
 
                 EntryPayload::Membership(mem) => {
                     data.last_membership =
-                        StoredMembershipOf::<TypeConfigKV>::new(Some(entry.log_id), mem);
+                        StoredMembershipOf::<TypeConfigCache>::new(Some(entry.log_id), mem);
                     CacheResponse::Empty
                 }
             };
@@ -1013,7 +1015,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     #[tracing::instrument(skip_all)]
     async fn install_snapshot(
         &mut self,
-        meta: &SnapshotMetaOf<TypeConfigKV>,
+        meta: &SnapshotMetaOf<TypeConfigCache>,
         // the received data already lives in the file that got handed to us
         mut snapshot: Self::SnapshotData,
     ) -> Result<(), io::Error> {
@@ -1044,7 +1046,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     #[tracing::instrument(skip_all)]
     async fn install_snapshot(
         &mut self,
-        meta: &SnapshotMetaOf<TypeConfigKV>,
+        meta: &SnapshotMetaOf<TypeConfigCache>,
         snapshot: Self::SnapshotData,
     ) -> Result<(), io::Error> {
         let bytes = snapshot.into_inner();
@@ -1066,7 +1068,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     #[cfg(not(feature = "in-memory-snapshots"))]
     async fn get_current_snapshot(
         &mut self,
-    ) -> Result<Option<SnapshotOf<TypeConfigKV, Self::SnapshotData>>, io::Error> {
+    ) -> Result<Option<SnapshotOf<TypeConfigCache, Self::SnapshotData>>, io::Error> {
         match self.read_current_snapshot().await? {
             None => Ok(None),
             Some((path, (meta, ..))) => {
@@ -1085,7 +1087,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     #[cfg(feature = "in-memory-snapshots")]
     async fn get_current_snapshot(
         &mut self,
-    ) -> Result<Option<SnapshotOf<TypeConfigKV, Self::SnapshotData>>, io::Error> {
+    ) -> Result<Option<SnapshotOf<TypeConfigCache, Self::SnapshotData>>, io::Error> {
         if self.in_memory_only {
             let guard = self.snapshot_mem.read().await;
             return Ok(guard.as_ref().map(|(meta, bytes)| Snapshot {

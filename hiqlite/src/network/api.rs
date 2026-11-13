@@ -531,13 +531,13 @@ pub(crate) enum ApiStreamRequestPayload {
     Backup((crate::NodeId, i64)),
 
     #[cfg(feature = "cache")]
-    KV(CacheRequest),
+    Cache(CacheRequest),
 
     // remote-only clients
     #[cfg(feature = "sqlite")]
     Query(Query),
     #[cfg(feature = "cache")]
-    KVGet(CacheRequest),
+    CacheGet(CacheRequest),
     #[cfg(feature = "dlock")]
     LockAwait(CacheRequest),
     #[cfg(feature = "listen_notify")]
@@ -603,7 +603,7 @@ pub(crate) enum ApiStreamResponsePayload {
     Backup(Result<(), Error>),
 
     #[cfg(feature = "cache")]
-    KV(Result<CacheResponse, Error>),
+    Cache(Result<CacheResponse, Error>),
 
     #[cfg(feature = "dlock")]
     Lock(Result<LockState, Error>),
@@ -942,7 +942,7 @@ async fn handle_socket_concurrent(
                 }
 
                 #[cfg(feature = "cache")]
-                ApiStreamRequestPayload::KV(cache_req) => {
+                ApiStreamRequestPayload::Cache(cache_req) => {
                     // Bounds-check the cache index before committing to the raft log. Embedded
                     // clients resolve indices locally, so an out-of-range index can only arrive
                     // via a hand-crafted wire request; rejecting it here keeps the state
@@ -972,7 +972,7 @@ async fn handle_socket_concurrent(
                     {
                         ApiStreamResponse {
                             request_id,
-                            result: ApiStreamResponsePayload::KV(Err(Error::new(format!(
+                            result: ApiStreamResponsePayload::Cache(Err(Error::new(format!(
                                 "cache index {cache_idx} out of range (0..{})",
                                 state.raft_cache.tx_caches.len()
                             )))),
@@ -983,19 +983,19 @@ async fn handle_socket_concurrent(
                                 let resp: CacheResponse = resp.data;
                                 ApiStreamResponse {
                                     request_id,
-                                    result: ApiStreamResponsePayload::KV(Ok(resp)),
+                                    result: ApiStreamResponsePayload::Cache(Ok(resp)),
                                 }
                             }
                             Err(err) => ApiStreamResponse {
                                 request_id,
-                                result: ApiStreamResponsePayload::KV(Err(Error::from(err))),
+                                result: ApiStreamResponsePayload::Cache(Err(Error::from(err))),
                             },
                         }
                     }
                 }
 
                 #[cfg(feature = "cache")]
-                ApiStreamRequestPayload::KVGet(cache_req) => {
+                ApiStreamRequestPayload::CacheGet(cache_req) => {
                     let (cache_idx, key) = match cache_req {
                         CacheRequest::Get { cache_idx, key } => (cache_idx, key),
                         _ => unreachable!(),
@@ -1008,7 +1008,7 @@ async fn handle_socket_concurrent(
                     if cache_idx >= state.raft_cache.tx_caches.len() {
                         ApiStreamResponse {
                             request_id,
-                            result: ApiStreamResponsePayload::KV(Err(Error::new(format!(
+                            result: ApiStreamResponsePayload::Cache(Err(Error::new(format!(
                                 "cache index {cache_idx} out of range (0..{})",
                                 state.raft_cache.tx_caches.len()
                             )))),
@@ -1021,11 +1021,15 @@ async fn handle_socket_concurrent(
                             .get(cache_idx)
                             .unwrap()
                             .send(CacheRequestHandler::Get { key, reply: ack })
-                            .expect("kv handler to always be running");
-                        let value = rx.await.expect("to always get an answer from kv handler");
+                            .expect("cache handler to always be running");
+                        let value = rx
+                            .await
+                            .expect("to always get an answer from cache handler");
                         ApiStreamResponse {
                             request_id,
-                            result: ApiStreamResponsePayload::KV(Ok(CacheResponse::Value(value))),
+                            result: ApiStreamResponsePayload::Cache(Ok(CacheResponse::Value(
+                                value,
+                            ))),
                         }
                     }
                 }
@@ -1042,10 +1046,10 @@ async fn handle_socket_concurrent(
                         .raft_cache
                         .tx_dlock
                         .send(LockRequest::Await(LockAwaitPayload { key, id, ack }))
-                        .expect("kv handler to always be running");
+                        .expect("cache handler to always be running");
                     let lock_state = rx
                         .await
-                        .expect("to always get an answer from the kv handler");
+                        .expect("to always get an answer from the cache handler");
 
                     ApiStreamResponse {
                         request_id,

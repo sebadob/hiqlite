@@ -21,7 +21,7 @@ use tracing::info;
 #[cfg(feature = "cache")]
 use crate::{
     app_state::StateRaftCache,
-    store::state_machine::memory::{TypeConfigKV, state_machine::StateMachineMemory},
+    store::state_machine::memory::{TypeConfigCache, state_machine::StateMachineMemory},
 };
 #[cfg(feature = "sqlite")]
 use crate::{
@@ -177,7 +177,7 @@ where
     };
 
     let (raft, shutdown_handle) = if node_config.cache_storage_disk {
-        let log_store = hiqlite_wal::LogStore::<TypeConfigKV>::start(
+        let log_store = hiqlite_wal::LogStore::<TypeConfigCache>::start(
             logs::logs_dir_cache(&node_config.data_dir),
             node_config.wal_sync.clone(),
             node_config.wal_size,

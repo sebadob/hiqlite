@@ -248,19 +248,19 @@ pub async fn handle_socket(
 
                 ApiStreamRequestPayload::Query(q) => query(client, request_id, q, None).await,
 
-                ApiStreamRequestPayload::KV(cache_req) => {
+                ApiStreamRequestPayload::Cache(cache_req) => {
                     let res = client.cache_req_retry(cache_req, false).await;
                     ApiStreamResponse {
                         request_id,
-                        result: ApiStreamResponsePayload::KV(res),
+                        result: ApiStreamResponsePayload::Cache(res),
                     }
                 }
 
-                ApiStreamRequestPayload::KVGet(cache_req) => {
+                ApiStreamRequestPayload::CacheGet(cache_req) => {
                     let res = client.cache_req_retry(cache_req, true).await;
                     ApiStreamResponse {
                         request_id,
-                        result: ApiStreamResponsePayload::KV(res),
+                        result: ApiStreamResponsePayload::Cache(res),
                     }
                 }
 

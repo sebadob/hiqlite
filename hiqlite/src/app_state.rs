@@ -18,7 +18,7 @@ use crate::store::state_machine::memory::dlock_handler::LockRequest;
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::{
-    TypeConfigKV, kv_handler::CacheRequestHandler, state_machine::StateMachineMemory,
+    TypeConfigCache, kv_handler::CacheRequestHandler, state_machine::StateMachineMemory,
 };
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::{
@@ -105,7 +105,7 @@ pub struct StateRaftDB {
 
 #[cfg(feature = "cache")]
 pub struct StateRaftCache {
-    pub raft: openraft::Raft<TypeConfigKV, Arc<StateMachineMemory>>,
+    pub raft: openraft::Raft<TypeConfigCache, Arc<StateMachineMemory>>,
     pub tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     #[cfg(feature = "listen_notify")]
     pub tx_notify: flume::Sender<NotifyRequest>,

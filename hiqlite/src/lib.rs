@@ -9,8 +9,33 @@
 // resolve the same way.
 extern crate self as hiqlite;
 
+// The base features `sqlite`, `cache` and `external-state-machine` each work standalone or in
+// combination; everything else is an add-on on top of one of them.
+#[cfg(not(any(feature = "__cluster", feature = "external-state-machine")))]
+compile_error!("a base feature is required: `sqlite`, `cache` or `external-state-machine`");
+
 #[cfg(all(feature = "cast_ints", feature = "cast_ints_unchecked"))]
-compile_error!("features `cast_ints` and `cast_ints_unchecked` are mutually exclusive!");
+compile_error!("features `cast_ints` and `cast_ints_unchecked` are mutually exclusive");
+
+// These add-ons only have code inside the Raft runtime modules, so they need `sqlite` or `cache` -
+// with `external-state-machine` alone their dependencies would be pulled unused.
+#[cfg(all(feature = "auto-heal", not(any(feature = "sqlite", feature = "cache"))))]
+compile_error!("feature `auto-heal` needs one of the base features `sqlite` or `cache`");
+
+#[cfg(all(
+    feature = "shutdown-handle",
+    not(any(feature = "sqlite", feature = "cache"))
+))]
+compile_error!("feature `shutdown-handle` needs one of the base features `sqlite` or `cache`");
+
+#[cfg(all(feature = "toml", not(any(feature = "sqlite", feature = "cache"))))]
+compile_error!("feature `toml` needs one of the base features `sqlite` or `cache`");
+
+#[cfg(all(
+    feature = "webpki-roots",
+    not(any(feature = "sqlite", feature = "cache"))
+))]
+compile_error!("feature `webpki-roots` needs one of the base features `sqlite` or `cache`");
 
 #[cfg(all(
     feature = "jemalloc",

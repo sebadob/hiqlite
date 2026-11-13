@@ -17,7 +17,7 @@ use tracing::{debug, info};
 #[cfg(feature = "cache")]
 use crate::network::management::{self, ClusterLeaveReq};
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::TypeConfigCache;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[cfg(feature = "sqlite")]
@@ -51,7 +51,7 @@ impl Client {
 
     /// Get cluster metrics for the cache Raft.
     #[cfg(feature = "cache")]
-    pub async fn metrics_cache(&self) -> Result<RaftMetrics<TypeConfigKV>, Error> {
+    pub async fn metrics_cache(&self) -> Result<RaftMetrics<TypeConfigCache>, Error> {
         if let Some(state) = &self.inner.state {
             let metrics = state.raft_cache.raft.metrics().borrow_watched().clone();
             Ok(metrics)
@@ -377,7 +377,7 @@ impl Client {
             let url = self
                 .build_addr("/cluster/metrics/cache", &self.inner.leader_cache)
                 .await;
-            self.get_metrics_local::<TypeConfigKV>(url)
+            self.get_metrics_local::<TypeConfigCache>(url)
                 .await?
                 .last_log_index
                 .unwrap_or(0)

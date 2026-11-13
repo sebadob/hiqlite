@@ -63,16 +63,18 @@ const _: fn(
 ) -> WireMembership = |membership| membership;
 #[cfg(feature = "cache")]
 const _: fn(
-    openraft::type_config::alias::VoteOf<crate::store::state_machine::memory::TypeConfigKV>,
+    openraft::type_config::alias::VoteOf<crate::store::state_machine::memory::TypeConfigCache>,
 ) -> WireVote = |vote| vote;
 #[cfg(feature = "cache")]
 const _: fn(
-    openraft::type_config::alias::SnapshotMetaOf<crate::store::state_machine::memory::TypeConfigKV>,
+    openraft::type_config::alias::SnapshotMetaOf<
+        crate::store::state_machine::memory::TypeConfigCache,
+    >,
 ) -> WireSnapshotMeta = |meta| meta;
 #[cfg(feature = "cache")]
 const _: fn(
     openraft::type_config::alias::StoredMembershipOf<
-        crate::store::state_machine::memory::TypeConfigKV,
+        crate::store::state_machine::memory::TypeConfigCache,
     >,
 ) -> WireMembership = |membership| membership;
 
@@ -89,7 +91,9 @@ macro_rules! wire_alias_guard {
         ) -> openraft::type_config::alias::$alias<TypeConfigWire> = |x| x;
         #[cfg(feature = "cache")]
         const _: fn(
-            openraft::type_config::alias::$alias<crate::store::state_machine::memory::TypeConfigKV>,
+            openraft::type_config::alias::$alias<
+                crate::store::state_machine::memory::TypeConfigCache,
+            >,
         ) -> openraft::type_config::alias::$alias<TypeConfigWire> = |x| x;
     };
 }
@@ -116,12 +120,12 @@ const _: () = assert!(
 );
 #[cfg(feature = "cache")]
 const _: () = assert!(
-    size_of::<openraft::RaftMetrics<crate::store::state_machine::memory::TypeConfigKV>>()
+    size_of::<openraft::RaftMetrics<crate::store::state_machine::memory::TypeConfigCache>>()
         == size_of::<WireMetrics>()
 );
 #[cfg(feature = "cache")]
 const _: () = assert!(
-    align_of::<openraft::RaftMetrics<crate::store::state_machine::memory::TypeConfigKV>>()
+    align_of::<openraft::RaftMetrics<crate::store::state_machine::memory::TypeConfigCache>>()
         == align_of::<WireMetrics>()
 );
 
@@ -309,15 +313,15 @@ mod tests {
 
         #[cfg(feature = "cache")]
         {
-            type Kv = crate::store::state_machine::memory::TypeConfigKV;
-            let group_bytes = serialize_serde(&sample_metrics!(Kv)).unwrap();
+            type Cache = crate::store::state_machine::memory::TypeConfigCache;
+            let group_bytes = serialize_serde(&sample_metrics!(Cache)).unwrap();
             assert_eq!(
                 group_bytes, wire_bytes,
                 "the cache group's metrics no longer read as the wire config's"
             );
             let read = deserialize_serde::<WireMetrics>(&group_bytes).unwrap();
             assert_eq!(serialize_serde(&read).unwrap(), group_bytes);
-            let read = deserialize_serde::<openraft::RaftMetrics<Kv>>(&wire_bytes).unwrap();
+            let read = deserialize_serde::<openraft::RaftMetrics<Cache>>(&wire_bytes).unwrap();
             assert_eq!(serialize_serde(&read).unwrap(), group_bytes);
         }
     }

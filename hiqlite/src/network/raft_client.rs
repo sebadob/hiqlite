@@ -25,7 +25,7 @@ use tokio::{select, task, time};
 use tracing::{debug, error, info};
 
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::TypeConfigCache;
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
@@ -73,7 +73,7 @@ pub struct NetworkStreaming {
 }
 
 #[cfg(feature = "cache")]
-impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
+impl RaftNetworkFactory<TypeConfigCache> for NetworkStreaming {
     type Network = NetworkConnectionStreaming;
 
     #[tracing::instrument(level = "debug", skip_all)]
@@ -167,14 +167,14 @@ enum RaftRequest {
     AppendCache(
         (
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-            AppendEntriesRequest<TypeConfigKV>,
+            AppendEntriesRequest<TypeConfigCache>,
         ),
     ),
     #[cfg(feature = "cache")]
     VoteCache(
         (
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-            VoteRequest<TypeConfigKV>,
+            VoteRequest<TypeConfigCache>,
         ),
     ),
     #[cfg(feature = "cache")]
@@ -188,7 +188,7 @@ enum RaftRequest {
     TransferLeaderCache(
         (
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-            TransferLeaderRequest<TypeConfigKV>,
+            TransferLeaderRequest<TypeConfigCache>,
         ),
     ),
 
@@ -683,7 +683,7 @@ impl RaftNetworkV2<TypeConfigSqlite> for NetworkConnectionStreaming {
 }
 
 #[cfg(feature = "cache")]
-impl RaftNetworkV2<TypeConfigKV> for NetworkConnectionStreaming {
+impl RaftNetworkV2<TypeConfigCache> for NetworkConnectionStreaming {
     #[cfg(not(feature = "in-memory-snapshots"))]
     type SnapshotData = tokio::fs::File;
     #[cfg(feature = "in-memory-snapshots")]
@@ -692,9 +692,9 @@ impl RaftNetworkV2<TypeConfigKV> for NetworkConnectionStreaming {
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
     async fn append_entries(
         &mut self,
-        rpc: AppendEntriesRequest<TypeConfigKV>,
+        rpc: AppendEntriesRequest<TypeConfigCache>,
         _option: RPCOption,
-    ) -> Result<AppendResult<TypeConfigKV>, RPCError<TypeConfigKV>> {
+    ) -> Result<AppendResult<TypeConfigCache>, RPCError<TypeConfigCache>> {
         let prev_log_id = rpc.prev_log_id;
         let last_log_id = rpc.entries.last().map(|entry| entry.log_id);
 
@@ -716,9 +716,9 @@ impl RaftNetworkV2<TypeConfigKV> for NetworkConnectionStreaming {
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
     async fn vote(
         &mut self,
-        rpc: VoteRequest<TypeConfigKV>,
+        rpc: VoteRequest<TypeConfigCache>,
         _option: RPCOption,
-    ) -> Result<VoteResponse<TypeConfigKV>, RPCError<TypeConfigKV>> {
+    ) -> Result<VoteResponse<TypeConfigCache>, RPCError<TypeConfigCache>> {
         let (ack, rx) = oneshot::channel();
         match self
             .send(RaftRequest::VoteCache((ack, rpc)), rx)
@@ -735,9 +735,9 @@ impl RaftNetworkV2<TypeConfigKV> for NetworkConnectionStreaming {
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
     async fn transfer_leader(
         &mut self,
-        rpc: TransferLeaderRequest<TypeConfigKV>,
+        rpc: TransferLeaderRequest<TypeConfigCache>,
         _option: RPCOption,
-    ) -> Result<TransferLeaderResponse<TypeConfigKV>, RPCError<TypeConfigKV>> {
+    ) -> Result<TransferLeaderResponse<TypeConfigCache>, RPCError<TypeConfigCache>> {
         let (ack, rx) = oneshot::channel();
         match self
             .send(RaftRequest::TransferLeaderCache((ack, rpc)), rx)
@@ -754,11 +754,11 @@ impl RaftNetworkV2<TypeConfigKV> for NetworkConnectionStreaming {
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
     async fn full_snapshot(
         &mut self,
-        vote: VoteOf<TypeConfigKV>,
-        snapshot: SnapshotOf<TypeConfigKV, Self::SnapshotData>,
+        vote: VoteOf<TypeConfigCache>,
+        snapshot: SnapshotOf<TypeConfigCache, Self::SnapshotData>,
         cancel: impl Future<Output = ReplicationClosed> + OptionalSend + 'static,
         option: RPCOption,
-    ) -> Result<SnapshotResponse<TypeConfigKV>, StreamingError<TypeConfigKV>> {
+    ) -> Result<SnapshotResponse<TypeConfigCache>, StreamingError<TypeConfigCache>> {
         tokio::pin!(cancel);
         let meta = snapshot.meta;
         let snapshot = snapshot.snapshot;

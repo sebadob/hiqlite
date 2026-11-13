@@ -15,7 +15,7 @@ pub mod notify_handler;
 // snapshot is held in memory instead, so a pure cache-only node needs no `data_dir`.
 // The state machine declares the matching `SnapshotData` type for both cases.
 openraft::declare_raft_types!(
-    pub TypeConfigKV:
+    pub TypeConfigCache:
         D = CacheRequest,
         R = CacheResponse,
         Node = Node,

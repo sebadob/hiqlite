@@ -17,7 +17,7 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
 
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::TypeConfigCache;
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::state_machine::StateMachineMemory;
 
@@ -120,7 +120,7 @@ pub async fn init_pristine_node_1_db(
 /// Initializes a fresh node 1, if it has not been set up yet.
 #[cfg(feature = "cache")]
 pub async fn init_pristine_node_1_cache(
-    raft: &openraft::Raft<TypeConfigKV, Arc<StateMachineMemory>>,
+    raft: &openraft::Raft<TypeConfigCache, Arc<StateMachineMemory>>,
     wal_on_disk: bool,
     node_id: u64,
     nodes: &[Node],
@@ -887,7 +887,7 @@ async fn is_initialized_timeout_sqlite(
 #[cfg(feature = "cache")]
 async fn is_initialized_timeout_cache(
     node_id: u64,
-    raft: &openraft::Raft<TypeConfigKV, Arc<StateMachineMemory>>,
+    raft: &openraft::Raft<TypeConfigCache, Arc<StateMachineMemory>>,
 ) -> Result<bool, Error> {
     let has_any_nodes = || {
         raft.metrics()

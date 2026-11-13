@@ -22,7 +22,7 @@ dirs.
   because openraft's `Config` gained a lot of fields.
 - Source breaking: the `Error` enum's openraft variants are split per group (`RaftErrorDb` /
   `RaftErrorKv` and friends), and the metrics functions return `RaftMetrics<TypeConfigSqlite>` /
-  `RaftMetrics<TypeConfigKV>` instead of `RaftMetrics<u64, Node>`.
+  `RaftMetrics<TypeConfigCache>` instead of `RaftMetrics<u64, Node>`.
 - The shared network paths don't convert between the two groups' types through a serialization round
   trip anymore - for the types they carry there is nothing to convert, they are the same types. The
   paths that do serialize whole metrics are split per group, so nothing is copied or parsed.
@@ -255,7 +255,7 @@ new one and return the old value, if is existed, in an atomic operation.
 
 It was possible that cache entries into the exact same cache that ended on the exact same TTL (second precision) could
 overwrite each others TTL, leaving one of the entries in place until forever and never being cleaned up. The TTLs are
-still in second precision, but the internal KV handler works with microseconds. If it detects a collision, it simply
+still in second precision, but the internal cache handler works with microseconds. If it detects a collision, it simply
 advances the conflicting new TTL in 1-microsecond steps until it finds a free slot. This is not 100% collision-free of
 course, because if you insert 1.000.000 entries into the exact same cache that have the exact same calculated absolute
 TTL consistently, you would get an overflow, but that is

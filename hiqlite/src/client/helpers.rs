@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::TypeConfigCache;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::{Client, Error, Node, NodeId};
@@ -143,7 +143,7 @@ impl Client {
     }
 
     #[cfg(feature = "cache")]
-    async fn remote_metrics_loop_cache(&self) -> RaftMetrics<TypeConfigKV> {
+    async fn remote_metrics_loop_cache(&self) -> RaftMetrics<TypeConfigCache> {
         loop {
             for addr in &self.inner.nodes {
                 {
