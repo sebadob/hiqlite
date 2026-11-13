@@ -536,8 +536,7 @@ impl From<hiqlite_wal::error::Error> for Error {
 
 impl From<Infallible> for Error {
     fn from(value: Infallible) -> Self {
-        trace!("Infallible: {value}");
-        Self::Error(value.to_string().into())
+        unreachable!("Infallible: {value}");
     }
 }
 
