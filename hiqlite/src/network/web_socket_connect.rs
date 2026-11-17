@@ -82,9 +82,8 @@ async fn try_connect_stream(
 
     let (mut ws, _) = if let Some(config) = tls_config {
         let (addr, _) = addr.split_once(':').unwrap_or((addr, ""));
-        let tls_stream = tls::into_tls_stream(addr, stream, config).await?;
-
-        fastwebsockets::handshake::client(&SpawnExecutor, req, tls_stream).await
+        let stream = tls::into_tls_stream(addr, stream, config).await?;
+        fastwebsockets::handshake::client(&SpawnExecutor, req, stream).await
     } else {
         fastwebsockets::handshake::client(&SpawnExecutor, req, stream).await
     }
