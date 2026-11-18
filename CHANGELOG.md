@@ -15,8 +15,12 @@ bump. Rollback is done by putting the previous (openraft 0.9 based) release back
 dirs.
 
 - `openraft/loosen-follower-log-revert` was a compile-time feature and is the `allow_log_reversion`
-  field on the `RaftConfig` now. It is only set for the cache group, SQLite keeps its stricter
-  behavior.
+  field on the `RaftConfig` now. `NodeConfig::default_raft_config()` enables it for both Raft
+  groups, which is what 0.16 did whenever the `cache` feature was on - that feature was global. A
+  node whose volume was wiped or corrupted re-syncs on its own, with a `warn` on its leader. Set
+  `raft_config.allow_log_reversion = Some(false)` on a node for the strict behavior, where such a
+  reversion stops that node's replication instead of healing it. It is a code-only knob - the TOML
+  `[raft_config]` section knows `logs_until_snapshot` only.
 - `raft_config` is validated at startup through `NodeConfig::is_valid()`, and
   `send_snapshot_timeout` is gone. `NodeConfig::default_raft_config()` uses `..Default::default()`
   because openraft's `Config` gained a lot of fields.
@@ -61,6 +65,22 @@ dirs.
   argument instead of hardcoding `ReadIndex`, and `hiqlite::ReadPolicy` is a re-export of openraft's
   enum so an app can name it. `ReadIndex` is the strong path, `LeaseRead` lets a leader answer on
   its own lease and is the faster one.
+- `hiqlite/src/v0_17_cold_restart_guard.rs` is a startup guard for the stop-the-world requirement
+  above. On a cluster config it asks every other node's `/version` endpoint. A node that does not
+  answer is shut down, which is exactly what the upgrade expects. A node that answers must run
+  0.17.0 or newer, and a node that answers `/ping` but has no `/version` endpoint is an old version
+  from before that endpoint existed. The latter two make the node refuse to start. The check runs
+  twice with 5 seconds in between to catch a node that comes up right after the first pass, and a
+  single node has no peers to check, so it does nothing there. `HQL_DISABLE_COLD_RESTART_GUARD=true`
+  skips the whole guard, which is what `just test` and `just test-no-s3` set.
+- The `v0_15_auto_cache_migration` module is gone. It only ever cleaned up the cache data of a
+  v0.14 data dir, its compile guard trips as soon as the version moves on, and the `HQL_CACHE_WAL_*`
+  migration vars are not evaluated anymore.
+- `NodeConfig::from_toml` and `NodeConfig::from_toml_table` have their `enc_keys` argument in every
+  feature set now. It used to be behind a `#[cfg]`, so a caller that passes the same number of
+  arguments everywhere, `default-features = false` users and the test code included, could not
+  compile. The argument is `Option<cryptr::EncKeys>` when the features have encryption keys and
+  `Option<()>` when they do not, and `None` is valid in both.
 
 ## v0.16.0
 

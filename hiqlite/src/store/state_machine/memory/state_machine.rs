@@ -326,8 +326,7 @@ impl StateMachineMemory {
             // current enum and a torn write can never leave a half-written fingerprint.
             // A missing file is always (re)written, even when the fingerprint itself is
             // empty: an enum with zero variants (the `hiqlite` server binary) produces the
-            // same normalized form as a fresh startup, and this file is the "cache data was
-            // started on >= v0.15" marker that `v0_15_auto_cache_migration` relies on.
+            // same normalized form as a fresh startup, so it must create the file too.
             let normalized = C::hiqlite_cache_variants_normalized();
             if !fs::try_exists(&path_meta).await? || stored.as_bytes() != normalized.as_bytes() {
                 let path_temp = format!("{path_meta}~");
@@ -1428,11 +1427,10 @@ mod cache_index_compatibility {
         let _ = std::fs::remove_dir_all(&base_dir);
     }
 
-    /// The fingerprint file doubles as the "cache data was started on >= v0.15" marker that
-    /// `v0_15_auto_cache_migration::check_migrate` uses to tell a v0.14 data dir from a
-    /// current one. A zero-variant enum - the `Empty` type of the `hiqlite` server binary -
+    /// The fingerprint file is the "cache index enum compatibility" marker that every startup
+    /// compares against. A zero-variant enum - the `Empty` type of the `hiqlite` server binary -
     /// normalizes to the same string as a fresh startup, so it must still write the file,
-    /// otherwise every restart after the first would look like a legacy migration.
+    /// otherwise a startup with such an enum would never create the marker at all.
     #[cfg(not(feature = "in-memory-snapshots"))]
     #[tokio::test(flavor = "multi_thread")]
     async fn empty_enum_still_writes_fingerprint_file() {

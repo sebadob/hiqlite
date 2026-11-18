@@ -46,11 +46,8 @@ where
         .map(|c| c.danger_tls_no_verify())
         .unwrap_or(false);
 
-    #[cfg(feature = "cache")]
-    if let Err(err) = crate::v0_15_auto_cache_migration::check_migrate(&node_config).await {
-        error!(
-            "Error during auto-migration for the Cache WAL layer and version migration: {err:?}"
-        );
+    if let Err(err) = crate::v0_17_cold_restart_guard::check_cold_restart(&node_config).await {
+        error!("Error during the v0.17 cold restart check for the cluster: {err:?}");
         return Err(err);
     }
 

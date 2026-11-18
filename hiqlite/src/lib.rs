@@ -142,8 +142,8 @@ mod http_client;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub mod tls;
 
-#[cfg(feature = "cache")]
-mod v0_15_auto_cache_migration;
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+mod v0_17_cold_restart_guard;
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 type NodeId = u64;

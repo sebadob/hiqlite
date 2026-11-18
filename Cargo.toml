@@ -76,7 +76,10 @@ hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
 libc = "0.2"
 memmap2 = "0.9.5"
 mime_guess = "2.0.5"
-openraft = { version = "0.10", default-features = false, features = ["serde", "tokio-rt"] }
+openraft = { version = "0.10", default-features = false, features = [
+  "serde",
+  "tokio-rt",
+] }
 rcgen = "0.14.10"
 reqwest = { version = "0.13.4", default-features = false, features = [
   "charset",

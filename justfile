@@ -141,14 +141,16 @@ test test="":
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
-    cargo test --features full,counters,external-state-machine,server {{ test }}
+    # The v0.17 cold restart guard is off for tests. It checks other nodes on startup, and our
+    # tests spin up whole clusters inside a single process all the time.
+    HQL_DISABLE_COLD_RESTART_GUARD="true" cargo test --features full,counters,external-state-machine,server {{ test }}
 
 # runs the full set of tests excluding backup to S3 tests
 test-no-s3:
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
-    TEST_SKIP_S3_RESTORE="true" cargo test --features cache,counters,dlock,listen_notify,macros,toml,external-state-machine
+    TEST_SKIP_S3_RESTORE="true" HQL_DISABLE_COLD_RESTART_GUARD="true" cargo test --features cache,counters,dlock,listen_notify,macros,toml,external-state-machine
 
 # builds the code
 build ty="server":

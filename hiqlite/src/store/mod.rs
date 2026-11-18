@@ -167,14 +167,8 @@ where
     #[cfg(feature = "dlock")]
     let tx_dlock = state_machine_store.tx_dlock.clone();
 
-    // openraft 0.10 replaced its `loosen-follower-log-revert` feature with this config field. Only
-    // the cache group ever allowed a log revert, and the `Arc` config is shared with the SQLite
-    // group, so build a dedicated one instead of mutating the shared instance.
-    let raft_config = {
-        let mut config = (*raft_config).clone();
-        config.allow_log_reversion = Some(true);
-        Arc::new(config)
-    };
+    // The log-revert allowance from `NodeConfig::default_raft_config` applies to both groups, so
+    // the shared `Arc` Raft config is used here as-is.
 
     let (raft, shutdown_handle) = if node_config.cache_storage_disk {
         let log_store = hiqlite_wal::LogStore::<TypeConfigCache>::start(
