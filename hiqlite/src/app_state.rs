@@ -95,6 +95,10 @@ pub struct StateRaftDB {
     pub log_statements: bool,
     pub is_raft_stopped: Arc<AtomicBool>,
     pub is_startup_finished: Arc<AtomicBool>,
+    /// Only set on single-node deployments: the last log index the WAL held when the node
+    /// started. Until the state machine has applied it, the node is still replaying its own log
+    /// and must not report itself healthy. Always `None` in a multi-node cluster.
+    pub single_node_replay_target: Option<u64>,
 }
 
 #[cfg(feature = "cache")]
@@ -110,6 +114,38 @@ pub struct StateRaftCache {
     pub is_raft_stopped: Arc<AtomicBool>,
     pub is_startup_finished: Arc<AtomicBool>,
     pub shutdown_handle: Option<hiqlite_wal::ShutdownHandle>,
+    /// Only set on single-node deployments: the last log index the WAL held when the node
+    /// started. Until the state machine has applied it, the node is still replaying its own log
+    /// and must not report itself healthy. Always `None` in a multi-node cluster.
+    pub single_node_replay_target: Option<u64>,
     #[cfg(feature = "cache")]
     pub cache_storage_disk: bool,
+}
+
+/// Returns an error while a single-node deployment is still re-applying the log it found at
+/// startup.
+///
+/// A single node commits on its own, so after a restart it re-applies everything its WAL holds
+/// shortly after it became leader again. Until then, its state machine may lag behind its own log,
+/// and after an unclean stop it may even be empty. Reporting healthy in that window lets an
+/// application read stale or missing data. In a multi-node cluster the target is always `None`, so
+/// this never blocks a node that needs its peers to make progress.
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+pub(crate) fn check_single_node_replay(
+    target: Option<u64>,
+    last_applied: Option<u64>,
+    raft_name: &str,
+) -> Result<(), crate::Error> {
+    if let Some(target) = target
+        && last_applied.is_none_or(|applied| applied < target)
+    {
+        return Err(crate::Error::Error(
+            format!(
+                "{raft_name}: still re-applying its log after startup (applied {last_applied:?} \
+                 of {target})"
+            )
+            .into(),
+        ));
+    }
+    Ok(())
 }
