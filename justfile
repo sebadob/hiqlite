@@ -115,6 +115,11 @@ clippy:
 
     cargo clippy --no-default-features --features server -- -D warnings
 
+    # opt-in features of the WAL crate, including its tests
+    cargo clippy -p hiqlite-wal --features oversized-entry-error -- -D warnings
+    cargo check -p hiqlite-wal --tests --features oversized-entry-error
+    cargo clippy --no-default-features --features sqlite,oversized-entry-error -- -D warnings
+
 clippy-examples:
     #!/usr/bin/env bash
     set -euxo pipefail

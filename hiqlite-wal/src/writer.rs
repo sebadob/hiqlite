@@ -481,7 +481,7 @@ mod tests {
         let (entry_tx, entry_rx) = flume::bounded(1);
         tx.send(Action::Append {
             rx: entry_rx,
-            callback: Box::new(|| {}),
+            callback: Box::new(|_| ()),
             ack: ack_tx,
         })
         .unwrap();
