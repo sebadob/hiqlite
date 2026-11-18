@@ -229,7 +229,10 @@ pub(crate) async fn backup_local_cleanup(
             // old orphans are reclaimed, while an in-progress backup (fresh ts) is kept.
             let s = s_orig.strip_suffix('~').unwrap_or(s_orig);
 
-            if !s.starts_with("backup_node_") && !s.ends_with(".sqlite") {
+            // Only local backups are subject to the retention rule. Both conditions must
+            // hold, otherwise any other `*_<number>.sqlite` file in this directory would be
+            // aged out and deleted as well.
+            if !s.starts_with("backup_node_") || !s.ends_with(".sqlite") {
                 continue;
             }
 
@@ -514,4 +517,51 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
     }
 
     info!("restore_backup_finish task successful");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_cleanup_only_removes_expired_backups() {
+        let dir = env::temp_dir().join(format!(
+            "hiqlite_backup_cleanup_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir).await;
+        fs::create_dir_all(&dir).await.unwrap();
+
+        let old_ts = Utc::now()
+            .sub(Duration::from_secs(10 * 24 * 3600))
+            .timestamp();
+        let fresh_ts = Utc::now().timestamp();
+
+        let expired = format!("backup_node_1_{old_ts}.sqlite");
+        let expired_tmp = format!("backup_node_1_{old_ts}.sqlite~");
+        let fresh = format!("backup_node_1_{fresh_ts}.sqlite");
+        // not a backup, but it has the same `*_<ts>.sqlite` shape
+        let foreign_db = format!("app_{old_ts}.sqlite");
+        // a backup prefix without the `.sqlite` suffix
+        let foreign_prefix = format!("backup_node_1_{old_ts}.txt");
+
+        for name in [&expired, &expired_tmp, &fresh, &foreign_db, &foreign_prefix] {
+            fs::write(dir.join(name), b"x").await.unwrap();
+        }
+
+        backup_local_cleanup(
+            dir.to_str().unwrap().to_string(),
+            Duration::from_secs(24 * 3600),
+        )
+        .await
+        .unwrap();
+
+        assert!(!dir.join(&expired).exists());
+        assert!(!dir.join(&expired_tmp).exists());
+        assert!(dir.join(&fresh).exists());
+        assert!(dir.join(&foreign_db).exists());
+        assert!(dir.join(&foreign_prefix).exists());
+
+        fs::remove_dir_all(&dir).await.unwrap();
+    }
 }
