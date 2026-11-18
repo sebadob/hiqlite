@@ -917,13 +917,16 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
                 ),
             })?;
 
+        // Restore from the received file before publishing it. If the restore fails, no new
+        // snapshot exists under a valid ID, so a restart cannot select a snapshot this node's
+        // database was never restored from. Publishing first would leave exactly that behind.
+        self.update_state_machine_(src.clone()).await?;
+
         atomic_file_switch(src, &dest)
             .await
             .map_err(|err| StorageError::IO {
                 source: StorageIOError::write(&err),
             })?;
-
-        self.update_state_machine_(dest).await?;
 
         Ok(())
     }
