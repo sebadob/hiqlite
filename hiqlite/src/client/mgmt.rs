@@ -93,6 +93,13 @@ impl Client {
     pub async fn is_healthy_db(&self) -> Result<(), Error> {
         let metrics = self.metrics_db().await?;
         metrics.running_state?;
+        if let Some(state) = &self.inner.state {
+            crate::app_state::check_single_node_replay(
+                state.raft_db.single_node_replay_target,
+                metrics.last_applied.map(|id| id.index),
+                "sqlite",
+            )?;
+        }
         if metrics.current_leader.is_some() {
             if metrics.state == ServerState::Learner
                 || metrics.state == ServerState::Follower
@@ -118,6 +125,13 @@ impl Client {
     pub async fn is_healthy_cache(&self) -> Result<(), Error> {
         let metrics = self.metrics_cache().await?;
         metrics.running_state?;
+        if let Some(state) = &self.inner.state {
+            crate::app_state::check_single_node_replay(
+                state.raft_cache.single_node_replay_target,
+                metrics.last_applied.map(|id| id.index),
+                "cache",
+            )?;
+        }
         if metrics.current_leader.is_some() {
             if metrics.state == ServerState::Learner
                 || metrics.state == ServerState::Follower
@@ -208,8 +222,10 @@ impl Client {
     /// log index - followers are normally a bit behind the leader, so we never require an exact
     /// index match.
     pub async fn wait_for_cluster_sync(&self) {
-        // fast path: a single instance will always be in sync with itself
+        // A single instance is always in sync with itself, once it has re-applied the log it
+        // found at startup.
         if self.inner.nodes.len() == 1 {
+            self.wait_for_single_node_replay().await;
             return;
         }
 
@@ -236,6 +252,55 @@ impl Client {
             }
 
             time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    async fn wait_for_single_node_replay(&self) {
+        let Some(state) = &self.inner.state else {
+            return;
+        };
+
+        loop {
+            let mut pending = false;
+
+            #[cfg(feature = "sqlite")]
+            if let Err(err) = crate::app_state::check_single_node_replay(
+                state.raft_db.single_node_replay_target,
+                state
+                    .raft_db
+                    .raft
+                    .metrics()
+                    .borrow()
+                    .last_applied
+                    .map(|id| id.index),
+                "sqlite",
+            ) {
+                pending = true;
+                debug!("{err}");
+            }
+
+            #[cfg(feature = "cache")]
+            if let Err(err) = crate::app_state::check_single_node_replay(
+                state.raft_cache.single_node_replay_target,
+                state
+                    .raft_cache
+                    .raft
+                    .metrics()
+                    .borrow()
+                    .last_applied
+                    .map(|id| id.index),
+                "cache",
+            ) {
+                pending = true;
+                debug!("{err}");
+            }
+
+            if !pending {
+                return;
+            }
+
+            info!("Waiting for this node to re-apply its log after startup");
+            time::sleep(Duration::from_millis(100)).await;
         }
     }
 

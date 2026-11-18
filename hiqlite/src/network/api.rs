@@ -57,6 +57,11 @@ pub async fn health(state: AppStateExt) -> Result<(), Error> {
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 async fn check_health(state: &AppStateExt) -> Result<(), Error> {
+    // This comes before the early-health-check delay on purpose: a single node does not need to
+    // report healthy early for any other node to start, but it must not report healthy while
+    // it is still re-applying its own log.
+    check_replay(state)?;
+
     if Utc::now().sub(state.health_check_delay) < state.app_start {
         info!("Early health check within the HQL_HEALTH_CHECK_DELAY timeframe - returning true");
         return Ok(());
@@ -86,6 +91,35 @@ async fn check_health(state: &AppStateExt) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+fn check_replay(state: &AppStateExt) -> Result<(), Error> {
+    #[cfg(feature = "sqlite")]
+    crate::app_state::check_single_node_replay(
+        state.raft_db.single_node_replay_target,
+        state
+            .raft_db
+            .raft
+            .metrics()
+            .borrow()
+            .last_applied
+            .map(|id| id.index),
+        "sqlite",
+    )?;
+    #[cfg(feature = "cache")]
+    crate::app_state::check_single_node_replay(
+        state.raft_cache.single_node_replay_target,
+        state
+            .raft_cache
+            .raft
+            .metrics()
+            .borrow()
+            .last_applied
+            .map(|id| id.index),
+        "cache",
+    )?;
+    Ok(())
+}
+
 #[tracing::instrument(skip_all)]
 pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
@@ -96,6 +130,9 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     }
 
     let secs_since_start = Utc::now().sub(state.app_start).num_seconds();
+
+    #[cfg(any(feature = "sqlite", feature = "cache"))]
+    check_replay(&state)?;
 
     #[cfg(feature = "sqlite")]
     {
