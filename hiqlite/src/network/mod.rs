@@ -129,8 +129,24 @@ const _: () = assert!(
         == align_of::<WireMetrics>()
 );
 
-// TODO change to default `Authorization` -> breaking change
-pub const HEADER_NAME_SECRET: &str = "X-API-SECRET";
+/// The name of the header that carries a node's API secret.
+///
+/// The value is always a bearer token:
+///
+/// ```text
+/// Authorization: Bearer <secret_api>
+/// ```
+///
+/// The name is the standard `Authorization` on purpose: loggers, proxies and client libraries mark
+/// it as sensitive by default, which a custom `X-API-SECRET` header never was. Requests that carry
+/// anything else in it are rejected, see [`validate_bearer`].
+pub const HEADER_NAME_SECRET: &str = "authorization";
+
+/// The scheme in front of the API secret inside [`HEADER_NAME_SECRET`].
+///
+/// Every client sends the header with the `bearer_auth` method of its HTTP client, which produces
+/// exactly `Bearer <secret_api>`.
+pub const BEARER_SCHEME: &str = "Bearer ";
 
 #[inline(always)]
 fn get_payload<T>(headers: &HeaderMap, body: body::Bytes) -> Result<T, Error>
@@ -182,15 +198,37 @@ pub fn serialize_network<T: Encode>(value: &T) -> Vec<u8> {
 
 #[inline(always)]
 fn validate_secret(state: &AppStateExt, headers: &HeaderMap) -> Result<(), Error> {
-    match headers.get(HEADER_NAME_SECRET) {
-        None => Err(Error::Token("API Secret missing".into())),
-        Some(secret) => {
-            if !constant_time_eq(state.secret_api.as_bytes(), secret.as_bytes()) {
-                Err(Error::Token("Invalid API Secret".into()))
-            } else {
-                Ok(())
-            }
+    validate_bearer(&state.secret_api, headers)
+}
+
+/// Validate a request's `Authorization` header against a node's API secret.
+///
+/// The value has to be `Bearer <secret_api>` and the secret is compared in constant time. A missing
+/// header, a raw secret without the scheme, and any other token are all errors: there is exactly one
+/// accepted shape, so anything that authenticates does it the intended way.
+pub(crate) fn validate_bearer(secret_api: &str, headers: &HeaderMap) -> Result<(), Error> {
+    let Some(value) = headers.get(HEADER_NAME_SECRET) else {
+        return Err(Error::Token("API Secret missing".into()));
+    };
+
+    // The scheme is matched case-insensitively, which is what the RFC requires for it.
+    let value = value.as_bytes();
+    let len = BEARER_SCHEME.len();
+    let secret = match (value.get(..len), value.get(len..)) {
+        (Some(prefix), Some(secret)) if prefix.eq_ignore_ascii_case(BEARER_SCHEME.as_bytes()) => {
+            secret
         }
+        _ => {
+            return Err(Error::Token(
+                "The `Authorization` header must be `Bearer <api_secret>`".into(),
+            ));
+        }
+    };
+
+    if constant_time_eq(secret_api.as_bytes(), secret) {
+        Ok(())
+    } else {
+        Err(Error::Token("Invalid API Secret".into()))
     }
 }
 
@@ -198,6 +236,7 @@ fn validate_secret(state: &AppStateExt, headers: &HeaderMap) -> Result<(), Error
 mod tests {
     use super::*;
     use crate::helpers::deserialize_serde;
+    use axum::http::{HeaderName, header::AUTHORIZATION};
     use std::collections::{BTreeMap, BTreeSet};
 
     // One sample, spelled once per type config, so the layout check compares values that are equal
@@ -324,5 +363,67 @@ mod tests {
             let read = deserialize_serde::<openraft::RaftMetrics<Cache>>(&wire_bytes).unwrap();
             assert_eq!(serialize_serde(&read).unwrap(), group_bytes);
         }
+    }
+
+    const SECRET: &str = "SuperSecureSecret1337";
+
+    fn auth(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(value).unwrap());
+        headers
+    }
+
+    /// The value the `reqwest` clients send: `bearer_auth` builds `Bearer <token>`.
+    fn bearer(token: &str) -> String {
+        format!("{BEARER_SCHEME}{token}")
+    }
+
+    /// The header name we send is the standard `Authorization`, which is the whole point of the
+    /// change: tooling marks it as sensitive without anybody configuring it.
+    #[test]
+    fn header_name_secret_is_the_standard_authorization_header() {
+        assert_eq!(HeaderName::from_static(HEADER_NAME_SECRET), AUTHORIZATION);
+    }
+
+    #[test]
+    fn validate_bearer_accepts_the_bearer_token() {
+        // The exact value every Hiqlite client sends.
+        assert!(validate_bearer(SECRET, &auth(&bearer(SECRET))).is_ok());
+        // The scheme is case-insensitive, the secret itself is not.
+        assert!(validate_bearer(SECRET, &auth(&format!("bearer {SECRET}"))).is_ok());
+        assert!(validate_bearer(SECRET, &auth(&format!("BEARER {SECRET}"))).is_ok());
+        // The secret is the rest of the value, byte for byte - no trimming.
+        assert!(validate_bearer(SECRET, &auth(&format!("Bearer {SECRET} "))).is_err());
+    }
+
+    #[test]
+    fn validate_bearer_refuses_everything_else() {
+        // The old header name carries nothing anymore.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-api-secret"),
+            HeaderValue::from_static(SECRET),
+        );
+        assert!(matches!(
+            validate_bearer(SECRET, &headers),
+            Err(Error::Token(msg)) if msg == "API Secret missing"
+        ));
+
+        // A raw secret without the scheme is refused, and the answer says what to send.
+        assert!(matches!(
+            validate_bearer(SECRET, &auth(SECRET)),
+            Err(Error::Token(msg)) if msg == "The `Authorization` header must be `Bearer <api_secret>`"
+        ));
+
+        // The right shape with somebody else's secret.
+        assert!(matches!(
+            validate_bearer(SECRET, &auth("Bearer 0123456789abcdef")),
+            Err(Error::Token(msg)) if msg == "Invalid API Secret"
+        ));
+
+        // A value that is only the scheme, or nothing at all, has no secret in it.
+        assert!(validate_bearer(SECRET, &auth("Bearer")).is_err());
+        assert!(validate_bearer(SECRET, &auth("Bearer ")).is_err());
+        assert!(validate_bearer(SECRET, &auth("")).is_err());
     }
 }

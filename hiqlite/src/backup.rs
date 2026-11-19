@@ -1,11 +1,11 @@
 use crate::app_state::AppState;
-use crate::helpers::{
-    atomic_file_switch, parse_duration, set_path_access, validate_db_backup_snapshot,
-};
+#[cfg(feature = "s3")]
+use crate::helpers::parse_duration;
+use crate::helpers::{atomic_file_switch, set_path_access, validate_db_backup_snapshot};
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{QueryWrite, StateMachineSqlite};
-use crate::{Client, Error, NodeConfig};
-use chrono::{DateTime, Utc};
+use crate::{Client, Error, NodeConfig, NodeId};
+use chrono::Utc;
 use openraft::type_config::async_runtime::watch::WatchReceiver;
 use std::env;
 use std::ops::Sub;
@@ -24,9 +24,19 @@ use crate::store::state_machine::memory::state_machine::StateMachineMemory;
 
 pub const BACKUP_DB_NAME: &str = "restore.sqlite";
 
+/// The default prefix of every backup file name, used when `backup_file_prefix` is not set.
+pub const DEFAULT_BACKUP_FILE_PREFIX: &str = "backup_node";
+
+/// The timestamp every parsed backup file name must be newer than. Anything older is treated as
+/// a bogus name and is never cleaned up, so a wild timestamp can never delete a fresh backup.
+const TS_MIN: i64 = 1704063600;
+
 #[derive(Debug, Clone)]
 pub struct BackupConfig {
     cron_schedule: cron::Schedule,
+    /// How long backups stay in the S3 bucket. The local retention is `backup_keep_for_local` on
+    /// the `NodeConfig`, and without the `s3` feature there is nothing to retain offsite.
+    #[cfg(feature = "s3")]
     keep_for: Duration,
 }
 
@@ -34,16 +44,21 @@ impl Default for BackupConfig {
     fn default() -> Self {
         Self {
             cron_schedule: cron::Schedule::from_str("0 30 2 * * * *").unwrap(),
+            #[cfg(feature = "s3")]
             keep_for: Duration::from_secs(30 * 24 * 3600),
         }
     }
 }
 
 impl BackupConfig {
-    pub fn new(cron_schedule: &str, keep_for: Duration) -> Result<Self, Error> {
+    pub fn new(
+        cron_schedule: &str,
+        #[cfg(feature = "s3")] keep_for: Duration,
+    ) -> Result<Self, Error> {
         Ok(Self {
             cron_schedule: cron::Schedule::from_str(cron_schedule)
                 .map_err(|_| Error::Config("Invalid syntax for cron_schedule".into()))?,
+            #[cfg(feature = "s3")]
             keep_for,
         })
     }
@@ -53,6 +68,7 @@ impl BackupConfig {
         let cron_schedule =
             cron::Schedule::from_str(&cron_str).expect("Invalid syntax for HQL_BACKUP_CRON");
 
+        #[cfg(feature = "s3")]
         let keep_for = env::var("HQL_BACKUP_KEEP_FOR")
             .ok()
             .as_deref()
@@ -61,34 +77,94 @@ impl BackupConfig {
 
         Self {
             cron_schedule,
+            #[cfg(feature = "s3")]
             keep_for,
         }
     }
 }
 
-#[derive(Debug, PartialEq)]
+/// Where a restore reads its backup from.
+///
+/// Every backup file that Hiqlite writes - locally and in the bucket - is named
+/// `{backup_file_prefix}_{node_id}_{unix_ts}.sqlite`, and a source always names exactly one of these
+/// files. `start_node_from_backup` takes this type directly, the `HQL_BACKUP_RESTORE` env var is
+/// its string form: `s3:<object name>` or `file:<path>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackupSource {
+    /// The object name inside the configured S3 bucket. Needs the `s3` feature.
+    #[cfg(feature = "s3")]
     S3(String),
+    /// A local file, given by its full path on this node.
     File(String),
 }
 
 impl BackupSource {
-    fn from_env() -> Option<Self> {
-        let var = env::var("HQL_BACKUP_RESTORE").ok()?;
+    fn from_env() -> Result<Option<Self>, Error> {
+        let Some(var) = env::var("HQL_BACKUP_RESTORE").ok() else {
+            return Ok(None);
+        };
 
+        #[cfg(feature = "s3")]
         if let Some(obj) = var.strip_prefix("s3:") {
-            return Some(Self::S3(obj.to_string()));
+            return Ok(Some(Self::S3(obj.to_string())));
+        }
+
+        #[cfg(not(feature = "s3"))]
+        if var.starts_with("s3:") {
+            return Err(Error::S3(
+                "HQL_BACKUP_RESTORE asks for a restore from S3, but this build has no S3 support. \
+                Restore from a local file with 'file:<path>' instead."
+                    .to_string(),
+            ));
         }
 
         if let Some(file) = var.strip_prefix("file:") {
-            return Some(Self::File(file.to_string()));
+            return Ok(Some(Self::File(file.to_string())));
         }
 
-        error!(
-            "HQL_BACKUP_RESTORE must start with either 's3:' or 'file:'. \
-            Cannot restore from backup - unknown prefix: {}",
-            var
-        );
+        Err(Error::Config(
+            format!(
+                "HQL_BACKUP_RESTORE must start with either 's3:' or 'file:' - \
+                unknown prefix: '{var}'"
+            )
+            .into(),
+        ))
+    }
+}
+
+/// The full file name of a backup: `{prefix}_{node_id}_{ts}.sqlite`.
+pub(crate) fn backup_file_name(prefix: &str, node_id: NodeId, ts: i64) -> String {
+    format!("{prefix}_{node_id}_{ts}.sqlite")
+}
+
+/// A backup file prefix must be a plain single file name component: non-empty, never `.` / `..`,
+/// and only characters that are safe inside a file name. Path separators are what would let a
+/// prefix point outside the backups directory, so they are rejected.
+pub(crate) fn is_valid_file_prefix(prefix: &str) -> bool {
+    !prefix.is_empty()
+        && prefix != "."
+        && prefix != ".."
+        && prefix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+/// The unix timestamp out of a `{prefix}_{node_id}_{ts}.sqlite` file name, or `None` when the
+/// name is not ours.
+///
+/// The match is exact on purpose: the prefix must be followed by `_`, the node id and the
+/// timestamp must both be plain numbers and the name must end in `.sqlite`. Anything else - a
+/// foreign file in a shared bucket, a name under a longer prefix like `backup_node_v2_...`, a
+/// name with a path in it - is `None`, and cleanup jobs never touch a name that is `None`.
+pub(crate) fn backup_ts_from_name(name: &str, prefix: &str) -> Option<i64> {
+    let stem = name
+        .strip_prefix(prefix)
+        .and_then(|s| s.strip_prefix('_'))
+        .and_then(|s| s.strip_suffix(".sqlite"))?;
+    let (node_id, ts) = stem.rsplit_once('_')?;
+    if node_id.parse::<NodeId>().is_ok() {
+        ts.parse::<i64>().ok()
+    } else {
         None
     }
 }
@@ -96,6 +172,7 @@ impl BackupSource {
 pub fn start_cron(
     client: Client,
     backup_config: BackupConfig,
+    #[cfg(feature = "s3")] backup_file_prefix: String,
     #[cfg(feature = "s3")] s3_config: Option<Arc<S3Config>>,
 ) {
     task::spawn(Box::pin(async move {
@@ -127,7 +204,10 @@ pub fn start_cron(
             for _ in 0..retries {
                 match backup_cron_job(
                     &client,
+                    #[cfg(feature = "s3")]
                     backup_config.keep_for,
+                    #[cfg(feature = "s3")]
+                    &backup_file_prefix,
                     #[cfg(feature = "s3")]
                     &s3_config,
                 )
@@ -164,7 +244,8 @@ pub fn start_cron(
 
 async fn backup_cron_job(
     client: &Client,
-    keep_for: Duration,
+    #[cfg(feature = "s3")] keep_for: Duration,
+    #[cfg(feature = "s3")] backup_file_prefix: &str,
     #[cfg(feature = "s3")] s3_config: &Option<Arc<S3Config>>,
 ) -> Result<(), Error> {
     client.backup().await?;
@@ -173,7 +254,7 @@ async fn backup_cron_job(
     {
         if let Some(s3_config) = s3_config {
             // the backup task will be async in the background, but we can start cleaning up already
-            let threshold = Utc::now().sub(keep_for);
+            let threshold = Utc::now().sub(keep_for).timestamp();
 
             let list = s3_config.bucket.list("", None).await?;
             for bucket in list {
@@ -183,9 +264,14 @@ async fn backup_cron_job(
                 }
 
                 for object in bucket.contents.iter() {
-                    if let Some(dt) = dt_from_backup_name(&object.key)
-                        && dt < threshold
-                    {
+                    // Only our own backup files are ever deleted here. Anything a shared bucket
+                    // holds that does not match `{prefix}_{node_id}_{ts}.sqlite` exactly is left
+                    // untouched, which is what makes one bucket for many clusters safe.
+                    let Some(ts) = backup_ts_from_name(&object.key, backup_file_prefix) else {
+                        debug!("Found non-backup object - skipping: {}", object.key);
+                        continue;
+                    };
+                    if ts < threshold {
                         info!("Deleting expired backup: {}", object.key);
                         s3_config.bucket.delete(object.key.clone()).await?;
                     }
@@ -200,10 +286,8 @@ async fn backup_cron_job(
 pub(crate) async fn backup_local_cleanup(
     backup_path: String,
     keep_for: Duration,
+    backup_file_prefix: &str,
 ) -> Result<(), Error> {
-    // just make sure the parsed TS later on is somewhat reasonable
-    let ts_min = 1704063600;
-
     let ts_threshold = Utc::now().sub(keep_for).timestamp();
 
     let path = Path::new(&backup_path);
@@ -230,26 +314,18 @@ pub(crate) async fn backup_local_cleanup(
             // old orphans are reclaimed, while an in-progress backup (fresh ts) is kept.
             let s = s_orig.strip_suffix('~').unwrap_or(s_orig);
 
-            if !s.starts_with("backup_node_") && !s.ends_with(".sqlite") {
+            // same rule as on S3: a name that is not exactly ours is never removed
+            let Some(ts) = backup_ts_from_name(s, backup_file_prefix) else {
+                debug!("Found non-backup file - skipping: {s_orig}");
                 continue;
-            }
+            };
 
-            let stripped = s.strip_suffix(".sqlite").unwrap_or(s);
-            let (_, ts) = stripped.rsplit_once('_').unwrap_or_default();
-
-            match ts.parse::<i64>() {
-                Ok(ts) => {
-                    if ts > ts_min && ts < ts_threshold {
-                        // remove the on-disk file under its real name (keep any '~' suffix)
-                        let p = format!("{backup_path}/{s_orig}");
-                        info!("Cleaning up local backup {s_orig} ({p})");
-                        if let Err(err) = tokio::fs::remove_file(p).await {
-                            error!(?err, "Error removing local backup");
-                        }
-                    }
-                }
-                Err(err) => {
-                    error!(?err, "Cannot parse ts from file {s_orig}")
+            if ts > TS_MIN && ts < ts_threshold {
+                // remove the on-disk file under its real name (keep any '~' suffix)
+                let p = format!("{backup_path}/{s_orig}");
+                info!("Cleaning up local backup {s_orig} ({p})");
+                if let Err(err) = tokio::fs::remove_file(p).await {
+                    error!(?err, "Error removing local backup");
                 }
             }
         }
@@ -258,43 +334,22 @@ pub(crate) async fn backup_local_cleanup(
     Ok(())
 }
 
-fn dt_from_backup_name(name: &str) -> Option<DateTime<Utc>> {
-    if let Some(backup) = name.strip_prefix("backup_node_") {
-        let (_, rest) = match backup.split_once("_") {
-            None => {
-                error!("Invalid backup filename format on S3: {}", name);
-                return None;
-            }
-            Some(s) => s,
-        };
-        let ts = match rest.strip_suffix(".sqlite") {
-            None => {
-                error!(
-                    "Invalid backup filename on S3 - '.sqlite' suffix missing: {}",
-                    name
-                );
-                return None;
-            }
-            Some(ts) => ts,
-        };
+/// Restore the backup that was given to `start_node_from_backup`, or the one named by the
+/// `HQL_BACKUP_RESTORE` env var when no explicit source was given.
+/// Returns `Ok(true)` when the backup has been applied, which needs the node ID `1`.
+///
+/// Every node of the cluster must be started with the same restore source: node 1 applies the
+/// backup, all other nodes wipe their own state and join the new cluster clean.
+pub(crate) async fn restore_backup_start(
+    node_config: &NodeConfig,
+    explicit: Option<BackupSource>,
+) -> Result<bool, Error> {
+    let src = match explicit {
+        Some(src) => Some(src),
+        None => BackupSource::from_env()?,
+    };
 
-        match ts.parse::<i64>() {
-            Ok(ts) => DateTime::from_timestamp(ts, 0),
-            Err(err) => {
-                error!("Error parsing TS from remote backup as i64: {}", err);
-                None
-            }
-        }
-    } else {
-        None
-    }
-}
-
-/// Check if the env var `HQL_BACKUP_RESTORE` is set and restores the given backup if so.
-/// Returns `Ok(true)` if backup has been applied.
-/// This will only run if the current node ID is `1`.
-pub(crate) async fn restore_backup_start(node_config: &NodeConfig) -> Result<bool, Error> {
-    if let Some(src) = BackupSource::from_env() {
+    if let Some(src) = src {
         info!("Found backup restore request {:?}", src);
 
         if node_config.node_id == 1 {
@@ -357,15 +412,16 @@ async fn cleanup_restore_data_dirs(data_dir: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Apply the given backup from S3 storage.
+/// Apply the given backup and move it onto the node's database path.
 ///
 /// **CAUTION: This function MUST BE CALLED when the Raft is not running!**
 ///
-/// You only need to invoke this manually if you want to apply a backup in another
-/// way than with the `HQL_BACKUP_RESTORE` env var, which is being done automatically.
+/// You only need this if you apply a backup in another way than `start_node_from_backup` (or the
+/// `HQL_BACKUP_RESTORE` env var), which both do it for you at startup.
 pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Result<(), Error> {
     info!("Starting database restore from backup {:?}", src);
 
+    #[cfg(feature = "s3")]
     if let BackupSource::S3(_) = &src
         && node_config.s3_config.is_none()
     {
@@ -381,6 +437,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     set_path_access(&path_backups, 0o700).await?;
 
     let path_backup = match src {
+        #[cfg(feature = "s3")]
         BackupSource::S3(s3_obj) => {
             let s3_config = match &node_config.s3_config {
                 None => {
@@ -522,4 +579,82 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
     }
 
     info!("restore_backup_finish task successful");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{backup_file_name, backup_ts_from_name, is_valid_file_prefix};
+
+    #[test]
+    fn a_backup_file_name_round_trips_to_its_timestamp() {
+        let name = backup_file_name("backup_node", 2, 1_700_000_000);
+        assert_eq!(name, "backup_node_2_1700000000.sqlite");
+        assert_eq!(
+            backup_ts_from_name(&name, "backup_node"),
+            Some(1_700_000_000)
+        );
+    }
+
+    #[test]
+    fn a_custom_prefix_only_matches_its_own_files() {
+        assert_eq!(
+            backup_ts_from_name("app-a_1_1700000000.sqlite", "app-a"),
+            Some(1_700_000_000)
+        );
+        // the default prefix is not ours and ours is not the default one
+        assert_eq!(
+            backup_ts_from_name("backup_node_1_1700000000.sqlite", "app-a"),
+            None
+        );
+        assert_eq!(
+            backup_ts_from_name("app-a_1_1700000000.sqlite", "backup_node"),
+            None
+        );
+        // a longer name that starts with our prefix must not match
+        assert_eq!(
+            backup_ts_from_name("app-a_v2_1_1700000000.sqlite", "app-a"),
+            None
+        );
+        assert_eq!(
+            backup_ts_from_name("app-ab_1_1700000000.sqlite", "app-a"),
+            None
+        );
+    }
+
+    #[test]
+    fn foreign_files_have_no_backup_timestamp() {
+        for name in [
+            "",
+            "backup_node",
+            "backup_node_",
+            "backup_node_1",
+            "backup_node_1_.sqlite",
+            "backup_node_1_1700000000",
+            "backup_node_1_1700000000.sqlite~",
+            "backup_node_1_1700000000.sqlite.gz",
+            "backup_node_x_1700000000.sqlite",
+            "backup_node_1_1700000000.sqlite/",
+            "backup_node_1/../../etc/passwd",
+            "backup_node_1\\..\\..\\windows",
+            "../backup_node_1_1700000000.sqlite",
+            "some/backup_node_1_1700000000.sqlite",
+            "notes.txt",
+        ] {
+            assert_eq!(
+                backup_ts_from_name(name, "backup_node"),
+                None,
+                "must have no ts: {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_plain_file_name_prefixes_are_valid() {
+        for prefix in ["backup_node", "app-a", "app.bak", "App1", "backup_node_"] {
+            assert!(is_valid_file_prefix(prefix), "must accept: {prefix:?}");
+        }
+        for prefix in ["", ".", "..", "a/b", "a\\b", "a b", "a\0", "näme"] {
+            assert!(!is_valid_file_prefix(prefix), "must reject: {prefix:?}");
+        }
+    }
 }

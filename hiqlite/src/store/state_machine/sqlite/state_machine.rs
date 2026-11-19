@@ -168,6 +168,7 @@ impl StateMachineSqlite {
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::s3::S3Config>>,
         do_reset_metadata: bool,
         #[cfg(feature = "backup")] local_backup_keep_for: Duration,
+        #[cfg(feature = "backup")] backup_file_prefix: &str,
     ) -> Result<StateMachineSqlite, io::Error> {
         // IMPORTANT: Do NOT change the order of the db exists check!
         // DB recovery will fail otherwise!
@@ -199,6 +200,8 @@ impl StateMachineSqlite {
             do_reset_metadata,
             #[cfg(feature = "backup")]
             local_backup_keep_for,
+            #[cfg(feature = "backup")]
+            backup_file_prefix.to_string(),
             lock_file,
         );
 

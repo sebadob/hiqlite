@@ -5,82 +5,207 @@
 `openraft` was updated from 0.9 to 0.10.
 
 Persisted data is unchanged: the WAL logs and WAL metadata, the SQLite state machine's metadata and
-the snapshot files from 0.15/0.16 load as they are. Both directions are pinned by tests
-(`bincode_compat` and the wire goldens), so an existing data dir can simply be kept.
+the snapshot files load as they are. Both directions are pinned by tests, so an existing data dir
+can simply be kept.
 
-Raft _network_ messages are not compatible anymore, so a rolling upgrade is not possible. Stop the
-whole cluster, update all nodes at once and start them again. A node that fails one of the new
-startup consistency checks has to be wiped and re-added as a learner. Expect a one-time leader term
-bump. Rollback is done by putting the previous (openraft 0.9 based) release back on the same data
-dirs.
+### Breaking
 
-- `openraft/loosen-follower-log-revert` was a compile-time feature and is the `allow_log_reversion`
-  field on the `RaftConfig` now. `NodeConfig::default_raft_config()` enables it for both Raft
-  groups, which is what 0.16 did whenever the `cache` feature was on - that feature was global. A
-  node whose volume was wiped or corrupted re-syncs on its own, with a `warn` on its leader. Set
-  `raft_config.allow_log_reversion = Some(false)` on a node for the strict behavior, where such a
-  reversion stops that node's replication instead of healing it. It is a code-only knob - the TOML
-  `[raft_config]` section knows `logs_until_snapshot` only.
-- `raft_config` is validated at startup through `NodeConfig::is_valid()`, and
-  `send_snapshot_timeout` is gone. `NodeConfig::default_raft_config()` uses `..Default::default()`
-  because openraft's `Config` gained a lot of fields.
-- Source breaking: the `Error` enum's openraft variants are split per group (`RaftErrorDb` /
-  `RaftErrorKv` and friends), and the metrics functions return `RaftMetrics<TypeConfigSqlite>` /
-  `RaftMetrics<TypeConfigCache>` instead of `RaftMetrics<u64, Node>`.
-- The shared network paths don't convert between the two groups' types through a serialization round
-  trip anymore - for the types they carry there is nothing to convert, they are the same types. The
-  paths that do serialize whole metrics are split per group, so nothing is copied or parsed.
-- `openraft`'s `RaftLogStorage::purge` is inclusive, so a purge now also removes the entry it names
-  and the purge frontier lands one entry further than before. Only which entries are deleted
-  changes, the bytes on disk do not.
-- `get_log_state` on a fully purged log reports `last_log_id = last_purged_log_id`, which is
-  openraft's convention and what its new startup consistency check expects.
-- A read range that starts below the first entry, runs past the last one, or has no upper bound
-  (`0..`) is now answered with what is there instead of being rejected. The runtime never asked for
-  these; openraft's reference stores answer them, and its storage test suite asks for them.
-- When a purge removes the whole log, the last WAL file is emptied in place instead of deleted and
-  re-created. The reader task caches a mmap per file, and the re-created file recycled the
-  `wal_no`, so it kept reading the deleted file's contents.
-- The memory state machine's `install_snapshot` uses the data it is handed when nothing streamed
-  into the receive file, which is how openraft 0.10's storage test suite hands it over.
-- The memory state machine's old-snapshot cleanup isn't a spawned task anymore, it runs inline
-  after the write. It deleted from a directory listing while `read_current_snapshot` does the same
-  listing before it reads the file it picked, so the cleanup could delete exactly that file in
-  between and turn the read into a `NotFound`. A cleanup that can't read the directory now errors
-  instead of panicking its task.
-- openraft's storage test suite now runs against both cache log stores, the WAL and the in-memory
-  one, together with the memory state machine (`hiqlite/src/store/tests_openraft_suite.rs`), which
-  is what surfaced the behaviors above.
-- The in-memory log store accepts a purge point it holds no entries for - below its first entry
-  after a snapshot install, or past its tail - and just moves the recorded point.
-- `is_forward_to_leader()` still matches `ForwardToLeader` only, like in 0.9.
-- A graceful shutdown on the leader hands leadership to the voter with the greatest matching log
-  before it leaves, and waits for the handover up to one election timeout, so a shutdown doesn't
-  cost the cluster an election. Only the leader does anything, and a single node has nobody to hand
-  over to, so it shuts down exactly like before.
+#### `v0.15` Migration Guard
+
+The `v0_15_auto_cache_migration` module is gone. It only ever cleaned up the cache data of a v0.14
+data dir, its compile guard trips as soon as the version moves on, and the `HQL_CACHE_WAL_*`
+migration vars are not evaluated anymore.
+
+**CAUTION: This means you MUST NOT try to upgrade to this version from < v0.15 directly! It would
+break your cluster. You MUST start at least any 0.15 or 0.16 cleanly BEFORE upgrading!**
+
+#### Raft Network
+
+Raft _network_ messages are not compatible anymore. **A rolling upgrade is not possible**:
+
+1. stop the whole cluster
+2. update all nodes at once
+3. start them again
+
+> There is a new guard in place that will refuse a restart if online cluster nodes with an older
+> version are reachable. This is only a helper. You need to take care of it yourself.
+
+#### `backup` Feature
+
+the `backup` feature does not pull in `s3` anymore. Backups have never needed S3 - the cron job, the
+vacuum into the local `backups` dir, the local cleanup and a `file:` restore are plain disk work -
+and the encryption keys, `cryptr` and `s3-simple` were the price for all of it.
+
+`backup` is now `cron` + `sqlite`, and the push to a bucket, the bucket cleanup and the `s3:`
+restore source live behind `s3`, which keeps implying `backup`. A default-features build has local
+backups and no S3 client in it. Add `s3` where you had backups before and want them offsite.
+
+#### API Secret
+
+The API secret travels in the standard `Authorization` header now, as a bearer token -
+`Authorization: Bearer <secret_api>` - and not in the custom `X-API-SECRET` anymore. `Authorization`
+is the header that loggers, proxies and client libraries treat as sensitive by default, which is
+exactly what a secret needs. The value has to carry the `Bearer ` scheme, matched
+case-insensitively, and the secret behind it is compared byte for byte in constant time. A raw
+secret without the scheme is refused with an answer that says what to send, and the old header
+authenticates nothing. `Client` code is unchanged: the HTTP client builds the header itself. Tooling
+that talks to the API by hand needs `-H "Authorization: Bearer <secret_api>"`, and old and new nodes
+cannot authenticate each other, which is the same stop-the-world upgrade the openraft 0.10 wire
+change forces anyway.
+
+#### Errors
+
+Source breaking: the `Error` enum's openraft variants are split per group (`RaftErrorDb` /
+`RaftErrorKv` and friends), and the metrics functions return `RaftMetrics<TypeConfigSqlite>` /
+`RaftMetrics<TypeConfigCache>` instead of `RaftMetrics<u64, Node>`.
+
+#### `query_consistent()`
+
+`query_consistent()` and `query_consistent_map()` take the `ReadPolicy` as an argument, and
+`hiqlite::ReadPolicy` is a re-export of openraft's enum so an app can name it. `ReadIndex` is the
+strong path, `LeaseRead` lets a leader answer on its own lease and is the faster one.
+
+### Changes
+
+#### `backup_file_prefix` config var
+
+The new `backup_file_prefix` (TOML key, `HQL_BACKUP_FILE_PREFIX`) is the prefix of every backup
+file name.
+
+A backup is always `{backup_file_prefix}_{node_id}_{unix_ts}.sqlite`, on disk and in the bucket, and
+`backup_node` is the default, which is what every existing file is named. Listing, the local cleanup
+and the S3 cleanup job accept that exact shape of your own prefix only, and nothing that does not
+match is ever deleted - so several clusters can share one bucket, and files that are not Hiqlite
+backups in a shared directory or bucket are untouched. `Client::backup_file_local` validates the
+name against the same rule.
+
+#### Shutdown Behavior
+
+A graceful shutdown on the leader hands leadership over before it leaves, so a shutdown doesn't cost
+the cluster an election. It tries the voters in the order openraft follows when a removed leader
+steps down - the greatest matching log first - and gives each candidate a slice of the remaining
+budget, because a transfer that lands on a node which is unreachable, or whose log is behind, is
+silently ignored. Only the leader does anything, and a single node has nobody to hand over to, so it
+shuts down exactly like before.
+
+#### Test Suite
+
+`openraft`'s storage test suite now runs against both cache log stores, the WAL and the in-memory
+one, together with the memory state machine.
+
+#### Extended API and Cluster Control
+
+> You should never automate changing anything on these endpoints. They should always be triggered
+> manually, in very specific situations.
+
+##### `/cluster/election`
+
+- `GET`: answers the server state, leader, voter flag, and the effective `enable_elect` of every
+  group
+- `PUT`: with `{ "enable_elect": true|false }` changes it for all groups of that node in one call
+- `POST`: makes the node campaign for the leadership of all its groups. Optional query param
+  `?force=true` -> bypasses openraft's Pre-Vote round, which inflates the term even when the node
+  cannot win - use it only when you know the node's log is at the cluster tip. A learner is refused
+  on `POST`, it can never win an election. A runtime change is in-memory only: a restart applies the
+  marker of the node line again, and every change is logged.
+
+The matching `Client` helpers are `cluster_election_state()`, `set_node_election(node_id, enable)`
+and `elect_node(node_id, force)`. They work on a remote client for the whole cluster. An embedded
+client can only reach its own node.
+
+#### Membership Control
+
+Membership control without a `{raft_type}`, acting on all groups of a node in the same way:
+
+- `GET /cluster/membership` answers voters, learners, leader and server state of every group
+- `POST /cluster/promote` with `{ "node_id": 3 }` moves a learner into the voter set
+- `DELETE /cluster/membership` with `{ "node_id": 1, "stay_as_learner": true }` takes a voter out
+  again
+- `POST /cluster/transfer_leader` with `{ "node_id": 2 }` hands the leadership of both groups to one
+  specific node. They answer the full membership of the node that ran them, so the call that changed
+  something also shows the new shape. They run on the leader: a follower answers with the same
+  redirect payload a write gets, and clients follow it. The existing `{raft_type}` routes for a full
+  voter set and for a node leaving are untouched and stay the way to repair a half-applied change.
+
+Demoting the current leader with `stay_as_learner: true` is the switchover of a master-slave setup:
+openraft steps it down onto the most up-to-date remaining voter, by the same rule as the shutdown
+handover - no election timeout, and the leader grants the target its own vote. A leader that would
+demote _itself_ to a learner is refused, because it keeps leading in that shape and openraft cannot
+complete the change: hand the leadership over with `transfer_leader` first and run the demotion on
+the node that took it. `transfer_leader` is a request, so a node whose log is behind ignores it, and
+a learner is refused as a target outright.
+
+The matching `Client` helpers are `cluster_membership()`, `promote_node(node_id)`,
+`demote_node(node_id, stay_as_learner)` and `transfer_leadership(node_id)`. A remote client sends
+them to the leader it knows and follows a leader redirect, an embedded client runs them on its own
+node.
+
+#### Geo-Replication Possibilities
+
+Nodes can be marked to never start an election on their own: a node line accepts an optional 4th
+value, `id addr_raft addr_api election_disable`.
+
+A marked node starts with `raft_config.enable_elect = false` for both of its Raft groups. It stays
+a full voting member: it grants votes like every other voter, it counts towards the quorum, and a
+leader can hand leadership over to it at any time - it just never nominates itself.
+
+This makes it possible to create somewhat of a Geo Replicated backup node with a 2 node cluster
+(2 local, 1 far node), without paying the latency overhead that you would typically have with Raft
+over WAN. Each write needs 2 network round-trips, which means if the far node would become the
+leader, or necessary to reach a quorum, your latency would spike. This makes it possible to run
+2 local fast nodes HA, and the 3rd node can be geo-replicated. This has some caveats though. If one
+of the local nodes goes down, your latency is bound by the far node until the local one comes up
+again. This is not a big issue for restarts or upgrades, but should be kept in mind for longer
+downtimes. On the upside, with an extenced API now, this would even make it possible to do a hot
+switch-over to a disastery recovery location. This will never be handled automatically though, and
+needs manual triggers.
+
+> The whole thing is documented in `docs/geo-replication.md`: the config, the API, the handover
+> rules, the failover playbooks, monitoring, and the list of things that will bite you.
+
+#### New Start Functions
+
+New start functions `hiqlite::start_node_from_backup(node_config, source)` and
+`hiqlite::start_node_with_cache_from_backup(node_config, source)`. They take the backup to restore
+as a parameter - `hiqlite::BackupSource::File(path)` or `hiqlite::BackupSource::S3(object)` - and
+never read `HQL_BACKUP_RESTORE`, which is what an app needs that runs several Hiqlite instances in
+one process, each with its own data dir, its own prefix and its own backup. Everything else is
+the env var behaviour: pass the same source to every node of the cluster, node 1 applies it, the
+others wipe their state and join.
+
+`HQL_BACKUP_RESTORE` is evaluated at startup, and a value it cannot honour is now an error that
+stops the node instead of a log line and a normal boot: an `s3:` source on a build without the `s3`
+feature, and a value without the `s3:` or `file:` prefix. Restoring from a backup is a deliberate
+act, and a disaster-recovery request that gets quietly ignored is the worst way to find that out.
+
+#### Cache Index Metadata Reset
+
+Hiqlite writes a normalized version of the Cache Index enum to disk. It compares it against the
+previous version on each startup. This is necessary, because the caches are indexed by a positional
+int for speed instead of by string / hash. However, this comes with the cost that the Cache Index
+enum is append-only and must never change.
+
+The new `HQL_CACHE_META_RESET=true` re-initializes the cache-index fingerprint of your
+`CacheVariants` enum for the caches group. It deletes that fingerprint only: the database, the Raft
+logs, and your cache content are untouched. A renamed variant needs it on every node's start, for
+one start, and nothing else.
+
+**CAUTION:** A removed variant needs a guarantee from you: every node has to clear all of its caches
+at startup, because the entries of the removed index are still persisted, and swapping the names of
+two variants counts as a removal too. If all you are doing is renaming a variant because you like a
+different name better, but the data inside stays the same, there is nothing else to do.
+
+#### Documentation
+
+Up until now, all "documentation" lived either in the readme, or in sources. It got kind of messy,
+and this version starts with adding proper documentation in `docs/`. This is probably not complete
+yet, but a good starting point.
+
+### Bugfix
+
 - `wait_for_cluster_sync()`'s single-instance fast path only looked at the node list, which a local
   client never has, so it never fired for an embedded single node. A local client now takes the
   member count from its own Raft membership, like `shutdown_execute` does.
-- Source breaking: `query_consistent()` and `query_consistent_map()` take the `ReadPolicy` as an
-  argument instead of hardcoding `ReadIndex`, and `hiqlite::ReadPolicy` is a re-export of openraft's
-  enum so an app can name it. `ReadIndex` is the strong path, `LeaseRead` lets a leader answer on
-  its own lease and is the faster one.
-- `hiqlite/src/v0_17_cold_restart_guard.rs` is a startup guard for the stop-the-world requirement
-  above. On a cluster config it asks every other node's `/version` endpoint. A node that does not
-  answer is shut down, which is exactly what the upgrade expects. A node that answers must run
-  0.17.0 or newer, and a node that answers `/ping` but has no `/version` endpoint is an old version
-  from before that endpoint existed. The latter two make the node refuse to start. The check runs
-  twice with 5 seconds in between to catch a node that comes up right after the first pass, and a
-  single node has no peers to check, so it does nothing there. `HQL_DISABLE_COLD_RESTART_GUARD=true`
-  skips the whole guard, which is what `just test` and `just test-no-s3` set.
-- The `v0_15_auto_cache_migration` module is gone. It only ever cleaned up the cache data of a
-  v0.14 data dir, its compile guard trips as soon as the version moves on, and the `HQL_CACHE_WAL_*`
-  migration vars are not evaluated anymore.
-- `NodeConfig::from_toml` and `NodeConfig::from_toml_table` have their `enc_keys` argument in every
-  feature set now. It used to be behind a `#[cfg]`, so a caller that passes the same number of
-  arguments everywhere, `default-features = false` users and the test code included, could not
-  compile. The argument is `Option<cryptr::EncKeys>` when the features have encryption keys and
-  `Option<()>` when they do not, and `None` is valid in both.
 
 ## v0.16.0
 

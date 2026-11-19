@@ -135,6 +135,7 @@ pub struct RTTRequest {
 }
 
 #[allow(clippy::blocks_in_conditions)]
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_writer(
     mut conn: rusqlite::Connection,
     this_node: NodeId,
@@ -142,6 +143,7 @@ pub fn spawn_writer(
     log_statements: bool,
     do_reset_metadata: bool,
     #[cfg(feature = "backup")] local_backup_keep_for: Duration,
+    #[cfg(feature = "backup")] backup_file_prefix: String,
     lock_file: std::fs::File,
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(1);
@@ -664,6 +666,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                         req.node_id,
                         req.ts,
                         req.target_folder.clone(),
+                        #[cfg(feature = "backup")]
+                        &backup_file_prefix,
                         #[cfg(feature = "s3")]
                         s3_config,
                         #[cfg(feature = "s3")]
@@ -675,16 +679,20 @@ CREATE TABLE IF NOT EXISTS _metadata
                     }
 
                     #[cfg(feature = "backup")]
-                    rt.spawn(async move {
-                        if let Err(err) = crate::backup::backup_local_cleanup(
-                            req.target_folder,
-                            local_backup_keep_for,
-                        )
-                        .await
-                        {
-                            error!("Error during local backup cleanup: {:?}", err);
-                        }
-                    });
+                    {
+                        let prefix = backup_file_prefix.clone();
+                        rt.spawn(async move {
+                            if let Err(err) = crate::backup::backup_local_cleanup(
+                                req.target_folder,
+                                local_backup_keep_for,
+                                &prefix,
+                            )
+                            .await
+                            {
+                                error!("Error during local backup cleanup: {:?}", err);
+                            }
+                        });
+                    }
 
                     if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
@@ -806,6 +814,7 @@ fn create_backup(
     node_id: NodeId,
     ts: i64,
     target_folder: String,
+    #[cfg(feature = "backup")] file_prefix: &str,
     #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
     #[cfg(feature = "s3")] rt: &runtime::Handle,
 ) -> Result<(), Error> {
@@ -814,6 +823,12 @@ fn create_backup(
     // - connect to vacuumed db and reset metadata
     // - if we have an s3 target, encrypt and push it
 
+    // A backup file is always `{prefix}_{node_id}_{ts}.sqlite`. The prefix comes from the config;
+    // without the `backup` feature nothing lists, cleans up, or restores these files, so the
+    // default shape is all that is left.
+    #[cfg(feature = "backup")]
+    let file = crate::backup::backup_file_name(file_prefix, node_id, ts);
+    #[cfg(not(feature = "backup"))]
     let file = format!("backup_node_{node_id}_{ts}.sqlite");
     let path_full = format!("{target_folder}/{file}");
     info!("Creating database backup into {path_full}");

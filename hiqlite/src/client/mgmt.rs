@@ -1,21 +1,23 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
-use crate::helpers::deserialize_serde;
+use crate::helpers::{deserialize, deserialize_serde, serialize};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use crate::helpers::{shutdown_transfer_deadline, transfer_leadership_before_shutdown};
-use crate::network::HEADER_NAME_SECRET;
-use crate::{Client, Error};
+use crate::{Client, Error, NodeId};
 use openraft::RaftTypeConfig;
 use openraft::ServerState;
 use openraft::type_config::async_runtime::watch::WatchReceiver;
+use reqwest::Method;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
-#[cfg(feature = "cache")]
-use crate::network::management::{self, ClusterLeaveReq};
+use crate::network::management::{
+    self, ClusterLeaveReq, ElectionReq, ElectionState, MembersState, NodeReq,
+};
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigCache;
 #[cfg(feature = "sqlite")]
@@ -84,7 +86,7 @@ impl Client {
             .as_ref()
             .unwrap()
             .get(url)
-            .header(HEADER_NAME_SECRET, self.inner.api_secret.as_ref().unwrap())
+            .bearer_auth(self.inner.api_secret.as_ref().unwrap())
             .send()
             .await?;
 
@@ -94,6 +96,319 @@ impl Client {
         } else {
             let err = res.json::<Error>().await?;
             Err(err)
+        }
+    }
+
+    /// The election state of every cluster node, keyed by node id.
+    ///
+    /// An embedded client knows its own node only, so it reports that one. A remote client asks
+    /// every node address it was built with and leaves out the nodes that do not answer. It is an
+    /// error only when no node answers at all.
+    pub async fn cluster_election_state(&self) -> Result<BTreeMap<NodeId, ElectionState>, Error> {
+        let mut map = BTreeMap::new();
+        for (_, state) in self.election_states().await? {
+            map.insert(state.node_id(), state);
+        }
+        Ok(map)
+    }
+
+    /// Enable or disable a node's own right to start elections, for every Raft group it runs.
+    ///
+    /// `openraft` keeps this in its runtime config, so the change is in memory only: a restart
+    /// applies the `election_disable` marker of that node's own node line again. An embedded client
+    /// can change its own node only.
+    pub async fn set_node_election(
+        &self,
+        node_id: NodeId,
+        enable: bool,
+    ) -> Result<ElectionState, Error> {
+        if let Some(state) = &self.inner.state {
+            if node_id != state.id {
+                return Err(Error::Error(
+                    "An embedded client can change the election state of its own node only".into(),
+                ));
+            }
+            return management::local_set_enable_elect(state, enable).await;
+        }
+
+        let body = serialize(&ElectionReq {
+            enable_elect: enable,
+        })?;
+        self.node_request(node_id, Method::PUT, "", Some(body))
+            .await
+    }
+
+    /// Make a node campaign for the leadership of all its Raft groups.
+    ///
+    /// Without `force`, openraft runs a Pre-Vote round first, so the term is untouched when the
+    /// node cannot win. With `force`, that round is bypassed and the term climbs unconditionally -
+    /// use it only when you know the node's log is at the cluster tip. A learner is refused, and an
+    /// embedded client can elect its own node only.
+    pub async fn elect_node(&self, node_id: NodeId, force: bool) -> Result<ElectionState, Error> {
+        if let Some(state) = &self.inner.state {
+            if node_id != state.id {
+                return Err(Error::Error(
+                    "An embedded client can elect its own node only".into(),
+                ));
+            }
+            return management::local_elect(state, force).await;
+        }
+
+        let query = if force { "?force=true" } else { "" };
+        self.node_request(node_id, Method::POST, query, None).await
+    }
+
+    /// The membership of every cluster node, keyed by node id.
+    ///
+    /// It answers who is voter and who is learner in each Raft group, and which node each group
+    /// follows. Like `cluster_election_state()`: an embedded client reports its own node, a remote
+    /// client asks every node address it was built with and leaves out the nodes that do not answer.
+    pub async fn cluster_membership(&self) -> Result<BTreeMap<NodeId, MembersState>, Error> {
+        let mut map = BTreeMap::new();
+        for (_, state) in self.members_states().await? {
+            map.insert(state.node_id(), state);
+        }
+        Ok(map)
+    }
+
+    /// Make a learner a voter in every Raft group of the cluster.
+    ///
+    /// The node must already be a learner - this only moves it into the voter set. It runs on the
+    /// node that leads the cluster: a remote client sends it to its known leader and follows a
+    /// leader redirect, an embedded client runs it locally and fails with the redirect payload when
+    /// its own node is not the leader.
+    pub async fn promote_node(&self, node_id: NodeId) -> Result<MembersState, Error> {
+        if let Some(state) = &self.inner.state {
+            return management::local_promote(state, node_id).await;
+        }
+
+        let body = serialize(&NodeReq { node_id })?;
+        self.leader_request(Method::POST, "/cluster/promote", body)
+            .await
+    }
+
+    /// Take a voter out of the voter set of every Raft group of the cluster.
+    ///
+    /// With `stay_as_learner` the node keeps replicating as a learner, which is what a master-slave
+    /// setup wants. Without it the node leaves the cluster entirely, and `openraft`'s step-down
+    /// hands the leadership to the most up-to-date remaining voter, so demoting the leader this way
+    /// is the switchover.
+    ///
+    /// A leader that would demote itself to a learner is refused: it keeps leading, and openraft
+    /// cannot complete the change. Hand the leadership over with
+    /// [`transfer_leadership`](Self::transfer_leadership) first and run this call on the node that
+    /// took it.
+    pub async fn demote_node(
+        &self,
+        node_id: NodeId,
+        stay_as_learner: bool,
+    ) -> Result<MembersState, Error> {
+        if let Some(state) = &self.inner.state {
+            return management::local_demote(state, node_id, stay_as_learner).await;
+        }
+
+        let body = serialize(&ClusterLeaveReq {
+            node_id,
+            stay_as_learner,
+        })?;
+        self.leader_request(Method::DELETE, "/cluster/membership", body)
+            .await
+    }
+
+    /// Hand the leadership of every Raft group to a specific node.
+    ///
+    /// A transfer is a request, not a command: a target that is unreachable, or whose log is
+    /// behind, ignores it, and the answer then shows the leadership where it was. A learner can
+    /// never take over and is refused. It must run on the current leader, like `promote_node()`.
+    pub async fn transfer_leadership(&self, node_id: NodeId) -> Result<MembersState, Error> {
+        if let Some(state) = &self.inner.state {
+            return management::local_transfer_leader(state, node_id).await;
+        }
+
+        let body = serialize(&NodeReq { node_id })?;
+        self.leader_request(Method::POST, "/cluster/transfer_leader", body)
+            .await
+    }
+
+    /// Send a `/cluster` request to the node that leads the cluster, following one leader redirect
+    /// per attempt, because a leader change between our look and our call is normal.
+    async fn leader_request(
+        &self,
+        method: Method,
+        path: &str,
+        body: Vec<u8>,
+    ) -> Result<MembersState, Error> {
+        let scheme = if self.inner.tls_config.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+        let secret = self
+            .inner
+            .api_secret
+            .as_ref()
+            .ok_or_else(|| Error::Token("API Secret missing".into()))?;
+        let client = self
+            .inner
+            .client
+            .as_ref()
+            .ok_or_else(|| Error::Connect("Client has no http client".into()))?;
+
+        #[cfg(feature = "sqlite")]
+        let (leader, tx) = (&self.inner.leader_db, &self.inner.tx_client_db);
+        #[cfg(not(feature = "sqlite"))]
+        let (leader, tx) = (&self.inner.leader_cache, &self.inner.tx_client_cache);
+
+        for attempt in 0..3 {
+            let addr = leader.read().await.1.clone();
+            let url = format!("{}://{}{}", scheme, addr, path);
+            let res = client
+                .request(method.clone(), &url)
+                .bearer_auth(secret)
+                .body(body.clone())
+                .send()
+                .await?;
+
+            if res.status().is_success() {
+                let bytes = res.bytes().await?;
+                return Ok(deserialize(bytes.as_ref())?);
+            }
+
+            let err = res.json::<Error>().await?;
+            if !self.was_leader_update_error(&err, leader, tx).await {
+                return Err(err);
+            }
+            debug!("Node {addr} is not the leader any more - retrying, attempt {attempt}");
+        }
+
+        Err(Error::Connect(
+            "The cluster leader kept changing during the membership request".into(),
+        ))
+    }
+
+    /// The election state of every node we know about, as `(api address, state)` pairs.
+    async fn election_states(&self) -> Result<Vec<(String, ElectionState)>, Error> {
+        self.get_from_every_node("/cluster/election", |state| {
+            management::election_state(state)
+        })
+        .await
+    }
+
+    /// The membership of every node we know about, as `(api address, state)` pairs.
+    async fn members_states(&self) -> Result<Vec<(String, MembersState)>, Error> {
+        self.get_from_every_node("/cluster/membership", |state| {
+            management::members_state(state)
+        })
+        .await
+    }
+
+    /// `GET` one `/cluster` path on every node we know, answering `(api address, payload)` pairs.
+    /// A node that does not answer is skipped with an `error` log; the call is an error only when
+    /// no node answers at all, so a half-reachable cluster gives a partial answer.
+    async fn get_from_every_node<T>(
+        &self,
+        path: &str,
+        local: impl Fn(&Arc<AppState>) -> Result<T, Error>,
+    ) -> Result<Vec<(String, T)>, Error>
+    where
+        T: bincode_next::Decode<()>,
+    {
+        if let Some(state) = &self.inner.state {
+            return Ok(vec![(String::new(), local(state)?)]);
+        }
+
+        let scheme = if self.inner.tls_config.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+        let secret = self
+            .inner
+            .api_secret
+            .as_ref()
+            .ok_or_else(|| Error::Token("API Secret missing".into()))?;
+        let client = self
+            .inner
+            .client
+            .as_ref()
+            .ok_or_else(|| Error::Connect("Client has no http client".into()))?;
+
+        let mut out = Vec::new();
+        for addr in &self.inner.nodes {
+            let url = format!("{}://{}{}", scheme, addr, path);
+            let res = client.get(&url).bearer_auth(secret).send().await;
+            match res {
+                Ok(res) if res.status().is_success() => {
+                    let bytes = res.bytes().await?;
+                    out.push((addr.clone(), deserialize(bytes.as_ref())?));
+                }
+                Ok(res) => {
+                    let err = res.json::<Error>().await?;
+                    error!("Error getting {path} from node {addr}: {err}");
+                }
+                Err(err) => {
+                    error!("Error getting {path} from node {addr}: {err}");
+                }
+            }
+        }
+
+        if out.is_empty() {
+            return Err(Error::Connect(format!(
+                "No cluster node answered its {path} state"
+            )));
+        }
+        Ok(out)
+    }
+
+    /// Send one of the `/cluster/election` requests to a single node, found by its node id.
+    async fn node_request(
+        &self,
+        node_id: NodeId,
+        method: Method,
+        query: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<ElectionState, Error> {
+        let mut addr = None;
+        for (node_addr, state) in self.election_states().await? {
+            if state.node_id() == node_id {
+                addr = Some(node_addr);
+                break;
+            }
+        }
+        let addr = addr.ok_or_else(|| {
+            Error::Connect(format!(
+                "Node {node_id} did not answer with its election state"
+            ))
+        })?;
+
+        let scheme = if self.inner.tls_config.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+        let secret = self
+            .inner
+            .api_secret
+            .as_ref()
+            .ok_or_else(|| Error::Token("API Secret missing".into()))?;
+        let client = self
+            .inner
+            .client
+            .as_ref()
+            .ok_or_else(|| Error::Connect("Client has no http client".into()))?;
+
+        let url = format!("{}://{}/cluster/election{}", scheme, addr, query);
+        let mut req = client.request(method, &url).bearer_auth(secret);
+        if let Some(body) = body {
+            req = req.body(body);
+        }
+
+        let res = req.send().await?;
+        if res.status().is_success() {
+            let bytes = res.bytes().await?;
+            Ok(deserialize(bytes.as_ref())?)
+        } else {
+            Err(res.json::<Error>().await?)
         }
     }
 
@@ -409,7 +724,7 @@ impl Client {
         let client = crate::http_client::build_http_client(self.inner.tls_no_verify);
         let res = client
             .get(url)
-            .header(HEADER_NAME_SECRET, &state.secret_api)
+            .bearer_auth(&state.secret_api)
             .send()
             .await?;
 

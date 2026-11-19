@@ -499,7 +499,7 @@ impl From<flume::SendError<NotifyRequest>> for Error {
     }
 }
 
-#[cfg(any(feature = "backup", feature = "s3"))]
+#[cfg(feature = "s3")]
 impl From<cryptr::stream::s3::S3Error> for Error {
     fn from(value: cryptr::stream::s3::S3Error) -> Self {
         trace!("cryptr::stream::s3::S3Error: {value}");

@@ -27,7 +27,9 @@ harness = false
 default = ["auto-heal", "backup", "sqlite", "toml"]
 
 auto-heal = ["hiqlite-wal/auto-heal"]
-backup = ["dep:cron", "s3", "sqlite"]
+# Local backups: the cron job, the local backup dir + its cleanup, and restore from a local
+# file. S3 storage for backups is opt-in via the `s3` feature on top of this.
+backup = ["dep:cron", "sqlite"]
 cache = ["__cluster", "dep:rust_decimal"]
 counters = ["cache"]
 dashboard = [
@@ -78,6 +80,7 @@ listen_notify = ["dep:futures-util", "cache"]
 macros = ["dep:hiqlite-derive", "dep:rust-embed"]
 toml = ["dep:toml"]
 # S3 access for backups. Enables cryptr's S3 streaming, and with it `s3-simple`.
+# Pushes the `backup` feature's local backups offsite, encrypted.
 s3 = ["backup", "cryptr/s3"]
 server = [
   "dep:clap",

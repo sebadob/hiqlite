@@ -161,6 +161,29 @@ wal_size = 2097152
 # overwritten by: HQL_CACHE_STORAGE_DISK
 cache_storage_disk = true
 
+# Re-initializes the cache index metadata of your `CacheVariants`
+# enum. Set `HQL_CACHE_META_RESET=true` for a single start: the
+# stored fingerprint is deleted and written from the current enum,
+# which is what a renamed variant needs. Only that fingerprint is
+# deleted - the database, the Raft logs, and your cache content
+# are untouched.
+#
+# Every node keeps its own fingerprint, so set it on every node of
+# the cluster for that single start.
+#
+# A removed variant needs more than this: every node must clear all
+# of its caches at startup, because the entries of the removed index
+# are still persisted. Swapping the names of two variants counts as
+# a removal too.
+#
+# !!!
+# This value can only be set via ENV VAR, and only for that single
+# start. Remove it immediately after.
+# !!!
+#
+# default: false
+#HQL_CACHE_META_RESET=true
+
 # Sets the limit when the Raft will trigger the creation of a new
 # state machine snapshot and purge all logs that are included in
 # the snapshot.
@@ -262,6 +285,20 @@ backup_cron = "0 30 2 * * * *"
 # default: '3d'
 # overwritten by: HQL_BACKUP_KEEP_FOR_LOCAL
 #backup_keep_for_local = '3d'
+
+# The prefix of every backup file name. A backup is always written as
+# `{backup_file_prefix}_{node_id}_{unix_ts}.sqlite`, on the local disk
+# and in the bucket.
+#
+# Set one prefix per application when several Hiqlite clusters share a
+# single bucket: the cleanup jobs only ever delete files that match this
+# exact shape, so clusters with different prefixes can never delete each
+# other's backups, and objects that are not Hiqlite backups are never
+# touched at all.
+#
+# default: "backup_node"
+# overwritten by: HQL_BACKUP_FILE_PREFIX
+backup_file_prefix = "backup_node"
 
 # If you ever need to restore from a backup, the process is simple.
 # 1. Have the cluster shut down. This is probably the case anyway, if
@@ -398,6 +435,8 @@ rate_limit_db_burst = 200000
 # Local backups will be left in place.
 #
 # This option should be seen as a last resort.
+# A node of a live cluster should re-sync from its healthy members
+# instead: start it as a learner, let it catch up, promote it.
 # USE WITH CARE!
 #
 # !!!

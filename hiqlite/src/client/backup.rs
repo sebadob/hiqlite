@@ -3,14 +3,20 @@ use crate::client::stream::{ClientBackupPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::sqlite::state_machine::QueryWrite;
 use crate::{Client, Error, Response};
-use chrono::{NaiveDateTime, Utc};
+use chrono::Utc;
 use tokio::fs;
 use tokio::sync::oneshot;
-use tracing::{debug, error, warn};
+use tracing::debug;
+use tracing::error;
 
+#[cfg(feature = "s3")]
+use chrono::NaiveDateTime;
+#[cfg(feature = "s3")]
 use cryptr::stream::writer::channel_writer::ChannelReceiver;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(feature = "s3")]
+use tracing::warn;
 
 #[derive(Debug)]
 pub struct BackupListing {
@@ -104,14 +110,20 @@ impl Client {
     }
 
     /// Get the file handle to a local backup.
+    ///
+    /// The name must be exactly `{backup_file_prefix}_{node_id}_{unix_ts}.sqlite` - the shape Hiqlite
+    /// writes - so a caller cannot reach outside of the backups directory (e.g. via `../` or an
+    /// embedded path separator).
     pub async fn backup_file_local(&self, filename: &str) -> Result<fs::File, Error> {
         if let Some(state) = self.inner.state.clone() {
-            // Backups are always created as `backup_node_{node_id}_{ts}.sqlite` directly in the
-            // flat backups dir; enforce that shape so a caller cannot reach outside of it (e.g.
-            // via "../" or an embedded path separator).
-            if !valid_backup_filename(filename) {
+            if !valid_backup_filename(&state.backup_file_prefix, filename) {
                 return Err(Error::BadRequest(
-                    format!("invalid backup filename: {filename}").into(),
+                    format!(
+                        "invalid backup filename: {filename} - expected \
+                        {}_{{node_id}}_{{unix_ts}}.sqlite",
+                        state.backup_file_prefix
+                    )
+                    .into(),
                 ));
             }
 
@@ -125,6 +137,7 @@ impl Client {
         }
     }
 
+    #[cfg(feature = "s3")]
     pub fn backup_s3_stream(&self, object: String) -> Result<ChannelReceiver, Error> {
         if let Some(state) = self.inner.state.clone() {
             if let Some(s3) = state.s3_config.clone() {
@@ -140,6 +153,9 @@ impl Client {
     }
 
     /// List all existing local backups.
+    ///
+    /// Only files with the exact `{backup_file_prefix}_{node_id}_{unix_ts}.sqlite` shape are listed -
+    /// the in-flight temp file and anything a shared directory may hold are not.
     pub async fn backup_list_local(&self) -> Result<Vec<BackupListing>, Error> {
         if let Some(state) = self.inner.state.clone() {
             let mut res = Vec::with_capacity(4);
@@ -154,7 +170,7 @@ impl Client {
 
                 let fname = entry.file_name();
                 let name = fname.to_str().unwrap_or_default().to_string();
-                if !name.starts_with("backup_node_") {
+                if !valid_backup_filename(&state.backup_file_prefix, &name) {
                     debug!("Found non-backup file: {name}");
                     continue;
                 }
@@ -182,6 +198,10 @@ impl Client {
     }
 
     /// List all existing S3 backups.
+    ///
+    /// Only objects with the exact `{backup_file_prefix}_{node_id}_{unix_ts}.sqlite` shape are listed,
+    /// so a shared bucket reports your cluster's backups and nothing else.
+    #[cfg(feature = "s3")]
     pub async fn backup_list_s3(&self) -> Result<Vec<BackupListing>, Error> {
         if let Some(state) = self.inner.state.clone() {
             let mut res = Vec::with_capacity(16);
@@ -195,7 +215,7 @@ impl Client {
                     }
 
                     for obj in bucket.contents {
-                        if !obj.key.starts_with("backup_node_") {
+                        if !valid_backup_filename(&state.backup_file_prefix, &obj.key) {
                             debug!("Found non-backup file: {}", obj.key);
                             continue;
                         }
@@ -237,14 +257,17 @@ impl Client {
     }
 }
 
-/// Backups are always created as `backup_node_{node_id}_{ts}.sqlite` directly in the flat backups
+/// Backups are always created as `{prefix}_{node_id}_{ts}.sqlite` directly in the flat backups
 /// dir; only that exact shape is accepted, so a caller cannot reach outside of it (e.g. via "../"
 /// or an embedded path separator).
-fn valid_backup_filename(filename: &str) -> bool {
-    let Some(rest) = filename.strip_prefix("backup_node_") else {
+fn valid_backup_filename(prefix: &str, filename: &str) -> bool {
+    let Some(rest) = filename.strip_prefix(prefix) else {
         return false;
     };
-    let Some(stem) = rest.strip_suffix(".sqlite") else {
+    let Some(stem) = rest
+        .strip_prefix('_')
+        .and_then(|s| s.strip_suffix(".sqlite"))
+    else {
         return false;
     };
     // `stem` is `{node_id}_{ts}`; both must be plain integers, which also rules out any embedded
@@ -262,8 +285,30 @@ mod tests {
 
     #[test]
     fn valid_backup_filenames_are_accepted() {
-        assert!(valid_backup_filename("backup_node_1_1700000000.sqlite"));
-        assert!(valid_backup_filename("backup_node_42_1700000000.sqlite"));
+        assert!(valid_backup_filename(
+            "backup_node",
+            "backup_node_1_1700000000.sqlite"
+        ));
+        assert!(valid_backup_filename(
+            "backup_node",
+            "backup_node_42_1700000000.sqlite"
+        ));
+    }
+
+    #[test]
+    fn a_custom_prefix_only_accepts_its_own_files() {
+        assert!(valid_backup_filename("app-a", "app-a_1_1700000000.sqlite"));
+        // the default prefix is not a prefix of a custom one and the other way round
+        assert!(!valid_backup_filename(
+            "app-a",
+            "backup_node_1_1700000000.sqlite"
+        ));
+        assert!(!valid_backup_filename(
+            "backup_node",
+            "app-a_1_1700000000.sqlite"
+        ));
+        // a longer prefix that starts with ours must not match
+        assert!(!valid_backup_filename("app", "app-a_1_1700000000.sqlite"));
     }
 
     #[test]
@@ -272,6 +317,8 @@ mod tests {
             "",
             "backup_node_1",
             "backup_node_1_.sqlite",
+            "backup_node_1_1700000000.sqlite~",
+            "backup_node_1_1700000000.sqlite.gz",
             ".sqlite",
             "../backup_node_1_1700000000.sqlite",
             "backup_node_1_1700000000.sqlite/",
@@ -279,7 +326,10 @@ mod tests {
             "backup_node_1\\..\\..\\windows",
             "node_backup_1_1700000000.sqlite",
         ] {
-            assert!(!valid_backup_filename(name), "should reject: {name:?}");
+            assert!(
+                !valid_backup_filename("backup_node", name),
+                "should reject: {name:?}"
+            );
         }
     }
 }

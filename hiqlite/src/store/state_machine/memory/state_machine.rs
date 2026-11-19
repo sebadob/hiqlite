@@ -5,7 +5,6 @@ use crate::store::state_machine::memory::{TypeConfigCache, kv_handler};
 use crate::{CacheVariants, Error};
 use bincode_next::{Decode, Encode};
 use chrono::Utc;
-use dotenvy::var;
 use futures_util::{Stream, StreamExt};
 use openraft::storage::{EntryResponder, RaftStateMachine, Snapshot};
 use openraft::type_config::alias::{
@@ -19,8 +18,6 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Display};
 use std::io;
-#[cfg(feature = "in-memory-snapshots")]
-use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::fs;
@@ -33,6 +30,8 @@ use uuid::Uuid;
 use crate::store::state_machine::memory::dlock_handler::{self, *};
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
+#[cfg(feature = "in-memory-snapshots")]
+use std::io::Cursor;
 
 type Entry = EntryOf<TypeConfigCache>;
 
@@ -298,27 +297,44 @@ impl StateMachineMemory {
         #[cfg(not(feature = "in-memory-snapshots"))]
         {
             let path_meta = format!("{path_sm}/cache_index.meta");
-            let stored = match fs::read_to_string(&path_meta).await {
-                Ok(stored) => {
-                    if !C::hiqlite_cache_compatible_with(&stored) {
+
+            // `HQL_CACHE_META_RESET=true` deletes the stored fingerprint and re-initializes it
+            // from the current enum. That is the way out of the startup refusal after a rename.
+            // Removing a variant needs more: the app must clear all of its caches at startup,
+            // because the persisted entries of the removed index are still in there.
+            let meta_reset = std::env::var("HQL_CACHE_META_RESET")
+                .as_deref()
+                .unwrap_or("false")
+                .parse::<bool>()
+                .expect("Cannot parse HQL_CACHE_META_RESET as bool");
+
+            let stored = if meta_reset {
+                warn!("Resetting the cache index metadata at {path_meta}");
+                let _ = fs::remove_file(&path_meta).await;
+                String::default()
+            } else {
+                match fs::read_to_string(&path_meta).await {
+                    Ok(stored) => {
+                        if !C::hiqlite_cache_compatible_with(&stored) {
+                            return Err(Error::Cache(
+                                format!(
+                                    "cache index enum is incompatible with previously persisted \
+                                     data ({}):\n--- stored ---\n{}--- current ---\n{}",
+                                    path_meta,
+                                    stored,
+                                    C::hiqlite_cache_variants_normalized()
+                                )
+                                .into(),
+                            ));
+                        }
+                        stored
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::default(),
+                    Err(err) => {
                         return Err(Error::Cache(
-                            format!(
-                                "cache index enum is incompatible with previously persisted \
-                                 data ({}):\n--- stored ---\n{}--- current ---\n{}",
-                                path_meta,
-                                stored,
-                                C::hiqlite_cache_variants_normalized()
-                            )
-                            .into(),
+                            format!("cannot read cache index metadata {path_meta}: {err}").into(),
                         ));
                     }
-                    stored
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::default(),
-                Err(err) => {
-                    return Err(Error::Cache(
-                        format!("cannot read cache index metadata {path_meta}: {err}").into(),
-                    ));
                 }
             };
 

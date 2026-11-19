@@ -7,6 +7,7 @@ use crate::{Node, helpers};
 use axum::body;
 use axum::body::Body;
 use axum::extract::Path;
+use axum::extract::Query;
 use axum::http::HeaderMap;
 use axum::response::Response;
 use bincode_next::{Decode, Encode};
@@ -71,6 +72,7 @@ pub(crate) async fn add_learner(
                 &raft_type,
                 &format!("node {nid} to become a committed learner"),
                 |mc| mc.membership().get_node(&nid).is_some(),
+                LeaderLoss::Fails,
             )
             .await
             {
@@ -137,6 +139,7 @@ pub(crate) async fn become_member(
                 &raft_type,
                 &format!("node {} to become a committed voter", payload.node_id),
                 |mc| mc.voter_ids().any(|id| id == payload.node_id),
+                LeaderLoss::Fails,
             )
             .await
             {
@@ -381,6 +384,11 @@ pub async fn leave_cluster_exec(
                     payload.node_id, raft_type
                 ),
                 |mc| !mc.voter_ids().any(|id| id == payload.node_id),
+                if self_removal {
+                    LeaderLoss::IsThePoint
+                } else {
+                    LeaderLoss::Fails
+                },
             )
             .await
             {
@@ -431,6 +439,7 @@ pub async fn leave_cluster_exec(
                     payload.node_id, raft_type
                 ),
                 |mc| !mc.nodes().any(|(id, _)| *id == payload.node_id),
+                LeaderLoss::Fails,
             )
             .await
             {
@@ -487,6 +496,542 @@ pub(crate) async fn metrics(
     }
 }
 
+/// The election state of one Raft group on this node.
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct NodeElection {
+    pub node_id: NodeId,
+    /// openraft's server state for this group, formatted: `Leader`, `Follower`, `Learner`, ...
+    pub state: String,
+    /// The group's current leader, if any.
+    pub leader: Option<NodeId>,
+    pub is_voter: bool,
+    /// The effective runtime value: `false` means this node never starts an election on its own
+    /// for this group. It still grants votes and it still accepts a leadership transfer.
+    pub enable_elect: bool,
+    /// The marker of this node's own node line. A runtime change of `enable_elect` is not
+    /// persisted, so a restart applies this value again.
+    pub election_disable: bool,
+}
+
+/// The election state of every Raft group this node runs.
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct ElectionState {
+    #[cfg(feature = "sqlite")]
+    pub sqlite: NodeElection,
+    #[cfg(feature = "cache")]
+    pub cache: NodeElection,
+}
+
+/// The body of `PUT /cluster/election`.
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct ElectionReq {
+    pub enable_elect: bool,
+}
+
+/// The query of `POST /cluster/election`: `?force=true` skips openraft's Pre-Vote round.
+#[derive(Debug, Deserialize)]
+pub struct ElectQuery {
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Every Raft group this build runs.
+pub(crate) fn raft_types() -> Vec<RaftType> {
+    let types = [
+        #[cfg(feature = "sqlite")]
+        RaftType::Sqlite,
+        #[cfg(feature = "cache")]
+        RaftType::Cache,
+    ];
+
+    types.into_iter().collect()
+}
+
+fn node_election(state: &Arc<AppState>, raft_type: &RaftType) -> Result<NodeElection, Error> {
+    let view = helpers::get_raft_view(state, raft_type)?;
+
+    Ok(NodeElection {
+        node_id: state.id,
+        state: format!("{:?}", view.state),
+        leader: view.leader_id,
+        is_voter: view.membership.voter_ids().any(|id| id == state.id),
+        enable_elect: helpers::is_elect_enabled(state, raft_type),
+        election_disable: state.election_disable.contains(&state.id),
+    })
+}
+
+pub(crate) fn election_state(state: &Arc<AppState>) -> Result<ElectionState, Error> {
+    Ok(ElectionState {
+        #[cfg(feature = "sqlite")]
+        sqlite: node_election(state, &RaftType::Sqlite)?,
+        #[cfg(feature = "cache")]
+        cache: node_election(state, &RaftType::Cache)?,
+    })
+}
+
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+impl ElectionState {
+    /// The id of the node this state comes from - every group reports the same one.
+    pub fn node_id(&self) -> NodeId {
+        #[cfg(feature = "sqlite")]
+        {
+            self.sqlite.node_id
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            self.cache.node_id
+        }
+    }
+}
+
+/// The local counterpart of `PUT /cluster/election` for an embedded client's own node.
+pub(crate) async fn local_set_enable_elect(
+    state: &Arc<AppState>,
+    enable: bool,
+) -> Result<ElectionState, Error> {
+    for raft_type in raft_types() {
+        if helpers::is_raft_stopped(state, &raft_type)
+            || !helpers::is_raft_initialized(state, &raft_type).await?
+        {
+            return Err(Error::Error("Raft is not initialized".into()));
+        }
+        helpers::set_enable_elect(state, &raft_type, enable);
+    }
+
+    election_state(state)
+}
+
+/// The local counterpart of `POST /cluster/election` for an embedded client's own node.
+///
+/// A learner is refused outright: it can never win an election, it can only inflate the term.
+pub(crate) async fn local_elect(
+    state: &Arc<AppState>,
+    force: bool,
+) -> Result<ElectionState, Error> {
+    for raft_type in raft_types() {
+        let view = helpers::get_raft_view(state, &raft_type)?;
+        if view.state == ServerState::Learner {
+            return Err(Error::Error(
+                format!(
+                    "Node {} is a learner in the {:?} group and can never become a leader",
+                    state.id, raft_type
+                )
+                .into(),
+            ));
+        }
+    }
+
+    for raft_type in raft_types() {
+        if helpers::is_raft_stopped(state, &raft_type)
+            || !helpers::is_raft_initialized(state, &raft_type).await?
+        {
+            return Err(Error::Error("Raft is not initialized".into()));
+        }
+
+        if force {
+            warn!(
+                "Node {} forces an election for its {:?} group: the Pre-Vote is bypassed and the \
+                 term climbs even when this node cannot win",
+                state.id, raft_type
+            );
+        }
+        helpers::trigger_elect(state, &raft_type, force).await?;
+    }
+
+    election_state(state)
+}
+
+/// Get the election state of this node: `GET /cluster/election`.
+#[tracing::instrument(skip_all)]
+pub(crate) async fn get_election(
+    state: AppStateExt,
+    headers: HeaderMap,
+) -> Result<Response, Error> {
+    validate_secret(&state, &headers)?;
+
+    fmt_ok(headers, election_state(&state)?)
+}
+
+/// Change this node's own right to start elections: `PUT /cluster/election`.
+///
+/// Applied to every group the node runs, so a node is never internally inconsistent about it.
+/// The change is in-memory only - a restart applies the `election_disable` marker of the node's
+/// own line again. Any node accepts this for itself, it does not need to be the leader.
+#[tracing::instrument(skip_all)]
+pub(crate) async fn put_election(
+    state: AppStateExt,
+    headers: HeaderMap,
+    body: body::Bytes,
+) -> Result<Response, Error> {
+    validate_secret(&state, &headers)?;
+
+    let req = get_payload::<ElectionReq>(&headers, body)?;
+
+    fmt_ok(
+        headers,
+        local_set_enable_elect(&state, req.enable_elect).await?,
+    )
+}
+
+/// Make this node campaign for the leadership of all its groups: `POST /cluster/election`.
+///
+/// Without `?force=true` openraft runs a Pre-Vote round first, so the term is untouched when this
+/// node cannot win - a node whose own leader lease is still valid is refused locally. With
+/// `?force=true` the Pre-Vote is bypassed and the term climbs unconditionally. A learner is
+/// refused outright: it can never win, it can only inflate the term.
+#[tracing::instrument(skip_all)]
+pub(crate) async fn post_election(
+    state: AppStateExt,
+    headers: HeaderMap,
+    Query(query): Query<ElectQuery>,
+) -> Result<Response, Error> {
+    validate_secret(&state, &headers)?;
+
+    fmt_ok(headers, local_elect(&state, query.force).await?)
+}
+
+/// The membership of one Raft group, as this node sees it.
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct NodeMembers {
+    pub node_id: NodeId,
+    /// openraft's server state for this group, formatted: `Leader`, `Follower`, `Learner`, ...
+    pub state: String,
+    /// The group's current leader, if any.
+    pub leader: Option<NodeId>,
+    /// Every voter of the group.
+    pub voters: Vec<NodeId>,
+    /// Every learner of the group.
+    pub learners: Vec<NodeId>,
+    pub is_voter: bool,
+    pub is_learner: bool,
+}
+
+/// The membership of every Raft group this node runs.
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct MembersState {
+    #[cfg(feature = "sqlite")]
+    pub sqlite: NodeMembers,
+    #[cfg(feature = "cache")]
+    pub cache: NodeMembers,
+}
+
+/// The body of `POST /cluster/promote` and `POST /cluster/transfer_leader`.
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct NodeReq {
+    pub node_id: NodeId,
+}
+
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+impl MembersState {
+    /// The id of the node this state comes from - every group reports the same one.
+    pub fn node_id(&self) -> NodeId {
+        #[cfg(feature = "sqlite")]
+        {
+            self.sqlite.node_id
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            self.cache.node_id
+        }
+    }
+}
+
+fn node_members(state: &Arc<AppState>, raft_type: &RaftType) -> Result<NodeMembers, Error> {
+    let view = helpers::get_raft_view(state, raft_type)?;
+
+    let voters = view.membership.voter_ids().collect::<Vec<_>>();
+    let learners = view
+        .membership
+        .nodes()
+        .filter(|(node_id, _)| !voters.contains(node_id))
+        .map(|(node_id, _)| *node_id)
+        .collect::<Vec<_>>();
+
+    Ok(NodeMembers {
+        node_id: state.id,
+        state: format!("{:?}", view.state),
+        leader: view.leader_id,
+        voters,
+        learners,
+        is_voter: view.membership.voter_ids().any(|id| id == state.id),
+        is_learner: view.membership.nodes().any(|(id, _)| *id == state.id)
+            && !view.membership.voter_ids().any(|id| id == state.id),
+    })
+}
+
+pub(crate) fn members_state(state: &Arc<AppState>) -> Result<MembersState, Error> {
+    Ok(MembersState {
+        #[cfg(feature = "sqlite")]
+        sqlite: node_members(state, &RaftType::Sqlite)?,
+        #[cfg(feature = "cache")]
+        cache: node_members(state, &RaftType::Cache)?,
+    })
+}
+
+/// Every group must be up and leading by this node before any membership change of ours runs.
+/// A change that only some groups committed would leave a node voter in one and learner in the
+/// other, which is exactly the half state the master-slave playbooks must never end up in.
+async fn require_we_lead_all_groups(state: &Arc<AppState>) -> Result<(), Error> {
+    for raft_type in raft_types() {
+        if helpers::is_raft_stopped(state, &raft_type)
+            || !helpers::is_raft_initialized(state, &raft_type).await?
+        {
+            return Err(Error::Error("Raft is not initialized".into()));
+        }
+        are_we_leader(state, &raft_type).await?;
+    }
+
+    Ok(())
+}
+
+/// The local counterpart of `POST /cluster/promote`: make a learner a voter in every group.
+pub(crate) async fn local_promote(
+    state: &Arc<AppState>,
+    node_id: NodeId,
+) -> Result<MembersState, Error> {
+    require_we_lead_all_groups(state).await?;
+
+    // All groups are checked before the first change runs, so one group that does not know the
+    // node cannot leave the other groups already changed.
+    let mut targets = Vec::new();
+    for raft_type in raft_types() {
+        let view = helpers::get_raft_view(state, &raft_type)?;
+        let is_voter = view.membership.voter_ids().any(|id| id == node_id);
+        let is_member = view.membership.nodes().any(|(id, _)| *id == node_id);
+        if !is_voter && !is_member {
+            return Err(Error::Error(
+                format!(
+                    "Node {node_id} is not a member of the {raft_type:?} group - add it as a \
+                     learner first"
+                )
+                .into(),
+            ));
+        }
+        targets.push((raft_type, is_voter));
+    }
+
+    let lock = state.raft_lock.lock().await;
+    for (raft_type, is_voter) in targets {
+        if is_voter {
+            info!("Node {node_id} is a voter in the {raft_type:?} group already");
+            continue;
+        }
+
+        let membership = helpers::get_raft_view(state, &raft_type)?.membership;
+        let mut voters = membership.voter_ids().collect::<BTreeSet<NodeId>>();
+        voters.insert(node_id);
+        helpers::change_membership(state, &raft_type, voters, true).await?;
+
+        wait_for_membership_commit(
+            state,
+            &raft_type,
+            &format!("node {node_id} to become a committed voter of the {raft_type:?} group"),
+            |mc| mc.voter_ids().any(|id| id == node_id),
+            LeaderLoss::Fails,
+        )
+        .await?;
+    }
+
+    // Give the new voter a second to replicate its own voter state logs, like `become_member` does.
+    time::sleep(Duration::from_millis(1000)).await;
+    drop(lock);
+
+    members_state(state)
+}
+
+/// The local counterpart of `DELETE /cluster/membership`: take a voter out of the voter set of
+/// every group, optionally keeping it as a learner.
+///
+/// Demoting the leader with `stay_as_learner = false` is the switchover: openraft's step-down
+/// watcher hands the leadership to the most up-to-date remaining voter. A leader that would
+/// demote itself to a learner is refused, because it keeps leading in that shape and the
+/// membership change cannot complete.
+pub(crate) async fn local_demote(
+    state: &Arc<AppState>,
+    node_id: NodeId,
+    stay_as_learner: bool,
+) -> Result<MembersState, Error> {
+    require_we_lead_all_groups(state).await?;
+
+    let self_removal = node_id == state.id;
+
+    // A leader that removes itself from the Voters and stays in the node map as a Learner keeps
+    // leading: openraft's step-down watcher steps a Leader down only when the committed
+    // membership no longer contains it at all, and a Leader that is not in the joint config's
+    // quota cannot finalize the two-step change. The cluster would sit on the joint config
+    // forever. Moving the leadership first and demoting from the new leader is the way to do it.
+    if self_removal && stay_as_learner {
+        return Err(Error::Error(
+            format!(
+                "Node {} is the leader: demoting itself to a Learner is refused, because it would \
+                 keep leading and the membership change could not complete. Move the leadership \
+                 to another voter first (`POST /cluster/transfer_leader`) and then demote node \
+                 {node_id} from that node.",
+                state.id
+            )
+            .into(),
+        ));
+    }
+
+    let lock = state.raft_lock.lock().await;
+
+    for raft_type in raft_types() {
+        let view = helpers::get_raft_view(state, &raft_type)?;
+        let is_voter = view.membership.voter_ids().any(|id| id == node_id);
+        let is_member = view.membership.nodes().any(|(id, _)| *id == node_id);
+
+        if is_voter {
+            // The two-step voter removal must keep a leader that removes itself in the node map,
+            // for the reason spelled out in `leave_cluster_exec`.
+            let retain = self_removal || stay_as_learner;
+            helpers::remove_voter(state, &raft_type, node_id, retain).await?;
+            wait_for_membership_commit(
+                state,
+                &raft_type,
+                &format!("node {node_id} to no longer be a Voter of the {raft_type:?} group"),
+                |mc| !mc.voter_ids().any(|id| id == node_id),
+                if self_removal {
+                    LeaderLoss::IsThePoint
+                } else {
+                    LeaderLoss::Fails
+                },
+            )
+            .await?;
+
+            if !stay_as_learner {
+                // RemoveNodes only edits the node map, so it cannot hit the race above. If we were
+                // demoted in the meantime it is rejected, and the node stays a committed learner.
+                if let Err(err) = helpers::remove_learner(state, &raft_type, node_id).await {
+                    warn!(
+                        "Node {node_id} was dropped from the Voters of the {raft_type:?} group, \
+                         but its Learner entry could not be removed (we may have been demoted in \
+                         the meantime): {err:?}",
+                    );
+                }
+            }
+
+            if self_removal && !stay_as_learner {
+                wait_for_demotion(state, &raft_type).await?;
+            }
+        } else if is_member && !stay_as_learner {
+            helpers::remove_learner(state, &raft_type, node_id).await?;
+            wait_for_membership_commit(
+                state,
+                &raft_type,
+                &format!("node {node_id} to no longer be a Learner of the {raft_type:?} group"),
+                |mc| !mc.nodes().any(|(id, _)| *id == node_id),
+                LeaderLoss::Fails,
+            )
+            .await?;
+        } else {
+            info!(
+                "Node {node_id} is not a voter of the {raft_type:?} group - nothing to demote \
+                 there"
+            );
+        }
+    }
+
+    drop(lock);
+    members_state(state)
+}
+
+/// The local counterpart of `POST /cluster/transfer_leader`: hand the leadership of every group to
+/// one specific node.
+pub(crate) async fn local_transfer_leader(
+    state: &Arc<AppState>,
+    node_id: NodeId,
+) -> Result<MembersState, Error> {
+    require_we_lead_all_groups(state).await?;
+
+    for raft_type in raft_types() {
+        if node_id == state.id {
+            continue;
+        }
+        let view = helpers::get_raft_view(state, &raft_type)?;
+        if !view.membership.voter_ids().any(|id| id == node_id) {
+            return Err(Error::Error(
+                format!(
+                    "Node {node_id} is not a voter of the {raft_type:?} group - only a voter can \
+                     accept a leadership transfer"
+                )
+                .into(),
+            ));
+        }
+    }
+
+    // openraft gives up on a transfer after one election timeout, which is the election we would
+    // be facing without the transfer at all, so that is our budget too.
+    let deadline = helpers::shutdown_transfer_deadline(state);
+
+    for raft_type in raft_types() {
+        if node_id == state.id {
+            continue;
+        }
+        let moved = helpers::transfer_leadership_to(state, &raft_type, node_id, deadline).await?;
+        if !moved {
+            warn!(
+                "Leadership of the {raft_type:?} group did not move to node {node_id} - its log is \
+                 most likely behind, or it is unreachable"
+            );
+        }
+    }
+
+    members_state(state)
+}
+
+/// Get the membership of every group of this node: `GET /cluster/membership`.
+#[tracing::instrument(skip_all)]
+pub(crate) async fn get_members(state: AppStateExt, headers: HeaderMap) -> Result<Response, Error> {
+    validate_secret(&state, &headers)?;
+
+    fmt_ok(headers, members_state(&state)?)
+}
+
+/// Make a learner a voter in every group: `POST /cluster/promote`.
+#[tracing::instrument(skip_all)]
+pub(crate) async fn post_promote(
+    state: AppStateExt,
+    headers: HeaderMap,
+    body: body::Bytes,
+) -> Result<Response, Error> {
+    validate_secret(&state, &headers)?;
+
+    let req = get_payload::<NodeReq>(&headers, body)?;
+
+    fmt_ok(headers, local_promote(&state, req.node_id).await?)
+}
+
+/// Take a voter out of the voter set of every group: `DELETE /cluster/membership`.
+#[tracing::instrument(skip_all)]
+pub(crate) async fn delete_members(
+    state: AppStateExt,
+    headers: HeaderMap,
+    body: body::Bytes,
+) -> Result<Response, Error> {
+    validate_secret(&state, &headers)?;
+
+    let req = get_payload::<ClusterLeaveReq>(&headers, body)?;
+
+    fmt_ok(
+        headers,
+        local_demote(&state, req.node_id, req.stay_as_learner).await?,
+    )
+}
+
+/// Hand the leadership of every group to one specific node: `POST /cluster/transfer_leader`.
+#[tracing::instrument(skip_all)]
+pub(crate) async fn post_transfer_leader(
+    state: AppStateExt,
+    headers: HeaderMap,
+    body: body::Bytes,
+) -> Result<Response, Error> {
+    validate_secret(&state, &headers)?;
+
+    let req = get_payload::<NodeReq>(&headers, body)?;
+
+    fmt_ok(headers, local_transfer_leader(&state, req.node_id).await?)
+}
+
 /// Maximum time to wait for a membership change to be committed while holding `state.raft_lock`.
 /// A leader change mid-operation can lose the uncommitted entry, so this wait is bounded and
 /// re-checks leadership on every poll - otherwise the shared lock could be held forever (see
@@ -499,11 +1044,21 @@ const MEMBERSHIP_COMMIT_TIMEOUT: Duration = Duration::from_secs(40);
 /// Bounded by `MEMBERSHIP_COMMIT_TIMEOUT` and re-checks leadership on every poll, because a
 /// leader change mid-operation can lose the uncommitted entry. Callers must hold
 /// `state.raft_lock`.
+/// How a leader change while we wait for a membership commit is judged.
+enum LeaderLoss {
+    /// The change is ours to drive: a leader change loses the uncommitted entry, so it fails.
+    Fails,
+    /// Losing the leadership is the point of the change (we removed ourselves from the Voters):
+    /// the joint config is committed by us, the new leader completes the exit from there.
+    IsThePoint,
+}
+
 async fn wait_for_membership_commit(
     state: &Arc<AppState>,
     raft_type: &RaftType,
     what: &str,
     mut is_done: impl FnMut(&WireMembership) -> bool,
+    leader_loss: LeaderLoss,
 ) -> Result<(), Error> {
     let start = time::Instant::now();
 
@@ -516,8 +1071,18 @@ async fn wait_for_membership_commit(
         info!("Waiting for {what}");
         time::sleep(Duration::from_millis(500)).await;
 
-        // A leader change mid-operation can lose the uncommitted entry, so bail out loudly.
-        are_we_leader(state, raft_type).await?;
+        // A leader change mid-operation can lose the uncommitted entry, so bail out loudly. For a
+        // self-removal the demotion is the point of the change, and the new leader finalizes it.
+        if let Err(err) = are_we_leader(state, raft_type).await {
+            if matches!(leader_loss, LeaderLoss::IsThePoint) {
+                warn!(
+                    "Node {} ({:?}) is no longer the Leader while waiting for {what}, which is the                      point of a self-removal: {err:?}",
+                    state.id, raft_type
+                );
+                return Ok(());
+            }
+            return Err(err);
+        }
 
         if start.elapsed() > MEMBERSHIP_COMMIT_TIMEOUT {
             return Err(Error::Error(

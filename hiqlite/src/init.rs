@@ -1,7 +1,7 @@
 use crate::app_state::{AppState, RaftType};
 use crate::helpers::{deserialize_serde, serialize};
+use crate::network::WireMetrics;
 use crate::network::management::{ClusterLeaveReq, LearnerReq};
-use crate::network::{HEADER_NAME_SECRET, WireMetrics};
 use crate::{Error, Node, NodeId, helpers};
 use openraft::Membership;
 use openraft::type_config::async_runtime::watch::WatchReceiver;
@@ -196,11 +196,7 @@ async fn should_node_1_skip_init(
             );
             debug!("checking membership via {}", url);
 
-            let res = client
-                .get(url)
-                .header(HEADER_NAME_SECRET, secret_api)
-                .send()
-                .await;
+            let res = client.get(url).bearer_auth(secret_api).send().await;
             match res {
                 Ok(resp) => {
                     debug!("{} status: {}", node.id, resp.status());
@@ -458,7 +454,7 @@ async fn try_become(
 
             let res = client
                 .post(&url)
-                .header(HEADER_NAME_SECRET, &state.secret_api)
+                .bearer_auth(&state.secret_api)
                 .body(payload.to_vec())
                 .send()
                 .await;
@@ -608,11 +604,7 @@ async fn is_remote_cluster_member(
             )
             .expect("Cannot write into String");
 
-            let res = client
-                .get(&url)
-                .header(HEADER_NAME_SECRET, &state.secret_api)
-                .send()
-                .await;
+            let res = client.get(&url).bearer_auth(&state.secret_api).send().await;
 
             match res {
                 Ok(resp) => {
@@ -723,7 +715,7 @@ pub async fn leave_remote_cluster(
 
             let res = client
                 .delete(&url)
-                .header(HEADER_NAME_SECRET, &state.secret_api)
+                .bearer_auth(&state.secret_api)
                 .body(payload.clone())
                 .send()
                 .await;
@@ -802,12 +794,7 @@ pub async fn leave_remote_cluster(
                 raft_type.as_str()
             )?;
 
-            let Ok(res) = client
-                .get(&url)
-                .header(HEADER_NAME_SECRET, &state.secret_api)
-                .send()
-                .await
-            else {
+            let Ok(res) = client.get(&url).bearer_auth(&state.secret_api).send().await else {
                 error!(
                     "Unable to reach Node {} via {} to confirm cluster leave via metrics",
                     node.id, url

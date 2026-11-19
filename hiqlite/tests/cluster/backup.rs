@@ -6,6 +6,9 @@ use tokio::{fs, time};
 
 pub static BACKUP_PATH_FILE: &str = "tests/data_test/backup.sqlite";
 
+/// The `backup_file_prefix` every test node is built with - see `start::build_config_with_nodes`.
+pub const TEST_FILE_PREFIX: &str = "test_bkp";
+
 pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
     log("Creating backup request via client_1");
     client_1.backup().await?;
@@ -20,6 +23,49 @@ pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
     let metrics = client_1.metrics_db().await?;
     let leader = metrics.current_leader.unwrap();
     let path = find_backup_file(leader).await;
+
+    log("Backup file name must carry the configured prefix");
+    let name = path.rsplit_once('/').map(|(_, name)| name).unwrap();
+    assert!(
+        name.starts_with(&format!("{TEST_FILE_PREFIX}_")),
+        "backup name {name} must start with '{TEST_FILE_PREFIX}_'"
+    );
+    let list = client_1.backup_list_local().await?;
+    assert!(
+        list.iter().any(|b| b.name == name),
+        "our backup must be listed: {name}"
+    );
+
+    log("Plant foreign files in the backups dir, with a timestamp older than the local retention");
+    // `backup_node_...` is the default prefix: these are the files of a *different* cluster that
+    // shares the directory. The local cleanup job runs after every backup and must leave them
+    // alone because they do not match our prefix.
+    let dir = path.rsplit_once('/').map(|(dir, _)| dir).unwrap();
+    let foreign_default_prefix = format!("{dir}/backup_node_1_1700000000.sqlite");
+    let foreign_not_a_backup = format!("{dir}/notes.txt");
+    fs::write(&foreign_default_prefix, b"not ours").await?;
+    fs::write(&foreign_not_a_backup, b"not ours").await?;
+
+    log("Backup again to run the local cleanup job, then check the foreign files survived");
+    client_1.backup().await?;
+    time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        fs::try_exists(&foreign_default_prefix).await?,
+        "cleanup must not delete a file of another prefix"
+    );
+    assert!(
+        fs::try_exists(&foreign_not_a_backup).await?,
+        "cleanup must not delete a file that is no backup"
+    );
+    let list = client_1.backup_list_local().await?;
+    assert!(
+        !list.iter().any(|b| b.name == "notes.txt"),
+        "a file that is no backup must not be listed"
+    );
+    assert!(
+        !list.iter().any(|b| b.name.starts_with("backup_node_")),
+        "files of another prefix must not be listed"
+    );
 
     // copy the file into a 2nd location for later restore from file testing
     fs::copy(&path, BACKUP_PATH_FILE).await?;
@@ -72,10 +118,13 @@ pub async fn find_backup_file(node_id: u64) -> String {
     let path_base = format!("{}/node_{}/state_machine/backups", TEST_DATA_DIR, node_id);
     let mut ls = fs::read_dir(&path_base).await.unwrap();
 
-    if let Some(file) = ls.next_entry().await.unwrap() {
+    // the dir can hold planted foreign files; only our own prefix is a test backup
+    while let Some(file) = ls.next_entry().await.unwrap() {
         let file_name = file.file_name();
         let name = file_name.to_str().unwrap();
-        return format!("{}/{}", path_base, name);
+        if name.starts_with(&format!("{TEST_FILE_PREFIX}_")) {
+            return format!("{}/{}", path_base, name);
+        }
     }
     panic!("Backup folder is empty when it should not be");
 }

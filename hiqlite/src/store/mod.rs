@@ -51,6 +51,8 @@ pub(crate) async fn start_raft_db(
     // We always want to start stopped and set to `false` as soon as we found out,
     // that we are not pristine node and need cleanup.
     let is_raft_stopped = Arc::new(AtomicBool::new(true));
+    // The runtime mirror of openraft's `enable_elect`, seeded from our config value.
+    let enable_elect = Arc::new(AtomicBool::new(raft_config.enable_elect));
 
     let log_store = hiqlite_wal::LogStore::<TypeConfigSqlite>::start(
         logs::logs_dir_db(&node_config.data_dir),
@@ -70,6 +72,8 @@ pub(crate) async fn start_raft_db(
         do_reset_metadata,
         #[cfg(feature = "backup")]
         node_config.backup_keep_for_local,
+        #[cfg(feature = "backup")]
+        &node_config.backup_file_prefix,
     )
     .await?;
 
@@ -122,6 +126,7 @@ pub(crate) async fn start_raft_db(
         log_statements: node_config.log_statements,
         is_raft_stopped,
         is_startup_finished,
+        enable_elect,
     })
 }
 
@@ -139,6 +144,8 @@ where
     // that we are not pristine node and need cleanup.
     let is_raft_stopped = Arc::new(AtomicBool::new(true));
     let is_startup_finished = Arc::new(AtomicBool::new(false));
+    // The runtime mirror of openraft's `enable_elect`, seeded from our config value.
+    let enable_elect = Arc::new(AtomicBool::new(raft_config.enable_elect));
 
     let state_machine_store = Arc::new(
         StateMachineMemory::new::<C>(&node_config.data_dir, !node_config.cache_storage_disk)
@@ -228,6 +235,7 @@ where
         tx_dlock,
         is_raft_stopped,
         is_startup_finished,
+        enable_elect,
         shutdown_handle,
         path_snapshots,
         cache_storage_disk: node_config.cache_storage_disk,

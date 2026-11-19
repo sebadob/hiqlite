@@ -24,7 +24,10 @@ use crate::backup;
 use crate::dashboard;
 
 #[allow(clippy::extra_unused_type_parameters)]
-pub async fn start_node_inner<C>(node_config: Box<NodeConfig>) -> Result<Client, Error>
+pub async fn start_node_inner<C>(
+    node_config: Box<NodeConfig>,
+    #[cfg(feature = "backup")] backup_source: Option<crate::BackupSource>,
+) -> Result<Client, Error>
 where
     C: Debug + CacheVariants,
 {
@@ -58,7 +61,7 @@ where
     dashboard::init()?;
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
-    let backup_applied = backup::restore_backup_start(&node_config).await?;
+    let backup_applied = backup::restore_backup_start(&node_config, backup_source).await?;
 
     let raft_config = Arc::new(
         node_config
@@ -119,6 +122,8 @@ where
         is_shutting_down: AtomicBool::new(false),
         #[cfg(feature = "backup")]
         backups_dir: format!("{}/state_machine/backups", node_config.data_dir),
+        #[cfg(feature = "backup")]
+        backup_file_prefix: node_config.backup_file_prefix.to_string(),
         id: node_config.node_id,
         #[cfg(feature = "cache")]
         nodes: node_config.nodes.clone(),
@@ -140,6 +145,7 @@ where
         tx_client_stream: tx_client_stream.clone(),
         health_check_delay: node_config.health_check_delay,
         learner_only: node_config.learner_only,
+        election_disable: node_config.election_disable.clone(),
         #[cfg(feature = "s3")]
         s3_config: node_config.s3_config.clone(),
     });
@@ -232,7 +238,19 @@ where
                         .post(management::post_membership)
                         .delete(management::leave_cluster),
                 )
-                .route("/metrics/{raft_type}", get(management::metrics)),
+                .route(
+                    "/membership",
+                    get(management::get_members).delete(management::delete_members),
+                )
+                .route("/promote", post(management::post_promote))
+                .route("/transfer_leader", post(management::post_transfer_leader))
+                .route("/metrics/{raft_type}", get(management::metrics))
+                .route(
+                    "/election",
+                    get(management::get_election)
+                        .put(management::put_election)
+                        .post(management::post_election),
+                ),
         )
         .route("/listen", get(api::listen))
         .route("/stream/{raft_type}", get(api::stream))
@@ -396,6 +414,8 @@ where
     backup::start_cron(
         client.clone(),
         node_config.backup_config,
+        #[cfg(feature = "s3")]
+        node_config.backup_file_prefix.to_string(),
         #[cfg(feature = "s3")]
         node_config.s3_config,
     );

@@ -60,10 +60,14 @@ use std::fmt::{Debug, Display};
 use crate::store::state_machine::sqlite::state_machine::Response;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use crate::{client::Client, error::Error};
+#[cfg(feature = "backup")]
+pub use backup::{BackupSource, DEFAULT_BACKUP_FILE_PREFIX};
 #[cfg(feature = "config-embed")]
 pub use config::REFERENCE_CONFIG;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
-pub use config::{NodeConfig, RaftConfig, RateLimitConfig};
+pub use config::{EncKeysArg, NodeConfig, RaftConfig, RateLimitConfig};
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+pub use network::management::{ElectionState, MembersState, NodeElection, NodeMembers};
 #[cfg(feature = "sqlite")]
 pub use query::cust_types::VecText;
 
@@ -174,6 +178,11 @@ pub trait CacheVariants {
     /// form of a previously persisted cache index) still exists unchanged in the current enum.
     /// Adding new variants at the end is allowed (enum expansion); any re-order,
     /// insert-in-between, removal, or rename makes it incompatible and returns `false`.
+    ///
+    /// A rename is recovered by starting every node once with `HQL_CACHE_META_RESET=true`, which
+    /// re-initializes the persisted metadata from the current enum. A removal needs that plus a
+    /// full cache clear on every node before anything reads a cache; the entries of the removed
+    /// index are persisted, and every index behind it has shifted.
     fn hiqlite_cache_compatible_with(stored: &str) -> bool {
         let variants = Self::hiqlite_cache_variants();
         for line in stored.lines() {
@@ -241,22 +250,64 @@ mod empty {
 }
 
 /// The main entry function to start a Raft / Hiqlite node.
-/// # Panics
-/// If an incorrect `node_config` was given.
 #[cfg(feature = "sqlite")]
 pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
-    start::start_node_inner::<empty::Empty>(Box::new(node_config)).await
+    start::start_node_inner::<empty::Empty>(
+        Box::new(node_config),
+        #[cfg(feature = "backup")]
+        None,
+    )
+    .await
 }
 
 /// The main entry function to start a Raft / Hiqlite node.
 /// With the `cache` feature enabled, you need to provide the generic enum which
 /// will function as the Cache Index value to decide between multiple caches.
-/// # Panics
-/// If an incorrect `node_config` was given.
 #[cfg(feature = "cache")]
 pub async fn start_node_with_cache<C>(node_config: NodeConfig) -> Result<Client, Error>
 where
     C: Debug + CacheVariants,
 {
-    start::start_node_inner::<C>(Box::new(node_config)).await
+    start::start_node_inner::<C>(
+        Box::new(node_config),
+        #[cfg(feature = "backup")]
+        None,
+    )
+    .await
+}
+
+/// Start a Raft / Hiqlite node and restore the given backup before the Raft boots.
+///
+/// This is the `HQL_BACKUP_RESTORE` env var as a parameter: the env var is not read at all, which
+/// is what you need when a single process runs several Hiqlite instances with their own names and
+/// their own backups. Set a distinct `backup_file_prefix` per instance, so their backups never collide
+/// in a shared backups directory or bucket.
+///
+/// Give every node of the cluster the same source: node 1 applies the backup, all other nodes
+/// delete their own state and join the restored cluster clean. A source that points at S3 needs
+/// the `s3` feature. Restoring wipes what the node has today - it is a deliberate act, and it
+/// happens before the node writes anything.
+#[cfg(feature = "backup")]
+pub async fn start_node_from_backup(
+    node_config: NodeConfig,
+    backup: BackupSource,
+) -> Result<Client, Error> {
+    start::start_node_inner::<empty::Empty>(Box::new(node_config), Some(backup)).await
+}
+
+/// Start a Raft / Hiqlite node with the `cache` feature and restore the given backup before the
+/// Raft boots.
+///
+/// Same as [`start_node_from_backup`], with the cache variant enum of [`start_node_with_cache`].
+/// The restore wipes the caches as well - they are rebuilt from the restored Raft log, and
+/// cache-only data that was in them is gone.
+#[cfg(all(feature = "backup", feature = "cache"))]
+pub async fn start_node_with_cache_from_backup<C>(
+    node_config: NodeConfig,
+    backup: BackupSource,
+) -> Result<Client, Error>
+where
+    C: Debug + CacheVariants,
+{
+    start::start_node_inner::<C>(Box::new(node_config), Some(backup)).await
 }
