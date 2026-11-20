@@ -142,6 +142,17 @@ they work. Touch these only when you know which number you are chasing: heartbea
 timing, snapshot policy, the maximum append-entries batch, and the cluster name. The snapshot policy
 decides when a snapshot is created; `logs_until_snapshot` caps how big the log grows in between.
 
+`api_batch_capacity` and `api_batch_linger_ms` decide how writes are collected on the leader. A
+write that arrives while a batch is being built joins it, and the batch goes to the log store in one
+shot: one append for the WAL, one result per write. The capacity is 4096 by default and the linger
+is 0 ms, which means a batch is exactly what is already queued and no write ever waits for company.
+A linger of a few milliseconds packs fuller batches on a hot write path and pays for it with that
+much extra latency on a write that arrives at an idle leader.
+
+Two of these are not timing, and they are easy to mix up. `enable_tick = false` pauses heartbeat
+sending only. The switch that keeps a node from nominating itself is `enable_elect`, and that is
+what the `election_disable` marker of a node line sets. See `geo-replication.md`.
+
 ## TLS
 
 - `tls_auto_certificates` - generate self-signed certificates for Raft and API traffic. Clients

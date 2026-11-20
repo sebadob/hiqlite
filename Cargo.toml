@@ -76,7 +76,7 @@ hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
 libc = "0.2"
 memmap2 = "0.9.5"
 mime_guess = "2.0.5"
-openraft = { version = "0.10", default-features = false, features = [
+openraft = { version = "0.10.1", default-features = false, features = [
   "serde",
   "tokio-rt",
 ] }

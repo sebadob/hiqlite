@@ -8,6 +8,12 @@ Persisted data is unchanged: the WAL logs and WAL metadata, the SQLite state mac
 the snapshot files load as they are. Both directions are pinned by tests, so an existing data dir
 can simply be kept.
 
+For `LogSync::IntervalMillis(_)` and `LogSync::ImmediateAsync`, you can expect an increased
+throughput performance of ~10%. When using `LogSync::Immediate`, I was able to get up to 350%
+more throughput in some situations. This was very specific to the benchmark setup though, where
+you have a few writers that fire many requests. It will not be that much when you have lots of
+writers with a single request each.
+
 ### Breaking
 
 #### `v0.15` Migration Guard

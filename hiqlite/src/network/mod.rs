@@ -289,6 +289,7 @@ mod tests {
                 }),
                 state: openraft::ServerState::Leader,
                 current_leader: Some(3),
+                last_leader_contact: None,
                 millis_since_quorum_ack: None,
                 last_quorum_acked: None,
                 membership_config: std::sync::Arc::new(
