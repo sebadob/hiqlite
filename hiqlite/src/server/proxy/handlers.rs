@@ -18,8 +18,6 @@ use tracing::{debug, error};
 
 pub type AppStateExt = axum::extract::State<Arc<AppStateProxy>>;
 
-const HEADER_NAME_SECRET: &str = "X-API-SECRET";
-
 pub async fn ping() {}
 
 pub async fn get_version() -> impl IntoResponse {
@@ -167,19 +165,17 @@ pub(crate) async fn metrics(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    let metrics = match raft_type {
+    // Each group serializes its own metrics - the type is generic over the type config, so a
+    // shared one would mean a conversion on every request.
+    match raft_type {
         #[cfg(feature = "sqlite")]
-        RaftType::Sqlite => state.client.metrics_db().await?,
+        RaftType::Sqlite => fmt_ok_serde(headers, &state.client.metrics_db().await?),
         #[cfg(feature = "cache")]
-        RaftType::Cache => state.client.metrics_cache().await?,
-        RaftType::Unknown => {
-            return Err(Error::new(
-                "unknown raft type - neither `sqlite` nor `cache` feature enabled",
-            ));
-        }
-    };
-
-    fmt_ok_serde(headers, &metrics)
+        RaftType::Cache => fmt_ok_serde(headers, &state.client.metrics_cache().await?),
+        RaftType::Unknown => Err(Error::new(
+            "unknown raft type - neither `sqlite` nor `cache` feature enabled",
+        )),
+    }
 }
 
 /// Like [`fmt_ok`], but for openraft-owned payloads (e.g. `RaftMetrics`), which stay on the
@@ -196,14 +192,5 @@ fn fmt_ok_serde<S: Debug + Serialize>(headers: HeaderMap, payload: S) -> Result<
 
 #[inline(always)]
 fn validate_secret(state: &AppStateExt, headers: &HeaderMap) -> Result<(), Error> {
-    match headers.get(HEADER_NAME_SECRET) {
-        None => Err(Error::Token("API Secret missing".into())),
-        Some(secret) => {
-            if !constant_time_eq::constant_time_eq(state.secret_api.as_bytes(), secret.as_bytes()) {
-                Err(Error::Token("Invalid API Secret".into()))
-            } else {
-                Ok(())
-            }
-        }
-    }
+    crate::network::validate_bearer(&state.secret_api, headers)
 }

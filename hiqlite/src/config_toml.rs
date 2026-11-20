@@ -33,7 +33,7 @@ impl NodeConfig {
         path: &str,
         table: Option<&str>,
         secrets: Option<toml::Table>,
-        #[cfg(any(feature = "s3", feature = "dashboard"))] enc_keys: Option<cryptr::EncKeys>,
+        enc_keys: crate::config::EncKeysArg,
     ) -> Result<Self, Error> {
         dotenvy::dotenv().ok();
 
@@ -54,14 +54,7 @@ impl NodeConfig {
             Error::config(format!("Cannot find table '{t_name}' in {path}: {err}"))
         })?;
 
-        Self::from_toml_table(
-            table,
-            t_name,
-            secrets,
-            #[cfg(any(feature = "s3", feature = "dashboard"))]
-            enc_keys,
-        )
-        .await
+        Self::from_toml_table(table, t_name, secrets, enc_keys).await
     }
 
     /// Tries to parse the `NodeConfig` from the already parsed given `toml::Table`. Will use
@@ -78,9 +71,14 @@ impl NodeConfig {
         table: toml::Table,
         table_name: &str,
         secrets: Option<toml::Table>,
-        #[cfg(any(feature = "s3", feature = "dashboard"))] enc_keys: Option<cryptr::EncKeys>,
+        enc_keys: crate::config::EncKeysArg,
     ) -> Result<Self, Error> {
         dotenvy::dotenv().ok();
+
+        // The placeholder shape accepts `None` only, and there is nothing to use it for when the
+        // features have no encryption keys.
+        #[cfg(not(any(feature = "s3", feature = "dashboard")))]
+        let _ = enc_keys;
 
         let t_name = table_name;
         let mut map = table;
@@ -121,18 +119,19 @@ impl NodeConfig {
         } else {
             t_u64(&mut map, t_name, "node_id", "HQL_NODE_ID")?.unwrap_or(0)
         };
-        let nodes = if let Some(nodes) = t_str_vec(&mut map, t_name, "nodes", "HQL_NODES")? {
-            nodes
-                .into_iter()
-                .map(|n| Node::from(n.as_str()))
-                .collect::<Vec<_>>()
-        } else {
-            vec![Node {
-                id: 1,
-                addr_raft: "localhost:8100".to_string(),
-                addr_api: "localhost:8200".to_string(),
-            }]
-        };
+        let (nodes, election_disable) =
+            if let Some(nodes) = t_str_vec(&mut map, t_name, "nodes", "HQL_NODES")? {
+                Node::parse_lines(nodes)
+            } else {
+                (
+                    vec![Node {
+                        id: 1,
+                        addr_raft: "localhost:8100".to_string(),
+                        addr_api: "localhost:8200".to_string(),
+                    }],
+                    vec![],
+                )
+            };
 
         let listen_addr_api = t_str(&mut map, t_name, "listen_addr_api", "HQL_LISTEN_ADDR_API")?
             .map(Cow::from)
@@ -271,13 +270,14 @@ impl NodeConfig {
             t_bool(&mut map, t_name, "learner_only", "HQL_LEARNER_ONLY")?.unwrap_or(false);
 
         #[cfg(feature = "backup")]
-        let (backup_config, backup_keep_for_local) = {
+        let (backup_config, backup_keep_for_local, backup_file_prefix) = {
             let backup_cron =
                 if let Some(v) = t_str(&mut map, t_name, "backup_cron", "HQL_BACKUP_CRON")? {
                     Cow::from(v)
                 } else {
                     Cow::from("0 30 2 * * * *")
                 };
+            #[cfg(feature = "s3")]
             let backup_keep_for =
                 t_duration(&mut map, t_name, "backup_keep_for", "HQL_BACKUP_KEEP_FOR")?
                     .unwrap_or(Duration::from_secs(30 * 24 * 3600));
@@ -288,11 +288,22 @@ impl NodeConfig {
                 "HQL_BACKUP_KEEP_FOR_LOCAL",
             )?
             .unwrap_or(Duration::from_secs(3 * 24 * 3600));
+            let backup_file_prefix = t_str(
+                &mut map,
+                t_name,
+                "backup_file_prefix",
+                "HQL_BACKUP_FILE_PREFIX",
+            )?
+            .map(Cow::from)
+            .unwrap_or_else(|| crate::backup::DEFAULT_BACKUP_FILE_PREFIX.into());
 
-            let backup_config =
-                crate::backup::BackupConfig::new(backup_cron.as_ref(), backup_keep_for)
-                    .map_err(|err| Error::config(format!("Error building BackupConfig: {err}")))?;
-            (backup_config, backup_keep_for_local)
+            let backup_config = crate::backup::BackupConfig::new(
+                backup_cron.as_ref(),
+                #[cfg(feature = "s3")]
+                backup_keep_for,
+            )
+            .map_err(|err| Error::config(format!("Error building BackupConfig: {err}")))?;
+            (backup_config, backup_keep_for_local, backup_file_prefix)
         };
 
         #[cfg(feature = "s3")]
@@ -408,9 +419,10 @@ impl NodeConfig {
 
         check_empty(map, table_name)?;
 
-        Ok(NodeConfig {
+        let mut config = NodeConfig {
             node_id,
             nodes,
+            election_disable,
             listen_addr_api,
             listen_addr_raft,
             data_dir,
@@ -433,6 +445,8 @@ impl NodeConfig {
             backup_config,
             #[cfg(feature = "backup")]
             backup_keep_for_local,
+            #[cfg(feature = "backup")]
+            backup_file_prefix,
             #[cfg(feature = "s3")]
             s3_config,
             #[cfg(feature = "dashboard")]
@@ -445,7 +459,10 @@ impl NodeConfig {
             rate_limit_cache,
             #[cfg(feature = "sqlite")]
             rate_limit_db,
-        })
+        };
+        config.apply_election_disable();
+
+        Ok(config)
     }
 }
 
@@ -461,6 +478,7 @@ fn check_empty(table: toml::Table, tbl_name: &str) -> Result<(), Error> {
                 "backup_cron",
                 "backup_keep_for",
                 "backup_keep_for_local",
+                "backup_file_prefix",
                 "cache_storage_disk",
                 "s3_url",
                 "s3_bucket",

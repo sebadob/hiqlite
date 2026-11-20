@@ -4,12 +4,13 @@ use crate::app_state::{AppState, RaftType};
 use crate::network::NetworkStreaming;
 use crate::{CacheVariants, Error, NodeConfig, NodeId, RaftConfig, init};
 use hiqlite_wal::LogSync;
+use openraft::Raft;
 use openraft::storage::RaftLogStorage;
-use openraft::{Raft, StorageError};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::fmt::Debug;
+use std::io;
 use std::mem;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -20,7 +21,7 @@ use tracing::info;
 #[cfg(feature = "cache")]
 use crate::{
     app_state::StateRaftCache,
-    store::state_machine::memory::{TypeConfigKV, state_machine::StateMachineMemory},
+    store::state_machine::memory::{TypeConfigCache, state_machine::StateMachineMemory},
 };
 #[cfg(feature = "sqlite")]
 use crate::{
@@ -35,7 +36,11 @@ use crate::{
 pub mod logs;
 pub mod state_machine;
 
-pub type StorageResult<T> = Result<T, StorageError<NodeId>>;
+#[cfg(all(test, feature = "cache"))]
+mod tests_openraft_suite;
+
+/// Error type of the storage traits: openraft 0.10 defines them in terms of `io::Error`.
+pub type StorageResult<T> = Result<T, io::Error>;
 
 #[cfg(feature = "sqlite")]
 pub(crate) async fn start_raft_db(
@@ -46,6 +51,8 @@ pub(crate) async fn start_raft_db(
     // We always want to start stopped and set to `false` as soon as we found out,
     // that we are not pristine node and need cleanup.
     let is_raft_stopped = Arc::new(AtomicBool::new(true));
+    // The runtime mirror of openraft's `enable_elect`, seeded from our config value.
+    let enable_elect = Arc::new(AtomicBool::new(raft_config.enable_elect));
 
     let log_store = hiqlite_wal::LogStore::<TypeConfigSqlite>::start(
         logs::logs_dir_db(&node_config.data_dir),
@@ -65,12 +72,15 @@ pub(crate) async fn start_raft_db(
         do_reset_metadata,
         #[cfg(feature = "backup")]
         node_config.backup_keep_for_local,
+        #[cfg(feature = "backup")]
+        &node_config.backup_file_prefix,
     )
     .await?;
 
     let is_startup_finished = Arc::new(AtomicBool::new(false));
     let sql_writer = state_machine_store.write_tx.clone();
     let read_pool = state_machine_store.read_pool.clone();
+    let path_snapshots = StateMachineSqlite::path_snapshots(&node_config.data_dir);
 
     let network = NetworkStreaming {
         node_id: node_config.node_id,
@@ -112,9 +122,11 @@ pub(crate) async fn start_raft_db(
         shutdown_handle,
         sql_writer,
         read_pool,
+        path_snapshots,
         log_statements: node_config.log_statements,
         is_raft_stopped,
         is_startup_finished,
+        enable_elect,
     })
 }
 
@@ -132,6 +144,8 @@ where
     // that we are not pristine node and need cleanup.
     let is_raft_stopped = Arc::new(AtomicBool::new(true));
     let is_startup_finished = Arc::new(AtomicBool::new(false));
+    // The runtime mirror of openraft's `enable_elect`, seeded from our config value.
+    let enable_elect = Arc::new(AtomicBool::new(raft_config.enable_elect));
 
     let state_machine_store = Arc::new(
         StateMachineMemory::new::<C>(&node_config.data_dir, !node_config.cache_storage_disk)
@@ -148,6 +162,10 @@ where
     };
 
     let tx_caches = state_machine_store.tx_caches.clone();
+    let path_snapshots = format!(
+        "{}/snapshots",
+        StateMachineMemory::path_sm(&node_config.data_dir)
+    );
     #[cfg(feature = "listen_notify")]
     let tx_notify = state_machine_store.tx_notify.clone();
     #[cfg(feature = "listen_notify")]
@@ -156,8 +174,11 @@ where
     #[cfg(feature = "dlock")]
     let tx_dlock = state_machine_store.tx_dlock.clone();
 
+    // The log-revert allowance from `NodeConfig::default_raft_config` applies to both groups, so
+    // the shared `Arc` Raft config is used here as-is.
+
     let (raft, shutdown_handle) = if node_config.cache_storage_disk {
-        let log_store = hiqlite_wal::LogStore::<TypeConfigKV>::start(
+        let log_store = hiqlite_wal::LogStore::<TypeConfigCache>::start(
             logs::logs_dir_cache(&node_config.data_dir),
             node_config.wal_sync.clone(),
             node_config.wal_size,
@@ -214,7 +235,9 @@ where
         tx_dlock,
         is_raft_stopped,
         is_startup_finished,
+        enable_elect,
         shutdown_handle,
+        path_snapshots,
         cache_storage_disk: node_config.cache_storage_disk,
     })
 }

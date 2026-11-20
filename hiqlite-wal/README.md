@@ -28,8 +28,8 @@ After the header, each log entry has a dynamic length with it's own tiny header,
 - variable length Log Data
 
 The `auto-heal` feature will try to auto heal corrupted WAL files by reverting the latest Raft Log ID to the highest
-healthy one. In case of lost or unrecoverable logs, this will only work, if `openraft/loosen-follower-log-revert` is
-set.
+healthy one. In case of lost or unrecoverable logs, this will only work, if `allow_log_reversion` is set on the
+`RaftConfig`. Hiqlite enables it for its cache group only, the SQLite group keeps the stricter behavior.
 Such an integrity check can also be forced at startup (for the latest existing WAL) by setting the ENV var
 `HQL_CHECK_WAL_INTEGRITY=true`, but there is usually no need to do this, as long as the lock file has not been
 deleted manually.

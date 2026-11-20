@@ -84,12 +84,13 @@ clippy:
     set -euxo pipefail
     clear
 
-    cargo clippy --no-default-features -- -D warnings
+    # base features, each standalone: sqlite here, cache and external-state-machine below
+    cargo clippy --no-default-features --features sqlite -- -D warnings
 
     cargo clippy --no-default-features --features sqlite,cast_ints -- -D warnings
     cargo clippy --no-default-features --features sqlite,cast_ints_unchecked -- -D warnings
-    # auto-heal should only apply to sqlite
-    cargo clippy --no-default-features --features auto-heal -- -D warnings
+    # auto-heal needs one of the base features - cover both
+    cargo clippy --no-default-features --features cache,auto-heal -- -D warnings
     cargo clippy --no-default-features --features sqlite,auto-heal -- -D warnings
     # backup / s3 should only apply to sqlite
     cargo clippy --no-default-features --features backup -- -D warnings
@@ -97,6 +98,7 @@ clippy:
     cargo clippy --no-default-features --features sqlite,auto-heal,backup -- -D warnings
 
     cargo clippy --no-default-features --features cache -- -D warnings
+    cargo clippy --no-default-features --features cache,toml -- -D warnings
     cargo clippy --no-default-features --features in-memory-snapshots -- -D warnings
     cargo clippy --no-default-features --features counters -- -D warnings
     cargo clippy --no-default-features --features dlock -- -D warnings
@@ -104,7 +106,9 @@ clippy:
     cargo clippy --no-default-features --features sqlite,cache,webpki-roots -- -D warnings
 
     cargo clippy --no-default-features --features dashboard -- -D warnings
-    cargo clippy --no-default-features --features shutdown-handle -- -D warnings
+    # shutdown-handle needs one of the base features - cover both
+    cargo clippy --no-default-features --features cache,shutdown-handle -- -D warnings
+    cargo clippy --no-default-features --features sqlite,shutdown-handle -- -D warnings
 
     # external-state-machine must build standalone without pulling in the
     # internal `__cluster` boundary, and must not break any regular combination
@@ -137,14 +141,16 @@ test test="":
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
-    cargo test --features full,counters,external-state-machine,server {{ test }}
+    # The v0.17 cold restart guard is off for tests. It checks other nodes on startup, and our
+    # tests spin up whole clusters inside a single process all the time.
+    HQL_DISABLE_COLD_RESTART_GUARD="true" cargo test --features full,counters,external-state-machine,server {{ test }}
 
 # runs the full set of tests excluding backup to S3 tests
 test-no-s3:
     #!/usr/bin/env bash
     set -euxo pipefail
     clear
-    TEST_SKIP_S3_RESTORE="true" cargo test --features cache,counters,dlock,listen_notify,macros,toml,external-state-machine
+    TEST_SKIP_S3_RESTORE="true" HQL_DISABLE_COLD_RESTART_GUARD="true" cargo test --features cache,counters,dlock,listen_notify,macros,toml,external-state-machine
 
 # builds the code
 build ty="server":

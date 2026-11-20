@@ -1,15 +1,16 @@
+use crate::APP_VERSION;
 use crate::app_state::RaftType;
-use crate::helpers::{deserialize, get_raft_metrics, serialize};
+use crate::helpers::{deserialize, get_raft_view, serialize};
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{AppStateExt, Error, validate_secret};
-use crate::{APP_VERSION, Node};
+use crate::network::{AppStateExt, Error, WireMembership, validate_secret};
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use bincode_next::{Decode, Encode};
 use chrono::Utc;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
-use openraft::{ServerState, StoredMembership};
+use openraft::ServerState;
+use openraft::type_config::async_runtime::watch::WatchReceiver;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::ops::{Deref, Sub};
@@ -28,6 +29,9 @@ use crate::store::state_machine::memory::{
 use crate::store::state_machine::memory::dlock_handler::{
     LockAwaitPayload, LockRequest, LockState,
 };
+
+#[cfg(feature = "sqlite")]
+use openraft::raft::ReadPolicy;
 
 #[cfg(feature = "sqlite")]
 use crate::{
@@ -64,7 +68,7 @@ async fn check_health(state: &AppStateExt) -> Result<(), Error> {
 
     #[cfg(feature = "sqlite")]
     {
-        let metrics = state.raft_db.raft.metrics().borrow().clone();
+        let metrics = state.raft_db.raft.metrics().borrow_watched().clone();
         metrics.running_state?;
         if metrics.current_leader.is_none() {
             return Err(Error::LeaderChange(
@@ -74,7 +78,7 @@ async fn check_health(state: &AppStateExt) -> Result<(), Error> {
     }
     #[cfg(feature = "cache")]
     {
-        let metrics = state.raft_cache.raft.metrics().borrow().clone();
+        let metrics = state.raft_cache.raft.metrics().borrow_watched().clone();
         metrics.running_state?;
         if metrics.current_leader.is_none() {
             return Err(Error::LeaderChange(
@@ -114,16 +118,16 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                 return Err(Error::Error("sqlite raft is not running".into()));
             }
 
-            let metrics = get_raft_metrics(&state, &RaftType::Sqlite).await?;
+            let view = get_raft_view(&state, &RaftType::Sqlite)?;
             ensure_ready_member(
                 state.id,
                 state.learner_only,
-                metrics.state,
-                &metrics.membership_config,
+                view.state,
+                &view.membership,
                 "sqlite",
             )?;
 
-            if metrics.current_leader.is_none() && (state.id != 1 || secs_since_start < 10) {
+            if view.leader_id.is_none() && (state.id != 1 || secs_since_start < 10) {
                 warn!("sqlite raft leader vote in progress - secs_since_start: {secs_since_start}");
                 return Err(Error::Error("sqlite raft leader vote in progress".into()));
             }
@@ -147,16 +151,16 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
                 return Err(Error::Error("cache raft is not running".into()));
             }
 
-            let metrics = get_raft_metrics(&state, &RaftType::Cache).await?;
+            let view = get_raft_view(&state, &RaftType::Cache)?;
             ensure_ready_member(
                 state.id,
                 state.learner_only,
-                metrics.state,
-                &metrics.membership_config,
+                view.state,
+                &view.membership,
                 "cache",
             )?;
 
-            if metrics.current_leader.is_none() && (state.id != 1 || secs_since_start < 10) {
+            if view.leader_id.is_none() && (state.id != 1 || secs_since_start < 10) {
                 warn!("cache raft leader vote in progress");
                 return Err(Error::Error(
                     "cache raft leader vote in progress - secs_since_start: {secs_since_start}"
@@ -173,7 +177,7 @@ fn ensure_ready_member(
     id: u64,
     learner_only: bool,
     state: ServerState,
-    membership_config: &StoredMembership<u64, Node>,
+    membership_config: &WireMembership,
     raft_label: &'static str,
 ) -> Result<(), Error> {
     if state == ServerState::Shutdown {
@@ -263,7 +267,9 @@ pub async fn get_version() -> impl IntoResponse {
 mod tests {
     use super::ensure_ready_member;
     use crate::Node;
-    use openraft::{Membership, ServerState, StoredMembership};
+    use crate::network::{TypeConfigWire, WireMembership};
+    use openraft::ServerState;
+    use openraft::type_config::alias::{MembershipOf, StoredMembershipOf};
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
@@ -311,7 +317,7 @@ mod tests {
     fn membership_with_voters_and_learners<const VOTERS: usize, const MEMBERS: usize>(
         voters: [u64; VOTERS],
         members: [u64; MEMBERS],
-    ) -> StoredMembership<u64, Node> {
+    ) -> WireMembership {
         let voters = BTreeSet::from(voters);
         let nodes = members
             .into_iter()
@@ -327,7 +333,10 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
 
-        StoredMembership::new(None, Membership::new(vec![voters], nodes))
+        StoredMembershipOf::<TypeConfigWire>::new(
+            None,
+            MembershipOf::<TypeConfigWire>::new(vec![voters], nodes).unwrap(),
+        )
     }
 }
 
@@ -512,7 +521,7 @@ pub(crate) enum ApiStreamRequestPayload {
     #[cfg(feature = "sqlite")]
     Transaction(Vec<Query>),
     #[cfg(feature = "sqlite")]
-    QueryConsistent(Query),
+    QueryConsistent(Query, WireReadPolicy),
     #[cfg(feature = "sqlite")]
     Batch(#[bincode(with_serde)] std::borrow::Cow<'static, str>),
     #[cfg(feature = "sqlite")]
@@ -522,17 +531,49 @@ pub(crate) enum ApiStreamRequestPayload {
     Backup((crate::NodeId, i64)),
 
     #[cfg(feature = "cache")]
-    KV(CacheRequest),
+    Cache(CacheRequest),
 
     // remote-only clients
     #[cfg(feature = "sqlite")]
     Query(Query),
     #[cfg(feature = "cache")]
-    KVGet(CacheRequest),
+    CacheGet(CacheRequest),
     #[cfg(feature = "dlock")]
     LockAwait(CacheRequest),
     #[cfg(feature = "listen_notify")]
     Notify(CacheRequest),
+}
+
+/// Mirror of `openraft::raft::ReadPolicy` for the wire.
+///
+/// openraft's enum has no serde or bincode derives, so the API payload carries this type and
+/// converts it at the edges. Variant order matches openraft, which keeps the encoded indexes
+/// identical.
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub(crate) enum WireReadPolicy {
+    LeaseRead,
+    ReadIndex,
+}
+
+#[cfg(feature = "sqlite")]
+impl From<ReadPolicy> for WireReadPolicy {
+    fn from(policy: ReadPolicy) -> Self {
+        match policy {
+            ReadPolicy::LeaseRead => Self::LeaseRead,
+            ReadPolicy::ReadIndex => Self::ReadIndex,
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl From<WireReadPolicy> for ReadPolicy {
+    fn from(policy: WireReadPolicy) -> Self {
+        match policy {
+            WireReadPolicy::LeaseRead => Self::LeaseRead,
+            WireReadPolicy::ReadIndex => Self::ReadIndex,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Encode, Decode)]
@@ -562,7 +603,7 @@ pub(crate) enum ApiStreamResponsePayload {
     Backup(Result<(), Error>),
 
     #[cfg(feature = "cache")]
-    KV(Result<CacheResponse, Error>),
+    Cache(Result<CacheResponse, Error>),
 
     #[cfg(feature = "dlock")]
     Lock(Result<LockState, Error>),
@@ -789,13 +830,14 @@ async fn handle_socket_concurrent(
                 }
 
                 #[cfg(feature = "sqlite")]
-                ApiStreamRequestPayload::QueryConsistent(Query { sql, params }) => {
+                ApiStreamRequestPayload::QueryConsistent(Query { sql, params }, read_policy) => {
                     let res = query_consistent_local(
                         &state.raft_db.raft,
                         state.raft_db.log_statements,
                         state.raft_db.read_pool.clone(),
                         sql,
                         params,
+                        read_policy.into(),
                     )
                     .await;
 
@@ -900,7 +942,7 @@ async fn handle_socket_concurrent(
                 }
 
                 #[cfg(feature = "cache")]
-                ApiStreamRequestPayload::KV(cache_req) => {
+                ApiStreamRequestPayload::Cache(cache_req) => {
                     // Bounds-check the cache index before committing to the raft log. Embedded
                     // clients resolve indices locally, so an out-of-range index can only arrive
                     // via a hand-crafted wire request; rejecting it here keeps the state
@@ -930,7 +972,7 @@ async fn handle_socket_concurrent(
                     {
                         ApiStreamResponse {
                             request_id,
-                            result: ApiStreamResponsePayload::KV(Err(Error::new(format!(
+                            result: ApiStreamResponsePayload::Cache(Err(Error::new(format!(
                                 "cache index {cache_idx} out of range (0..{})",
                                 state.raft_cache.tx_caches.len()
                             )))),
@@ -941,19 +983,19 @@ async fn handle_socket_concurrent(
                                 let resp: CacheResponse = resp.data;
                                 ApiStreamResponse {
                                     request_id,
-                                    result: ApiStreamResponsePayload::KV(Ok(resp)),
+                                    result: ApiStreamResponsePayload::Cache(Ok(resp)),
                                 }
                             }
                             Err(err) => ApiStreamResponse {
                                 request_id,
-                                result: ApiStreamResponsePayload::KV(Err(Error::from(err))),
+                                result: ApiStreamResponsePayload::Cache(Err(Error::from(err))),
                             },
                         }
                     }
                 }
 
                 #[cfg(feature = "cache")]
-                ApiStreamRequestPayload::KVGet(cache_req) => {
+                ApiStreamRequestPayload::CacheGet(cache_req) => {
                     let (cache_idx, key) = match cache_req {
                         CacheRequest::Get { cache_idx, key } => (cache_idx, key),
                         _ => unreachable!(),
@@ -966,7 +1008,7 @@ async fn handle_socket_concurrent(
                     if cache_idx >= state.raft_cache.tx_caches.len() {
                         ApiStreamResponse {
                             request_id,
-                            result: ApiStreamResponsePayload::KV(Err(Error::new(format!(
+                            result: ApiStreamResponsePayload::Cache(Err(Error::new(format!(
                                 "cache index {cache_idx} out of range (0..{})",
                                 state.raft_cache.tx_caches.len()
                             )))),
@@ -979,11 +1021,15 @@ async fn handle_socket_concurrent(
                             .get(cache_idx)
                             .unwrap()
                             .send(CacheRequestHandler::Get { key, reply: ack })
-                            .expect("kv handler to always be running");
-                        let value = rx.await.expect("to always get an answer from kv handler");
+                            .expect("cache handler to always be running");
+                        let value = rx
+                            .await
+                            .expect("to always get an answer from cache handler");
                         ApiStreamResponse {
                             request_id,
-                            result: ApiStreamResponsePayload::KV(Ok(CacheResponse::Value(value))),
+                            result: ApiStreamResponsePayload::Cache(Ok(CacheResponse::Value(
+                                value,
+                            ))),
                         }
                     }
                 }
@@ -1000,10 +1046,10 @@ async fn handle_socket_concurrent(
                         .raft_cache
                         .tx_dlock
                         .send(LockRequest::Await(LockAwaitPayload { key, id, ack }))
-                        .expect("kv handler to always be running");
+                        .expect("cache handler to always be running");
                     let lock_state = rx
                         .await
-                        .expect("to always get an answer from the kv handler");
+                        .expect("to always get an answer from the cache handler");
 
                     ApiStreamResponse {
                         request_id,

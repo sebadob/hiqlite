@@ -1,32 +1,22 @@
-use crate::NodeId;
 use crate::store::StorageResult;
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::TypeConfigCache;
 use openraft::OptionalSend;
-use openraft::RaftLogReader;
-use openraft::StorageError;
-use openraft::StorageIOError;
-use openraft::Vote;
-use openraft::storage::LogFlushed;
-use openraft::storage::LogState;
-use openraft::storage::RaftLogStorage;
-use openraft::{CommittedLeaderId, Entry};
-use openraft::{LeaderId, LogId};
-use std::collections::{BTreeMap, Bound, VecDeque};
+use openraft::storage::{IOFlushed, LogState, RaftLogReader, RaftLogStorage};
+use openraft::type_config::alias::{EntryOf, LogIdOf, VoteOf};
+use std::collections::{Bound, VecDeque};
 use std::fmt::Debug;
-use std::ops::{Deref, RangeBounds};
+use std::io;
+use std::ops::RangeBounds;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{Mutex, RwLock, oneshot};
-use tokio::time::Instant;
-use tokio::{fs, task};
+use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 
-type Logs = Arc<RwLock<VecDeque<Entry<TypeConfigKV>>>>;
+type Logs = Arc<RwLock<VecDeque<EntryOf<TypeConfigCache>>>>;
 
 #[derive(Debug, Clone)]
 struct LogData {
-    last_purged: Option<LogId<u64>>,
-    vote: Option<Vote<NodeId>>,
+    last_purged: Option<LogIdOf<TypeConfigCache>>,
+    vote: Option<VoteOf<TypeConfigCache>>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,11 +41,11 @@ impl LogStoreMemory {
     }
 }
 
-impl RaftLogReader<TypeConfigKV> for LogStoreMemory {
+impl RaftLogReader<TypeConfigCache> for LogStoreMemory {
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
         range: RB,
-    ) -> StorageResult<Vec<Entry<TypeConfigKV>>> {
+    ) -> StorageResult<Vec<EntryOf<TypeConfigCache>>> {
         let start = match range.start_bound() {
             Bound::Included(i) => *i,
             Bound::Excluded(i) => *i + 1,
@@ -69,7 +59,7 @@ impl RaftLogReader<TypeConfigKV> for LogStoreMemory {
                 }
                 *i - 1
             }
-            Bound::Unbounded => panic!("open end log entries get"),
+            Bound::Unbounded => u64::MAX,
         };
         if end < start {
             return Ok(Vec::default());
@@ -84,46 +74,45 @@ impl RaftLogReader<TypeConfigKV> for LogStoreMemory {
             return Ok(Vec::default());
         }
 
-        debug_assert!(end > 0);
+        // openraft tolerates a range whose beginning or end the log does not contain - indexes
+        // already covered by a purge, the slot before the first entry, entries not appended yet -
+        // so the requested bounds get clamped to the entries that are actually present.
         let first_log_id = logs
             .front()
             .expect("logs non-empty (checked above)")
             .log_id
             .index;
-        debug_assert!(start >= first_log_id);
+        let last_log_id = logs
+            .back()
+            .expect("logs non-empty (checked above)")
+            .log_id
+            .index;
+        let start = start.max(first_log_id);
+        let end = end.min(last_log_id);
+        if end < start {
+            return Ok(Vec::default());
+        }
 
         let range_start = (start - first_log_id) as usize;
         let range_end = (end - first_log_id) as usize;
-        debug_assert!(if !logs.is_empty() {
-            logs.get(range_start).unwrap().log_id.index == start
-        } else {
-            range_start == 0
-        });
-        debug_assert!(if !logs.is_empty() {
-            logs.get(range_end).unwrap().log_id.index == end
-        } else {
-            range_end == 0
-        });
 
-        let mut res = Vec::with_capacity((end - start) as usize);
+        let mut res = Vec::with_capacity(range_end - range_start + 1);
         for entry in logs.range(range_start..=range_end) {
             res.push((*entry).clone());
         }
 
-        debug_assert!(if !res.is_empty() {
-            res.first().unwrap().log_id.index == start && res.last().unwrap().log_id.index == end
-        } else {
-            start == end
-        });
-
         Ok(res)
+    }
+
+    async fn read_vote(&mut self) -> StorageResult<Option<VoteOf<TypeConfigCache>>> {
+        Ok(self.data.lock().await.vote)
     }
 }
 
-impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
+impl RaftLogStorage<TypeConfigCache> for LogStoreMemory {
     type LogReader = Self;
 
-    async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfigKV>> {
+    async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfigCache>> {
         let last_purged_log_id = self.data.lock().await.last_purged;
 
         // Per the RaftLogStorage contract, `last_log_id` is the last present entry, or
@@ -149,36 +138,32 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
     // async fn save_committed(
     //     &mut self,
     //     committed: Option<LogId<NodeId>>,
-    // ) -> Result<(), StorageError<NodeId>> {
+    // ) -> Result<(), io::Error> {
     //     let mut lock = self.data.lock().await;
     //     lock.commited = committed;
     //     Ok(())
     // }
     //
-    // async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
+    // async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, io::Error> {
     //     Ok(self.data.lock().await.commited)
     // }
 
     #[tracing::instrument(level = "trace", skip(self))]
-    async fn save_vote(&mut self, vote: &Vote<NodeId>) -> Result<(), StorageError<NodeId>> {
+    async fn save_vote(&mut self, vote: &VoteOf<TypeConfigCache>) -> Result<(), io::Error> {
         let mut lock = self.data.lock().await;
         lock.vote = Some(*vote);
         Ok(())
-    }
-
-    async fn read_vote(&mut self) -> Result<Option<Vote<NodeId>>, StorageError<NodeId>> {
-        Ok(self.data.lock().await.vote)
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
     async fn append<I>(
         &mut self,
         entries: I,
-        callback: LogFlushed<TypeConfigKV>,
+        callback: IOFlushed<TypeConfigCache>,
     ) -> StorageResult<()>
     where
-        I: IntoIterator<Item = Entry<TypeConfigKV>> + Send,
-        I::IntoIter: Send,
+        I: IntoIterator<Item = EntryOf<TypeConfigCache>> + OptionalSend,
+        I::IntoIter: OptionalSend,
     {
         {
             let mut logs = self.logs.write().await;
@@ -187,13 +172,22 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
             }
         }
 
-        callback.log_io_completed(Ok(()));
+        callback.io_completed(Ok(()));
 
         Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    async fn truncate(&mut self, log_id: LogId<NodeId>) -> StorageResult<()> {
+    async fn truncate_after(
+        &mut self,
+        last_log_id: Option<LogIdOf<TypeConfigCache>>,
+    ) -> StorageResult<()> {
+        // keep everything up to and including `last_log_id`, drop the rest; `None` means all
+        let from = match last_log_id {
+            Some(id) => id.index.saturating_add(1),
+            None => 0,
+        };
+
         let mut logs = self.logs.write().await;
 
         if logs.is_empty() {
@@ -201,58 +195,35 @@ impl RaftLogStorage<TypeConfigKV> for LogStoreMemory {
             return Ok(());
         }
 
-        let first_offset = logs.front().unwrap().log_id.index;
-        debug_assert!(log_id.index >= first_offset);
-        let truncate_from = (log_id.index - first_offset) as usize;
-        // `truncate(log_id)` removes entries from `log_id` inclusive onward, so the cut point is
-        // exactly the entry named by `log_id`. DeleteConflictLog always names a present entry.
-        debug_assert_eq!(
-            logs.get(truncate_from).map(|e| e.log_id.index),
-            Some(log_id.index)
+        debug_assert!(
+            from == 0 || logs.front().unwrap().log_id.index <= from,
+            "truncate_after must never cut below the first present entry"
         );
 
-        logs.truncate(truncate_from);
+        // the deque is ordered by log index, so a plain retain keeps the wanted prefix
+        logs.retain(|entry| entry.log_id.index < from);
 
         Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
-        let new_last_purged = {
+    async fn purge(&mut self, log_id: LogIdOf<TypeConfigCache>) -> Result<(), io::Error> {
+        {
             let mut logs = self.logs.write().await;
 
-            if logs.is_empty() {
-                info!("Logs are empty - nothing to purge");
-                // The caller is telling us everything up to `log_id` (inclusive) is now
-                // covered by a snapshot. Record it so get_log_state() can still report
-                // the purged point even though no entries remain.
-                Some(log_id)
-            } else {
-                let first_offset = logs.front().unwrap().log_id.index;
-                debug_assert!(
-                    first_offset <= log_id.index,
-                    "first_offset <= log_id.index -> {} >= {}",
-                    first_offset,
-                    log_id.index
-                );
-                let purge_until = (log_id.index - first_offset) as usize;
-                debug_assert!(
-                    logs.len() >= purge_until,
-                    "lock.len() >= purge_until -> {} >= {}",
-                    logs.len(),
-                    purge_until
-                );
-
-                logs.drain(..purge_until);
-                // purge is inclusive
-                logs.pop_front().map(|e| e.log_id)
-            }
-        };
+            // Purge is inclusive, and the point can sit outside what is still here: below the
+            // first entry when a snapshot already covers it, or past the tail when everything
+            // gets dropped. Only the entries that are actually present can be removed.
+            let purge_count = logs
+                .iter()
+                .take_while(|entry| entry.log_id.index <= log_id.index)
+                .count();
+            logs.drain(..purge_count);
+        }
 
         let mut data = self.data.lock().await;
         // Never regress the recorded purged point.
-        data.last_purged = new_last_purged.or(data.last_purged);
-        drop(data);
+        data.last_purged = data.last_purged.max(Some(log_id));
 
         Ok(())
     }

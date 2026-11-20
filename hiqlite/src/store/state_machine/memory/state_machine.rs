@@ -1,32 +1,28 @@
 use crate::helpers::{atomic_file_switch, deserialize_serde, serialize_serde, set_path_access};
 use crate::store::StorageResult;
 use crate::store::state_machine::memory::kv_handler::{CacheRequestHandler, CacheSnapshot};
-use crate::store::state_machine::memory::{TypeConfigKV, kv_handler};
-use crate::{CacheVariants, Error, Node, NodeId};
+use crate::store::state_machine::memory::{TypeConfigCache, kv_handler};
+use crate::{CacheVariants, Error};
 use bincode_next::{Decode, Encode};
 use chrono::Utc;
-use dotenvy::var;
-use openraft::storage::RaftStateMachine;
-use openraft::{
-    EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
-    StorageIOError, StoredMembership,
+use futures_util::{Stream, StreamExt};
+use openraft::storage::{EntryResponder, RaftStateMachine, Snapshot};
+use openraft::type_config::alias::{
+    EntryOf, LogIdOf, SnapshotMetaOf, SnapshotOf, StoredMembershipOf,
 };
+use openraft::{EntryPayload, OptionalSend, RaftSnapshotBuilder};
 use rust_decimal::prelude::ToPrimitive;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::Debug;
-#[cfg(feature = "in-memory-snapshots")]
-use std::io::Cursor;
+use std::fmt::{Debug, Display};
+use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Mutex, RwLock, oneshot};
-use tokio::task;
-#[cfg(not(feature = "in-memory-snapshots"))]
-use tracing::info;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -34,19 +30,17 @@ use uuid::Uuid;
 use crate::store::state_machine::memory::dlock_handler::{self, *};
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
-
-type Entry = openraft::Entry<TypeConfigKV>;
-#[cfg(not(feature = "in-memory-snapshots"))]
-type SnapshotData = fs::File;
 #[cfg(feature = "in-memory-snapshots")]
-type SnapshotData = Cursor<Vec<u8>>;
+use std::io::Cursor;
+
+type Entry = EntryOf<TypeConfigCache>;
 
 type SnapshotKVs = Vec<CacheSnapshot>;
 type SnapshotLocks = Vec<u8>;
-type SnapshotDataContent = (SnapshotMeta<NodeId, Node>, SnapshotKVs, SnapshotLocks);
+type SnapshotDataContent = (SnapshotMetaOf<TypeConfigCache>, SnapshotKVs, SnapshotLocks);
 /// The latest snapshot kept in memory (`meta` + serialized bytes) for memory-only mode.
 #[cfg(feature = "in-memory-snapshots")]
-type MemSnapshot = (SnapshotMeta<NodeId, Node>, Vec<u8>);
+type MemSnapshot = (SnapshotMetaOf<TypeConfigCache>, Vec<u8>);
 
 // The variant order is part of the raft log format and must stay stable and
 // feature-independent: adding variants changes the serialized indices of
@@ -128,6 +122,12 @@ pub enum CacheRequest {
     },
 }
 
+impl Display for CacheRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub enum CacheResponse {
     Empty,
@@ -141,8 +141,8 @@ pub enum CacheResponse {
 
 #[derive(Debug, Default)]
 pub struct StateMachineData {
-    last_applied_log_id: Option<LogId<NodeId>>,
-    last_membership: StoredMembership<NodeId, Node>,
+    last_applied_log_id: Option<LogIdOf<TypeConfigCache>>,
+    last_membership: StoredMembershipOf<TypeConfigCache>,
 }
 
 /// This is a full in-memory state machine acting as a cache.
@@ -173,24 +173,31 @@ pub struct StateMachineMemory {
     pub(crate) tx_dlock: flume::Sender<LockRequest>,
 }
 
-impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
+impl RaftSnapshotBuilder<TypeConfigCache> for Arc<StateMachineMemory> {
     #[cfg(not(feature = "in-memory-snapshots"))]
-    async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfigKV>, StorageError<NodeId>> {
+    type SnapshotData = fs::File;
+    #[cfg(feature = "in-memory-snapshots")]
+    type SnapshotData = Cursor<Vec<u8>>;
+
+    #[cfg(not(feature = "in-memory-snapshots"))]
+    async fn build_snapshot(
+        &mut self,
+    ) -> Result<SnapshotOf<TypeConfigCache, Self::SnapshotData>, io::Error> {
         let (meta, snapshot_bytes) = self.build_snapshot_data().await?;
         let path = self.persist_snapshot(&meta, &snapshot_bytes).await?;
 
         // Stream the snapshot straight from the persisted file (zero-copy).
-        let file = fs::File::open(&path)
-            .await
-            .map_err(|err| StorageIOError::read_state_machine(&err))?;
+        let file = fs::File::open(&path).await?;
         Ok(Snapshot {
             meta,
-            snapshot: Box::new(file),
+            snapshot: file,
         })
     }
 
     #[cfg(feature = "in-memory-snapshots")]
-    async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfigKV>, StorageError<NodeId>> {
+    async fn build_snapshot(
+        &mut self,
+    ) -> Result<SnapshotOf<TypeConfigCache, Self::SnapshotData>, io::Error> {
         let (meta, snapshot_bytes) = self.build_snapshot_data().await?;
 
         // In memory-only mode we keep the snapshot in memory and never touch `data_dir`,
@@ -199,7 +206,7 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
             *self.snapshot_mem.write().await = Some((meta.clone(), snapshot_bytes.clone()));
             return Ok(Snapshot {
                 meta,
-                snapshot: Box::new(Cursor::new(snapshot_bytes)),
+                snapshot: Cursor::new(snapshot_bytes),
             });
         }
 
@@ -207,7 +214,7 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
         self.persist_snapshot(&meta, &snapshot_bytes).await?;
         Ok(Snapshot {
             meta,
-            snapshot: Box::new(Cursor::new(snapshot_bytes)),
+            snapshot: Cursor::new(snapshot_bytes),
         })
     }
 }
@@ -215,6 +222,18 @@ impl RaftSnapshotBuilder<TypeConfigKV> for Arc<StateMachineMemory> {
 impl StateMachineMemory {
     pub(crate) fn path_sm(data_dir: &str) -> String {
         format!("{data_dir}/state_machine_cache")
+    }
+
+    /// File name of a snapshot inside the snapshots dir. openraft 0.10 removed the id from
+    /// `SnapshotMeta`, so we keep our own: a timestamp plus the last applied log id. Both the
+    /// snapshot reads and the cleanup pick the "newest" one by name, so the timestamp must stay
+    /// the leading, fixed-width part.
+    fn snapshot_file_name(meta: &SnapshotMetaOf<TypeConfigCache>) -> String {
+        let now = Utc::now().timestamp();
+        match &meta.last_log_id {
+            Some(last) => format!("{}-{}-{}", now, last.leader_id, last.index),
+            None => format!("{now}--"),
+        }
     }
 
     pub(crate) async fn new<C>(base_path: &str, in_memory_only: bool) -> Result<Self, Error>
@@ -278,27 +297,44 @@ impl StateMachineMemory {
         #[cfg(not(feature = "in-memory-snapshots"))]
         {
             let path_meta = format!("{path_sm}/cache_index.meta");
-            let stored = match fs::read_to_string(&path_meta).await {
-                Ok(stored) => {
-                    if !C::hiqlite_cache_compatible_with(&stored) {
+
+            // `HQL_CACHE_META_RESET=true` deletes the stored fingerprint and re-initializes it
+            // from the current enum. That is the way out of the startup refusal after a rename.
+            // Removing a variant needs more: the app must clear all of its caches at startup,
+            // because the persisted entries of the removed index are still in there.
+            let meta_reset = std::env::var("HQL_CACHE_META_RESET")
+                .as_deref()
+                .unwrap_or("false")
+                .parse::<bool>()
+                .expect("Cannot parse HQL_CACHE_META_RESET as bool");
+
+            let stored = if meta_reset {
+                warn!("Resetting the cache index metadata at {path_meta}");
+                let _ = fs::remove_file(&path_meta).await;
+                String::default()
+            } else {
+                match fs::read_to_string(&path_meta).await {
+                    Ok(stored) => {
+                        if !C::hiqlite_cache_compatible_with(&stored) {
+                            return Err(Error::Cache(
+                                format!(
+                                    "cache index enum is incompatible with previously persisted \
+                                     data ({}):\n--- stored ---\n{}--- current ---\n{}",
+                                    path_meta,
+                                    stored,
+                                    C::hiqlite_cache_variants_normalized()
+                                )
+                                .into(),
+                            ));
+                        }
+                        stored
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::default(),
+                    Err(err) => {
                         return Err(Error::Cache(
-                            format!(
-                                "cache index enum is incompatible with previously persisted \
-                                 data ({}):\n--- stored ---\n{}--- current ---\n{}",
-                                path_meta,
-                                stored,
-                                C::hiqlite_cache_variants_normalized()
-                            )
-                            .into(),
+                            format!("cannot read cache index metadata {path_meta}: {err}").into(),
                         ));
                     }
-                    stored
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::default(),
-                Err(err) => {
-                    return Err(Error::Cache(
-                        format!("cannot read cache index metadata {path_meta}: {err}").into(),
-                    ));
                 }
             };
 
@@ -306,8 +342,7 @@ impl StateMachineMemory {
             // current enum and a torn write can never leave a half-written fingerprint.
             // A missing file is always (re)written, even when the fingerprint itself is
             // empty: an enum with zero variants (the `hiqlite` server binary) produces the
-            // same normalized form as a fresh startup, and this file is the "cache data was
-            // started on >= v0.15" marker that `v0_15_auto_cache_migration` relies on.
+            // same normalized form as a fresh startup, so it must create the file too.
             let normalized = C::hiqlite_cache_variants_normalized();
             if !fs::try_exists(&path_meta).await? || stored.as_bytes() != normalized.as_bytes() {
                 let path_temp = format!("{path_meta}~");
@@ -380,7 +415,7 @@ impl StateMachineMemory {
     #[allow(clippy::result_large_err)]
     async fn build_snapshot_data(
         &self,
-    ) -> Result<(SnapshotMeta<NodeId, Node>, Vec<u8>), StorageError<NodeId>> {
+    ) -> Result<(SnapshotMetaOf<TypeConfigCache>, Vec<u8>), io::Error> {
         let data = self.data.read().await;
 
         // Snapshot consistency: this read lock is held across the whole capture below, while
@@ -400,10 +435,10 @@ impl StateMachineMemory {
         for tx in &self.tx_caches {
             let (ack, rx) = oneshot::channel();
             tx.send(CacheRequestHandler::SnapshotBuild { reply: ack })
-                .expect("kv handler to always be running");
+                .expect("cache handler to always be running");
             caches.push(
                 rx.await
-                    .expect("to always receive an answer from kv handler"),
+                    .expect("to always receive an answer from cache handler"),
             );
         }
 
@@ -421,80 +456,66 @@ impl StateMachineMemory {
         #[cfg(not(feature = "dlock"))]
         let locks_bytes: Vec<u8> = Vec::default();
 
-        let now = Utc::now().timestamp();
-        let snapshot_id = if let Some(last) = data.last_applied_log_id {
-            format!("{}-{}-{}", now, last.leader_id, last.index)
-        } else {
-            format!("{now}--")
-        };
-
-        let meta = SnapshotMeta {
+        let meta = SnapshotMetaOf::<TypeConfigCache> {
             last_log_id: data.last_applied_log_id,
             last_membership: data.last_membership.clone(),
-            snapshot_id,
         };
 
         let snap: SnapshotDataContent = (meta.clone(), caches, locks_bytes);
         let snapshot_bytes =
-            serialize_serde(&snap).map_err(|err| StorageIOError::write_state_machine(&err))?;
+            serialize_serde(&snap).map_err(|err| io::Error::other(format!("{err}")))?;
 
         Ok((meta, snapshot_bytes))
     }
 
-    /// Persists a serialized snapshot to `data_dir` and spawns cleanup of older snapshots.
+    /// Persists a serialized snapshot to `data_dir` and cleans up older snapshots.
     /// Returns the path of the persisted snapshot file.
     // The error type is huge, but defined by the openraft trait.
     #[allow(clippy::result_large_err)]
     async fn persist_snapshot(
         &self,
-        meta: &SnapshotMeta<NodeId, Node>,
+        meta: &SnapshotMetaOf<TypeConfigCache>,
         snapshot_bytes: &[u8],
-    ) -> Result<String, StorageError<NodeId>> {
-        let path = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
+    ) -> Result<String, io::Error> {
+        let name = Self::snapshot_file_name(meta);
+        let path = format!("{}/{}", self.path_snapshots, name);
         let path_temp = format!("{path}~");
         {
             // truncate any leftover temp from a crashed previous run
-            let mut file = fs::File::create(&path_temp)
-                .await
-                .map_err(|err| StorageIOError::write_state_machine(&err))?;
-            file.write_all(snapshot_bytes)
-                .await
-                .map_err(|err| StorageIOError::write_state_machine(&err))?;
-            file.sync_data()
-                .await
-                .map_err(|err| StorageIOError::write_state_machine(&err))?;
+            let mut file = fs::File::create(&path_temp).await?;
+            file.write_all(snapshot_bytes).await?;
+            file.sync_data().await?;
         }
 
-        atomic_file_switch(path_temp, &path)
-            .await
-            .map_err(|err| StorageIOError::write_state_machine(&err))?;
+        atomic_file_switch(path_temp, &path).await?;
 
-        // cleanup task for old snapshots
-        let id = meta.snapshot_id.clone();
+        // Cleanup of the old snapshots, kept inline on purpose: it picks files from a directory
+        // listing, and `read_current_snapshot` does the same listing before it reads the file it
+        // picked. A detached cleaner can delete exactly that file in between, which turns the
+        // read into a `NotFound`.
+        let id = name;
         let dir = self.path_snapshots.clone();
-        task::spawn(async move {
-            let mut entries = fs::read_dir(&dir).await.unwrap();
-            loop {
-                let entry = match entries.next_entry().await {
-                    Ok(Some(entry)) => entry,
-                    Ok(None) => break,
-                    Err(err) => {
-                        warn!("Error reading directory entries: {err:?}");
-                        break;
-                    }
-                };
-                let fname = entry.file_name();
-                let name = fname.to_str().unwrap_or_default();
-                if !name.is_empty()
-                    && name != id
-                    // skip the in-flight snapshot receive temp file (`begin_receiving_snapshot`)
-                    && !(name.ends_with("~") || name.ends_with("tmp") || name.ends_with("temp"))
-                    && let Err(err) = fs::remove_file(format!("{dir}/{name}")).await
-                {
-                    warn!("Error removing old snapshot {name}: {err:?}");
+        let mut entries = fs::read_dir(&dir).await?;
+        loop {
+            let entry = match entries.next_entry().await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("Error reading directory entries: {err:?}");
+                    break;
                 }
+            };
+            let fname = entry.file_name();
+            let name = fname.to_str().unwrap_or_default();
+            if !name.is_empty()
+                && name != id
+                // skip the in-flight snapshot receive temp file (`begin_receiving_snapshot`)
+                && !(name.ends_with("~") || name.ends_with("tmp") || name.ends_with("temp"))
+                && let Err(err) = fs::remove_file(format!("{dir}/{name}")).await
+            {
+                warn!("Error removing old snapshot {name}: {err:?}");
             }
-        });
+        }
 
         Ok(path)
     }
@@ -504,12 +525,11 @@ impl StateMachineMemory {
     #[allow(clippy::result_large_err)]
     async fn apply_snapshot_bytes(
         &self,
-        meta: &SnapshotMeta<NodeId, Node>,
+        meta: &SnapshotMetaOf<TypeConfigCache>,
         bytes: &[u8],
-    ) -> Result<(), StorageError<NodeId>> {
+    ) -> Result<(), io::Error> {
         let (meta_snap, kvs, locks) = deserialize_serde::<SnapshotDataContent>(bytes)
-            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
-        debug_assert_eq!(meta.snapshot_id, meta_snap.snapshot_id);
+            .map_err(|err| io::Error::other(format!("{err}")))?;
         debug_assert_eq!(meta.last_log_id, meta_snap.last_log_id);
         debug_assert_eq!(meta.last_membership, meta_snap.last_membership);
 
@@ -533,9 +553,9 @@ impl StateMachineMemory {
                 .get(idx)
                 .unwrap()
                 .send(CacheRequestHandler::SnapshotInstall { snapshot, ack })
-                .expect("kv handler to always be running");
+                .expect("cache handler to always be running");
             rx.await
-                .expect("to always receive an answer from the kv handler");
+                .expect("to always receive an answer from the cache handler");
         }
 
         #[cfg(feature = "dlock")]
@@ -559,11 +579,7 @@ impl StateMachineMemory {
     pub async fn read_current_snapshot(
         &self,
     ) -> StorageResult<Option<(String, SnapshotDataContent)>> {
-        let mut list = tokio::fs::read_dir(&self.path_snapshots)
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::read(&err),
-            })?;
+        let mut list = tokio::fs::read_dir(&self.path_snapshots).await?;
 
         let mut latest_ts: Option<i64> = None;
         let mut latest_file_name = None;
@@ -584,9 +600,7 @@ impl StateMachineMemory {
                 continue;
             }
 
-            let meta = entry.metadata().await.map_err(|err| StorageError::IO {
-                source: StorageIOError::read(&err),
-            })?;
+            let meta = entry.metadata().await?;
             if meta.is_dir() {
                 warn!("Invalid folder in snapshots dir: {}", name);
                 continue;
@@ -656,38 +670,43 @@ impl StateMachineMemory {
             latest_file_name.unwrap_or_default()
         );
 
-        let bytes = fs::read(&path)
-            .await
-            .map_err(|e| StorageIOError::read_snapshot(None, &e))?;
+        let bytes = fs::read(&path).await?;
 
         Ok(Some((
             path,
             deserialize_serde::<SnapshotDataContent>(&bytes)
-                .map_err(|e| StorageIOError::read_snapshot(None, &e))?,
+                .map_err(|err| io::Error::other(format!("{err}")))?,
         )))
     }
 }
 
-impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
+impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
+    #[cfg(not(feature = "in-memory-snapshots"))]
+    type SnapshotData = fs::File;
+    #[cfg(feature = "in-memory-snapshots")]
+    type SnapshotData = Cursor<Vec<u8>>;
+
     type SnapshotBuilder = Self;
 
     async fn applied_state(
         &mut self,
-    ) -> Result<(Option<LogId<NodeId>>, StoredMembership<NodeId, Node>), StorageError<NodeId>> {
+    ) -> Result<
+        (
+            Option<LogIdOf<TypeConfigCache>>,
+            StoredMembershipOf<TypeConfigCache>,
+        ),
+        io::Error,
+    > {
         let data = self.data.read().await;
         Ok((data.last_applied_log_id, data.last_membership.clone()))
     }
 
-    async fn apply<I>(&mut self, entries: I) -> Result<Vec<CacheResponse>, StorageError<NodeId>>
+    async fn apply<Strm>(&mut self, mut entries: Strm) -> Result<(), io::Error>
     where
-        I: IntoIterator<Item = Entry> + OptionalSend,
-        I::IntoIter: OptionalSend,
+        Strm: Stream<Item = Result<EntryResponder<TypeConfigCache>, io::Error>>
+            + Unpin
+            + OptionalSend,
     {
-        let entries = entries.into_iter();
-        let mut replies = Vec::with_capacity(entries.size_hint().0);
-
-        // TODO if this takes `&mut self`, can we assume that there will be no reads in between?
-        // TODO -> we could take the lock only once at the start and be much faster with everything!
         let mut data = self.data.write().await;
 
         // Note: We do not need to have a bounds-check on `cache_index` here:
@@ -697,7 +716,8 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
         //   sealed and the user never provides the Integer manually.
 
         let mut last_applied_log_id = None;
-        for entry in entries {
+        while let Some(item) = entries.next().await {
+            let (entry, responder) = item?;
             last_applied_log_id = Some(entry.log_id);
 
             // we are using sync sends -> unbounded channels. Every `cache_idx` below is
@@ -731,7 +751,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 value,
                                 expires,
                             })
-                            .expect("kv handler to always be running");
+                            .expect("cache handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -745,12 +765,12 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 key: key.to_string(),
                                 reply: ack,
                             })
-                            .expect("kv handler to always be running");
+                            .expect("cache handler to always be running");
 
-                        // The kv handler runs on its own thread per cache and never takes the
+                        // The cache handler runs on its own thread per cache and never takes the
                         // state-machine lock, so awaiting its answer while `data` is held is
                         // deadlock-free. The removal is a raft log entry, applied on all nodes.
-                        CacheResponse::Value(rx.await.expect("kv handler to always answer"))
+                        CacheResponse::Value(rx.await.expect("cache handler to always answer"))
                     }
 
                     CacheRequest::Replace {
@@ -772,9 +792,9 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 expires,
                                 reply: ack,
                             })
-                            .expect("kv handler to always be running");
+                            .expect("cache handler to always be running");
 
-                        CacheResponse::Value(rx.await.expect("kv handler to always answer"))
+                        CacheResponse::Value(rx.await.expect("cache handler to always answer"))
                     }
 
                     CacheRequest::Delete { cache_idx, key } => {
@@ -784,7 +804,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             .send(CacheRequestHandler::Delete {
                                 key: key.to_string(),
                             })
-                            .expect("kv handler to always be running");
+                            .expect("cache handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -794,7 +814,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                             .get(cache_idx)
                             .unwrap()
                             .send(CacheRequestHandler::Clear)
-                            .expect("kv handler to always be running");
+                            .expect("cache handler to always be running");
 
                         CacheResponse::Ok
                     }
@@ -806,7 +826,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 .get(cache_idx)
                                 .unwrap()
                                 .send(CacheRequestHandler::ClearCounters)
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -817,10 +837,10 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                     CacheRequest::ClearAll => {
                         for tx in &self.tx_caches {
                             tx.send(CacheRequestHandler::Clear)
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
                             #[cfg(feature = "counters")]
                             tx.send(CacheRequestHandler::ClearCounters)
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
                         }
 
                         CacheResponse::Ok
@@ -933,7 +953,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                     key: key.to_string(),
                                     value,
                                 })
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -958,7 +978,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                     delta: value,
                                     reply: ack,
                                 })
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
 
                             let v = rx.await.unwrap();
                             CacheResponse::CounterValue(Some(v))
@@ -976,7 +996,7 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                                 .send(CacheRequestHandler::CounterDel {
                                     key: key.to_string(),
                                 })
-                                .expect("kv handler to always be running");
+                                .expect("cache handler to always be running");
 
                             CacheResponse::Ok
                         }
@@ -986,17 +1006,20 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
                 },
 
                 EntryPayload::Membership(mem) => {
-                    data.last_membership = StoredMembership::new(Some(entry.log_id), mem);
+                    data.last_membership =
+                        StoredMembershipOf::<TypeConfigCache>::new(Some(entry.log_id), mem);
                     CacheResponse::Empty
                 }
             };
 
-            replies.push(resp_value);
+            if let Some(responder) = responder {
+                responder.send(resp_value);
+            }
         }
 
         data.last_applied_log_id = last_applied_log_id;
 
-        Ok(replies)
+        Ok(())
     }
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
@@ -1005,56 +1028,31 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
 
     #[cfg(not(feature = "in-memory-snapshots"))]
     #[tracing::instrument(skip_all)]
-    async fn begin_receiving_snapshot(
-        &mut self,
-    ) -> Result<Box<SnapshotData>, StorageError<NodeId>> {
-        // `~`-suffixed name: both `read_current_snapshot` and the snapshot cleanup skip those,
-        // so an in-flight receive is never mistaken for a real (complete) snapshot.
-        let path = format!("{}/temp~", self.path_snapshots);
-        info!("Saving incoming snapshot to {}", path);
-
-        // clean up possible existing old data
-        let _ = fs::remove_file(&path).await;
-
-        match fs::File::create(path).await {
-            Ok(file) => Ok(Box::new(file)),
-            Err(err) => Err(StorageError::IO {
-                source: StorageIOError::write(&err),
-            }),
-        }
-    }
-
-    #[cfg(feature = "in-memory-snapshots")]
-    #[tracing::instrument(skip_all)]
-    async fn begin_receiving_snapshot(
-        &mut self,
-    ) -> Result<Box<SnapshotData>, StorageError<NodeId>> {
-        // The incoming snapshot is streamed into memory. For disk-backed nodes it is
-        // persisted in `install_snapshot`; for memory-only nodes it never hits disk.
-        Ok(Box::new(Cursor::new(Vec::new())))
-    }
-
-    #[cfg(not(feature = "in-memory-snapshots"))]
-    #[tracing::instrument(skip_all)]
     async fn install_snapshot(
         &mut self,
-        meta: &SnapshotMeta<NodeId, Node>,
-        // the streamed data already lives in the temp file created by `begin_receiving_snapshot`
-        _snapshot: Box<SnapshotData>,
-    ) -> Result<(), StorageError<NodeId>> {
-        // the temp file created by `begin_receiving_snapshot` (see its `~` naming comment)
+        meta: &SnapshotMetaOf<TypeConfigCache>,
+        // the received data already lives in the file that got handed to us
+        mut snapshot: Self::SnapshotData,
+    ) -> Result<(), io::Error> {
+        // the receive file (the `~` suffix keeps reads and the cleanup from picking it up)
         let src = format!("{}/temp~", self.path_snapshots);
-        let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
+        let dest = format!(
+            "{}/{}",
+            self.path_snapshots,
+            StateMachineMemory::snapshot_file_name(meta)
+        );
 
-        atomic_file_switch(src, &dest)
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::write(&err),
-            })?;
-
-        let bytes = fs::read(dest)
-            .await
-            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+        let bytes = if fs::try_exists(&src).await? {
+            atomic_file_switch(src, &dest).await?;
+            fs::read(&dest).await?
+        } else {
+            // nothing got streamed into the receive file, so the data is the file we were handed -
+            // openraft's storage test suite hands it inline, the runtime never does
+            let mut bytes = Vec::new();
+            snapshot.read_to_end(&mut bytes).await?;
+            fs::write(&dest, &bytes).await?;
+            bytes
+        };
 
         self.apply_snapshot_bytes(meta, &bytes).await
     }
@@ -1063,20 +1061,20 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     #[tracing::instrument(skip_all)]
     async fn install_snapshot(
         &mut self,
-        meta: &SnapshotMeta<NodeId, Node>,
-        snapshot: Box<SnapshotData>,
-    ) -> Result<(), StorageError<NodeId>> {
-        let bytes = (*snapshot).into_inner();
+        meta: &SnapshotMetaOf<TypeConfigCache>,
+        snapshot: Self::SnapshotData,
+    ) -> Result<(), io::Error> {
+        let bytes = snapshot.into_inner();
 
         if self.in_memory_only {
             *self.snapshot_mem.write().await = Some((meta.clone(), bytes.clone()));
         } else {
-            let dest = format!("{}/{}", self.path_snapshots, meta.snapshot_id);
-            fs::write(&dest, &bytes)
-                .await
-                .map_err(|err| StorageError::IO {
-                    source: StorageIOError::write(&err),
-                })?;
+            let dest = format!(
+                "{}/{}",
+                self.path_snapshots,
+                StateMachineMemory::snapshot_file_name(meta)
+            );
+            fs::write(&dest, &bytes).await?;
         }
 
         self.apply_snapshot_bytes(meta, &bytes).await
@@ -1085,17 +1083,15 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     #[cfg(not(feature = "in-memory-snapshots"))]
     async fn get_current_snapshot(
         &mut self,
-    ) -> Result<Option<Snapshot<TypeConfigKV>>, StorageError<NodeId>> {
+    ) -> Result<Option<SnapshotOf<TypeConfigCache, Self::SnapshotData>>, io::Error> {
         match self.read_current_snapshot().await? {
             None => Ok(None),
             Some((path, (meta, ..))) => {
-                let file = fs::File::open(path).await.map_err(|err| StorageError::IO {
-                    source: StorageIOError::read(&err),
-                })?;
+                let file = fs::File::open(path).await?;
 
                 let snapshot = Snapshot {
                     meta,
-                    snapshot: Box::new(file),
+                    snapshot: file,
                 };
 
                 Ok(Some(snapshot))
@@ -1106,25 +1102,23 @@ impl RaftStateMachine<TypeConfigKV> for Arc<StateMachineMemory> {
     #[cfg(feature = "in-memory-snapshots")]
     async fn get_current_snapshot(
         &mut self,
-    ) -> Result<Option<Snapshot<TypeConfigKV>>, StorageError<NodeId>> {
+    ) -> Result<Option<SnapshotOf<TypeConfigCache, Self::SnapshotData>>, io::Error> {
         if self.in_memory_only {
             let guard = self.snapshot_mem.read().await;
             return Ok(guard.as_ref().map(|(meta, bytes)| Snapshot {
                 meta: meta.clone(),
-                snapshot: Box::new(Cursor::new(bytes.clone())),
+                snapshot: Cursor::new(bytes.clone()),
             }));
         }
 
         match self.read_current_snapshot().await? {
             None => Ok(None),
             Some((path, (meta, ..))) => {
-                let bytes = fs::read(&path).await.map_err(|err| StorageError::IO {
-                    source: StorageIOError::read(&err),
-                })?;
+                let bytes = fs::read(&path).await?;
 
                 let snapshot = Snapshot {
                     meta,
-                    snapshot: Box::new(Cursor::new(bytes)),
+                    snapshot: Cursor::new(bytes),
                 };
 
                 Ok(Some(snapshot))
@@ -1194,7 +1188,8 @@ mod tests {
             .await
             .expect("get_current_snapshot to succeed")
             .expect("an in-memory snapshot to be present after building one");
-        assert_eq!(current.meta.snapshot_id, built.meta.snapshot_id);
+        assert_eq!(current.meta.last_log_id, built.meta.last_log_id);
+        assert_eq!(current.meta.last_membership, built.meta.last_membership);
 
         let _ = std::fs::remove_dir_all(&base_dir);
     }
@@ -1218,16 +1213,11 @@ mod tests {
             .build_snapshot_data()
             .await
             .expect("snapshot build to succeed");
-        let valid = format!("{}/{}", sm.path_snapshots, meta.snapshot_id);
+        let file_name = StateMachineMemory::snapshot_file_name(&meta);
+        let valid = format!("{}/{}", sm.path_snapshots, file_name);
         std::fs::write(&valid, &bytes).unwrap();
 
-        let ts = meta
-            .snapshot_id
-            .split_once('-')
-            .unwrap()
-            .0
-            .parse::<i64>()
-            .unwrap();
+        let ts = file_name.split_once('-').unwrap().0.parse::<i64>().unwrap();
         let legacy = format!("{}/{}--.temp", sm.path_snapshots, ts + 1);
         let current = format!("{}/{}--~", sm.path_snapshots, ts + 2);
         std::fs::write(&legacy, b"partial snapshot").unwrap();
@@ -1453,11 +1443,10 @@ mod cache_index_compatibility {
         let _ = std::fs::remove_dir_all(&base_dir);
     }
 
-    /// The fingerprint file doubles as the "cache data was started on >= v0.15" marker that
-    /// `v0_15_auto_cache_migration::check_migrate` uses to tell a v0.14 data dir from a
-    /// current one. A zero-variant enum - the `Empty` type of the `hiqlite` server binary -
+    /// The fingerprint file is the "cache index enum compatibility" marker that every startup
+    /// compares against. A zero-variant enum - the `Empty` type of the `hiqlite` server binary -
     /// normalizes to the same string as a fresh startup, so it must still write the file,
-    /// otherwise every restart after the first would look like a legacy migration.
+    /// otherwise a startup with such an enum would never create the marker at all.
     #[cfg(not(feature = "in-memory-snapshots"))]
     #[tokio::test(flavor = "multi_thread")]
     async fn empty_enum_still_writes_fingerprint_file() {

@@ -100,6 +100,9 @@ pub async fn build_config_with_nodes(
     config.secret_api = SECRET_API.to_string();
 
     config.backup_config = Default::default();
+    // A prefix of our own, so the tests prove that backups are named by the config, and that the
+    // cleanup jobs only ever touch files with exactly this prefix.
+    config.backup_file_prefix = "test_bkp".into();
     config.cache_storage_disk = false;
 
     config

@@ -17,10 +17,14 @@ use crate::store::state_machine::memory::dlock_handler::LockRequest;
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::NotifyRequest;
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::{TypeConfigKV, kv_handler::CacheRequestHandler};
+use crate::store::state_machine::memory::{
+    TypeConfigCache, kv_handler::CacheRequestHandler, state_machine::StateMachineMemory,
+};
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::{
-    TypeConfigSqlite, state_machine::SqlitePool, writer::WriterRequest,
+    TypeConfigSqlite,
+    state_machine::{SqlitePool, StateMachineSqlite},
+    writer::WriterRequest,
 };
 #[cfg(any(feature = "backup", feature = "dashboard"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -55,6 +59,9 @@ pub(crate) struct AppState {
     pub is_shutting_down: AtomicBool,
     #[cfg(feature = "backup")]
     pub backups_dir: String,
+    /// The prefix of every backup file name - see `NodeConfig`'s `backup_file_prefix`.
+    #[cfg(feature = "backup")]
+    pub backup_file_prefix: String,
     pub id: NodeId,
     #[cfg(feature = "cache")]
     pub nodes: Vec<crate::Node>,
@@ -76,6 +83,9 @@ pub(crate) struct AppState {
     pub tx_client_stream: flume::Sender<ClientStreamReq>,
     pub health_check_delay: Duration,
     pub learner_only: bool,
+    /// The node ids that are configured to never start an election on their own. The leader uses
+    /// this list to pick a handover target that is actually able to become one.
+    pub election_disable: Vec<NodeId>,
 }
 
 #[cfg(any(feature = "backup", feature = "dashboard"))]
@@ -88,18 +98,23 @@ impl AppState {
 
 #[cfg(feature = "sqlite")]
 pub struct StateRaftDB {
-    pub raft: openraft::Raft<TypeConfigSqlite>,
+    pub raft: openraft::Raft<TypeConfigSqlite, StateMachineSqlite>,
     pub shutdown_handle: hiqlite_wal::ShutdownHandle,
     pub sql_writer: flume::Sender<WriterRequest>,
     pub read_pool: SqlitePool,
+    /// Where the network layer assembles an incoming snapshot, for the state machine to read.
+    pub path_snapshots: String,
     pub log_statements: bool,
     pub is_raft_stopped: Arc<AtomicBool>,
     pub is_startup_finished: Arc<AtomicBool>,
+    /// Mirrors openraft's runtime `enable_elect` for this group. openraft only has a setter
+    /// (`Raft::runtime_config().elect()`), so Hiqlite tracks the value it applies here.
+    pub enable_elect: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "cache")]
 pub struct StateRaftCache {
-    pub raft: openraft::Raft<TypeConfigKV>,
+    pub raft: openraft::Raft<TypeConfigCache, Arc<StateMachineMemory>>,
     pub tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
     #[cfg(feature = "listen_notify")]
     pub tx_notify: flume::Sender<NotifyRequest>,
@@ -109,7 +124,12 @@ pub struct StateRaftCache {
     pub tx_dlock: flume::Sender<LockRequest>,
     pub is_raft_stopped: Arc<AtomicBool>,
     pub is_startup_finished: Arc<AtomicBool>,
+    /// Mirrors openraft's runtime `enable_elect` for this group. openraft only has a setter
+    /// (`Raft::runtime_config().elect()`), so Hiqlite tracks the value it applies here.
+    pub enable_elect: Arc<AtomicBool>,
     pub shutdown_handle: Option<hiqlite_wal::ShutdownHandle>,
+    /// Where the network layer assembles an incoming snapshot, for the state machine to read.
+    pub path_snapshots: String,
     #[cfg(feature = "cache")]
     pub cache_storage_disk: bool,
 }

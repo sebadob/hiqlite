@@ -2,10 +2,10 @@ use crate::helpers::deserialize_serde;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine::{StateMachineData, StateMachineSqlite};
 use crate::store::state_machine::sqlite::writer::{SnapshotRequest, WriterRequest};
-use crate::{Error, Node, NodeId};
-use openraft::{
-    RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership,
-};
+use openraft::RaftSnapshotBuilder;
+use openraft::storage::Snapshot;
+use openraft::type_config::alias::{SnapshotMetaOf, SnapshotOf};
+use std::io;
 use tokio::sync::oneshot;
 use tokio::{fs, task};
 use tracing::{debug, error, info, warn};
@@ -22,8 +22,12 @@ pub struct SQLiteSnapshotBuilder {
 }
 
 impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
+    type SnapshotData = tokio::fs::File;
+
     #[tracing::instrument(level = "trace", skip(self))]
-    async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfigSqlite>, StorageError<NodeId>> {
+    async fn build_snapshot(
+        &mut self,
+    ) -> Result<SnapshotOf<TypeConfigSqlite, Self::SnapshotData>, io::Error> {
         // - build new snapshot id
         // - make sure target path exists
         // - send snapshot request to db writer
@@ -47,9 +51,7 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
             .expect("Sender to always be listening");
 
         let resp = rx.await.expect("to always receive a snapshot response")?;
-        let snapshot = fs::File::open(path).await.map_err(|err| StorageError::IO {
-            source: StorageIOError::read_state_machine(&err),
-        })?;
+        let snapshot = fs::File::open(path).await?;
 
         let path_snapshots = self.path_snapshots.clone();
         #[cfg(feature = "backup")]
@@ -63,12 +65,11 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
         ));
 
         let snapshot = Snapshot {
-            meta: SnapshotMeta {
+            meta: SnapshotMetaOf::<TypeConfigSqlite> {
                 last_log_id: resp.meta.last_applied_log_id,
                 last_membership: resp.meta.last_membership,
-                snapshot_id: snapshot_id.to_string(),
             },
-            snapshot: Box::new(snapshot),
+            snapshot,
         };
 
         Ok(snapshot)
@@ -81,12 +82,8 @@ async fn snapshots_cleanup(
     path_snapshots: String,
     #[cfg(feature = "backup")] path_backups: String,
     keep_id: Uuid,
-) -> Result<(), StorageError<NodeId>> {
-    let mut list = tokio::fs::read_dir(&path_snapshots)
-        .await
-        .map_err(|err| StorageError::IO {
-            source: StorageIOError::read(&err),
-        })?;
+) -> Result<(), io::Error> {
+    let mut list = tokio::fs::read_dir(&path_snapshots).await?;
 
     let keep_id = keep_id.to_string();
     let mut deletes = Vec::new();
@@ -102,9 +99,7 @@ async fn snapshots_cleanup(
         let file_name = entry.file_name();
         let name = file_name.to_str().unwrap_or("UNKNOWN");
 
-        let meta = entry.metadata().await.map_err(|err| StorageError::IO {
-            source: StorageIOError::read(&err),
-        })?;
+        let meta = entry.metadata().await?;
 
         // we only expect sub-dirs in the snapshot dir
         if meta.is_dir() {

@@ -1,14 +1,14 @@
-use crate::{LogStore, LogStoreReader, reader, writer};
+use crate::{LogStore, LogStoreReader, error, reader, writer};
 use bincode_next::error::{DecodeError, EncodeError};
-use openraft::storage::{LogFlushed, RaftLogStorage};
-use openraft::{
-    AnyError, ErrorSubject, ErrorVerb, LogId, OptionalSend, RaftLogId, RaftLogReader,
-    RaftTypeConfig, StorageError, StorageIOError, Vote,
-};
+use openraft::entry::RaftEntry;
+use openraft::storage::{IOFlushed, RaftLogReader, RaftLogStorage};
+use openraft::type_config::alias::{EntryOf, LogIdOf, VoteOf};
+use openraft::{LogState, OptionalSend, RaftTypeConfig};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::Bound;
 use std::fmt::Debug;
+use std::io;
 use std::ops::RangeBounds;
 use tokio::sync::oneshot;
 use tracing::debug;
@@ -31,8 +31,28 @@ where
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
         range: RB,
-    ) -> Result<Vec<T::Entry>, StorageError<T::NodeId>> {
+    ) -> Result<Vec<EntryOf<T>>, io::Error> {
         try_get_log_entries::<T, _>(&self.reader, range).await
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    async fn read_vote(&mut self) -> Result<Option<VoteOf<T>>, io::Error> {
+        debug!("Entering read_vote()");
+
+        let (ack, rx) = oneshot::channel();
+
+        self.reader
+            .send_async(reader::Action::Vote(ack))
+            .await
+            .map_err(|err| io::Error::from(error::Error::from(err)))?;
+
+        let vote = rx
+            .await
+            .unwrap()
+            .map_err(io::Error::from)?
+            .map(|b| deserialize(&b).unwrap());
+
+        Ok(vote)
     }
 }
 
@@ -43,22 +63,40 @@ where
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
         range: RB,
-    ) -> Result<Vec<T::Entry>, StorageError<T::NodeId>> {
+    ) -> Result<Vec<EntryOf<T>>, io::Error> {
         try_get_log_entries::<T, _>(&self.tx, range).await
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    async fn read_vote(&mut self) -> Result<Option<VoteOf<T>>, io::Error> {
+        debug!("Entering read_vote()");
+
+        let (ack, rx) = oneshot::channel();
+
+        self.tx
+            .send_async(reader::Action::Vote(ack))
+            .await
+            .map_err(|err| io::Error::from(error::Error::from(err)))?;
+
+        let vote = rx
+            .await
+            .unwrap()
+            .map_err(io::Error::from)?
+            .map(|b| deserialize(&b).unwrap());
+
+        Ok(vote)
     }
 }
 
 #[tracing::instrument(skip_all)]
 #[inline(always)]
-// The error type is huge, but it's given by the openraft trait definition.
-#[allow(clippy::result_large_err)]
 async fn try_get_log_entries<
     T: RaftTypeConfig,
     RB: RangeBounds<u64> + Clone + Debug + OptionalSend,
 >(
     tx: &flume::Sender<reader::Action>,
     range: RB,
-) -> Result<Vec<T::Entry>, StorageError<T::NodeId>> {
+) -> Result<Vec<EntryOf<T>>, io::Error> {
     let from = match range.start_bound() {
         Bound::Included(i) => *i,
         // `Excluded(u64::MAX)` means "nothing after this" - treat it as an empty range below
@@ -69,7 +107,8 @@ async fn try_get_log_entries<
         Bound::Included(i) => *i,
         // `Excluded(0)` means "up to but not including log 0" - an empty range
         Bound::Excluded(i) => i.saturating_sub(1),
-        Bound::Unbounded => unreachable!(),
+        // an open-ended range; the reader answers it with everything it holds
+        Bound::Unbounded => reader::NO_END,
     };
     debug!("Entering try_get_log_entries() from {from} until {until}");
 
@@ -77,20 +116,23 @@ async fn try_get_log_entries<
         // empty range - nothing to read (also covers `Excluded(u64::MAX)` / `Excluded(0)`)
         return Ok(Vec::new());
     }
-    let mut res: Vec<T::Entry> = Vec::with_capacity((until - from + 1) as usize);
+    // an open-ended range (`NO_END`) has no size we could reserve up-front
+    let cap = if until == reader::NO_END {
+        0
+    } else {
+        (until - from + 1) as usize
+    };
+    let mut res: Vec<EntryOf<T>> = Vec::with_capacity(cap);
 
     let (ack, rx) = flume::bounded(1);
     tx.send_async(reader::Action::Logs { from, until, ack })
         .await
-        .expect("LogsReader to always be listening");
+        .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
     while let Some(data_res) = rx.recv_async().await.unwrap() {
-        let data = data_res.map_err(|err| StorageError::IO {
-            source: StorageIOError::read_logs(&err),
-        })?;
-        let entry = deserialize::<T::Entry>(&data).map_err(|err| StorageError::IO {
-            source: StorageIOError::<T::NodeId>::read_logs(&err),
-        })?;
+        let data = data_res.map_err(io::Error::from)?;
+        let entry = deserialize::<EntryOf<T>>(&data)
+            .map_err(|err| io::Error::from(error::Error::from(err)))?;
         res.push(entry);
     }
 
@@ -104,37 +146,29 @@ where
     type LogReader = LogStoreReader<T>;
 
     #[tracing::instrument(skip_all)]
-    async fn get_log_state(&mut self) -> Result<openraft::LogState<T>, StorageError<T::NodeId>> {
+    async fn get_log_state(&mut self) -> Result<LogState<T>, io::Error> {
         debug!("Entering get_log_state()");
 
         let (ack, rx) = oneshot::channel();
         self.reader
             .send_async(reader::Action::LogState(ack))
             .await
-            .map_err(|err| {
-                StorageIOError::new(ErrorSubject::Logs, ErrorVerb::Read, AnyError::new(&err))
-            })?;
+            .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
-        let log_state = rx.await.unwrap().map_err(|err| {
-            StorageIOError::new(ErrorSubject::Logs, ErrorVerb::Read, AnyError::new(&err))
-        })?;
+        let log_state = rx.await.unwrap().map_err(io::Error::from)?;
 
         let last_purged_log_id = if let Some(bytes) = log_state.last_purged_log_id {
-            Some(deserialize(&bytes).map_err(|err| {
-                StorageIOError::new(ErrorSubject::Logs, ErrorVerb::Read, AnyError::new(&err))
-            })?)
+            Some(deserialize(&bytes).map_err(|err| io::Error::from(error::Error::from(err)))?)
         } else {
             None
         };
         let last_log_id = if let Some(bytes) = log_state.last_log {
-            Some(deserialize(&bytes).map_err(|err| {
-                StorageIOError::new(ErrorSubject::Logs, ErrorVerb::Read, AnyError::new(&err))
-            })?)
+            Some(deserialize(&bytes).map_err(|err| io::Error::from(error::Error::from(err)))?)
         } else {
             None
         };
 
-        Ok(openraft::LogState {
+        Ok(LogState {
             last_purged_log_id,
             last_log_id,
         })
@@ -149,7 +183,7 @@ where
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
-    async fn save_vote(&mut self, vote: &Vote<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
+    async fn save_vote(&mut self, vote: &VoteOf<T>) -> Result<(), io::Error> {
         debug!("Entering save_vote(): {:?}", vote);
 
         let (ack, rx) = oneshot::channel();
@@ -159,102 +193,71 @@ where
                 ack,
             })
             .await
-            .expect("Writer to always be running");
+            .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
-        rx.await.unwrap().map_err(|err| StorageError::IO {
-            source: StorageIOError::write_vote(&err),
-        })?;
+        rx.await.unwrap().map_err(io::Error::from)?;
 
         Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
-    async fn read_vote(&mut self) -> Result<Option<Vote<T::NodeId>>, StorageError<T::NodeId>> {
-        debug!("Entering read_vote()");
-
-        let (ack, rx) = oneshot::channel();
-
-        self.reader
-            .send_async(reader::Action::Vote(ack))
-            .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::read_vote(&err),
-            })?;
-
-        let vote = rx
-            .await
-            .unwrap()
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::read_vote(&err),
-            })?
-            .map(|b| deserialize(&b).unwrap());
-
-        Ok(vote)
-    }
-
-    #[tracing::instrument(level = "debug", skip_all)]
-    async fn append<I>(
-        &mut self,
-        entries: I,
-        callback: LogFlushed<T>,
-    ) -> Result<(), StorageError<T::NodeId>>
+    async fn append<I>(&mut self, entries: I, callback: IOFlushed<T>) -> Result<(), io::Error>
     where
-        I: IntoIterator<Item = T::Entry> + Send,
-        I::IntoIter: Send,
+        I: IntoIterator<Item = EntryOf<T>> + OptionalSend,
+        I::IntoIter: OptionalSend,
     {
         debug!("Entering append()");
 
         let (tx, rx) = flume::bounded(1);
         let (ack, ack_rx) = oneshot::channel();
 
-        let callback = Box::new(move |res| callback.log_io_completed(res));
+        let callback = Box::new(move |res| callback.io_completed(res));
         self.writer
             .send_async(writer::Action::Append { rx, callback, ack })
             .await
-            .map_err(|err| StorageIOError::write_logs(&err))?;
+            .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
         for entry in entries {
             let data = serialize(&entry).unwrap();
-            tx.send_async(Some((entry.get_log_id().index, data)))
+            tx.send_async(Some((entry.log_id().index, data)))
                 .await
-                .map_err(|err| StorageIOError::write_logs(&err))?;
+                .map_err(|err| io::Error::from(error::Error::from(err)))?;
         }
         tx.send_async(None)
             .await
-            .map_err(|err| StorageIOError::write_logs(&err))?;
+            .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
-        ack_rx
-            .await
-            .unwrap()
-            .map_err(|err| StorageIOError::write_logs(&err))?;
+        ack_rx.await.unwrap().map_err(io::Error::from)?;
 
         Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
-    async fn truncate(&mut self, log_id: LogId<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
-        debug!("truncate(): [{:?}, +oo)", log_id);
+    async fn truncate_after(&mut self, last_log_id: Option<LogIdOf<T>>) -> Result<(), io::Error> {
+        debug!("truncate_after(): [{:?}, +oo)", last_log_id);
+
+        // keep everything up to and including `last_log_id`, drop the rest; `None` means all
+        let from = match last_log_id {
+            Some(id) => id.index.saturating_add(1),
+            None => 0,
+        };
 
         let (ack, rx) = oneshot::channel();
         self.writer
             .send_async(writer::Action::Remove {
-                from: log_id.index,
+                from,
                 until: u64::MAX,
                 last_log: None,
                 ack,
             })
             .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::write_logs(&err),
-            })?;
+            .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
-        rx.await.unwrap().map_err(|err| StorageError::IO {
-            source: StorageIOError::write_logs(&err),
-        })
+        rx.await.unwrap().map_err(io::Error::from)
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
-    async fn purge(&mut self, log_id: LogId<T::NodeId>) -> Result<(), StorageError<T::NodeId>> {
+    async fn purge(&mut self, log_id: LogIdOf<T>) -> Result<(), io::Error> {
         debug!("purge(): [0, {:?}]", log_id);
 
         let last_log = Some(serialize(&log_id).unwrap());
@@ -262,17 +265,15 @@ where
         self.writer
             .send_async(writer::Action::Remove {
                 from: 0,
-                until: log_id.index,
+                // openraft's `purge` is inclusive, while `shift_delete_logs` keeps the id it is
+                // given as the new front - so the new front is the entry after the purge point.
+                until: log_id.index + 1,
                 last_log,
                 ack,
             })
             .await
-            .map_err(|err| StorageError::IO {
-                source: StorageIOError::write_logs(&err),
-            })?;
+            .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
-        rx.await.unwrap().map_err(|err| StorageError::IO {
-            source: StorageIOError::write_logs(&err),
-        })
+        rx.await.unwrap().map_err(io::Error::from)
     }
 }

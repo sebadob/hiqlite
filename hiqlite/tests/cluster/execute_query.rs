@@ -1,7 +1,7 @@
 use crate::log;
 use chrono::Utc;
 use hiqlite::macros::{TryFromRow, params};
-use hiqlite::{Client, Error};
+use hiqlite::{Client, Error, ReadPolicy};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time;
@@ -176,21 +176,34 @@ pub async fn test_execute_query(
 
     log("Query consistent from all clients");
     let res: Vec<TestData> = client_1
-        .query_consistent_map("SELECT * FROM test WHERE id = $1", params!(3))
+        .query_consistent_map(
+            "SELECT * FROM test WHERE id = $1",
+            params!(3),
+            ReadPolicy::ReadIndex,
+        )
         .await?;
     assert_eq!(res[0].id, data.id);
     assert_eq!(res[0].ts, data.ts);
     assert_eq!(res[0].description, data.description);
 
+    // client_2 asks for the lease policy, which must land on the exact same result
     let res: Vec<TestData> = client_2
-        .query_consistent_map("SELECT * FROM test WHERE id = $1", params!(3))
+        .query_consistent_map(
+            "SELECT * FROM test WHERE id = $1",
+            params!(3),
+            ReadPolicy::LeaseRead,
+        )
         .await?;
     assert_eq!(res[0].id, data.id);
     assert_eq!(res[0].ts, data.ts);
     assert_eq!(res[0].description, data.description);
 
     let res: Vec<TestData> = client_3
-        .query_consistent_map("SELECT * FROM test WHERE id = $1", params!(3))
+        .query_consistent_map(
+            "SELECT * FROM test WHERE id = $1",
+            params!(3),
+            ReadPolicy::ReadIndex,
+        )
         .await?;
     assert_eq!(res[0].id, data.id);
     assert_eq!(res[0].ts, data.ts);

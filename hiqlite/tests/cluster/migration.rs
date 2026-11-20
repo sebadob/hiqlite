@@ -27,8 +27,8 @@ pub async fn test_migrations(
     client_3: &Client,
 ) -> Result<(), Error> {
     // TODO the should_panic annotation does not work in this context -> maybe create separate tests
-    // to catch these panics properly in the future, even though they do what they should when checking
-    // manually
+    //  to catch these panics properly in the future, even though they do what they should when
+    //  checking manually
 
     // no leading integer index -> should panic
     // let res = client_1.migrate::<MigrationBad1>().await;

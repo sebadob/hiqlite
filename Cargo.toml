@@ -31,8 +31,8 @@ argon2 = { version = "0.6", features = ["parallel", "zeroize"] }
 axum = { version = "0.8.1", features = ["http2", "tokio"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
 axum-server = { version = "0.8", features = [
-    "tls-rustls",
-    "tls-rustls-no-provider",
+  "tls-rustls",
+  "tls-rustls-no-provider",
 ] }
 # only kept as a dev dependency for compat tests between this and *-next
 # can be removed after 0.15 or 0.16 with some safe margin
@@ -41,11 +41,11 @@ bincode-next = { version = "3.1.1", features = ["derive", "serde"] }
 byteorder = "1.4.3"
 bytes = "1.11.1"
 chrono = { version = "0.4.38", default-features = false, features = [
-    "std",
-    "clock",
-    "now",
-    # The default serde impl for chrono does not match the one from rusqlite.
-    #"serde",
+  "std",
+  "clock",
+  "now",
+  # The default serde impl for chrono does not match the one from rusqlite.
+  #"serde",
 ] }
 clap = { version = "4.1.11", features = ["derive", "env"] }
 console-subscriber = "0.5.0"
@@ -59,9 +59,9 @@ ctrlc = { version = "3.4.4", features = ["termination"] }
 deadpool = { version = "0.13", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"
 fastwebsockets = { version = "0.10.0", features = [
-    "upgrade",
-    "with_axum",
-    "unstable-split",
+  "upgrade",
+  "with_axum",
+  "unstable-split",
 ] }
 flume = "0.12"
 fs4 = { version = "1.1.0", features = ["sync"] }
@@ -76,18 +76,25 @@ hyper-util = { version = "0.1.6", features = ["client", "http2", "tokio"] }
 libc = "0.2"
 memmap2 = "0.9.5"
 mime_guess = "2.0.5"
-openraft = { version = "0.9.21", features = ["serde", "storage-v2"] }
+openraft = { version = "0.10.1", default-features = false, features = [
+  "serde",
+  "tokio-rt",
+] }
 rcgen = "0.14.10"
 reqwest = { version = "0.13.4", default-features = false, features = [
-    "charset",
-    "http2",
-    "json",
-    "rustls-no-provider",
+  "charset",
+  "http2",
+  "json",
+  "rustls-no-provider",
 ] }
 rusqlite = { version = "0.41.0", features = ["bundled"] }
 rust-embed = { version = "8.5.0", features = [] }
 rustls = { version = "0.23.46", default-features = false, features = [
-    "logging", "prefer-post-quantum", "std", "tls12", "ring"
+  "logging",
+  "prefer-post-quantum",
+  "std",
+  "tls12",
+  "ring",
 ] }
 rustls-platform-verifier = "0.7"
 serde = { version = "1.0.114", features = ["derive"] }
@@ -105,9 +112,9 @@ tokio-rustls = { version = "0.26.4", features = ["ring"] }
 toml = "1"
 tower = { version = "0.5", features = [] }
 tower-http = { version = "0.7", features = [
-    "set-header",
-    "sensitive-headers",
-    "util",
+  "set-header",
+  "sensitive-headers",
+  "util",
 ] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }

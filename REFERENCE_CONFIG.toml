@@ -25,7 +25,8 @@ node_id = 0
 
 # All cluster member nodes.
 # Each array value must have the following format:
-# `id addr_raft addr_api`
+# `id addr_raft addr_api [election_disable]`
+# The optional 4th value is a flag: it marks that node to never start an election on its own.
 # If given via ENV var, separate them by `\n`.
 #
 # default: ["1 localhost:8100 localhost:8200"]
@@ -174,6 +175,29 @@ log_sync = "interval_200"
 # overwritten by: HQL_CACHE_STORAGE_DISK
 cache_storage_disk = true
 
+# Re-initializes the cache index metadata of your `CacheVariants`
+# enum. Set `HQL_CACHE_META_RESET=true` for a single start: the
+# stored fingerprint is deleted and written from the current enum,
+# which is what a renamed variant needs. Only that fingerprint is
+# deleted - the database, the Raft logs, and your cache content
+# are untouched.
+#
+# Every node keeps its own fingerprint, so set it on every node of
+# the cluster for that single start.
+#
+# A removed variant needs more than this: every node must clear all
+# of its caches at startup, because the entries of the removed index
+# are still persisted. Swapping the names of two variants counts as
+# a removal too.
+#
+# !!!
+# This value can only be set via ENV VAR, and only for that single
+# start. Remove it immediately after.
+# !!!
+#
+# default: false
+#HQL_CACHE_META_RESET=true
+
 # Sets the limit when the Raft will trigger the creation of a new
 # state machine snapshot and purge all logs that are included in
 # the snapshot.
@@ -277,6 +301,22 @@ secret_api = "{{ SECRET_API }}"
 # overwritten by: HQL_LEARNER_ONLY
 #learner_only = false
 
+# Nodes that are marked with `election_disable` in their node line never start an election on
+# their own. They stay full voting members: they still grant votes to other nodes, and a leader
+# can still hand leadership over to them at any time.
+#
+# There is no own config key, the marker comes from the `nodes` above. It is the tool for a
+# geo-replica: run two nodes in the same region, mark the far one, and a leader change is decided
+# by the local nodes while the far node keeps the quorum of three.
+#
+# A node whose own id is marked starts with `enable_elect = false` for both of its Raft groups.
+# `GET /cluster/election` shows the state, `PUT /cluster/election` changes it at runtime, and a
+# restart applies the marker of the node line again. `POST /cluster/election` makes a node campaign
+# for the leadership of all its groups.
+#
+# See also the `election_disable` list of the `NodeConfig`, and the full guide in
+# `docs/geo-replication.md`.
+
 # When the auto-backup task should run.
 # Accepts cron syntax:
 # "sec min hour day_of_month month day_of_week year"
@@ -301,15 +341,34 @@ backup_keep_for = "30d"
 # overwritten by: HQL_BACKUP_KEEP_FOR_LOCAL
 backup_keep_for_local = "3d"
 
+# The prefix of every backup file name. A backup is always written as
+# `{backup_file_prefix}_{node_id}_{unix_ts}.sqlite`, on the local disk and in the bucket.
+#
+# Set one prefix per application when several Hiqlite clusters share a single
+# bucket: the cleanup jobs only ever delete files that match this exact shape,
+# so clusters with different prefixes can never delete each other's backups,
+# and objects that are not Hiqlite backups are never touched at all.
+#
+# type: string
+# default: "backup_node"
+# overwritten by: HQL_BACKUP_FILE_PREFIX
+backup_file_prefix = "backup_node"
+
 # If you ever need to restore from a backup, the process is simple.
 # 1. Have the cluster shut down. This is probably the case anyway, if
 #    you need to restore from a backup.
 # 2. Provide a backup file name on S3 storage with the
 #    `HQL_BACKUP_RESTORE` value with prefix `s3:` (encrypted), or a file
 #    on disk (plain sqlite file) with the prefix `file:`.
+#    Set it on every node of the cluster: node 1 applies the backup, all
+#    other nodes wipe their state and join the restored cluster clean.
 # 3. Start up the cluster again.
 # 4. After the restart, make sure to remove the HQL_BACKUP_RESTORE
 #    env value.
+#
+# Apps that run several Hiqlite instances in one process use
+# `start_node_from_backup` and `start_node_with_cache_from_backup` with an
+# explicit source instead, and the env var is never read.
 #
 # CAUTION: can only be set via ENV VAR temporarily
 #HQL_BACKUP_RESTORE=
@@ -441,6 +500,8 @@ insecure_cookie = false
 # Local backups will be left in place.
 #
 # This option should be seen as a last resort.
+# A node of a live cluster should re-sync from its healthy members
+# instead: start it as a learner, let it catch up, promote it.
 # USE WITH CARE!
 #
 # !!!

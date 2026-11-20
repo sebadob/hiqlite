@@ -13,20 +13,10 @@ pub mod notify_handler;
 // By default Cache Snapshots are streamed directly from file, which is zero-copy and
 // efficient even for large caches. With the opt-in `in-memory-snapshots` feature the
 // snapshot is held in memory instead, so a pure cache-only node needs no `data_dir`.
-#[cfg(not(feature = "in-memory-snapshots"))]
+// The state machine declares the matching `SnapshotData` type for both cases.
 openraft::declare_raft_types!(
-    pub TypeConfigKV:
+    pub TypeConfigCache:
         D = CacheRequest,
         R = CacheResponse,
         Node = Node,
-        SnapshotData = tokio::fs::File,
-);
-
-#[cfg(feature = "in-memory-snapshots")]
-openraft::declare_raft_types!(
-    pub TypeConfigKV:
-        D = CacheRequest,
-        R = CacheResponse,
-        Node = Node,
-        SnapshotData = std::io::Cursor<Vec<u8>>,
 );

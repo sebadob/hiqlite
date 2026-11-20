@@ -8,6 +8,7 @@ use crate::server::proxy::handlers::AppStateExt;
 use crate::store::state_machine::sqlite::state_machine::Query;
 use crate::{Client, Error};
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
+use openraft::raft::ReadPolicy;
 use std::ops::Deref;
 use tokio::task;
 use tracing::{debug, error};
@@ -201,8 +202,8 @@ pub async fn handle_socket(
                     }
                 }
 
-                ApiStreamRequestPayload::QueryConsistent(q) => {
-                    query(client, request_id, q, true).await
+                ApiStreamRequestPayload::QueryConsistent(q, read_policy) => {
+                    query(client, request_id, q, Some(read_policy.into())).await
                 }
 
                 ApiStreamRequestPayload::Batch(sql) => {
@@ -245,21 +246,21 @@ pub async fn handle_socket(
                     }
                 }
 
-                ApiStreamRequestPayload::Query(q) => query(client, request_id, q, false).await,
+                ApiStreamRequestPayload::Query(q) => query(client, request_id, q, None).await,
 
-                ApiStreamRequestPayload::KV(cache_req) => {
+                ApiStreamRequestPayload::Cache(cache_req) => {
                     let res = client.cache_req_retry(cache_req, false).await;
                     ApiStreamResponse {
                         request_id,
-                        result: ApiStreamResponsePayload::KV(res),
+                        result: ApiStreamResponsePayload::Cache(res),
                     }
                 }
 
-                ApiStreamRequestPayload::KVGet(cache_req) => {
+                ApiStreamRequestPayload::CacheGet(cache_req) => {
                     let res = client.cache_req_retry(cache_req, true).await;
                     ApiStreamResponse {
                         request_id,
-                        result: ApiStreamResponsePayload::KV(res),
+                        result: ApiStreamResponsePayload::Cache(res),
                     }
                 }
 
@@ -303,16 +304,21 @@ async fn query(
     client: &Client,
     request_id: usize,
     query: Query,
-    consistent: bool,
+    read_policy: Option<ReadPolicy>,
 ) -> ApiStreamResponse {
-    let res = match client.query_remote_req(query.clone(), consistent).await {
+    let consistent = read_policy.is_some();
+
+    let res = match client
+        .query_remote_req(query.clone(), read_policy.clone())
+        .await
+    {
         Ok(res) => Ok(res),
         Err(err) => {
             if client
                 .was_leader_update_error(&err, &client.inner.leader_db, &client.inner.tx_client_db)
                 .await
             {
-                client.query_remote_req(query, consistent).await
+                client.query_remote_req(query, read_policy).await
             } else {
                 Err(err)
             }

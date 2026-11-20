@@ -3,27 +3,29 @@ use crate::NodeId;
 use crate::app_state::RaftType;
 use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::network::raft_server::{
-    RaftStreamRequest, RaftStreamResponse, RaftStreamResponsePayload,
+    RaftStreamRequest, RaftStreamResponse, RaftStreamResponsePayload, SnapshotWireRequest,
 };
-use crate::network::web_socket_connect;
+use crate::network::{WireSnapshotMeta, WireVote, web_socket_connect};
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocketWrite};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use openraft::error::RPCError;
-use openraft::error::Unreachable;
+use openraft::errors::RPCError;
+use openraft::errors::Unreachable;
 use std::collections::HashMap;
+use std::future::Future;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::io::{ReadHalf, WriteHalf};
+use tokio::io::ReadHalf;
+use tokio::io::WriteHalf;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::{select, task, time};
 use tracing::{debug, error, info};
 
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::TypeConfigCache;
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
@@ -31,14 +33,33 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use crate::Error;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
-use openraft::{
-    error::{InstallSnapshotError, RaftError},
-    network::{RPCOption, RaftNetwork, RaftNetworkFactory},
-    raft::{
-        AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
-        InstallSnapshotResponse, VoteRequest, VoteResponse,
-    },
+use openraft::OptionalSend;
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::RaftTypeConfig;
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::errors::ReplicationClosed;
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::errors::StreamingError;
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::network::{RPCOption, RaftNetworkFactory, RaftNetworkV2};
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::raft::{
+    AppendEntriesRequest, AppendResult, SnapshotResponse, TransferLeaderRequest,
+    TransferLeaderResponse, VoteRequest, VoteResponse,
 };
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::type_config::alias::{SnapshotOf, VoteOf};
+
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+const SNAPSHOT_CHUNK_SIZE_FALLBACK: usize = 3 * 1024 * 1024;
+
+/// The wire's snapshot message builder, so the chunk helper stays generic over both groups.
+type SnapshotRequestFn = fn(
+    (
+        oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
+        SnapshotWireRequest,
+    ),
+) -> RaftRequest;
 
 pub struct NetworkStreaming {
     pub node_id: NodeId,
@@ -52,7 +73,7 @@ pub struct NetworkStreaming {
 }
 
 #[cfg(feature = "cache")]
-impl RaftNetworkFactory<TypeConfigKV> for NetworkStreaming {
+impl RaftNetworkFactory<TypeConfigCache> for NetworkStreaming {
     type Network = NetworkConnectionStreaming;
 
     #[tracing::instrument(level = "debug", skip_all)]
@@ -124,14 +145,21 @@ enum RaftRequest {
     VoteDB(
         (
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-            VoteRequest<u64>,
+            VoteRequest<TypeConfigSqlite>,
         ),
     ),
     #[cfg(feature = "sqlite")]
     SnapshotDB(
         (
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-            InstallSnapshotRequest<TypeConfigSqlite>,
+            SnapshotWireRequest,
+        ),
+    ),
+    #[cfg(feature = "sqlite")]
+    TransferLeaderDB(
+        (
+            oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
+            TransferLeaderRequest<TypeConfigSqlite>,
         ),
     ),
 
@@ -139,21 +167,28 @@ enum RaftRequest {
     AppendCache(
         (
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-            AppendEntriesRequest<TypeConfigKV>,
+            AppendEntriesRequest<TypeConfigCache>,
         ),
     ),
     #[cfg(feature = "cache")]
     VoteCache(
         (
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-            VoteRequest<u64>,
+            VoteRequest<TypeConfigCache>,
         ),
     ),
     #[cfg(feature = "cache")]
     SnapshotCache(
         (
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-            InstallSnapshotRequest<TypeConfigKV>,
+            SnapshotWireRequest,
+        ),
+    ),
+    #[cfg(feature = "cache")]
+    TransferLeaderCache(
+        (
+            oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
+            TransferLeaderRequest<TypeConfigCache>,
         ),
     ),
 
@@ -262,12 +297,16 @@ impl NetworkStreaming {
                                     RaftRequest::VoteDB((ack, _)) => Some(ack),
                                     #[cfg(feature = "sqlite")]
                                     RaftRequest::SnapshotDB((ack, _)) => Some(ack),
+                                    #[cfg(feature = "sqlite")]
+                                    RaftRequest::TransferLeaderDB((ack, _)) => Some(ack),
                                     #[cfg(feature = "cache")]
                                     RaftRequest::AppendCache((ack, _)) => Some(ack),
                                     #[cfg(feature = "cache")]
                                     RaftRequest::VoteCache((ack, _)) => Some(ack),
                                     #[cfg(feature = "cache")]
                                     RaftRequest::SnapshotCache((ack, _)) => Some(ack),
+                                    #[cfg(feature = "cache")]
+                                    RaftRequest::TransferLeaderCache((ack, _)) => Some(ack),
                                     RaftRequest::StreamResponse(_) => None,
                                     RaftRequest::ReaderExit => {
                                         continue;
@@ -342,8 +381,13 @@ impl NetworkStreaming {
                         Some((ack, RaftStreamRequest::VoteDB((request_id, req))))
                     }
                     #[cfg(feature = "sqlite")]
-                    RaftRequest::SnapshotDB((ack, req)) => {
-                        Some((ack, RaftStreamRequest::SnapshotDB((request_id, req))))
+                    RaftRequest::SnapshotDB((ack, mut req)) => {
+                        req.request_id = request_id;
+                        Some((ack, RaftStreamRequest::SnapshotDB(req)))
+                    }
+                    #[cfg(feature = "sqlite")]
+                    RaftRequest::TransferLeaderDB((ack, req)) => {
+                        Some((ack, RaftStreamRequest::TransferLeaderDB((request_id, req))))
                     }
 
                     #[cfg(feature = "cache")]
@@ -355,9 +399,15 @@ impl NetworkStreaming {
                         Some((ack, RaftStreamRequest::VoteCache((request_id, req))))
                     }
                     #[cfg(feature = "cache")]
-                    RaftRequest::SnapshotCache((ack, req)) => {
-                        Some((ack, RaftStreamRequest::SnapshotCache((request_id, req))))
+                    RaftRequest::SnapshotCache((ack, mut req)) => {
+                        req.request_id = request_id;
+                        Some((ack, RaftStreamRequest::SnapshotCache(req)))
                     }
+                    #[cfg(feature = "cache")]
+                    RaftRequest::TransferLeaderCache((ack, req)) => Some((
+                        ack,
+                        RaftStreamRequest::TransferLeaderCache((request_id, req)),
+                    )),
 
                     RaftRequest::StreamResponse(resp) => {
                         match in_flight.remove(&resp.request_id) {
@@ -513,17 +563,12 @@ impl Drop for NetworkConnectionStreaming {
 }
 
 impl NetworkConnectionStreaming {
-    // The error type is huge, but defined by the openraft trait.
-    #[allow(clippy::result_large_err)]
     #[inline(always)]
-    async fn send<Err>(
+    async fn send(
         &mut self,
         req: RaftRequest,
         rx: oneshot::Receiver<Result<RaftStreamResponsePayload, Error>>,
-    ) -> Result<RaftStreamResponsePayload, RPCError<NodeId, Node, Err>>
-    where
-        Err: std::error::Error + 'static + Clone,
-    {
+    ) -> Result<RaftStreamResponsePayload, Error> {
         tracing::debug!(
             req = debug(&req),
             "sending rpc request to {}",
@@ -536,46 +581,37 @@ impl NetworkConnectionStreaming {
                 self.node.id,
                 err.to_string()
             );
-            RPCError::Unreachable(Unreachable::new(&err))
+            Error::Connect(err.to_string())
         })?;
 
-        rx.await
-            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
-            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
+        rx.await.map_err(|err| Error::Connect(err.to_string()))?
     }
 }
 
 #[cfg(feature = "sqlite")]
-impl RaftNetwork<TypeConfigSqlite> for NetworkConnectionStreaming {
+impl RaftNetworkV2<TypeConfigSqlite> for NetworkConnectionStreaming {
+    type SnapshotData = tokio::fs::File;
+
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
     async fn append_entries(
         &mut self,
         req: AppendEntriesRequest<TypeConfigSqlite>,
         _option: RPCOption,
-    ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        let (ack, rx) = oneshot::channel();
-        match self.send(RaftRequest::AppendDB((ack, req)), rx).await? {
-            RaftStreamResponsePayload::AppendDB(resp) => {
-                resp.map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
-            }
-            _ => unreachable!(),
-        }
-    }
+    ) -> Result<AppendResult<TypeConfigSqlite>, RPCError<TypeConfigSqlite>> {
+        let prev_log_id = req.prev_log_id;
+        let last_log_id = req.entries.last().map(|entry| entry.log_id);
 
-    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
-    async fn install_snapshot(
-        &mut self,
-        req: InstallSnapshotRequest<TypeConfigSqlite>,
-        _option: RPCOption,
-    ) -> Result<
-        InstallSnapshotResponse<NodeId>,
-        RPCError<NodeId, Node, RaftError<NodeId, InstallSnapshotError>>,
-    > {
         let (ack, rx) = oneshot::channel();
-        match self.send(RaftRequest::SnapshotDB((ack, req)), rx).await? {
-            RaftStreamResponsePayload::SnapshotDB(resp) => {
-                resp.map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
-            }
+        match self
+            .send(RaftRequest::AppendDB((ack, req)), rx)
+            .await
+            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
+        {
+            RaftStreamResponsePayload::AppendDB(res) => res
+                // An append request without entries only asks for an ack, which is the request's
+                // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
+                .map(|res| res.into_append_result(prev_log_id, last_log_id.or(prev_log_id)))
+                .map_err(|err| RPCError::Unreachable(Unreachable::new(&err))),
             _ => unreachable!(),
         }
     }
@@ -583,53 +619,96 @@ impl RaftNetwork<TypeConfigSqlite> for NetworkConnectionStreaming {
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
     async fn vote(
         &mut self,
-        req: VoteRequest<NodeId>,
+        req: VoteRequest<TypeConfigSqlite>,
         _option: RPCOption,
-    ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
+    ) -> Result<VoteResponse<TypeConfigSqlite>, RPCError<TypeConfigSqlite>> {
         let (ack, rx) = oneshot::channel();
-        match self.send(RaftRequest::VoteDB((ack, req)), rx).await? {
-            RaftStreamResponsePayload::VoteDB(resp) => {
-                resp.map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
+        match self
+            .send(RaftRequest::VoteDB((ack, req)), rx)
+            .await
+            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
+        {
+            RaftStreamResponsePayload::VoteDB(res) => {
+                res.map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
             }
+            _ => unreachable!(),
+        }
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
+    async fn transfer_leader(
+        &mut self,
+        req: TransferLeaderRequest<TypeConfigSqlite>,
+        _option: RPCOption,
+    ) -> Result<TransferLeaderResponse<TypeConfigSqlite>, RPCError<TypeConfigSqlite>> {
+        let (ack, rx) = oneshot::channel();
+        match self
+            .send(RaftRequest::TransferLeaderDB((ack, req)), rx)
+            .await
+            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
+        {
+            RaftStreamResponsePayload::TransferLeaderDB(res) => {
+                res.map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
+    async fn full_snapshot(
+        &mut self,
+        vote: VoteOf<TypeConfigSqlite>,
+        snapshot: SnapshotOf<TypeConfigSqlite, Self::SnapshotData>,
+        cancel: impl Future<Output = ReplicationClosed> + OptionalSend + 'static,
+        option: RPCOption,
+    ) -> Result<SnapshotResponse<TypeConfigSqlite>, StreamingError<TypeConfigSqlite>> {
+        tokio::pin!(cancel);
+        let meta = snapshot.meta;
+        let snapshot = snapshot.snapshot;
+        let payload = self
+            .chunk_stream(
+                vote,
+                meta,
+                snapshot,
+                &mut cancel,
+                option,
+                RaftRequest::SnapshotDB,
+            )
+            .await?;
+        match payload {
+            RaftStreamResponsePayload::SnapshotDB(res) => res,
             _ => unreachable!(),
         }
     }
 }
 
 #[cfg(feature = "cache")]
-impl RaftNetwork<TypeConfigKV> for NetworkConnectionStreaming {
+impl RaftNetworkV2<TypeConfigCache> for NetworkConnectionStreaming {
+    #[cfg(not(feature = "in-memory-snapshots"))]
+    type SnapshotData = tokio::fs::File;
+    #[cfg(feature = "in-memory-snapshots")]
+    type SnapshotData = std::io::Cursor<Vec<u8>>;
+
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
     async fn append_entries(
         &mut self,
-        req: AppendEntriesRequest<TypeConfigKV>,
+        rpc: AppendEntriesRequest<TypeConfigCache>,
         _option: RPCOption,
-    ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        let (ack, rx) = oneshot::channel();
-        match self.send(RaftRequest::AppendCache((ack, req)), rx).await? {
-            RaftStreamResponsePayload::AppendCache(resp) => {
-                resp.map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
-            }
-            _ => unreachable!(),
-        }
-    }
+    ) -> Result<AppendResult<TypeConfigCache>, RPCError<TypeConfigCache>> {
+        let prev_log_id = rpc.prev_log_id;
+        let last_log_id = rpc.entries.last().map(|entry| entry.log_id);
 
-    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
-    async fn install_snapshot(
-        &mut self,
-        req: InstallSnapshotRequest<TypeConfigKV>,
-        _option: RPCOption,
-    ) -> Result<
-        InstallSnapshotResponse<NodeId>,
-        RPCError<NodeId, Node, RaftError<NodeId, InstallSnapshotError>>,
-    > {
         let (ack, rx) = oneshot::channel();
         match self
-            .send(RaftRequest::SnapshotCache((ack, req)), rx)
-            .await?
+            .send(RaftRequest::AppendCache((ack, rpc)), rx)
+            .await
+            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
         {
-            RaftStreamResponsePayload::SnapshotCache(resp) => {
-                resp.map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
-            }
+            RaftStreamResponsePayload::AppendCache(res) => res
+                // An append request without entries only asks for an ack, which is the request's
+                // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
+                .map(|res| res.into_append_result(prev_log_id, last_log_id.or(prev_log_id)))
+                .map_err(|err| RPCError::Unreachable(Unreachable::new(&err))),
             _ => unreachable!(),
         }
     }
@@ -637,15 +716,123 @@ impl RaftNetwork<TypeConfigKV> for NetworkConnectionStreaming {
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
     async fn vote(
         &mut self,
-        req: VoteRequest<NodeId>,
+        rpc: VoteRequest<TypeConfigCache>,
         _option: RPCOption,
-    ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
+    ) -> Result<VoteResponse<TypeConfigCache>, RPCError<TypeConfigCache>> {
         let (ack, rx) = oneshot::channel();
-        match self.send(RaftRequest::VoteCache((ack, req)), rx).await? {
-            RaftStreamResponsePayload::VoteCache(resp) => {
-                resp.map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
+        match self
+            .send(RaftRequest::VoteCache((ack, rpc)), rx)
+            .await
+            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
+        {
+            RaftStreamResponsePayload::VoteCache(res) => {
+                res.map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
             }
             _ => unreachable!(),
+        }
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
+    async fn transfer_leader(
+        &mut self,
+        rpc: TransferLeaderRequest<TypeConfigCache>,
+        _option: RPCOption,
+    ) -> Result<TransferLeaderResponse<TypeConfigCache>, RPCError<TypeConfigCache>> {
+        let (ack, rx) = oneshot::channel();
+        match self
+            .send(RaftRequest::TransferLeaderCache((ack, rpc)), rx)
+            .await
+            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
+        {
+            RaftStreamResponsePayload::TransferLeaderCache(res) => {
+                res.map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
+    async fn full_snapshot(
+        &mut self,
+        vote: VoteOf<TypeConfigCache>,
+        snapshot: SnapshotOf<TypeConfigCache, Self::SnapshotData>,
+        cancel: impl Future<Output = ReplicationClosed> + OptionalSend + 'static,
+        option: RPCOption,
+    ) -> Result<SnapshotResponse<TypeConfigCache>, StreamingError<TypeConfigCache>> {
+        tokio::pin!(cancel);
+        let meta = snapshot.meta;
+        let snapshot = snapshot.snapshot;
+        let payload = self
+            .chunk_stream(
+                vote,
+                meta,
+                snapshot,
+                &mut cancel,
+                option,
+                RaftRequest::SnapshotCache,
+            )
+            .await?;
+        match payload {
+            RaftStreamResponsePayload::SnapshotCache(res) => res,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl NetworkConnectionStreaming {
+    #[cfg(any(feature = "cache", feature = "sqlite"))]
+    /// openraft 0.10 hands the network a whole snapshot instead of a payload, so the chunking
+    /// over the WebSocket is ours again: every chunk is one message with its own ack, and only
+    /// the last one is answered with the real response.
+    async fn chunk_stream<C, R>(
+        &mut self,
+        vote: WireVote,
+        meta: WireSnapshotMeta,
+        mut data: R,
+        mut cancel: impl Future<Output = ReplicationClosed> + Unpin,
+        option: RPCOption,
+        snapshot_request: SnapshotRequestFn,
+    ) -> Result<RaftStreamResponsePayload, StreamingError<C>>
+    where
+        C: RaftTypeConfig,
+        R: tokio::io::AsyncRead + Unpin + OptionalSend,
+    {
+        use tokio::io::AsyncReadExt;
+
+        let chunk_size = option
+            .snapshot_chunk_size()
+            .unwrap_or(SNAPSHOT_CHUNK_SIZE_FALLBACK);
+        let mut buf = vec![0u8; chunk_size];
+        let mut first = true;
+
+        loop {
+            let read = data
+                .read(&mut buf)
+                .await
+                .map_err(|err| StreamingError::Unreachable(Unreachable::new(&err)))?;
+            let last = read == 0;
+
+            let (ack, rx) = oneshot::channel();
+            let req = SnapshotWireRequest {
+                request_id: 0,
+                vote,
+                meta: meta.clone(),
+                data: buf[..read].to_vec(),
+                first,
+                last,
+            };
+            first = false;
+
+            let payload = select! {
+                payload = self.send(snapshot_request((ack, req)), rx) => {
+                    payload.map_err(|err| StreamingError::Unreachable(Unreachable::new(&err)))?
+                },
+                closed = &mut cancel => return Err(StreamingError::Closed(closed)),
+            };
+
+            if last {
+                return Ok(payload);
+            }
         }
     }
 }

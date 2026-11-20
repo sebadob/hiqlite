@@ -34,16 +34,36 @@ desired.
 
 Handle errors gracefully with a `Result` when they are temporary, but `panic` when they are unrecoverable.
 
+**Docs never link private items:** a doc comment must not use an intra-doc link for a private
+const, fn, type or module, because that link only resolves with `--document-private-items`. Write
+those names as a plain code span instead.
+
+**Docs carry no line numbers:** operator docs (`docs/`) must not use `file.rs:123`-style anchors and
+must not link to `#L123`. Line references drift and nobody maintains them. Docs also never name
+something that is not public API - operators want to use the thing, not read it. When a doc points at
+code at all, it points at a module path, never at a line. "Where things live" belongs in this file.
+
 ## Repository layout
 
 - `hiqlite/` main crate
     - `hiqlite/src/client/` the main "DB Client" a user works with in the end
+        - `hiqlite/src/client/mgmt.rs` the cluster-control calls: election state, promote, demote,
+          leadership handover, and the leader-following retry they run through
     - `hiqlite/src/network/` API + Raft cluster setup and operations
+        - `hiqlite/src/network/management.rs` the `/cluster/*` endpoints behind those calls
+        - `hiqlite/src/network/mod.rs` the API secret header (`Authorization` bearer token) and its
+          validation, shared by the node router and the proxy router
     - `hiqlite/src/query/` Query engine and helpers when using the sqlite state machine
     - `hiqlite/src/server/` dedicated server binary; low priority, crate is usually embedded directly
     - `hiqlite/src/store/state_machine/` Raft state machine for DB + Cache
+    - `hiqlite/src/config.rs` + `hiqlite/src/config_toml.rs` node lines, the `election_disable`
+      marker, and the startup validation of both
+    - `hiqlite/src/helpers.rs` the election gate, the election triggers, and the handover target
+      order used by a graceful shutdown
+    - `hiqlite/src/start.rs` the router nest with all `/cluster` routes
 - `hiqlite-derive/` derive macros
 - `hiqlite-wal/` WAL file implementation for `openraft`
+- `docs/` operator-facing guides (setup, playbooks, things to watch out for); no code, links to it
 - `dashboard/` dashboard to query the DB (`sqlite` feature only); Svelte file during development, but compiled into
   static HTML for a release
 - `examples/` example code; make sure they are clean when you change any code

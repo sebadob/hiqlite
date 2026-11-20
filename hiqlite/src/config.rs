@@ -2,6 +2,7 @@ use crate::tls::ServerTlsConfig;
 use crate::{Error, Node, NodeId};
 use openraft::SnapshotPolicy;
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::env;
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -28,6 +29,10 @@ pub use openraft::Config as RaftConfig;
 #[cfg(feature = "config-embed")]
 pub static REFERENCE_CONFIG: &str = include_str!("../../REFERENCE_CONFIG.toml");
 
+/// The marker that a node line may carry as its fourth value: a node that is marked with it never
+/// starts an election on its own. See [`Node::parse_line`] and `NodeConfig::election_disable`.
+const ELECTION_DISABLE: &str = "election_disable";
+
 #[derive(Debug)]
 pub struct RateLimitConfig {
     pub rps: u32,
@@ -42,6 +47,15 @@ impl Default for RateLimitConfig {
         }
     }
 }
+
+/// The `enc_keys` argument of `NodeConfig::from_toml` and `NodeConfig::from_toml_table`, in every
+/// feature set: the real keys where the features compile encryption keys in, and a placeholder that
+/// only ever accepts `None` where they do not. A caller passes the same four arguments everywhere,
+/// no matter which features its build has.
+#[cfg(any(feature = "s3", feature = "dashboard"))]
+pub type EncKeysArg = Option<cryptr::EncKeys>;
+#[cfg(not(any(feature = "s3", feature = "dashboard")))]
+pub type EncKeysArg = Option<()>;
 
 /// The main Node config.
 ///
@@ -162,6 +176,17 @@ pub struct NodeConfig {
     pub backup_config: backup::BackupConfig,
     #[cfg(feature = "backup")]
     pub backup_keep_for_local: Duration,
+    /// The prefix of every backup file name. A backup is always written as
+    /// `{prefix}_{node_id}_{unix_ts}.sqlite`, on the local disk and in the S3 bucket.
+    ///
+    /// Set one prefix per application when several Hiqlite clusters share a single bucket: the
+    /// cleanup jobs only ever delete files matching this exact shape, so clusters with different
+    /// prefixes can never delete each other's backups, and objects that are not a Hiqlite backup
+    /// at all are never touched.
+    ///
+    /// default: `backup_node`
+    #[cfg(feature = "backup")]
+    pub backup_file_prefix: Cow<'static, str>,
     /// If an `S3Config` is given, it will be used to push backups to the S3 bucket. feature `s3`
     #[cfg(feature = "s3")]
     pub s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
@@ -179,6 +204,18 @@ pub struct NodeConfig {
     /// If true, keep a newly joining node as a learner instead of promoting it to a voting member
     /// during startup reconciliation. This does not demote an existing voter.
     pub learner_only: bool,
+    /// The node ids whose node line carries the `election_disable` marker.
+    ///
+    /// When this node's own id is in this list, `raft_config.enable_elect` is set to `false`
+    /// during config parsing: the node never starts an election on its own, for both of its Raft
+    /// groups. It still votes for other nodes, and it still accepts a leadership transfer, so a
+    /// leader can hand over to it at any time.
+    ///
+    /// The marker is a node line value only - it is deliberately not a field of [`Node`], because
+    /// that type is serialized into the Raft logs and its bytes must stay compatible.
+    ///
+    /// A node that changes this at runtime reverts to this config value when it restarts.
+    pub election_disable: Vec<NodeId>,
     /// To guarantee the stability of your Raft cluster no matter how high requests might spike,
     /// you can set rate-limits.
     #[cfg(feature = "cache")]
@@ -216,6 +253,8 @@ impl Default for NodeConfig {
             backup_config: backup::BackupConfig::default(),
             #[cfg(feature = "backup")]
             backup_keep_for_local: Duration::from_secs(3 * 24 * 3600),
+            #[cfg(feature = "backup")]
+            backup_file_prefix: backup::DEFAULT_BACKUP_FILE_PREFIX.into(),
             #[cfg(feature = "s3")]
             s3_config: None,
             #[cfg(feature = "dashboard")]
@@ -224,6 +263,7 @@ impl Default for NodeConfig {
             insecure_cookie: false,
             health_check_delay: Duration::from_secs(30),
             learner_only: false,
+            election_disable: vec![],
             #[cfg(feature = "cache")]
             rate_limit_cache: None,
             #[cfg(feature = "sqlite")]
@@ -347,9 +387,12 @@ impl NodeConfig {
             }
         };
 
-        let slf = Self {
+        let (nodes, election_disable) = Node::parse_from_env_with_flags("HQL_NODES");
+
+        let mut slf = Self {
             node_id,
-            nodes: Node::parse_from_env("HQL_NODES"),
+            nodes,
+            election_disable,
             listen_addr_api,
             listen_addr_raft,
             data_dir: env::var("HQL_DATA_DIR")
@@ -411,19 +454,23 @@ impl NodeConfig {
                 .expect("Cannot parse HQL_LEARNER_ONLY as bool"),
             #[cfg(feature = "backup")]
             backup_keep_for_local,
+            #[cfg(feature = "backup")]
+            backup_file_prefix: env::var("HQL_BACKUP_FILE_PREFIX")
+                .unwrap_or_else(|_| backup::DEFAULT_BACKUP_FILE_PREFIX.to_string())
+                .into(),
             #[cfg(feature = "cache")]
             rate_limit_cache,
             #[cfg(feature = "sqlite")]
             rate_limit_db,
         };
 
+        slf.apply_election_disable();
         slf.is_valid()
             .expect("NodeConfig parsed from env is invalid");
         slf
     }
 
     /// Provides good defaults for a `RaftConfig` inside a fast network.
-    #[allow(deprecated)] // allow to not need ..Default::default() and miss config updates
     pub fn default_raft_config(logs_until_snapshot: u64) -> RaftConfig {
         RaftConfig {
             cluster_name: "hiqlite".to_string(),
@@ -431,7 +478,6 @@ impl NodeConfig {
             election_timeout_max: 3000,
             heartbeat_interval: 500,
             install_snapshot_timeout: 10_000,
-            send_snapshot_timeout: 0,
             max_payload_entries: 128,
             replication_lag_threshold: logs_until_snapshot * 2,
             snapshot_policy: SnapshotPolicy::LogsSinceLast(logs_until_snapshot),
@@ -442,7 +488,14 @@ impl NodeConfig {
             enable_tick: true,
             enable_heartbeat: true,
             enable_elect: true,
-            // ..Default::default()
+            // A wiped or corrupted volume must be able to re-sync on its own: a reset only ever
+            // overwrites a follower's log with the leader's, and the leader's log holds every
+            // committed entry, so a reverted log can only ever drop entries that were never
+            // committed on that node. Without this, a follower that reverts under the same leader
+            // panics that leader in debug builds and stalls its replication in release builds.
+            // Set it to `Some(false)` on a node to keep the strict behavior.
+            allow_log_reversion: Some(true),
+            ..Default::default()
         }
     }
 
@@ -455,6 +508,27 @@ impl NodeConfig {
         if cloned.init().is_err() {
             debug!("Cannot initialize ENC_KEYS - already initialized");
         }
+    }
+
+    /// Apply the `election_disable` marker of this node's own node line to the Raft config.
+    ///
+    /// `enable_elect = false` means the node never starts an election on its own, for both of its
+    /// Raft groups. It still grants votes and it still accepts a leadership transfer, so it stays a
+    /// fully voting member. A node that flips this at runtime with the `PUT /cluster/election`
+    /// endpoint reverts to this config value when it restarts.
+    ///
+    /// The config parsers from env and TOML apply this on their own. Call it after you set
+    /// `election_disable` on a config you built by hand.
+    pub fn apply_election_disable(&mut self) {
+        if !self.election_disable.contains(&self.node_id) {
+            return;
+        }
+        self.raft_config.enable_elect = false;
+        warn!(
+            "Node {} has 'election_disable' set: it will never start an election on its own \
+             (both Raft groups). A restart reverts any runtime change back to this value.",
+            self.node_id
+        );
     }
 
     /// Validates the config
@@ -470,6 +544,37 @@ impl NodeConfig {
         if !self.nodes.iter().any(|node| node.id == self.node_id) {
             return Err(Error::Config(
                 format!("'node_id' {} not found in 'nodes'", self.node_id).into(),
+            ));
+        }
+
+        let mut ids = BTreeSet::new();
+        for node in &self.nodes {
+            ids.insert(node.id);
+        }
+        if ids.len() != self.nodes.len() {
+            return Err(Error::Config(
+                format!(
+                    "Invalid nodes configured: must not contain duplicate IDs: {:?}",
+                    self.nodes
+                )
+                .into(),
+            ));
+        }
+
+        for node_id in &self.election_disable {
+            if !self.nodes.iter().any(|node| node.id == *node_id) {
+                return Err(Error::Config(
+                    format!("'election_disable' node id {node_id} not found in 'nodes'").into(),
+                ));
+            }
+        }
+
+        #[cfg(feature = "backup")]
+        if !backup::is_valid_file_prefix(&self.backup_file_prefix) {
+            return Err(Error::Config(
+                "'backup_file_prefix' must be a plain file name prefix: non-empty and only letters, \
+                 digits, '.', '-' and '_'"
+                    .into(),
             ));
         }
 
@@ -507,6 +612,11 @@ impl NodeConfig {
             ));
         }
 
+        self.raft_config
+            .clone()
+            .validate()
+            .map_err(|err| Error::Config(format!("'raft_config' is invalid: {err}").into()))?;
+
         if self.log_statements {
             warn!(
                 r#"
@@ -540,35 +650,87 @@ clean up logs after debugging!
 
 impl From<&str> for Node {
     fn from(s: &str) -> Self {
-        let (id, rest) = s
-            .trim()
-            .split_once(' ')
-            .expect("invalid format for HQL_NODES");
-        let (addr_raft, addr_api) = rest.split_once(' ').expect("invalid format for HQL_NODES");
+        Self::parse_line(s).0
+    }
+}
+
+impl Node {
+    /// Parse a single node line out of `nodes` / `HQL_NODES`.
+    ///
+    /// The format is `id addr_raft addr_api`, and it accepts the optional fourth value
+    /// `election_disable`, which marks a node that never starts an election on its own. The second
+    /// return value is `true` for such a line. Anything else is a config error and panics loudly.
+    pub fn parse_line(s: &str) -> (Self, bool) {
+        let mut tokens = s.split_whitespace();
+        let (id, addr_raft, addr_api, flag, extra) = (
+            tokens.next(),
+            tokens.next(),
+            tokens.next(),
+            tokens.next(),
+            tokens.next(),
+        );
+
+        let Some((id, addr_raft, addr_api)) =
+            id.zip(addr_raft).zip(addr_api).map(|((i, r), a)| (i, r, a))
+        else {
+            panic!("invalid format for HQL_NODES, expected 'id addr_raft addr_api': {s}");
+        };
+
+        let election_disable = match flag {
+            None => false,
+            Some(flag) if flag == ELECTION_DISABLE => true,
+            Some(flag) => panic!("invalid format for HQL_NODES, unknown node flag '{flag}': {s}"),
+        };
+        if extra.is_some() {
+            panic!("invalid format for HQL_NODES, too many values: {s}");
+        }
 
         let id = id
             .parse::<u64>()
             .expect("Cannot parse Node ID from HQL_NODES to u64");
 
-        Self {
-            id,
-            addr_raft: addr_raft.trim().to_string(),
-            addr_api: addr_api.trim().to_string(),
-        }
+        (
+            Self {
+                id,
+                addr_raft: addr_raft.to_string(),
+                addr_api: addr_api.to_string(),
+            },
+            election_disable,
+        )
     }
-}
 
-impl Node {
-    pub fn parse_from_env(env_var: &str) -> Vec<Self> {
-        let mut res = Vec::with_capacity(3);
-        let value = env::var(env_var).unwrap_or_else(|_| panic!("{env_var} does not exist"));
+    /// Parse a full node list, given as one line per node, and collect the ids of all nodes that
+    /// carry the `election_disable` marker. See [`Node::parse_line`].
+    pub fn parse_lines<S: AsRef<str>>(
+        lines: impl IntoIterator<Item = S>,
+    ) -> (Vec<Self>, Vec<NodeId>) {
+        let mut nodes = Vec::with_capacity(3);
+        let mut election_disable = Vec::new();
 
-        for line in value.lines() {
-            if !line.is_empty() {
-                res.push(Self::from(line))
+        for line in lines {
+            let line = line.as_ref();
+            if line.trim().is_empty() {
+                continue;
             }
+            let (node, disable) = Self::parse_line(line);
+            if disable {
+                election_disable.push(node.id);
+            }
+            nodes.push(node);
         }
-        res
+
+        (nodes, election_disable)
+    }
+
+    pub fn parse_from_env(env_var: &str) -> Vec<Self> {
+        Self::parse_from_env_with_flags(env_var).0
+    }
+
+    /// Parse the node list from the given env var, where every node is one line, and collect the
+    /// ids of all nodes that carry the `election_disable` marker. See [`Node::parse_line`].
+    pub fn parse_from_env_with_flags(env_var: &str) -> (Vec<Self>, Vec<NodeId>) {
+        let value = env::var(env_var).unwrap_or_else(|_| panic!("{env_var} does not exist"));
+        Self::parse_lines(value.lines())
     }
 }
 
@@ -592,10 +754,107 @@ mod tests {
         );
         assert_eq!(c.data_dir, "data");
         assert_eq!(c.filename_db, "hiqlite.db");
-        assert_eq!(c.log_statements, true);
+        assert!(c.log_statements);
 
         assert_eq!(c.secret_raft, "SuperSecureSecret1337");
         assert_eq!(c.secret_api, "SuperSecureSecret1337");
         assert!(!c.learner_only);
+        assert!(c.election_disable.is_empty());
+        assert!(c.raft_config.enable_elect);
+    }
+
+    #[test]
+    fn node_line_parses_plain_and_marked() {
+        let (node, disable) = Node::parse_line("1 localhost:8100 localhost:8200");
+        assert_eq!(node.id, 1);
+        assert_eq!(node.addr_raft, "localhost:8100");
+        assert_eq!(node.addr_api, "localhost:8200");
+        assert!(!disable);
+
+        let (node, disable) =
+            Node::parse_line("3 198.51.100.9:8100 198.51.100.9:8200 election_disable");
+        assert_eq!(node.id, 3);
+        assert_eq!(node.addr_api, "198.51.100.9:8200");
+        assert!(disable);
+    }
+
+    #[test]
+    fn node_lines_collect_the_marked_ids() {
+        let (nodes, election_disable) = Node::parse_lines([
+            "1 10.0.0.1:8100 10.0.0.1:8200",
+            "2 10.0.0.2:8100 10.0.0.2:8200",
+            "3 198.51.100.9:8100 198.51.100.9:8200 election_disable",
+        ]);
+
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(election_disable, vec![3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown node flag 'nope'")]
+    fn node_line_rejects_an_unknown_flag() {
+        Node::parse_line("1 10.0.0.1:8100 10.0.0.1:8200 nope");
+    }
+
+    #[test]
+    #[should_panic(expected = "too many values")]
+    fn node_line_rejects_extra_values() {
+        Node::parse_line("1 10.0.0.1:8100 10.0.0.1:8200 election_disable extra");
+    }
+
+    #[test]
+    #[should_panic(expected = "expected 'id addr_raft addr_api'")]
+    fn node_line_rejects_missing_values() {
+        Node::parse_line("1 10.0.0.1:8100");
+    }
+
+    #[test]
+    fn a_marked_node_disables_its_own_election() {
+        let mut config = NodeConfig {
+            node_id: 3,
+            nodes: vec![node(1), node(2), node(3)],
+            election_disable: vec![3],
+            ..Default::default()
+        };
+
+        assert!(config.raft_config.enable_elect);
+        config.apply_election_disable();
+        assert!(!config.raft_config.enable_elect);
+    }
+
+    #[test]
+    fn an_unmarked_node_keeps_its_election_enabled() {
+        let mut config = NodeConfig {
+            node_id: 1,
+            nodes: vec![node(1), node(2), node(3)],
+            election_disable: vec![3],
+            ..Default::default()
+        };
+
+        config.apply_election_disable();
+        assert!(config.raft_config.enable_elect);
+    }
+
+    #[test]
+    fn config_rejects_an_election_disable_id_that_is_not_a_node() {
+        let config = NodeConfig {
+            node_id: 1,
+            nodes: vec![node(1)],
+            secret_raft: "0123456789abcdef".into(),
+            secret_api: "0123456789abcdef".into(),
+            election_disable: vec![7],
+            ..Default::default()
+        };
+
+        let err = config.is_valid().unwrap_err().to_string();
+        assert!(err.contains("election_disable"), "{err}");
+    }
+
+    fn node(id: u64) -> Node {
+        Node {
+            id,
+            addr_raft: format!("10.0.0.{id}:8100"),
+            addr_api: format!("10.0.0.{id}:8200"),
+        }
     }
 }

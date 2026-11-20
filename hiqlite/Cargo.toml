@@ -1,6 +1,6 @@
 [package]
 name = "hiqlite"
-version = "0.16.0"
+version = "0.17.0-20261117"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -27,18 +27,20 @@ harness = false
 default = ["auto-heal", "backup", "sqlite", "toml"]
 
 auto-heal = ["hiqlite-wal/auto-heal"]
-backup = ["dep:cron", "s3", "sqlite"]
-cache = ["__cluster", "openraft/loosen-follower-log-revert"]
+# Local backups: the cron job, the local backup dir + its cleanup, and restore from a local
+# file. S3 storage for backups is opt-in via the `s3` feature on top of this.
+backup = ["dep:cron", "sqlite"]
+cache = ["__cluster", "dep:rust_decimal"]
 counters = ["cache"]
 dashboard = [
-    "dep:argon2",
-    "dep:axum-extra",
-    "dep:cryptr",
-    "dep:mime_guess",
-    "dep:spow",
-    "dep:tower",
-    "dep:tower-http",
-    "sqlite",
+  "dep:argon2",
+  "dep:axum-extra",
+  "dep:cryptr",
+  "dep:mime_guess",
+  "dep:spow",
+  "dep:tower",
+  "dep:tower-http",
+  "sqlite",
 ]
 dlock = ["cache"]
 cast_ints = []
@@ -48,106 +50,101 @@ config-embed = []
 # This reuses the SQLite connection, read-pool, restore, and single-writer
 # machinery without starting a Hiqlite Raft group.
 external-state-machine = [
-    "dep:deadpool",
-    "dep:fs4",
-    "dep:rusqlite",
-    "rusqlite/backup",
-    "rusqlite/functions",
-    "rusqlite/hooks",
+  "dep:deadpool",
+  "dep:fs4",
+  "dep:rusqlite",
+  "rusqlite/backup",
+  "rusqlite/functions",
+  "rusqlite/hooks",
 ]
 full = [
-    "auto-heal",
-    "backup",
-    "cache",
-    "counters",
-    "dashboard",
-    "dlock",
-    "listen_notify",
-    "macros",
-    "s3",
-    "shutdown-handle",
-    "sqlite",
-    "toml",
+  "auto-heal",
+  "backup",
+  "cache",
+  "counters",
+  "dashboard",
+  "dlock",
+  "listen_notify",
+  "macros",
+  "s3",
+  "shutdown-handle",
+  "sqlite",
+  "toml",
 ]
 # Opt-in: keep Cache Snapshots in-memory instead of on disk. This lets a pure
 # cache-only node run without a `data_dir`, but doubles snapshot memory cost and
 # disables zero-copy snapshot streaming from file. Deliberately NOT part of `full`.
 in-memory-snapshots = ["cache"]
 jemalloc = ["dep:tikv-jemallocator"]
-listen_notify = [
-    "dep:futures-util",
-    "cache"
-]
-macros = ["dep:hiqlite-derive"]
+listen_notify = ["dep:futures-util", "cache"]
+macros = ["dep:hiqlite-derive", "dep:rust-embed"]
 toml = ["dep:toml"]
 # S3 access for backups. Enables cryptr's S3 streaming, and with it `s3-simple`.
+# Pushes the `backup` feature's local backups offsite, encrypted.
 s3 = ["backup", "cryptr/s3"]
 server = [
-    "dep:clap",
-    "dep:home",
-    "dep:tracing-subscriber",
-    "config-embed",
-    "full",
-    "listen_notify",
-    "tokio/macros",
+  "dep:clap",
+  "dep:home",
+  "dep:tracing-subscriber",
+  "config-embed",
+  "full",
+  "listen_notify",
+  "tokio/macros",
 ]
 shutdown-handle = ["dep:ctrlc"]
 sqlite = [
-    "__cluster",
-    "dep:deadpool",
-    "dep:fs4",
-    "dep:rusqlite",
-    "dep:serde_rusqlite",
-    "rusqlite/backup",
-    "rusqlite/cache",
-    "rusqlite/chrono",
-    "rusqlite/column_decltype",
-    "rusqlite/csvtab",
-    "rusqlite/functions",
-    "rusqlite/load_extension",
-    "rusqlite/modern_sqlite",
-    "rusqlite/serde_json",
-    "rusqlite/series",
-    "rusqlite/url",
-    "rusqlite/uuid",
-    "rusqlite/vtab",
+  "__cluster",
+  "dep:deadpool",
+  "dep:fs4",
+  "dep:hex",
+  "dep:rusqlite",
+  "dep:rust-embed",
+  "dep:serde_rusqlite",
+  "rusqlite/backup",
+  "rusqlite/cache",
+  "rusqlite/chrono",
+  "rusqlite/column_decltype",
+  "rusqlite/csvtab",
+  "rusqlite/functions",
+  "rusqlite/load_extension",
+  "rusqlite/modern_sqlite",
+  "rusqlite/serde_json",
+  "rusqlite/series",
+  "rusqlite/url",
+  "rusqlite/uuid",
+  "rusqlite/vtab",
 ]
-webpki-roots = [
-    "dep:webpki-root-certs",
-]
+webpki-roots = ["dep:webpki-root-certs"]
 
 # Internal dependency boundary for the regular Hiqlite Raft/network runtime.
 # The external state-machine feature deliberately does not enable it.
 __cluster = [
-    "dep:axum",
-    "dep:axum-server",
-    "dep:bincode-next",
-    "dep:bytes",
-    "dep:chrono",
-    "dep:constant_time_eq",
-    "dep:crossbeam",
-    "dep:dotenvy",
-    "dep:fastwebsockets",
-    "dep:getrandom",
-    "dep:hex",
-    "dep:hiqlite-wal",
-    "dep:hostname",
-    "dep:http-body-util",
-    "dep:hyper",
-    "dep:hyper-util",
-    "dep:openraft",
-    "dep:rcgen",
-    "dep:reqwest",
-    "dep:rust_decimal",
-    "dep:rust-embed",
-    "dep:rustls",
-    "dep:rustls-platform-verifier",
-    "dep:serde_json",
-    "dep:serde_rusqlite",
-    "dep:socket2",
-    "dep:time",
-    "dep:tokio-rustls",
-    "dep:url",
+  "dep:axum",
+  "dep:axum-server",
+  "dep:bincode-next",
+  "dep:bytes",
+  "dep:chrono",
+  "dep:constant_time_eq",
+  "dep:crossbeam",
+  "dep:dotenvy",
+  "dep:fastwebsockets",
+  "dep:futures-util",
+  "dep:getrandom",
+  "dep:hiqlite-wal",
+  "dep:hostname",
+  "dep:http-body-util",
+  "dep:hyper",
+  "dep:hyper-util",
+  "dep:openraft",
+  "dep:rcgen",
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:rustls-platform-verifier",
+  "dep:serde_json",
+  "dep:socket2",
+  "dep:time",
+  "dep:tokio-rustls",
+  "dep:url",
 ]
 
 # Internal use only

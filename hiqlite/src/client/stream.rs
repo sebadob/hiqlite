@@ -23,6 +23,8 @@ use crate::network::api::{ApiStreamRequest, ApiStreamRequestPayload};
 use crate::store::state_machine::memory::state_machine::CacheRequest;
 #[cfg(feature = "sqlite")]
 use crate::{migration::Migration, store::state_machine::sqlite::state_machine::Query};
+#[cfg(feature = "sqlite")]
+use openraft::raft::ReadPolicy;
 
 /// Interval between client-initiated keepalive pings on the API WebSocket. The server auto-pongs
 /// every ping (fastwebsockets default), so a healthy idle connection always produces inbound
@@ -56,7 +58,7 @@ pub(crate) enum ClientStreamReq {
     #[cfg(feature = "sqlite")]
     Query(ClientQueryPayload),
     #[cfg(feature = "sqlite")]
-    QueryConsistent(ClientQueryPayload),
+    QueryConsistent(ClientQueryPayload, ReadPolicy),
     #[cfg(feature = "sqlite")]
     Batch(ClientBatchPayload),
     #[cfg(feature = "sqlite")]
@@ -66,15 +68,15 @@ pub(crate) enum ClientStreamReq {
     Backup(ClientBackupPayload),
 
     #[cfg(feature = "cache")]
-    KV(ClientKVPayload),
+    Cache(ClientCachePayload),
     #[cfg(feature = "cache")]
-    KVGet(ClientKVPayload),
+    CacheGet(ClientCachePayload),
 
     #[cfg(feature = "dlock")]
-    LockAwait(ClientKVPayload),
+    LockAwait(ClientCachePayload),
 
     #[cfg(feature = "listen_notify")]
-    Notify(ClientKVPayload),
+    Notify(ClientCachePayload),
 
     Shutdown,
 
@@ -139,7 +141,7 @@ pub struct ClientBackupPayload {
 
 #[cfg(feature = "cache")]
 #[derive(Debug)]
-pub struct ClientKVPayload {
+pub struct ClientCachePayload {
     pub request_id: usize,
     pub cache_req: CacheRequest,
     pub ack: oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
@@ -369,14 +371,20 @@ async fn client_stream(
                 }
 
                 #[cfg(feature = "sqlite")]
-                ClientStreamReq::QueryConsistent(ClientQueryPayload {
-                    request_id,
-                    query,
-                    ack,
-                }) => {
+                ClientStreamReq::QueryConsistent(
+                    ClientQueryPayload {
+                        request_id,
+                        query,
+                        ack,
+                    },
+                    read_policy,
+                ) => {
                     let req = ApiStreamRequest {
                         request_id,
-                        payload: ApiStreamRequestPayload::QueryConsistent(query),
+                        payload: ApiStreamRequestPayload::QueryConsistent(
+                            query,
+                            read_policy.into(),
+                        ),
                     };
                     Some((
                         WritePayload::Payload(serialize_network(&req)),
@@ -438,14 +446,14 @@ async fn client_stream(
                 }
 
                 #[cfg(feature = "cache")]
-                ClientStreamReq::KV(ClientKVPayload {
+                ClientStreamReq::Cache(ClientCachePayload {
                     request_id,
                     cache_req,
                     ack,
                 }) => {
                     let req = ApiStreamRequest {
                         request_id,
-                        payload: ApiStreamRequestPayload::KV(cache_req),
+                        payload: ApiStreamRequestPayload::Cache(cache_req),
                     };
                     Some((
                         WritePayload::Payload(serialize_network(&req)),
@@ -455,14 +463,14 @@ async fn client_stream(
                 }
 
                 #[cfg(feature = "cache")]
-                ClientStreamReq::KVGet(ClientKVPayload {
+                ClientStreamReq::CacheGet(ClientCachePayload {
                     request_id,
                     cache_req,
                     ack,
                 }) => {
                     let req = ApiStreamRequest {
                         request_id,
-                        payload: ApiStreamRequestPayload::KVGet(cache_req),
+                        payload: ApiStreamRequestPayload::CacheGet(cache_req),
                     };
                     Some((
                         WritePayload::Payload(serialize_network(&req)),
@@ -472,7 +480,7 @@ async fn client_stream(
                 }
 
                 #[cfg(feature = "dlock")]
-                ClientStreamReq::LockAwait(ClientKVPayload {
+                ClientStreamReq::LockAwait(ClientCachePayload {
                     request_id,
                     cache_req,
                     ack,
@@ -489,7 +497,7 @@ async fn client_stream(
                 }
 
                 #[cfg(feature = "listen_notify")]
-                ClientStreamReq::Notify(ClientKVPayload {
+                ClientStreamReq::Notify(ClientCachePayload {
                     request_id,
                     cache_req,
                     ack,
@@ -603,7 +611,7 @@ async fn client_stream(
                     )
                 }
                 #[cfg(feature = "sqlite")]
-                ClientStreamReq::QueryConsistent(_) => {
+                ClientStreamReq::QueryConsistent(_, _) => {
                     unreachable!(
                         "we should never receive ClientStreamReq::QueryConsistent from WS reader"
                     )
@@ -621,12 +629,12 @@ async fn client_stream(
                     unreachable!("we should never receive ClientStreamReq::Backup from WS reader")
                 }
                 #[cfg(feature = "cache")]
-                ClientStreamReq::KV(_) => {
-                    unreachable!("we should never receive ClientStreamReq::KV from WS reader")
+                ClientStreamReq::Cache(_) => {
+                    unreachable!("we should never receive ClientStreamReq::Cache from WS reader")
                 }
                 #[cfg(feature = "cache")]
-                ClientStreamReq::KVGet(_) => {
-                    unreachable!("we should never receive ClientStreamReq::KVGet from WS reader")
+                ClientStreamReq::CacheGet(_) => {
+                    unreachable!("we should never receive ClientStreamReq::CacheGet from WS reader")
                 }
                 #[cfg(feature = "dlock")]
                 ClientStreamReq::LockAwait(_) => {

@@ -1,7 +1,13 @@
 use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
+#[cfg(feature = "cache")]
+use crate::store::state_machine::memory::TypeConfigCache;
+#[cfg(feature = "sqlite")]
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::{Client, Error, Node, NodeId};
 use openraft::RaftMetrics;
+use openraft::RaftTypeConfig;
+use openraft::type_config::async_runtime::watch::WatchReceiver;
 use std::clone::Clone;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -58,15 +64,14 @@ impl Client {
     /// stalled cluster (no quorum) fails loudly instead of hanging the caller forever. The bounds
     /// mirror openraft's own `client_write`, so `C` and `E` are inferred exactly as at a plain call
     /// site.
-    pub(crate) async fn client_write_local<C, E>(
-        raft: &openraft::Raft<C>,
+    pub(crate) async fn client_write_local<C, SM>(
+        raft: &openraft::Raft<C, SM>,
         req: C::D,
     ) -> Result<openraft::raft::ClientWriteResponse<C>, Error>
     where
         C: openraft::RaftTypeConfig<NodeId = u64, Node = Node>,
-        <C::Responder as openraft::raft::responder::Responder<C>>::Receiver:
-            std::future::Future<Output = Result<openraft::raft::ClientWriteResult<C>, E>>,
-        E: std::error::Error + openraft::OptionalSend,
+        SM: openraft::storage::RaftStateMachine<C>,
+        Error: From<openraft::errors::RaftError<C, openraft::errors::ClientWriteError<C>>>,
     {
         match time::timeout(LOCAL_CLIENT_WRITE_TIMEOUT, raft.client_write(req)).await {
             Ok(res) => res.map_err(Into::into),
@@ -79,27 +84,27 @@ impl Client {
             // we never need to do any remote lookups for metrics -> get can never fail
             #[cfg(feature = "sqlite")]
             {
-                let metrics = state.raft_db.raft.metrics().borrow().clone();
+                let metrics = state.raft_db.raft.metrics().borrow_watched().clone();
                 let mut find_leader = Self::find_set_leader(metrics, &self.inner.leader_db).await;
 
                 while let Err(err) = find_leader {
                     warn!("Find DB leader error: {}", err);
                     time::sleep(Duration::from_millis(500)).await;
-                    let metrics = state.raft_db.raft.metrics().borrow().clone();
+                    let metrics = state.raft_db.raft.metrics().borrow_watched().clone();
                     find_leader = Self::find_set_leader(metrics, &self.inner.leader_db).await;
                 }
             }
 
             #[cfg(feature = "cache")]
             {
-                let metrics = state.raft_cache.raft.metrics().borrow().clone();
+                let metrics = state.raft_cache.raft.metrics().borrow_watched().clone();
                 let mut find_leader =
                     Self::find_set_leader(metrics, &self.inner.leader_cache).await;
 
                 while let Err(err) = find_leader {
                     warn!("Find cache leader error: {}", err);
                     time::sleep(Duration::from_millis(500)).await;
-                    let metrics = state.raft_cache.raft.metrics().borrow().clone();
+                    let metrics = state.raft_cache.raft.metrics().borrow_watched().clone();
                     find_leader = Self::find_set_leader(metrics, &self.inner.leader_cache).await;
                 }
             }
@@ -138,7 +143,7 @@ impl Client {
     }
 
     #[cfg(feature = "cache")]
-    async fn remote_metrics_loop_cache(&self) -> RaftMetrics<NodeId, Node> {
+    async fn remote_metrics_loop_cache(&self) -> RaftMetrics<TypeConfigCache> {
         loop {
             for addr in &self.inner.nodes {
                 {
@@ -160,7 +165,7 @@ impl Client {
     }
 
     #[cfg(feature = "sqlite")]
-    async fn remote_metrics_loop_db(&self) -> RaftMetrics<NodeId, Node> {
+    async fn remote_metrics_loop_db(&self) -> RaftMetrics<TypeConfigSqlite> {
         loop {
             for addr in &self.inner.nodes {
                 {
@@ -182,10 +187,17 @@ impl Client {
     }
 
     /// Resolve the current leader from cluster metrics and update the cached leader address.
-    pub(crate) async fn find_set_leader(
-        metrics: RaftMetrics<NodeId, Node>,
+    pub(crate) async fn find_set_leader<C>(
+        metrics: RaftMetrics<C>,
         leader: &Arc<RwLock<(NodeId, String)>>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        C: RaftTypeConfig<
+                NodeId = u64,
+                Node = Node,
+                Membership = openraft::impls::Membership<u64, Node>,
+            >,
+    {
         let leader_id = match metrics.current_leader {
             None => {
                 return Err(Error::Connect("Leader vote is in progress".to_string()));
@@ -313,6 +325,7 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::{TypeConfigWire, WireMetrics};
 
     #[tokio::test]
     async fn await_channel_response_returns_value() {
@@ -337,8 +350,8 @@ mod tests {
         assert!(err.to_string().contains("timed out"));
     }
 
-    fn metrics_with_leader(leader_id: u64, members: &[u64]) -> RaftMetrics<NodeId, Node> {
-        use openraft::{Membership, ServerState, StoredMembership, Vote};
+    fn metrics_with_leader(leader_id: u64, members: &[u64]) -> WireMetrics {
+        use openraft::type_config::alias::{MembershipOf, StoredMembershipOf};
         use std::collections::{BTreeMap, BTreeSet};
 
         let nodes = members
@@ -355,24 +368,19 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
 
-        RaftMetrics {
-            running_state: Ok(()),
-            id: leader_id,
-            current_term: 0,
-            vote: Vote::default(),
-            last_log_index: None,
-            last_applied: None,
-            snapshot: None,
-            purged: None,
-            state: ServerState::Follower,
-            current_leader: Some(leader_id),
-            millis_since_quorum_ack: None,
-            membership_config: Arc::new(StoredMembership::new(
-                None,
-                Membership::new(vec![BTreeSet::from_iter(members.iter().copied())], nodes),
-            )),
-            replication: None,
-        }
+        let membership = MembershipOf::<TypeConfigWire>::new(
+            vec![BTreeSet::from_iter(members.iter().copied())],
+            nodes,
+        )
+        .unwrap();
+
+        // `find_set_leader` only reads the leader and the membership, everything else can stay
+        // at openraft's default
+        let mut metrics = RaftMetrics::new_initial(leader_id);
+        metrics.current_leader = Some(leader_id);
+        metrics.membership_config =
+            Arc::new(StoredMembershipOf::<TypeConfigWire>::new(None, membership));
+        metrics
     }
 
     #[tokio::test]

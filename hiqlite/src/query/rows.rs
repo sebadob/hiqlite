@@ -758,7 +758,7 @@ mod try_from_row_tests {
         let mut row = make_row(&[
             ("name", ValueOwned::Text("hi".into())),
             ("count", ValueOwned::Integer(42)),
-            ("big", ValueOwned::Text(u64::MAX.to_string().into())),
+            ("big", ValueOwned::Text(u64::MAX.to_string())),
             ("skipped", ValueOwned::Integer(999)),
             ("a", ValueOwned::Text("inner".into())),
         ]);

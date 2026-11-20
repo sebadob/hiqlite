@@ -1,6 +1,4 @@
-use crate::network::HEADER_NAME_SECRET;
-use axum::http::{HeaderName, HeaderValue, header};
-use std::str::FromStr;
+use axum::http::{HeaderValue, header};
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower::layer::util::{Identity, Stack};
@@ -25,12 +23,9 @@ type MiddlewareStack = Stack<
 >;
 
 pub fn middleware() -> MiddlewareStack {
-    let sensitive_headers: Arc<[_]> = vec![
-        header::AUTHORIZATION,
-        header::COOKIE,
-        HeaderName::from_str(HEADER_NAME_SECRET).unwrap(),
-    ]
-    .into();
+    // The API secret travels in the standard `Authorization` header, which every logger that
+    // understands sensitive headers redacts by default. `COOKIE` covers the dashboard's own session.
+    let sensitive_headers: Arc<[_]> = vec![header::AUTHORIZATION, header::COOKIE].into();
 
     ServiceBuilder::new()
         .layer(SetSensitiveRequestHeadersLayer::from_shared(

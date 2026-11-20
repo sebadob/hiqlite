@@ -3,23 +3,26 @@ use crate::network::handshake::HandshakeSecret;
 use crate::network::{AppStateExt, Error};
 use axum::response::IntoResponse;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
-use openraft::error::{Fatal, InstallSnapshotError, RaftError};
+use openraft::errors::{Fatal, RaftError, StreamingError, Unreachable};
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 use std::sync::atomic::Ordering;
 use tokio::task;
 use tracing::{debug, error, warn};
 
+use crate::network::{WireSnapshotMeta, WireVote};
 #[cfg(feature = "cache")]
-use crate::store::state_machine::memory::TypeConfigKV;
+use crate::store::state_machine::memory::TypeConfigCache;
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::raft::{
-    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
-    VoteRequest, VoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse, SnapshotResponse, TransferLeaderRequest,
+    TransferLeaderResponse, VoteRequest, VoteResponse,
 };
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::type_config::alias::SnapshotOf;
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Serialize, Deserialize)]
@@ -27,16 +30,32 @@ pub enum RaftStreamRequest {
     #[cfg(feature = "sqlite")]
     AppendDB((usize, AppendEntriesRequest<TypeConfigSqlite>)),
     #[cfg(feature = "sqlite")]
-    VoteDB((usize, VoteRequest<u64>)),
+    VoteDB((usize, VoteRequest<TypeConfigSqlite>)),
     #[cfg(feature = "sqlite")]
-    SnapshotDB((usize, InstallSnapshotRequest<TypeConfigSqlite>)),
+    SnapshotDB(SnapshotWireRequest),
+    #[cfg(feature = "sqlite")]
+    TransferLeaderDB((usize, TransferLeaderRequest<TypeConfigSqlite>)),
 
     #[cfg(feature = "cache")]
-    AppendCache((usize, AppendEntriesRequest<TypeConfigKV>)),
+    AppendCache((usize, AppendEntriesRequest<TypeConfigCache>)),
     #[cfg(feature = "cache")]
-    VoteCache((usize, VoteRequest<u64>)),
+    VoteCache((usize, VoteRequest<TypeConfigCache>)),
     #[cfg(feature = "cache")]
-    SnapshotCache((usize, InstallSnapshotRequest<TypeConfigKV>)),
+    SnapshotCache(SnapshotWireRequest),
+    #[cfg(feature = "cache")]
+    TransferLeaderCache((usize, TransferLeaderRequest<TypeConfigCache>)),
+}
+
+/// One chunk of a streamed snapshot. openraft hands the network the snapshot data instead
+/// of a payload, so the chunking stays ours and `vote` + `meta` travel with every chunk.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SnapshotWireRequest {
+    pub request_id: usize,
+    pub vote: WireVote,
+    pub meta: WireSnapshotMeta,
+    pub data: Vec<u8>,
+    pub first: bool,
+    pub last: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,22 +64,28 @@ pub struct RaftStreamResponse {
     pub payload: RaftStreamResponsePayload,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
 #[allow(clippy::enum_variant_names)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum RaftStreamResponsePayload {
     #[cfg(feature = "sqlite")]
-    AppendDB(Result<AppendEntriesResponse<u64>, RaftError<u64>>),
+    AppendDB(Result<AppendEntriesResponse<TypeConfigSqlite>, RaftError<TypeConfigSqlite>>),
     #[cfg(feature = "sqlite")]
-    VoteDB(Result<VoteResponse<u64>, RaftError<u64>>),
+    VoteDB(Result<VoteResponse<TypeConfigSqlite>, RaftError<TypeConfigSqlite>>),
     #[cfg(feature = "sqlite")]
-    SnapshotDB(Result<InstallSnapshotResponse<u64>, RaftError<u64, InstallSnapshotError>>),
+    SnapshotDB(Result<SnapshotResponse<TypeConfigSqlite>, StreamingError<TypeConfigSqlite>>),
+    #[cfg(feature = "sqlite")]
+    TransferLeaderDB(Result<TransferLeaderResponse<TypeConfigSqlite>, RaftError<TypeConfigSqlite>>),
 
     #[cfg(feature = "cache")]
-    AppendCache(Result<AppendEntriesResponse<u64>, RaftError<u64>>),
+    AppendCache(Result<AppendEntriesResponse<TypeConfigCache>, RaftError<TypeConfigCache>>),
     #[cfg(feature = "cache")]
-    VoteCache(Result<VoteResponse<u64>, RaftError<u64>>),
+    VoteCache(Result<VoteResponse<TypeConfigCache>, RaftError<TypeConfigCache>>),
     #[cfg(feature = "cache")]
-    SnapshotCache(Result<InstallSnapshotResponse<u64>, RaftError<u64, InstallSnapshotError>>),
+    SnapshotCache(Result<SnapshotResponse<TypeConfigCache>, StreamingError<TypeConfigCache>>),
+    #[cfg(feature = "cache")]
+    TransferLeaderCache(
+        Result<TransferLeaderResponse<TypeConfigCache>, RaftError<TypeConfigCache>>,
+    ),
 }
 
 #[derive(Debug)]
@@ -240,7 +265,12 @@ async fn handle_socket(
         let (request_id, payload) = match req {
             #[cfg(feature = "sqlite")]
             RaftStreamRequest::AppendDB((request_id, req)) => {
-                let res = state.raft_db.raft.append_entries(req).await;
+                let res = state
+                    .raft_db
+                    .raft
+                    .append_entries(req)
+                    .await
+                    .map(AppendEntriesResponse::from);
                 if let Err(RaftError::Fatal(Fatal::Stopped)) = &res {
                     debug!("Raft DB stopped - exiting");
                     state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
@@ -254,14 +284,30 @@ async fn handle_socket(
                 (request_id, RaftStreamResponsePayload::VoteDB(res))
             }
             #[cfg(feature = "sqlite")]
-            RaftStreamRequest::SnapshotDB((request_id, req)) => {
-                let res = state.raft_db.raft.install_snapshot(req).await;
+            RaftStreamRequest::SnapshotDB(req) => {
+                let request_id = req.request_id;
+                let res = snapshot_chunk_db(&state, req).await;
                 (request_id, RaftStreamResponsePayload::SnapshotDB(res))
+            }
+            #[cfg(feature = "sqlite")]
+            RaftStreamRequest::TransferLeaderDB((request_id, req)) => {
+                let res = state
+                    .raft_db
+                    .raft
+                    .handle_transfer_leader(req)
+                    .await
+                    .map_err(RaftError::Fatal);
+                (request_id, RaftStreamResponsePayload::TransferLeaderDB(res))
             }
 
             #[cfg(feature = "cache")]
             RaftStreamRequest::AppendCache((request_id, req)) => {
-                let res = state.raft_cache.raft.append_entries(req).await;
+                let res = state
+                    .raft_cache
+                    .raft
+                    .append_entries(req)
+                    .await
+                    .map(AppendEntriesResponse::from);
                 if let Err(RaftError::Fatal(Fatal::Stopped)) = &res {
                     debug!("Raft Cache stopped - exiting");
                     state
@@ -278,9 +324,23 @@ async fn handle_socket(
                 (request_id, RaftStreamResponsePayload::VoteCache(res))
             }
             #[cfg(feature = "cache")]
-            RaftStreamRequest::SnapshotCache((request_id, req)) => {
-                let res = state.raft_cache.raft.install_snapshot(req).await;
+            RaftStreamRequest::SnapshotCache(req) => {
+                let request_id = req.request_id;
+                let res = snapshot_chunk_cache(&state, req).await;
                 (request_id, RaftStreamResponsePayload::SnapshotCache(res))
+            }
+            #[cfg(feature = "cache")]
+            RaftStreamRequest::TransferLeaderCache((request_id, req)) => {
+                let res = state
+                    .raft_cache
+                    .raft
+                    .handle_transfer_leader(req)
+                    .await
+                    .map_err(RaftError::Fatal);
+                (
+                    request_id,
+                    RaftStreamResponsePayload::TransferLeaderCache(res),
+                )
             }
         };
 
@@ -307,4 +367,114 @@ async fn handle_socket(
     debug!("handle_socket exiting");
 
     Ok(())
+}
+
+/// openraft hands the network the snapshot data instead of a payload, so the chunk assembly is
+/// ours: every chunk lands in the receive file the state machine reads, and only the last one is
+/// handed to the Raft. Earlier chunks get the sender's vote echoed back as an ack.
+#[cfg(feature = "sqlite")]
+async fn snapshot_chunk_db(
+    state: &AppStateExt,
+    req: SnapshotWireRequest,
+) -> Result<SnapshotResponse<TypeConfigSqlite>, StreamingError<TypeConfigSqlite>> {
+    let receiver = receiver_file(&state.raft_db.path_snapshots, "temp", &req)
+        .await
+        .map_err(|err| StreamingError::Unreachable(Unreachable::new(&err)))?;
+
+    if !req.last {
+        return Ok(SnapshotResponse::new(req.vote));
+    }
+
+    let snapshot = SnapshotOf::<TypeConfigSqlite, tokio::fs::File> {
+        meta: req.meta,
+        snapshot: receiver,
+    };
+
+    state
+        .raft_db
+        .raft
+        .install_full_snapshot(req.vote, snapshot)
+        .await
+        .map_err(streaming_from_fatal)
+}
+
+#[cfg(feature = "cache")]
+async fn snapshot_chunk_cache(
+    state: &AppStateExt,
+    req: SnapshotWireRequest,
+) -> Result<SnapshotResponse<TypeConfigCache>, StreamingError<TypeConfigCache>> {
+    let receiver = receiver_file(&state.raft_cache.path_snapshots, "temp~", &req)
+        .await
+        .map_err(|err| StreamingError::Unreachable(Unreachable::new(&err)))?;
+
+    if !req.last {
+        return Ok(SnapshotResponse::new(req.vote));
+    }
+
+    // only the `in-memory-snapshots` build wants the data in the handle itself
+    #[cfg(not(feature = "in-memory-snapshots"))]
+    let data = receiver;
+    #[cfg(feature = "in-memory-snapshots")]
+    let data = {
+        let path = format!("{}/temp~", state.raft_cache.path_snapshots);
+        drop(receiver);
+        std::io::Cursor::new(
+            tokio::fs::read(&path)
+                .await
+                .map_err(|err| StreamingError::Unreachable(Unreachable::new(&err)))?,
+        )
+    };
+
+    let snapshot = SnapshotOf::<TypeConfigCache, _> {
+        meta: req.meta,
+        snapshot: data,
+    };
+
+    state
+        .raft_cache
+        .raft
+        .install_full_snapshot(req.vote, snapshot)
+        .await
+        .map_err(streaming_from_fatal)
+}
+
+/// Write one chunk to the snapshot's receive file. `first` truncates on purpose, so a leftover
+/// file from a crashed run is never appended to.
+async fn receiver_file(
+    dir: &str,
+    name: &str,
+    req: &SnapshotWireRequest,
+) -> Result<tokio::fs::File, std::io::Error> {
+    use tokio::io::AsyncWriteExt;
+
+    let path = format!("{dir}/{name}");
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(!req.first)
+        .truncate(req.first)
+        .open(&path)
+        .await?;
+
+    if !req.data.is_empty() {
+        file.write_all(&req.data).await?;
+    }
+
+    // the state machine reads this file by path, so everything must be on disk already
+    file.flush().await?;
+
+    Ok(file)
+}
+
+fn streaming_from_fatal<C>(fatal: Fatal<C>) -> StreamingError<C>
+where
+    C: openraft::RaftTypeConfig,
+{
+    match fatal {
+        Fatal::StorageError(err) => StreamingError::StorageError(err),
+        // A stopped or panicked Raft has no streaming-level meaning, so the sender sees a closed
+        // replication stream and retries, which is what the old InstallSnapshotError did.
+        other => StreamingError::Closed(openraft::errors::ReplicationClosed::new(other)),
+    }
 }

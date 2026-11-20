@@ -2,6 +2,7 @@ use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::migration::Migration;
 use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
 use crate::store::logs;
+use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine;
 use crate::store::state_machine::sqlite::state_machine::{
     Params, StateMachineData, StateMachineSqlite, StoredSnapshot,
@@ -9,10 +10,10 @@ use crate::store::state_machine::sqlite::state_machine::{
 use crate::store::state_machine::sqlite::transaction_env::{
     TransactionEnv, TransactionParamContext,
 };
-use crate::{AppliedMigration, Error, Node, NodeId, Param};
+use crate::{AppliedMigration, Error, NodeId, Param};
 use chrono::Utc;
 use flume::RecvError;
-use openraft::{LogId, SnapshotMeta, StorageError, StorageIOError, StoredMembership};
+use openraft::type_config::alias::{LogIdOf, StoredMembershipOf};
 use rusqlite::backup::Progress;
 use rusqlite::fallible_iterator::FallibleIterator;
 use rusqlite::fallible_streaming_iterator::FallibleStreamingIterator;
@@ -20,6 +21,7 @@ use rusqlite::types::Value;
 use rusqlite::{Batch, CachedStatement, Rows, Transaction};
 use std::borrow::Cow;
 use std::default::Default;
+use std::io;
 use std::ops::Sub;
 use std::path::PathBuf;
 use std::thread;
@@ -56,7 +58,7 @@ pub enum Query {
 pub struct SqlExecute {
     pub sql: Cow<'static, str>,
     pub params: Params,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub tx: oneshot::Sender<Result<usize, Error>>,
 }
 
@@ -64,28 +66,28 @@ pub struct SqlExecute {
 pub struct SqlExecuteReturning {
     pub sql: Cow<'static, str>,
     pub params: Params,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub tx: oneshot::Sender<Result<Vec<Result<RowOwned, Error>>, Error>>,
 }
 
 #[derive(Debug)]
 pub struct SqlTransaction {
     pub queries: Vec<state_machine::Query>,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub tx: oneshot::Sender<Result<Vec<Result<usize, Error>>, Error>>,
 }
 
 #[derive(Debug)]
 pub struct SqlBatch {
     pub sql: Cow<'static, str>,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub tx: oneshot::Sender<Result<Vec<Result<usize, Error>>, Error>>,
 }
 
 #[derive(Debug)]
 pub struct Migrate {
     pub migrations: Vec<Migration>,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub tx: oneshot::Sender<Result<(), Error>>,
 }
 
@@ -93,7 +95,7 @@ pub struct Migrate {
 pub struct SnapshotRequest {
     pub snapshot_id: Uuid,
     pub path: String,
-    pub ack: oneshot::Sender<Result<SnapshotResponse, StorageError<NodeId>>>,
+    pub ack: oneshot::Sender<Result<SnapshotResponse, io::Error>>,
 }
 
 #[derive(Debug)]
@@ -110,8 +112,8 @@ pub struct MetaPersistRequest {
 
 #[derive(Debug)]
 pub struct MetaMembershipRequest {
-    pub last_membership: StoredMembership<NodeId, Node>,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_membership: StoredMembershipOf<TypeConfigSqlite>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub ack: oneshot::Sender<()>,
 }
 
@@ -122,17 +124,18 @@ pub struct BackupRequest {
     pub ts: i64,
     #[cfg(feature = "s3")]
     pub s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub ack: oneshot::Sender<Result<(), Error>>,
 }
 
 #[derive(Debug)]
 pub struct RTTRequest {
-    pub last_applied_log_id: Option<LogId<NodeId>>,
+    pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
     pub ack: oneshot::Sender<()>,
 }
 
 #[allow(clippy::blocks_in_conditions)]
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_writer(
     mut conn: rusqlite::Connection,
     this_node: NodeId,
@@ -140,6 +143,7 @@ pub fn spawn_writer(
     log_statements: bool,
     do_reset_metadata: bool,
     #[cfg(feature = "backup")] local_backup_keep_for: Duration,
+    #[cfg(feature = "backup")] backup_file_prefix: String,
     lock_file: std::fs::File,
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(1);
@@ -543,9 +547,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                         }
                         Err(err) => {
                             error!("Error creating new snapshot: {:?}", err);
-                            ack.send(Err(StorageError::IO {
-                                source: StorageIOError::write(&err),
-                            }))
+                            ack.send(Err(err.into()))
                         }
                     }
                     .expect("snapshot listener to always exists");
@@ -664,6 +666,8 @@ CREATE TABLE IF NOT EXISTS _metadata
                         req.node_id,
                         req.ts,
                         req.target_folder.clone(),
+                        #[cfg(feature = "backup")]
+                        &backup_file_prefix,
                         #[cfg(feature = "s3")]
                         s3_config,
                         #[cfg(feature = "s3")]
@@ -675,16 +679,20 @@ CREATE TABLE IF NOT EXISTS _metadata
                     }
 
                     #[cfg(feature = "backup")]
-                    rt.spawn(async move {
-                        if let Err(err) = crate::backup::backup_local_cleanup(
-                            req.target_folder,
-                            local_backup_keep_for,
-                        )
-                        .await
-                        {
-                            error!("Error during local backup cleanup: {:?}", err);
-                        }
-                    });
+                    {
+                        let prefix = backup_file_prefix.clone();
+                        rt.spawn(async move {
+                            if let Err(err) = crate::backup::backup_local_cleanup(
+                                req.target_folder,
+                                local_backup_keep_for,
+                                &prefix,
+                            )
+                            .await
+                            {
+                                error!("Error during local backup cleanup: {:?}", err);
+                            }
+                        });
+                    }
 
                     if let Err(err) = conn.execute("PRAGMA optimize", []) {
                         error!("Error during 'PRAGMA optimize': {}", err);
@@ -806,6 +814,7 @@ fn create_backup(
     node_id: NodeId,
     ts: i64,
     target_folder: String,
+    #[cfg(feature = "backup")] file_prefix: &str,
     #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
     #[cfg(feature = "s3")] rt: &runtime::Handle,
 ) -> Result<(), Error> {
@@ -814,6 +823,12 @@ fn create_backup(
     // - connect to vacuumed db and reset metadata
     // - if we have an s3 target, encrypt and push it
 
+    // A backup file is always `{prefix}_{node_id}_{ts}.sqlite`. The prefix comes from the config;
+    // without the `backup` feature nothing lists, cleans up, or restores these files, so the
+    // default shape is all that is left.
+    #[cfg(feature = "backup")]
+    let file = crate::backup::backup_file_name(file_prefix, node_id, ts);
+    #[cfg(not(feature = "backup"))]
     let file = format!("backup_node_{node_id}_{ts}.sqlite");
     let path_full = format!("{target_folder}/{file}");
     info!("Creating database backup into {path_full}");
@@ -881,7 +896,7 @@ fn create_backup(
 fn migrate(
     conn: &mut rusqlite::Connection,
     mut migrations: Vec<Migration>,
-    last_applied_log_id: Option<LogId<NodeId>>,
+    last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
 ) -> Result<(), Error> {
     // The migration `ts` must be identical on all nodes: the wall clock would diverge, the
     // raft log id is deterministic.

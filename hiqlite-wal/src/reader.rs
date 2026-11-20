@@ -6,6 +6,10 @@ use std::thread;
 use tokio::sync::oneshot;
 use tracing::{debug, error};
 
+/// Sentinel for the upper bound of an open-ended range in `Action::Logs`; the reader answers such
+/// a read with everything it holds, like openraft's reference stores do.
+pub(crate) const NO_END: u64 = u64::MAX;
+
 #[allow(clippy::type_complexity)]
 pub enum Action {
     Logs {
@@ -69,12 +73,21 @@ fn run(
 
     while let Ok(action) = rx.recv() {
         match action {
-            Action::Logs { from, until, ack } => {
+            Action::Logs {
+                from,
+                mut until,
+                ack,
+            } => {
                 debug!("WAL Reader - Action::Logs - read from {from} until {until}");
                 {
                     let wal_upd = wal_locked.read().unwrap();
                     wal.active = wal_upd.active;
                     wal.clone_files_from_no_mmap(&wal_upd.files);
+                }
+
+                if until == NO_END {
+                    // an open-ended request is bounded by the end of what we actually hold
+                    until = wal.files.back().map(|f| f.id_until).unwrap_or(until);
                 }
 
                 let mut from_next = from;
@@ -154,6 +167,7 @@ fn run(
                     }
                 };
 
+                let last_purged = meta.read().unwrap().last_purged_log_id.clone();
                 let last_log = if let Some(latest_log_id) = latest_log_id {
                     buf.clear();
                     let active = wal.active();
@@ -174,11 +188,13 @@ fn run(
                     let (_, data) = buf.swap_remove(0);
                     Some(data)
                 } else {
-                    None
+                    // no entries left in the store; openraft's convention is that the last log id
+                    // is the purge frontier, and its startup check requires as much
+                    last_purged.clone()
                 };
 
                 let st = LogState {
-                    last_purged_log_id: meta.read().unwrap().last_purged_log_id.clone(),
+                    last_purged_log_id: last_purged,
                     last_log,
                 };
                 debug!(

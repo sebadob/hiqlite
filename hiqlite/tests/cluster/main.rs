@@ -17,9 +17,11 @@ mod batch;
 mod cache;
 mod check;
 mod dlock;
+mod election_disable;
 mod execute_query;
 mod learner_only;
 mod listen_notify;
+mod master_slave_switch;
 mod migration;
 mod remote_only;
 mod self_heal;
@@ -186,6 +188,7 @@ async fn exec_tests() -> Result<(), Error> {
     ));
     // Restore with only the Raft side over TLS.
     let (client_1, client_2, client_3) = backup_restore::start_test_cluster_with_backup(
+        backup_restore::Restore::EnvVar,
         restore_from == "file",
         start::TlsCombo {
             api: false,
@@ -216,8 +219,10 @@ async fn exec_tests() -> Result<(), Error> {
     time::sleep(Duration::from_millis(1000)).await;
 
     log("Trying to start the cluster again after shutdown with restore from local file backup");
+    log("This start uses the explicit backup source of `start_node_with_cache_from_backup`");
     // Restore with both sides plain.
     let (client_1, client_2, client_3) = backup_restore::start_test_cluster_with_backup(
+        backup_restore::Restore::Explicit,
         true,
         start::TlsCombo {
             api: false,

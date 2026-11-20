@@ -1,5 +1,5 @@
 use crate::client::helpers::await_channel_response;
-use crate::client::stream::{ClientKVPayload, ClientStreamReq};
+use crate::client::stream::{ClientCachePayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::store::state_machine::memory::dlock_handler::{
     LOCK_ALIVE_INTERVAL, LOCK_VALID_SECONDS, LockAwaitPayload, LockRequest, LockState,
@@ -218,7 +218,7 @@ impl Client {
                 .raft_cache
                 .tx_dlock
                 .send(LockRequest::Await(LockAwaitPayload { key, id, ack }))
-                .expect("kv handler to always be running");
+                .expect("cache handler to always be running");
             let state = await_channel_response(rx).await?;
             Ok(state)
         } else {
@@ -267,13 +267,13 @@ impl Client {
             let (ack, rx) = oneshot::channel();
 
             let payload = if is_remote_await {
-                ClientStreamReq::LockAwait(ClientKVPayload {
+                ClientStreamReq::LockAwait(ClientCachePayload {
                     request_id: self.new_request_id(),
                     cache_req,
                     ack,
                 })
             } else {
-                ClientStreamReq::KV(ClientKVPayload {
+                ClientStreamReq::Cache(ClientCachePayload {
                     request_id: self.new_request_id(),
                     cache_req,
                     ack,
@@ -287,7 +287,7 @@ impl Client {
                 .map_err(|err| Error::Error(err.to_string().into()))?;
             let res = await_channel_response(rx).await??;
             match res {
-                ApiStreamResponsePayload::KV(res) => match res? {
+                ApiStreamResponsePayload::Cache(res) => match res? {
                     CacheResponse::Lock(state) => {
                         assert!(!is_remote_await);
                         Ok(state)
