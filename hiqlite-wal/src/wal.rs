@@ -669,6 +669,11 @@ impl WalFile {
         file.set_len(self.len_max as u64)?;
         file.write_all(buf)?;
         file.sync_data()?;
+        // `sync_data()` makes the file's content durable, but not its name: the new directory
+        // entry lives in the parent directory. Without syncing it, a power loss right after a
+        // WAL rollover can lose the new file, including every log appended and acknowledged to
+        // it in the meantime. This only runs once per new WAL file, never per append.
+        sync_parent_dir(&self.path)?;
 
         Ok(())
     }
@@ -1107,10 +1112,65 @@ impl WalFileSet {
     }
 }
 
+/// Syncs the directory containing `path`, so that a file just created inside it survives a
+/// power loss.
+fn sync_parent_dir(path: &str) -> Result<(), Error> {
+    let dir = std::path::Path::new(path)
+        .parent()
+        .ok_or(Error::InvalidPath("WAL file path has no parent directory"))?;
+    // Directories cannot be opened as files on Windows, and NTFS journals the entry anyway.
+    #[cfg(unix)]
+    File::open(dir)?.sync_all()?;
+    #[cfg(test)]
+    tests::synced_dirs::record(dir);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    pub(super) mod synced_dirs {
+        use std::path::{Path, PathBuf};
+        use std::sync::Mutex;
+
+        static SYNCED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+        pub(crate) fn record(dir: &Path) {
+            SYNCED.lock().unwrap().push(dir.to_path_buf());
+        }
+
+        pub(crate) fn count(dir: &Path) -> usize {
+            SYNCED
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|d| d.as_path() == dir)
+                .count()
+        }
+    }
+
+    #[test]
+    fn create_file_syncs_its_directory() -> Result<(), Error> {
+        let base_path = format!("{}/create_file_syncs_dir", PATH);
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+        let dir = std::path::Path::new(&base_path);
+        let before = synced_dirs::count(dir);
+
+        let mut buf = Vec::with_capacity(32);
+        let mut wal = WalFile::new(1, &base_path, 0, 0, MB2).unwrap();
+        wal.create_file(&mut buf)?;
+        assert_eq!(synced_dirs::count(dir), before + 1);
+
+        buf.clear();
+        let mut wal = WalFile::new(2, &base_path, 0, 0, MB2).unwrap();
+        wal.create_file(&mut buf)?;
+        assert_eq!(synced_dirs::count(dir), before + 2);
+
+        Ok(())
+    }
 
     static PATH: &str = "test_data";
     static MB2: u32 = 2 * 1024 * 1024;
