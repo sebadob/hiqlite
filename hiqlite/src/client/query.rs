@@ -1,7 +1,7 @@
 use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientQueryPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
-use crate::query::rows::RowOwned;
+use crate::query::rows::RowsOwned;
 use crate::store::state_machine::sqlite::state_machine::Query;
 use crate::{Client, Error, Params, query};
 use openraft::raft::ReadPolicy;
@@ -28,6 +28,17 @@ impl Client {
     /// the raft and allocates a lot more memory, because it is working with owned data rather than
     /// with borrowed local one for quick mapping.
     /// You should only use it, if you really need to.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the DB request rate limit is exhausted, then the answer of the
+    /// read on the leader: [`Error::PrepareStatement`] and [`Error::QueryParams`] for a
+    /// statement that cannot be built from the given SQL and params, [`Error::Sqlite`] for a
+    /// query the state machine cannot run, and on a remote client [`Error::Error`] when the
+    /// answer channel of the leader is closed and [`Error::Connect`] when it times out, with
+    /// exactly one re-send after [`Error::LeaderChange`], and the
+    /// [`Error::CheckIsLeaderErrorDb`] of a leadership the leader could not confirm under the
+    /// given `read_policy`.
     pub async fn query_consistent<S>(
         &self,
         stmt: S,
@@ -58,6 +69,13 @@ impl Client {
     /// the raft, and allocates a lot more memory, because it is working with owned data rather than
     /// with borrowed local one for quick mapping.
     /// You should only use it if you really need to.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the DB request rate limit is exhausted, and everything
+    /// [`Self::query_consistent`] can return. The mapping of a row is not an error - see the
+    /// panics.
+    ///
     ///
     /// # Panics
     ///
@@ -115,6 +133,15 @@ impl Client {
     ///     .await?;
     /// ```
     ///
+    /// # Errors
+    ///
+    /// [`Error::PrepareStatement`] and [`Error::QueryParams`] for a statement that cannot be
+    /// built from the given SQL and params, [`Error::Sqlite`] for a query the state machine
+    /// cannot run, and on a remote client [`Error::Error`] when the answer channel of the
+    /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
+    /// after [`Error::LeaderChange`].
+    ///
+    ///
     /// # Panics
     ///
     /// If the returned data from the DB does not match the requested output type.
@@ -124,7 +151,7 @@ impl Client {
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.inner.state {
-            query::query_map(state, stmt, params).await
+            query::query_map(state, stmt, params, query::ROWS_HINT).await
         } else {
             Ok(self
                 .query_remote(stmt, params, None)
@@ -136,6 +163,15 @@ impl Client {
     }
 
     /// Non-panicking version of `query_map`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PrepareStatement`] and [`Error::QueryParams`] for a statement that cannot be
+    /// built from the given SQL and params, [`Error::Sqlite`] for a query the state machine
+    /// cannot run, and on a remote client [`Error::Error`] when the answer channel of the
+    /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
+    /// after [`Error::LeaderChange`]. A row that cannot be mapped into `T` is the `Err` of its
+    /// slot in the returned `Vec`.
     pub async fn query_try_map<T, S>(
         &self,
         stmt: S,
@@ -146,7 +182,7 @@ impl Client {
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.inner.state {
-            query::query_try_map(state, stmt, params).await
+            query::query_try_map(state, stmt, params, query::ROWS_HINT).await
         } else {
             Ok(self
                 .query_remote(stmt, params, None)
@@ -166,6 +202,16 @@ impl Client {
     ///     .query_map_one("SELECT * FROM test WHERE id = $1", params!("id1"))
     ///     .await?;
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PrepareStatement`] and [`Error::QueryParams`] for a statement that cannot be
+    /// built from the given SQL and params, [`Error::Sqlite`] for a query the state machine
+    /// cannot run, and on a remote client [`Error::Error`] when the answer channel of the
+    /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
+    /// after [`Error::LeaderChange`], [`Error::QueryReturnedNoRows`] when the query returns no
+    /// row at all and [`Error::Sqlite`] when it returns more than one.
+    ///
     ///
     /// # Panics
     ///
@@ -192,6 +238,16 @@ impl Client {
     }
 
     /// Non-panicking version of `query_map`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PrepareStatement`] and [`Error::QueryParams`] for a statement that cannot be
+    /// built from the given SQL and params, [`Error::Sqlite`] for a query the state machine
+    /// cannot run, and on a remote client [`Error::Error`] when the answer channel of the
+    /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
+    /// after [`Error::LeaderChange`], [`Error::QueryReturnedNoRows`] when the query returns no
+    /// row at all and [`Error::Sqlite`] when it returns more than one. A row that cannot be
+    /// mapped into `T` is the returned `Err`.
     pub async fn query_try_map_one<T, S>(
         &self,
         stmt: S,
@@ -220,6 +276,16 @@ impl Client {
     /// Works in the same way as `query_map_one()`, but returns only one result as an `Option<T>`.
     /// If no rows have been returned (without database errors), you will get an `Ok(None)`.
     ///
+    /// # Errors
+    ///
+    /// [`Error::PrepareStatement`] and [`Error::QueryParams`] for a statement that cannot be
+    /// built from the given SQL and params, [`Error::Sqlite`] for a query the state machine
+    /// cannot run, and on a remote client [`Error::Error`] when the answer channel of the
+    /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
+    /// after [`Error::LeaderChange`], and [`Error::Sqlite`] when the query returns more than
+    /// one row. No rows at all is `Ok(None)`.
+    ///
+    ///
     /// # Panics
     ///
     /// If the returned data from the DB does not match the requested output type.
@@ -245,6 +311,16 @@ impl Client {
     }
 
     /// Non-panicking version of `query_map`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PrepareStatement`] and [`Error::QueryParams`] for a statement that cannot be
+    /// built from the given SQL and params, [`Error::Sqlite`] for a query the state machine
+    /// cannot run, and on a remote client [`Error::Error`] when the answer channel of the
+    /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
+    /// after [`Error::LeaderChange`], and [`Error::Sqlite`] when the query returns more than
+    /// one row. No rows at all is `Ok(None)`; a row that cannot be mapped into `T` is the `Err`
+    /// inside the `Some`.
     pub async fn query_try_map_optional<T, S>(
         &self,
         stmt: S,
@@ -279,6 +355,15 @@ impl Client {
     ///
     /// **Note:**
     /// This works for local clients only, not for `hiqlite::Client::remote()` or `query_consistent`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for a remote client - serde mapping needs the local rows - plus
+    /// [`Error::PrepareStatement`] and [`Error::QueryParams`] for a statement that cannot be
+    /// built from the given SQL and params, [`Error::Sqlite`] for a query the state machine
+    /// cannot run, and on a remote client [`Error::Error`] when the answer channel of the
+    /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
+    /// after [`Error::LeaderChange`].
     pub async fn query_as<T, S>(&self, stmt: S, params: Params) -> Result<Vec<T>, Error>
     where
         T: DeserializeOwned + Send + 'static,
@@ -298,6 +383,16 @@ impl Client {
     /// Works in the same way as `query_as()`, but returns only one result.
     ///
     /// Errors if no rows are returned and ignores additional results if more than one row returned.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for a remote client, [`Error::PrepareStatement`] and
+    /// [`Error::QueryParams`] for a statement that cannot be built from the given SQL and
+    /// params, [`Error::Sqlite`] for a query the state machine cannot run, and on a remote
+    /// client [`Error::Error`] when the answer channel of the leader is closed and
+    /// [`Error::Connect`] when it times out, with exactly one re-send after
+    /// [`Error::LeaderChange`], [`Error::QueryReturnedNoRows`] when the query returns no row at
+    /// all; more than one row is mapped to the first one and the rest is ignored.
     pub async fn query_as_one<T, S>(&self, stmt: S, params: Params) -> Result<T, Error>
     where
         T: DeserializeOwned + Send + 'static,
@@ -317,6 +412,16 @@ impl Client {
     /// Works in the same way as `query_as_one()`, but returns only one result as `Option<T>`.
     /// Unlike the `query_as_one()`, this does not throw an error if no Rows have been returned,
     /// but just returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for a remote client, [`Error::PrepareStatement`] and
+    /// [`Error::QueryParams`] for a statement that cannot be built from the given SQL and
+    /// params, [`Error::Sqlite`] for a query the state machine cannot run, and on a remote
+    /// client [`Error::Error`] when the answer channel of the leader is closed and
+    /// [`Error::Connect`] when it times out, with exactly one re-send after
+    /// [`Error::LeaderChange`], and [`Error::Sqlite`] when the query returns more than one row.
+    /// No rows at all is `Ok(None)`.
     pub async fn query_as_optional<T, S>(&self, stmt: S, params: Params) -> Result<Option<T>, Error>
     where
         T: DeserializeOwned + Send + 'static,
@@ -336,19 +441,31 @@ impl Client {
     /// A raw query will return the bare `Row` without doing any deserialization or mapping.
     /// This can be useful if you just need to know if a query succeeds, or if you need to manually
     /// work with the result without being able to convert it into a type.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PrepareStatement`] and [`Error::QueryParams`] for a statement that cannot be
+    /// built from the given SQL and params, [`Error::Sqlite`] for a query the state machine
+    /// cannot run, and on a remote client [`Error::Error`] when the answer channel of the
+    /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
+    /// after [`Error::LeaderChange`].
     pub async fn query_raw<S>(&self, stmt: S, params: Params) -> Result<Vec<crate::Row<'_>>, Error>
     where
         S: Into<Cow<'static, str>>,
     {
         if let Some(state) = &self.inner.state {
-            let rows = query::query_owned_local(
+            let (cols, rows) = query::query_owned_local(
                 state.raft_db.log_statements,
                 state.raft_db.read_pool.clone(),
                 stmt,
                 params,
             )
-            .await?;
-            Ok(rows.into_iter().map(crate::Row::Owned).collect())
+            .await?
+            .into_parts();
+            Ok(rows
+                .into_iter()
+                .map(|row| crate::Row::Owned(row, cols.clone()))
+                .collect())
         } else {
             self.query_remote(stmt, params, None).await
         }
@@ -358,6 +475,15 @@ impl Client {
     ///
     /// This version will return exactly one `Row`.
     /// Throws an error if the returned rows are not exactly one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PrepareStatement`] and [`Error::QueryParams`] for a statement that cannot be
+    /// built from the given SQL and params, [`Error::Sqlite`] for a query the state machine
+    /// cannot run, and on a remote client [`Error::Error`] when the answer channel of the
+    /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
+    /// after [`Error::LeaderChange`], [`Error::Sqlite`] when the query returns no row at all
+    /// and [`Error::Sqlite`] when it returns more than one.
     pub async fn query_raw_one<S>(&self, stmt: S, params: Params) -> Result<crate::Row<'_>, Error>
     where
         S: Into<Cow<'static, str>>,
@@ -389,7 +515,7 @@ impl Client {
             params,
         };
 
-        let res = match self
+        let (cols, rows) = match self
             .query_remote_req(query.clone(), read_policy.clone())
             .await
         {
@@ -405,9 +531,11 @@ impl Client {
                 }
             }
         }?
-        .into_iter()
-        .map(crate::Row::Owned)
-        .collect();
+        .into_parts();
+        let res = rows
+            .into_iter()
+            .map(|row| crate::Row::Owned(row, cols.clone()))
+            .collect();
 
         Ok(res)
     }
@@ -416,7 +544,7 @@ impl Client {
         &self,
         query: Query,
         read_policy: Option<ReadPolicy>,
-    ) -> Result<Vec<RowOwned>, Error> {
+    ) -> Result<RowsOwned, Error> {
         let (ack, rx) = oneshot::channel();
         let request_id = self.new_request_id();
 

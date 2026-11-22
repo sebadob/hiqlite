@@ -1,18 +1,65 @@
 use crate::network::AppStateExt;
 use crate::network::api::ApiStreamResponsePayload;
-use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
+use crate::query::rows::{ColumnInfo, RowOwned, RowsOwned, ValueOwned};
 use crate::store::state_machine::sqlite::state_machine::{
     FORBIDDEN_NON_DET_FNS, Query, QueryWrite,
 };
 use crate::{Error, Params};
+use serde::ser::{SerializeMap as _, SerializeSeq as _};
+use serde::{Serialize, Serializer};
 use tokio::sync::oneshot;
 use tokio::task;
 use tracing::debug;
 
+/// The result of a dashboard query, serialized in the JSON shape the dashboard reads: a list of
+/// objects, one per row, keyed by the column names of the query.
+pub(crate) struct DashboardRows<'a> {
+    columns: &'a [String],
+    rows: &'a [RowOwned],
+}
+
+impl<'a> DashboardRows<'a> {
+    pub(crate) fn new(rows: &'a RowsOwned) -> Self {
+        Self {
+            columns: &rows.columns,
+            rows: &rows.rows,
+        }
+    }
+}
+
+/// One row paired with the column names it is keyed by.
+struct RowJson<'a> {
+    columns: &'a [String],
+    row: &'a RowOwned,
+}
+
+impl Serialize for RowJson<'_> {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        let mut obj = ser.serialize_map(Some(self.columns.len()))?;
+        for (name, value) in self.columns.iter().zip(self.row.values.iter()) {
+            obj.serialize_entry(name, &value)?;
+        }
+        obj.end()
+    }
+}
+
+impl Serialize for DashboardRows<'_> {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        let mut rows = ser.serialize_seq(Some(self.rows.len()))?;
+        for row in self.rows {
+            rows.serialize_element(&RowJson {
+                columns: self.columns,
+                row,
+            })?;
+        }
+        rows.end()
+    }
+}
+
 pub(crate) async fn dashboard_query_dynamic(
     state: AppStateExt,
     sql: String,
-) -> Result<Vec<RowOwned>, Error> {
+) -> Result<RowsOwned, Error> {
     let start_lower = sql
         .chars()
         .take(7)
@@ -23,7 +70,7 @@ pub(crate) async fn dashboard_query_dynamic(
     }
 
     if state.raft_db.log_statements {
-        debug!("dashboard query:\n{}", sql)
+        debug!("dashboard query:\n{sql}");
     }
 
     // we need to check if we can do a local select query or if it is
@@ -40,9 +87,7 @@ pub(crate) async fn dashboard_query_dynamic(
         task::spawn_blocking(move || {
             let mut stmt = conn.prepare(&sql)?;
 
-            let cols = stmt.columns();
-            let cols_len = cols.len();
-            let columns = ColumnOwned::mapping_cols_from_stmt(cols, cols_len)?;
+            let columns = ColumnInfo::mapping_cols_from_stmt(stmt.columns());
 
             let mut rows = stmt.raw_query();
             let mut rows_owned = Vec::new();
@@ -57,7 +102,8 @@ pub(crate) async fn dashboard_query_dynamic(
                 }
             }
 
-            Ok::<Vec<RowOwned>, Error>(rows_owned)
+            let names = columns.into_iter().map(|c| c.name).collect();
+            Ok::<RowsOwned, Error>(RowsOwned::new(names, rows_owned))
         })
         .await?
     } else {
@@ -98,17 +144,14 @@ pub(crate) async fn dashboard_query_dynamic(
             }
         };
 
-        let affected = if rows_affected > i64::MAX as usize {
-            i64::MAX
-        } else {
-            rows_affected as i64
-        };
-        Ok(vec![RowOwned {
-            columns: vec![ColumnOwned {
-                name: "rows_affected".to_string(),
-                value: ValueOwned::Integer(affected),
+        // Saturate at `i64::MAX`: the value is only reported to the UI as a number.
+        let affected = i64::try_from(rows_affected).unwrap_or(i64::MAX);
+        Ok(RowsOwned::new(
+            vec!["rows_affected".to_string()],
+            vec![RowOwned {
+                values: vec![Some(ValueOwned::Integer(affected))],
             }],
-        }])
+        ))
     }
 }
 
@@ -150,7 +193,7 @@ async fn execute_dynamic(state: &AppStateExt, sql: Query) -> Result<usize, Error
     }
 }
 
-#[inline(always)]
+#[inline]
 pub(crate) async fn is_this_local_leader(state: &AppStateExt) -> Result<bool, Error> {
     match state.raft_db.raft.current_leader().await {
         None => Err(Error::LeaderChange(

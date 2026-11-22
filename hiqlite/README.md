@@ -92,7 +92,7 @@ round-trips for each write by design.
 The performance can vary quite a bit, depending on your setup and hardware, of course. Quite a lot
 of work has been put into performance tuning already and I would say, it will be able to handle
 everything you throw at it. When you reach the threshold, you are probably in an area where you
-usually would not rely on a single database instance with something like a Postgres anymore as well.  
+usually would not rely on a single database instance with something like a Postgres anymore as well.\
 SSDs and fast memory make quite a big difference of course. Regarding the CPU, the whole system is
 designed to benefit more from fewer cores with higher single core speed like Workstation CPU's or
 AMD Epyc 4004 series. The reason is the single writer at a time limitation from SQLite.
@@ -266,7 +266,7 @@ optional per cache per entry TTL for each key.
 
 ### `cast_ints`
 
-This feature will make it possible to do integer casts when converting from a DB INTEGER. SQLites
+This feature will make it possible to do integer casts when converting from a DB INTEGER. SQLite's
 `INTEGER` is technically always an `i64`. This means you cannot safely convert into e.g. a `u32`.
 However, since Rust is strictly typed, you can assume that even though columns can store `i64`, they
 will never contain values outside a `u32`.
@@ -361,18 +361,18 @@ always matches the version Hiqlite was compiled against.
 
 This feature enables the regular Hiqlite cluster features apart from the `server` feature:
 
-- auto-heal
-- backup
-- cache
-- counters
-- dashboard
-- dlock
-- listen_notify
-- s3
-- shutdown-handle
-- sqlite
-- toml
-- webpki-roots
+- `auto-heal`
+- `backup`
+- `cache`
+- `counters`
+- `dashboard`
+- `dlock`
+- `listen_notify`
+- `s3`
+- `shutdown-handle`
+- `sqlite`
+- `toml`
+- `webpki-roots`
 
 ### `in-memory-snapshots`
 

@@ -13,7 +13,6 @@ use openraft::errors::RPCError;
 use openraft::errors::Unreachable;
 use std::collections::HashMap;
 use std::future::Future;
-use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -437,7 +436,7 @@ impl NetworkStreaming {
                 };
 
                 if let Some((ack, payload)) = stream_req {
-                    let bytes = serialize_serde(&payload).unwrap();
+                    let bytes = serialize_serde(&payload);
 
                     if let Err(err) = tx_write.send_async(WritePayload::Payload(bytes)).await {
                         let _ = ack.send(Err(Error::Connect(format!(
@@ -491,10 +490,9 @@ impl NetworkStreaming {
             .await
         {
             match frame.opcode {
-                OpCode::Continuation => {}
-                OpCode::Text => {}
+                OpCode::Continuation | OpCode::Text | OpCode::Ping | OpCode::Pong => {}
                 OpCode::Binary => {
-                    let bytes = frame.payload.deref();
+                    let bytes = &*frame.payload;
                     let payload = match deserialize_serde::<RaftStreamResponse>(bytes) {
                         Ok(payload) => payload,
                         Err(err) => {
@@ -512,8 +510,6 @@ impl NetworkStreaming {
                     }
                 }
                 OpCode::Close => break,
-                OpCode::Ping => {}
-                OpCode::Pong => {}
             }
         }
 
@@ -563,7 +559,7 @@ impl Drop for NetworkConnectionStreaming {
 }
 
 impl NetworkConnectionStreaming {
-    #[inline(always)]
+    #[inline]
     async fn send(
         &mut self,
         req: RaftRequest,

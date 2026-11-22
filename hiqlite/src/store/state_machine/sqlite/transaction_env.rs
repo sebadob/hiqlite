@@ -7,7 +7,7 @@ use rusqlite::{Transaction, types::Value};
 
 use crate::Error;
 
-/// Data structure for supporting Param::StmtOutput
+/// Data structure for supporting `Param::StmtOutput`
 #[derive(Default)]
 pub struct TransactionEnv {
     /// observable statements: statements with row output.

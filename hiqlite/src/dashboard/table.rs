@@ -1,6 +1,6 @@
 use crate::dashboard::handlers::TableFilterRequest;
 use crate::network::AppStateExt;
-use crate::query::query_map;
+use crate::query::{self, query_map};
 use crate::{Error, Param, Params};
 use serde::Serialize;
 
@@ -50,6 +50,7 @@ impl Table {
             state,
             "SELECT type,name,tbl_name,sql FROM sqlite_master",
             Params::new(),
+            query::ROWS_HINT,
         )
         .await?;
 
@@ -64,6 +65,7 @@ impl Table {
             state,
             "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE type = $1",
             vec![Param::Text(filter.as_str().to_string())],
+            query::ROWS_HINT,
         )
         .await?;
 

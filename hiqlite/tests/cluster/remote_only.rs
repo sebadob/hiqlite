@@ -76,7 +76,7 @@ async fn test_get_remove_atomicity(client: &Client) -> Result<(), Error> {
             client.get_remove::<_, _, String>(Cache::One, key),
         );
 
-        let wins = [a?, b?].into_iter().filter(Option::is_some).count();
+        let wins = [a?, b?].into_iter().flatten().count();
         assert_eq!(wins, 1, "exactly one concurrent get_remove must win");
     }
 
@@ -126,7 +126,7 @@ async fn test_mixed_claim_atomicity(client: &Client) -> Result<(), Error> {
 async fn check_client(client: &Client, id: u64) -> Result<(), Error> {
     check::is_client_db_healthy(client, Some(id)).await?;
 
-    log(format!("Test remote client {} database", id));
+    log(format!("Test remote client {id} database"));
 
     // single execute / query
     let data = TestData {
@@ -201,10 +201,10 @@ async fn check_client(client: &Client, id: u64) -> Result<(), Error> {
     // batch
     let results = client
         .batch(
-            r#"
+            r"
         DELETE FROM test WHERE id = 1001;
         DELETE FROM test WHERE id = 1002;
-        "#,
+        ",
         )
         .await?;
 
@@ -218,7 +218,7 @@ async fn check_client(client: &Client, id: u64) -> Result<(), Error> {
         .await?;
     assert_eq!(data.len(), 0);
 
-    log(format!("Test remote client {} cache", id));
+    log(format!("Test remote client {id} cache"));
     let key = "remote_key";
     let value = "remote Value";
     client
@@ -233,7 +233,7 @@ async fn check_client(client: &Client, id: u64) -> Result<(), Error> {
     let v: Option<String> = client.get(Cache::One, key).await?;
     assert!(v.is_none());
 
-    log(format!("Test remote client {} locks", id));
+    log(format!("Test remote client {id} locks"));
     let lock = client.lock("remote").await?;
 
     let cl = client.clone();

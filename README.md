@@ -372,18 +372,18 @@ always matches the version Hiqlite was compiled against.
 
 This feature enables the regular Hiqlite cluster features apart from the `server` feature:
 
-- auto-heal
-- backup
-- cache
-- counters
-- dashboard
-- dlock
-- listen_notify
-- s3
-- shutdown-handle
-- sqlite
-- toml
-- webpki-roots
+- `auto-heal`
+- `backup`
+- `cache`
+- `counters`
+- `dashboard`
+- `dlock`
+- `listen_notify`
+- `s3`
+- `shutdown-handle`
+- `sqlite`
+- `toml`
+- `webpki-roots`
 
 ### `in-memory-snapshots`
 

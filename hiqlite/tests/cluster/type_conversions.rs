@@ -97,11 +97,11 @@ pub async fn test_type_conversions(client: &Client) -> Result<(), Error> {
 
     let mut ret: Vec<Result<Data, Error>> = client
         .execute_returning_map(
-            r#"INSERT INTO type_conversion
+            r"INSERT INTO type_conversion
             (id, id_none, id_opt, name, name_none, name_opt, is_bool, utc, local, offset,
             naive_date, naive_time, naive_dt, json)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-            RETURNING *"#,
+            RETURNING *",
             params,
         )
         .await?;

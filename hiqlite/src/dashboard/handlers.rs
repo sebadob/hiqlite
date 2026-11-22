@@ -3,13 +3,12 @@ use crate::dashboard::session::{INSECURE_COOKIES, Session};
 use crate::dashboard::table::Table;
 use crate::dashboard::{query, session};
 use crate::network::AppStateExt;
-use crate::query::rows::RowOwned;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use axum::body::Body;
 use axum::extract::Path;
 use axum::http::header::LOCATION;
 use axum::http::{HeaderMap, Method};
-use axum::response::Response;
+use axum::response::{IntoResponse as _, Response};
 use axum::{Form, Json, body};
 use hyper::StatusCode;
 use openraft::RaftMetrics;
@@ -53,7 +52,7 @@ pub async fn post_session(
     session::set_session_verify(&state, Method::POST, &headers, login.password).await
 }
 
-/// Reject a missing or invalid PoW proof only when the dashboard is served over TLS
+/// Reject a missing or invalid `PoW` proof only when the dashboard is served over TLS
 /// (auto-TLS via `tls_api` / `tls_auto_certificates`); over plain HTTP the proof is
 /// ignored, mirroring the browser's `window.isSecureContext` check.
 fn validate_pow_if_tls(pow: &str, is_tls: bool) -> Result<(), Error> {
@@ -106,15 +105,13 @@ pub async fn get_tables_filtered(
 }
 
 #[tracing::instrument(skip_all)]
-pub async fn post_query(
-    state: AppStateExt,
-    _: Session,
-    body: body::Bytes,
-) -> Result<Json<Vec<RowOwned>>, Error> {
+pub async fn post_query(state: AppStateExt, _: Session, body: body::Bytes) -> Response {
     let binding = String::from_utf8_lossy(body.as_ref());
     let sql = binding.trim().to_string();
-    let res = query::dashboard_query_dynamic(state, sql).await?;
-    Ok(Json(res))
+    match query::dashboard_query_dynamic(state, sql).await {
+        Ok(res) => Json(query::DashboardRows::new(&res)).into_response(),
+        Err(err) => err.into_response(),
+    }
 }
 
 pub async fn get_metrics(state: AppStateExt, _: Session) -> Json<RaftMetrics<TypeConfigSqlite>> {

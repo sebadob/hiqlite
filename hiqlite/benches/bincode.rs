@@ -10,8 +10,8 @@
 //!     byte-identical to the serde paths — this bench prints "bytes: identical" as empirical
 //!     proof)
 //!
-//! `legacy` = LittleEndian + fixint (what hiqlite persists today); `standard` =
-//! LittleEndian + varint. Each group reports throughput in B/s against its own
+//! `legacy` = `LittleEndian` + fixint (what hiqlite persists today); `standard` =
+//! `LittleEndian` + varint. Each group reports throughput in B/s against its own
 //! encoded size, so the CPU-vs-bandwidth tradeoff (fixint vs varint) is visible.
 
 use std::hint::black_box;
@@ -155,7 +155,7 @@ fn serde_benches(c: &mut Criterion) {
                     &squery,
                     bincode::config::legacy(),
                 ))
-            })
+            });
         });
         g.bench_function("decode", |b| {
             b.iter(|| {
@@ -163,7 +163,7 @@ fn serde_benches(c: &mut Criterion) {
                     &legacy,
                     bincode::config::legacy(),
                 ))
-            })
+            });
         });
     }
     {
@@ -177,7 +177,7 @@ fn serde_benches(c: &mut Criterion) {
                     &squery,
                     bincode::config::standard(),
                 ))
-            })
+            });
         });
         g.bench_function("decode", |b| {
             b.iter(|| {
@@ -185,7 +185,7 @@ fn serde_benches(c: &mut Criterion) {
                     &standard,
                     bincode::config::standard(),
                 ))
-            })
+            });
         });
     }
 
@@ -196,7 +196,7 @@ fn serde_benches(c: &mut Criterion) {
         g.throughput(Throughput::Bytes(legacy.len() as u64));
         g.sample_size(50);
         g.bench_function("encode", |b| {
-            b.iter(|| black_box(bn_serde::encode_to_vec(&squery, config::legacy())))
+            b.iter(|| black_box(bn_serde::encode_to_vec(&squery, config::legacy())));
         });
         g.bench_function("decode", |b| {
             b.iter(|| {
@@ -204,7 +204,7 @@ fn serde_benches(c: &mut Criterion) {
                     &legacy,
                     config::legacy(),
                 ))
-            })
+            });
         });
     }
     {
@@ -213,7 +213,7 @@ fn serde_benches(c: &mut Criterion) {
         g.throughput(Throughput::Bytes(standard.len() as u64));
         g.sample_size(50);
         g.bench_function("encode", |b| {
-            b.iter(|| black_box(bn_serde::encode_to_vec(&squery, config::standard())))
+            b.iter(|| black_box(bn_serde::encode_to_vec(&squery, config::standard())));
         });
         g.bench_function("decode", |b| {
             b.iter(|| {
@@ -221,7 +221,7 @@ fn serde_benches(c: &mut Criterion) {
                     &standard,
                     config::standard(),
                 ))
-            })
+            });
         });
     }
 }
@@ -236,7 +236,7 @@ fn native_benches(c: &mut Criterion) {
         g.throughput(Throughput::Bytes(legacy.len() as u64));
         g.sample_size(50);
         g.bench_function("encode", |b| {
-            b.iter(|| black_box(bincode_next::encode_to_vec(&nquery, config::legacy())))
+            b.iter(|| black_box(bincode_next::encode_to_vec(&nquery, config::legacy())));
         });
         g.bench_function("decode", |b| {
             b.iter(|| {
@@ -244,7 +244,7 @@ fn native_benches(c: &mut Criterion) {
                     &legacy,
                     config::legacy(),
                 ))
-            })
+            });
         });
     }
     {
@@ -253,7 +253,7 @@ fn native_benches(c: &mut Criterion) {
         g.throughput(Throughput::Bytes(standard.len() as u64));
         g.sample_size(50);
         g.bench_function("encode", |b| {
-            b.iter(|| black_box(bincode_next::encode_to_vec(&nquery, config::standard())))
+            b.iter(|| black_box(bincode_next::encode_to_vec(&nquery, config::standard())));
         });
         g.bench_function("decode", |b| {
             b.iter(|| {
@@ -261,7 +261,7 @@ fn native_benches(c: &mut Criterion) {
                     &standard,
                     config::standard(),
                 ))
-            })
+            });
         });
     }
 }

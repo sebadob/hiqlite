@@ -86,7 +86,7 @@ impl Client {
     #[cfg(feature = "cache")]
     pub(crate) async fn rate_limit_cache(&self) -> Result<(), Error> {
         match self.try_rate_limit_cache() {
-            Ok(_) => Ok(()),
+            Ok(()) => Ok(()),
             Err(err) => {
                 let (tx, rx) = oneshot::channel();
                 if self.inner.rate_limit_cache_await.try_send(tx).is_ok() {
@@ -113,7 +113,7 @@ impl Client {
     #[cfg(feature = "sqlite")]
     pub(crate) async fn rate_limit_db(&self) -> Result<(), Error> {
         match self.try_rate_limit_db() {
-            Ok(_) => Ok(()),
+            Ok(()) => Ok(()),
             Err(err) => {
                 let (tx, rx) = oneshot::channel();
                 if self.inner.rate_limit_db_await.try_send(tx).is_ok() {

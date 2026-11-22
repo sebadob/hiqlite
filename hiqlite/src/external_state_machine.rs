@@ -255,6 +255,7 @@ const DIRTY_POISONED: &[u8] = b"restore-in-progress\n";
 pub struct CommitSequence(pub u64);
 
 impl CommitSequence {
+    #[must_use]
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -286,6 +287,7 @@ impl Sha256Digest {
         Self(Sha256::digest(bytes.as_ref()).into())
     }
 
+    #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -391,18 +393,33 @@ pub trait DeterministicSqliteOperation: Send + 'static {
     /// Stable caller-owned receipt codec name and version.
     const RECEIPT_CODEC: &'static str;
 
+    ///
+    /// # Errors
+    ///
+    /// An infrastructure failure: a statement that cannot be prepared, a transaction that
+    /// cannot be written, an SQLite error on the connection. Such an `Err` rolls the
+    /// transaction back and does not consume the sequence. A deterministic business rejection
+    /// is always `Ok`.
     fn apply(self, transaction: &Transaction<'_>) -> Result<Self::Output, Self::Error>;
 
     /// Encodes the durable lost-response receipt.
     ///
     /// Outputs that implement [`ExternalCodec`] can return
     /// `Ok(output.to_external_bytes())`.
+    ///
+    /// # Errors
+    ///
+    /// The codec failure string of an output that cannot be encoded into a durable receipt.
     fn encode_receipt(output: &Self::Output) -> Result<Vec<u8>, String>;
 
     /// Decodes one durable lost-response receipt.
     ///
     /// Outputs that implement [`ExternalCodec`] can return
     /// `Self::Output::from_external_bytes(bytes)`.
+    ///
+    /// # Errors
+    ///
+    /// The codec failure string of bytes that are not a valid receipt for `Self::Output`.
     fn decode_receipt(bytes: &[u8]) -> Result<Self::Output, String>;
 }
 
@@ -811,6 +828,16 @@ where
     ///
     /// A held OS owner lock fails closed. A dirty OFF/restore marker requires
     /// explicit rebuild. This never invokes Hiqlite's Raft auto-heal behavior.
+    ///
+    /// # Errors
+    ///
+    /// [`ExternalError::InvalidOptions`] for options that do not validate,
+    /// [`ExternalError::Locked`] for a projection an owner holds,
+    /// [`ExternalError::RebuildRequired`] for a projection with a dirty marker,
+    /// [`ExternalError::ConfigurationMismatch`], [`ExternalError::InvalidMetadata`] and
+    /// [`ExternalError::UnsupportedFormat`] for persisted metadata that does not fit, and
+    /// [`ExternalError::Io`], [`ExternalError::Setup`] and [`ExternalError::Sqlite`] for the
+    /// directory, the lock file and the database.
     pub async fn open(options: ExternalSqliteOptions) -> Result<Self, ExternalError> {
         Self::open_inner(options, false, false).await
     }
@@ -819,6 +846,11 @@ where
     /// [`ExternalError::RebuildRequired`], then opens an empty engine so the
     /// caller can install a validated snapshot/replay. Completed snapshot
     /// files are preserved. This is never called by [`Self::open`].
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::open`] answers, plus [`ExternalError::RebuildNotRequired`] when the
+    /// projection has no dirty marker - a healthy projection is never deleted this way.
     pub async fn rebuild_projection(options: ExternalSqliteOptions) -> Result<Self, ExternalError> {
         Self::open_inner(options, true, false).await
     }
@@ -830,6 +862,12 @@ where
     /// marker from an earlier external owner. This operation records an empty
     /// external frontier; the caller is responsible for proving that the
     /// adopted application state is the agreed initial state.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::open`] answers, plus [`ExternalError::AdoptionNotAllowed`] for a
+    /// database that does not exist at the managed path, carries external state-machine
+    /// metadata, does not pass `quick_check`, or has a dirty marker of an earlier owner.
     pub async fn adopt_existing_projection(
         options: ExternalSqliteOptions,
     ) -> Result<Self, ExternalError> {
@@ -1013,6 +1051,16 @@ where
     /// An exact retained retry returns [`ApplyOutcome::Recovered`] without
     /// executing the operation. Reusing a sequence with a different native
     /// coordinate, command digest, schema, entry kind, or receipt codec fails.
+    ///
+    /// # Errors
+    ///
+    /// The [`ExternalError::WriterClosed`] of a writer that is gone, the
+    /// [`ExternalError::WriterStopped`] of a writer that stopped before answering, the
+    /// [`ExternalError::WriterPoisoned`] of a projection that failed its reconcile, and the
+    /// sequence errors of the commit: [`ExternalApplyError`] over
+    /// [`ExternalError::SequenceGap`], [`ExternalError::SequenceBeforeInitial`],
+    /// [`ExternalError::SequenceOverflow`] and [`ExternalError::CommitConflict`]. Everything
+    /// `O::apply` answers for the operation itself is inside the `Err`.
     pub async fn apply_committed(
         &self,
         commit: ExternalCommit<C>,
@@ -1050,6 +1098,11 @@ where
     /// Callers must invoke either this method or [`Self::apply_committed`] for
     /// every global state-machine entry. This keeps snapshots aligned to the
     /// common applied frontier and makes omitted entries fail as sequence gaps.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::apply_committed`] answers, without the operation errors: this
+    /// advances over a committed entry without executing anything.
     pub async fn advance_committed(
         &self,
         commit: ExternalCommit<C>,
@@ -1073,6 +1126,11 @@ where
         rx.await.map_err(|_| ExternalError::WriterStopped)?
     }
 
+    ///
+    /// # Errors
+    ///
+    /// [`ExternalError::WriterClosed`] and [`ExternalError::WriterStopped`] when the writer no
+    /// longer answers state.
     pub async fn last_applied(&self) -> Result<Option<ExternalApplied<C>>, ExternalError> {
         Ok(self.state().await?.last_applied)
     }
@@ -1081,6 +1139,13 @@ where
     ///
     /// Pool connections use `SQLITE_OPEN_READ_ONLY`; toggling `query_only`
     /// cannot turn them into a write bypass.
+    ///
+    /// # Errors
+    ///
+    /// [`ExternalError::Pool`] while no read pool is available - after a snapshot restore it is
+    /// the restore that serves reads -, [`ExternalError::Io`] and [`ExternalError::Join`] for
+    /// the pooled connection and its blocking task, and the [`ExternalError::Sqlite`] of the
+    /// read itself.
     pub async fn read<T, F>(&self, read: F) -> Result<T, ExternalError>
     where
         T: Send + 'static,
@@ -1102,6 +1167,10 @@ where
     /// the completed artifact. A final UUID file is the crash-completion marker;
     /// the returned format/page-size/length/SHA-256 bind it to an outer manifest.
     /// Completed snapshot-file retention belongs to the caller.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::build_snapshot_into`] answers for the artifact it writes.
     pub async fn build_snapshot(&self) -> Result<ExternalSnapshot<C>, ExternalError> {
         let snapshot_id = Uuid::now_v7().to_string();
         let path = self.snapshots_dir.join(&snapshot_id);
@@ -1114,6 +1183,14 @@ where
     /// final name is published without replacement only after the SQLite copy
     /// and staging file are durable. This lets an outer snapshot builder own
     /// staging and retention without granting it a raw database handle.
+    ///
+    /// # Errors
+    ///
+    /// [`ExternalError::SnapshotDestinationExists`] when the destination is already there,
+    /// [`ExternalError::WriterClosed`] and [`ExternalError::WriterStopped`] when the writer
+    /// does not answer, [`ExternalError::StaleSnapshot`] when the checkpoint to copy is older
+    /// than the live one, and [`ExternalError::Io`] for the temporary file, the copy, the
+    /// rename and their fsyncs.
     pub async fn build_snapshot_into(
         &self,
         path: impl Into<PathBuf>,
@@ -1129,6 +1206,13 @@ where
     /// metadata, checkpoint, and retained receipt window match the supplied
     /// evidence. It does not prove compatibility with a particular live
     /// engine, activate the image, or authorize consensus-log reclamation.
+    ///
+    /// # Errors
+    ///
+    /// [`ExternalError::SnapshotMismatch`] for a file whose size, digest, embedded metadata,
+    /// checkpoint or receipt window does not match its evidence, [`ExternalError::Sqlite`] for
+    /// an image that does not pass the SQLite checks, [`ExternalError::Io`] for a file that
+    /// cannot be read, and [`ExternalError::Join`] for the blocking validation task.
     pub async fn validate_snapshot(snapshot: &ExternalSnapshot<C>) -> Result<(), ExternalError> {
         let path = snapshot.path.clone();
         let evidence = snapshot.evidence.clone();
@@ -1168,6 +1252,15 @@ where
     /// Format, application identity, checkpoint, receipt window, file size,
     /// SHA-256, and SQLite `quick_check` are verified before the live database
     /// is touched. Older snapshots are rejected.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::validate_snapshot`] answers for the staged image,
+    /// [`ExternalError::Io`] for staging it into the snapshots directory,
+    /// [`ExternalError::SnapshotMismatch`] for a snapshot id that is not a UUID,
+    /// [`ExternalError::WriterClosed`] and [`ExternalError::WriterStopped`] when the writer
+    /// does not run the restore, [`ExternalError::Pool`] for a read pool that cannot be rebuilt
+    /// after it, and the restore errors of the writer itself.
     pub async fn install_snapshot(
         &self,
         snapshot: ExternalSnapshot<C>,
@@ -1187,7 +1280,7 @@ where
                 task::spawn_blocking(move || validate_snapshot_file::<C, O>(&path, &evidence))
                     .await??;
             } else {
-                let staging = self.snapshots_dir.join(format!("{}.incoming", parsed_id));
+                let staging = self.snapshots_dir.join(format!("{parsed_id}.incoming"));
                 let _ = fs::remove_file(&staging).await;
                 fs::copy(&snapshot.path, &staging).await?;
                 sync_file(staging.clone()).await?;
@@ -1219,9 +1312,9 @@ where
 
         let writer_can_serve_reads = !matches!(
             restore,
-            Err(ExternalError::WriterClosed)
-                | Err(ExternalError::WriterStopped)
-                | Err(ExternalError::WriterPoisoned(_))
+            Err(ExternalError::WriterClosed
+                | ExternalError::WriterStopped
+                | ExternalError::WriterPoisoned(_))
         );
         if writer_can_serve_reads {
             *read_pool = Some(
@@ -1240,6 +1333,11 @@ where
 
     /// Gracefully checkpoints/closes the writer, removes the dirty marker, and
     /// releases the advisory owner lock. The `owner.lock` inode is persistent.
+    ///
+    /// # Errors
+    ///
+    /// [`ExternalError::WriterClosed`] when the writer queue is already gone, and
+    /// [`ExternalError::WriterStopped`] when it stops before acknowledging.
     pub async fn shutdown(self) -> Result<(), ExternalError> {
         let Self {
             write_tx,
@@ -1307,6 +1405,10 @@ where
     }
 }
 
+// The shutdown match below has arms with identical bodies on purpose: it picks the first error of
+// (poisoned, durable, close) in that order, and each arm binds its error from a different tuple
+// position, so the arms cannot be merged into one pattern.
+#[allow(clippy::match_same_arms)]
 fn spawn_external_writer<C, O>(
     mut conn: Connection,
     mut state: StoredState<C>,
@@ -1864,7 +1966,6 @@ fn load_state<C>(conn: &Connection) -> Result<StoredState<C>, ExternalError>
 where
     C: Clone + Eq + ExternalCodec,
 {
-    require_metadata_table(conn)?;
     type StateRow = (
         i64,
         String,
@@ -1883,6 +1984,8 @@ where
         Option<Vec<u8>>,
         Option<String>,
     );
+
+    require_metadata_table(conn)?;
     let row: StateRow = conn.query_row(
         &format!(
             "SELECT format_version, application_id, initial_sequence, initial_state_schema, \
@@ -2008,6 +2111,17 @@ fn load_receipt<C>(
 where
     C: ExternalCodec,
 {
+    type ReceiptRow = (
+        Vec<u8>,
+        Vec<u8>,
+        i64,
+        Vec<u8>,
+        Vec<u8>,
+        String,
+        Vec<u8>,
+        Vec<u8>,
+    );
+
     let encoded_size: Option<i64> = conn
         .query_row(
             &format!("SELECT length(receipt) FROM {RECEIPTS_TABLE} WHERE sequence=?1"),
@@ -2029,16 +2143,6 @@ where
         )));
     }
 
-    type ReceiptRow = (
-        Vec<u8>,
-        Vec<u8>,
-        i64,
-        Vec<u8>,
-        Vec<u8>,
-        String,
-        Vec<u8>,
-        Vec<u8>,
-    );
     let row: Option<ReceiptRow> = conn
         .query_row(
             &format!(
@@ -2431,7 +2535,7 @@ async fn inspect_snapshot(path: PathBuf) -> Result<(u32, u64, Sha256Digest), Ext
 fn hash_file_blocking(path: &Path) -> Result<Sha256Digest, ExternalError> {
     let mut reader = BufReader::new(File::open(path)?);
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut buffer = vec![0_u8; 64 * 1024];
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {

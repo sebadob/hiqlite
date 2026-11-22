@@ -119,28 +119,25 @@ impl WalFile {
                         // re-synced from another cluster member. This will only work, if
                         // `auto-heal` is enabled for the main `hiqlite` crate as well.
 
-                        match id_before {
-                            Some(id) => {
-                                warn!(
-                                    "Bad CRC CHKSUM for WAL ID {}. Trying automatic healing. \
-                                    Rolling back latest log ID to {}.",
-                                    record.log_id, id
-                                );
-                                self.id_until = id;
-                                // `data_end` is inclusive
-                                self.data_end = Some(offset - 1);
-                            }
-                            None => {
-                                warn!(
-                                    "Bad CRC CHKSUM for WAL ID {}. Trying automatic healing. \
-                                    The first ID in this log is bad - resetting data block.",
-                                    record.log_id
-                                );
-                                self.data_start = None;
-                                self.data_end = None;
-                                self.id_until = self.id_from;
-                            }
-                        };
+                        if let Some(id) = id_before {
+                            warn!(
+                                "Bad CRC CHKSUM for WAL ID {}. Trying automatic healing. \
+                                Rolling back latest log ID to {}.",
+                                record.log_id, id
+                            );
+                            self.id_until = id;
+                            // `data_end` is inclusive
+                            self.data_end = Some(offset - 1);
+                        } else {
+                            warn!(
+                                "Bad CRC CHKSUM for WAL ID {}. Trying automatic healing. \
+                                The first ID in this log is bad - resetting data block.",
+                                record.log_id
+                            );
+                            self.data_start = None;
+                            self.data_end = None;
+                            self.id_until = self.id_from;
+                        }
 
                         // We don't need to do anything with the already existing data from now on.
                         // It will be automatically overwritten by `data_end` index with upcoming
@@ -432,7 +429,7 @@ impl WalFile {
                     if record.crc != crc!(record.data) {
                         return Err(Error::Integrity("Invalid CRC for WAL Record".into()));
                     }
-                    buf.push((record.log_id, record.data.to_vec()))
+                    buf.push((record.log_id, record.data.to_vec()));
                 } else {
                     break;
                 }
@@ -475,7 +472,7 @@ impl WalFile {
     /// and within the bounds of the file - this function additionally checks that the record
     /// header and data fit into the file, so callers can rely on it not reading past the end of
     /// the mapped region (a corrupt `data_len` must not cause an OOB read or a u32 overflow).
-    #[inline(always)]
+    #[inline]
     fn read_record_unchecked(&self, offset: u32) -> Result<WalRecord<'_>, Error> {
         // make sure the record header fits completely into the file - use u64 so that a large
         // `offset` cannot wrap around in u32 arithmetic and pass this check
@@ -511,7 +508,7 @@ impl WalFile {
     }
 
     /// Does NOT do any boundary checks for the given range!
-    #[inline(always)]
+    #[inline]
     fn read_bytes(&self, from: u32, until: u32) -> Result<&[u8], Error> {
         debug_assert!(from < until, "from < until -> {from} < {until}");
         if let Some(mmap) = &self.mmap {
@@ -805,7 +802,7 @@ impl WalFileSet {
     #[tracing::instrument(level = "debug", skip_all)]
     #[inline]
     pub fn add_file(&mut self, wal_size: u32, buf: &mut Vec<u8>) -> Result<&WalFile, Error> {
-        let wal_no = self.files.back().map(|w| w.wal_no + 1).unwrap_or(1);
+        let wal_no = self.files.back().map_or(1, |w| w.wal_no + 1);
         let mut wal = WalFile::new(wal_no, &self.base_path, 0, 0, wal_size)?;
         wal.create_file(buf)?;
         self.files.push_back(wal);
@@ -1117,7 +1114,7 @@ mod tests {
 
     #[test]
     fn append_read_logs() -> Result<(), Error> {
-        let base_path = format!("{}/append_logs", PATH);
+        let base_path = format!("{PATH}/append_logs");
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
         let mut memo: Option<LogReadMemo> = None;
@@ -1227,7 +1224,7 @@ mod tests {
 
     #[test]
     fn convert_wal_header() -> Result<(), Error> {
-        let base_path = format!("{}/convert_wal_header", PATH);
+        let base_path = format!("{PATH}/convert_wal_header");
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
 
@@ -1253,8 +1250,8 @@ mod tests {
         assert_eq!(wal.data_end, wal_disk.data_end);
         assert_eq!(wal.len_max, wal_disk.len_max);
 
-        let path_h1 = format!("{}/0000000000000001.wal", base_path);
-        let path_h2 = format!("{}/0000000000000002.wal", base_path);
+        let path_h1 = format!("{base_path}/0000000000000001.wal");
+        let path_h2 = format!("{base_path}/0000000000000002.wal");
         let _ = fs::remove_file(&path_with_no);
         let _ = fs::remove_file(&path_h1);
         let _ = fs::remove_file(&path_h2);
@@ -1262,7 +1259,7 @@ mod tests {
         let mut set = WalFileSet {
             active: None,
             base_path,
-            files: Default::default(),
+            files: VecDeque::default(),
         };
         buf.clear();
         set.add_file(MB2, &mut buf).unwrap();
@@ -1279,7 +1276,7 @@ mod tests {
     #[test]
     fn integrity_check() -> Result<(), Error> {
         let mut buf = Vec::new();
-        let base_path = format!("{}/integrity_check", PATH);
+        let base_path = format!("{PATH}/integrity_check");
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
 
@@ -1287,7 +1284,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 1,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 1,
             id_until: 10,
             // make integrity check work
@@ -1301,7 +1298,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 2,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 11,
             id_until: 17,
             // make integrity check work
@@ -1315,7 +1312,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 3,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 18,
             id_until: 33,
             // make integrity check work
@@ -1344,7 +1341,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 1,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 1,
             id_until: 10,
             // make integrity check work
@@ -1358,7 +1355,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 3,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 18,
             id_until: 33,
             // make integrity check work
@@ -1380,7 +1377,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 1,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 1,
             id_until: 10,
             // make integrity check work
@@ -1394,7 +1391,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 2,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 11,
             id_until: 17,
             // make integrity check work
@@ -1408,7 +1405,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 4,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 18,
             id_until: 33,
             // make integrity check work
@@ -1430,7 +1427,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 1,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 1,
             id_until: 10,
             // make integrity check work
@@ -1444,7 +1441,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 2,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 11,
             id_until: 17,
             // make integrity check work
@@ -1458,7 +1455,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 3,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 19,
             id_until: 33,
             // make integrity check work
@@ -1481,7 +1478,7 @@ mod tests {
 
     #[test]
     fn roll_over_purge_front() -> Result<(), Error> {
-        let base_path = format!("{}/roll_over_purge_front", PATH);
+        let base_path = format!("{PATH}/roll_over_purge_front");
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
         let mut buf = Vec::with_capacity(8);
@@ -1489,7 +1486,7 @@ mod tests {
         let mut wal = WalFileSet {
             active: None,
             base_path,
-            files: Default::default(),
+            files: VecDeque::default(),
         };
         wal.add_file(MB2, &mut buf)?;
         wal.active().mmap_mut()?;
@@ -1561,7 +1558,7 @@ mod tests {
         let mut wal = WalFileSet {
             active: None,
             base_path,
-            files: Default::default(),
+            files: VecDeque::default(),
         };
         wal.add_file(MB2, &mut buf)?;
         wal.active().mmap_mut()?;
@@ -1596,7 +1593,7 @@ mod tests {
 
     #[test]
     fn roll_over_truncate_end() -> Result<(), Error> {
-        let base_path = format!("{}/roll_over_truncate_end", PATH);
+        let base_path = format!("{PATH}/roll_over_truncate_end");
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
         let mut buf = Vec::with_capacity(8);
@@ -1604,7 +1601,7 @@ mod tests {
         let mut wal = WalFileSet {
             active: None,
             base_path,
-            files: Default::default(),
+            files: VecDeque::default(),
         };
         wal.add_file(MB2, &mut buf)?;
         wal.active().mmap_mut()?;
@@ -1705,7 +1702,7 @@ mod tests {
         // Regression test: when the last record ends close to the end of the file, the phase-2
         // scan must not read a partial record header past the end of the mapped region (which
         // used to be a u32 overflow / out-of-bounds mmap slice).
-        let base_path = format!("{}/deep_check_eof", PATH);
+        let base_path = format!("{PATH}/deep_check_eof");
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
 
@@ -1734,8 +1731,8 @@ mod tests {
     fn read_logs_memo_survives_wal_no_reuse() -> Result<(), Error> {
         // Regression test: after all WAL files are purged and a new file re-uses `wal_no` 1, an
         // old `LogReadMemo` must not be applied - it would start scanning at the wrong offset.
-        let base_old = format!("{}/memo_wraparound_old", PATH);
-        let base_new = format!("{}/memo_wraparound_new", PATH);
+        let base_old = format!("{PATH}/memo_wraparound_old");
+        let base_new = format!("{PATH}/memo_wraparound_new");
         for path in [&base_old, &base_new] {
             let _ = fs::remove_dir_all(path);
             fs::create_dir_all(path)?;
@@ -1798,7 +1795,7 @@ mod tests {
     fn integrity_check_rejects_first_file_data_end_overflow() -> Result<(), Error> {
         // Regression test: the `data_end` bounds check used to be skipped for the first file,
         // so a corrupt header could pass startup integrity checks.
-        let base_path = format!("{}/integrity_first_eof", PATH);
+        let base_path = format!("{PATH}/integrity_first_eof");
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
 
@@ -1806,7 +1803,7 @@ mod tests {
         files.push_back(WalFile {
             version: 1,
             wal_no: 1,
-            path: "".to_string(),
+            path: String::new(),
             id_from: 1,
             id_until: 5,
             data_start: Some(32),

@@ -1,5 +1,5 @@
 use crate::app_state::RaftType;
-use crate::helpers::{serialize, serialize_serde};
+use crate::helpers::serialize;
 use crate::network::handshake::HandshakeSecret;
 use crate::server::proxy::state::AppStateProxy;
 use crate::server::proxy::stream;
@@ -169,28 +169,35 @@ pub(crate) async fn metrics(
     // shared one would mean a conversion on every request.
     match raft_type {
         #[cfg(feature = "sqlite")]
-        RaftType::Sqlite => fmt_ok_serde(headers, &state.client.metrics_db().await?),
+        RaftType::Sqlite => fmt_ok_serde(&headers, &state.client.metrics_db().await?),
         #[cfg(feature = "cache")]
-        RaftType::Cache => fmt_ok_serde(headers, &state.client.metrics_cache().await?),
+        RaftType::Cache => fmt_ok_serde(&headers, &state.client.metrics_cache().await?),
         RaftType::Unknown => Err(Error::new(
             "unknown raft type - neither `sqlite` nor `cache` feature enabled",
         )),
     }
 }
 
-/// Like [`fmt_ok`], but for openraft-owned payloads (e.g. `RaftMetrics`), which stay on the
-/// byte-identical serde adapter instead of native Encode/Decode.
-#[inline(always)]
-fn fmt_ok_serde<S: Debug + Serialize>(headers: HeaderMap, payload: S) -> Result<Response, Error> {
+/// Answer a proxy request like `fmt_ok`, but for openraft-owned payloads (e.g. `RaftMetrics`),
+/// which stay on the byte-identical serde adapter instead of native Encode/Decode.
+/// # Errors
+/// - [`Error::Bincode`] - if `payload` cannot be serialized on the serde wire format
+#[inline]
+fn fmt_ok_serde<S: Debug + Serialize>(headers: &HeaderMap, payload: S) -> Result<Response, Error> {
     if let Some(accept) = headers.get(ACCEPT)
         && accept == HeaderValue::from_static("application/json")
     {
         return Ok(Json(payload).into_response());
     }
-    Ok(serialize_serde(&payload)?.into_response())
+    // Not `serialize_serde`: a request answer is a response a client waits for, so a broken payload
+    // is answered with an error there instead of panicking.
+    Ok(
+        bincode_next::serde::encode_to_vec(&payload, bincode_next::config::legacy())?
+            .into_response(),
+    )
 }
 
-#[inline(always)]
+#[inline]
 fn validate_secret(state: &AppStateExt, headers: &HeaderMap) -> Result<(), Error> {
     crate::network::validate_bearer(&state.secret_api, headers)
 }

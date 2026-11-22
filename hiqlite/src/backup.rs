@@ -29,7 +29,7 @@ pub const DEFAULT_BACKUP_FILE_PREFIX: &str = "backup_node";
 
 /// The timestamp every parsed backup file name must be newer than. Anything older is treated as
 /// a bogus name and is never cleaned up, so a wild timestamp can never delete a fresh backup.
-const TS_MIN: i64 = 1704063600;
+const TS_MIN: i64 = 1_704_063_600;
 
 #[derive(Debug, Clone)]
 pub struct BackupConfig {
@@ -45,7 +45,7 @@ impl Default for BackupConfig {
         Self {
             cron_schedule: cron::Schedule::from_str("0 30 2 * * * *").unwrap(),
             #[cfg(feature = "s3")]
-            keep_for: Duration::from_secs(30 * 24 * 3600),
+            keep_for: Duration::from_hours(30 * 24),
         }
     }
 }
@@ -72,8 +72,9 @@ impl BackupConfig {
         let keep_for = env::var("HQL_BACKUP_KEEP_FOR")
             .ok()
             .as_deref()
-            .map(|v| parse_duration(v).expect("Cannot parse HQL_BACKUP_KEEP_FOR as Duration"))
-            .unwrap_or(Duration::from_secs(30 * 24 * 3600));
+            .map_or(Duration::from_hours(30 * 24), |v| {
+                parse_duration(v).expect("Cannot parse HQL_BACKUP_KEEP_FOR as Duration")
+            });
 
         Self {
             cron_schedule,
@@ -192,7 +193,10 @@ pub fn start_cron(
                     // don't set it to 0 to not go crazy in case of a bad config or timing
                     Duration::from_secs(1)
                 } else {
-                    Duration::from_secs((next.timestamp() - now.timestamp()) as u64)
+                    // `next > now`, so the delta is never negative; a gap below one second
+                    // truncates to 0 and runs the backup immediately, like before.
+                    let delta = (next - now).num_seconds();
+                    Duration::from_secs(u64::try_from(delta).unwrap_or_default())
                 }
             };
             time::sleep(dur).await;
@@ -209,11 +213,11 @@ pub fn start_cron(
                     #[cfg(feature = "s3")]
                     &backup_file_prefix,
                     #[cfg(feature = "s3")]
-                    &s3_config,
+                    s3_config.as_ref(),
                 )
                 .await
                 {
-                    Ok(_) => {
+                    Ok(()) => {
                         info!("Backup task finished successfully");
                         success = true;
                         break;
@@ -246,7 +250,7 @@ async fn backup_cron_job(
     client: &Client,
     #[cfg(feature = "s3")] keep_for: Duration,
     #[cfg(feature = "s3")] backup_file_prefix: &str,
-    #[cfg(feature = "s3")] s3_config: &Option<Arc<S3Config>>,
+    #[cfg(feature = "s3")] s3_config: Option<&Arc<S3Config>>,
 ) -> Result<(), Error> {
     client.backup().await?;
 
@@ -263,7 +267,7 @@ async fn backup_cron_job(
                     continue;
                 }
 
-                for object in bucket.contents.iter() {
+                for object in &bucket.contents {
                     // Only our own backup files are ever deleted here. Anything a shared bucket
                     // holds that does not match `{prefix}_{node_id}_{ts}.sqlite` exactly is left
                     // untouched, which is what makes one bucket for many clusters safe.
@@ -355,10 +359,9 @@ pub(crate) async fn restore_backup_start(
         if node_config.node_id == 1 {
             restore_backup(node_config, src).await?;
             return Ok(true);
-        } else {
-            warn!("Cleaning up existing files and start restore cluster join");
-            cleanup_restore_data_dirs(&node_config.data_dir).await?;
         }
+        warn!("Cleaning up existing files and start restore cluster join");
+        cleanup_restore_data_dirs(&node_config.data_dir).await?;
     }
 
     Ok(false)
@@ -439,13 +442,10 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     let path_backup = match src {
         #[cfg(feature = "s3")]
         BackupSource::S3(s3_obj) => {
-            let s3_config = match &node_config.s3_config {
-                None => {
-                    return Err(Error::S3(
-                        "No `S3Config` given, cannot restore backup".to_string(),
-                    ));
-                }
-                Some(c) => c,
+            let Some(s3_config) = &node_config.s3_config else {
+                return Err(Error::S3(
+                    "No `S3Config` given, cannot restore backup".to_string(),
+                ));
             };
             let path_backup = format!("{path_backups}/{BACKUP_DB_NAME}");
             s3_config.pull(&s3_obj, &path_backup).await?;

@@ -14,6 +14,9 @@ repository = "https://github.com/sebadob/hiqlite"
 [lib]
 doctest = false
 
+[lints]
+workspace = true
+
 [package.metadata.docs.rs]
 all-features = false
 features = ["full", "external-state-machine"]
@@ -22,6 +25,12 @@ features = ["full", "external-state-machine"]
 name = "bincode"
 path = "benches/bincode.rs"
 harness = false
+
+[[bench]]
+name = "row_access"
+path = "benches/row_access.rs"
+harness = false
+required-features = ["sqlite"]
 
 [features]
 default = ["auto-heal", "backup", "sqlite", "toml"]
@@ -99,6 +108,7 @@ sqlite = [
   "dep:hex",
   "dep:rusqlite",
   "dep:rust-embed",
+  "dep:rustc-hash",
   "dep:serde_rusqlite",
   "rusqlite/backup",
   "rusqlite/cache",
@@ -189,6 +199,7 @@ rcgen = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 rust-embed = { workspace = true, optional = true }
+rustc-hash = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-platform-verifier = { workspace = true, optional = true }
 serde.workspace = true

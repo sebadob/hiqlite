@@ -71,7 +71,47 @@ Source breaking: the `Error` enum's openraft variants are split per group (`Raft
 `hiqlite::ReadPolicy` is a re-export of openraft's enum so an app can name it. `ReadIndex` is the
 strong path, `LeaseRead` lets a leader answer on its own lease and is the faster one.
 
+#### Owned Rows
+
+A result set that travels through the network, or into the dashboard, keeps its column names once
+per result set now instead of once per row, and the values of a row sit in that column order.
+`Row::Owned` carries the column index of the result set it belongs to, and `ColumnOwned` is gone:
+naming a column was the job of the result set, never of a single row.
+
+A value is still taken out of the row when you read it, so a column can only be read once, and a
+second read of the same column is the same `Error::QueryParams` it always was.
+
+Public API changes:
+
+1. `Row::Owned(row)` is `Row::Owned(row, cols)` — the variant carries the column index of its
+   result set as second field.
+2. `RowOwned::get()` and `RowOwned::try_get()` are not public API anymore; a row is read through
+   `Row::get()` / `Row::try_get()`, which did not change.
+3. `ColumnOwned` is removed. The column info of a prepared statement is `ColumnInfo`.
+
+Migration:
+
+- Apps that use `query_map()`, `query_try_map()` and the `*_as()` calls with derived `FromRow` /
+  `TryFromRow` structs need **no change at all**. `Row::get("name")` and `Row::try_get("name")`
+  take the column name exactly like before, on borrowed rows and on owned rows.
+- A `match` on `Row::Owned(row)` becomes `match Row::Owned(row, _cols)`.
+- Code that kept a `RowOwned` around and read it directly reads it as `Row::Owned` instead.
+
+**CAUTION: The query payloads between nodes changed with this, so a rolling upgrade is not
+possible: stop the cluster, update every node, start it again.** Stored data (WAL logs, the SQLite
+state machine, snapshots) is unaffected, and the dashboard's JSON shape for a query is unchanged.
+
 ### Changes
+
+#### Row Name Lookup
+
+Resolving a column name of a row was a linear scan through the result set, and SQLite was asked
+for the name of every candidate column: a struct with N fields over N columns did N * (N + 1) / 2
+of those calls, for every single row. Every query now builds the name-to-index map of its result
+set once, which turns each later lookup into a single hash probe. For a 24-column result set over
+2000 rows, mapping rows by name dropped to about a third of the time it took (Apple silicon); for
+8 columns it is about 1.7x. Queries with a single short row pay a small per-query build instead,
+in the range of 0.4 - 1.2 µs.
 
 #### `backup_file_prefix` config var
 

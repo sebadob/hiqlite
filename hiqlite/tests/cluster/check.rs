@@ -10,14 +10,14 @@ pub async fn is_client_db_healthy(client: &Client, id: Option<u64>) -> Result<()
     client.wait_until_healthy_db().await;
     client.wait_until_healthy_cache().await;
 
-    log(format!("Checking DB health Node {:?}", id));
+    log(format!("Checking DB health Node {id:?}"));
     let metrics = client.metrics_db().await?;
     let members = metrics.membership_config.nodes().count();
     assert_eq!(members, 3);
 
-    log(format!("Checking Cache health {:?}", id));
+    log(format!("Checking Cache health {id:?}"));
     client.wait_until_healthy_cache().await;
-    log(format!("Cache {:?} is healthy", id));
+    log(format!("Cache {id:?} is healthy"));
     let metrics = client.metrics_cache().await?;
     let members = metrics.membership_config.nodes().count();
     assert_eq!(members, 3);
@@ -43,7 +43,7 @@ pub async fn is_client_db_healthy(client: &Client, id: Option<u64>) -> Result<()
     assert_eq!(data[4].id, 22);
     assert_eq!(data[5].id, 23);
 
-    log(format!("Database healthy {:?}", id));
+    log(format!("Database healthy {id:?}"));
 
     let v: String = client.get(Cache::One, KEY).await?.unwrap();
     assert_eq!(&v, VALUE);
@@ -55,7 +55,7 @@ pub async fn is_client_db_healthy(client: &Client, id: Option<u64>) -> Result<()
     let v: Option<String> = client.get(Cache::Two, KEY).await?;
     assert!(v.is_none());
 
-    log(format!("Cache healthy {:?}", id));
+    log(format!("Cache healthy {id:?}"));
 
     // everything should still be healthy
     client

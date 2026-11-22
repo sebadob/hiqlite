@@ -29,20 +29,19 @@ pub async fn verify_password(plain: String, hash: String) -> Result<(), Error> {
     })
     .await?;
 
-    match res {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            // In case of an error, to somewhat prevent a permanent DoS because of the single
-            // hasher allowed, we drop the permit early but delay this requests response. This is
-            // not a complete protection, of course, because the client could brute-force
-            // concurrently in a loop, but it gets us pretty far with simple mechanics. We don't
-            // want to overcomplicate the dashboard, as it's meant for internal debugging oinly
-            // and should never be exposed publicly anyway.
-            drop(permit);
+    if res.is_ok() {
+        Ok(())
+    } else {
+        // In case of an error, to somewhat prevent a permanent DoS because of the single
+        // hasher allowed, we drop the permit early but delay this requests response. This is
+        // not a complete protection, of course, because the client could brute-force
+        // concurrently in a loop, but it gets us pretty far with simple mechanics. We don't
+        // want to overcomplicate the dashboard, as it's meant for internal debugging oinly
+        // and should never be exposed publicly anyway.
+        drop(permit);
 
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            Err(Error::Unauthorized("unauthorized".into()))
-        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        Err(Error::Unauthorized("unauthorized".into()))
     }
 }
 

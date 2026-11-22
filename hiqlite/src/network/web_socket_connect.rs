@@ -54,7 +54,7 @@ async fn try_connect_stream(
     } else {
         "http"
     };
-    let uri = format!("{}://{}{}", scheme, addr, path);
+    let uri = format!("{scheme}://{addr}{path}");
     info!("Trying to connect to: {uri}");
 
     let req = Request::builder()

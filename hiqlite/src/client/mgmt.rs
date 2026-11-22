@@ -38,6 +38,13 @@ const CLUSTER_SYNC_ALLOWED_DIFF: u64 = 100;
 
 impl Client {
     /// Get cluster metrics for the database Raft.
+    ///
+    /// # Errors
+    ///
+    /// Only the remote path can fail: [`Error::Token`] when the client has no API secret,
+    /// [`Error::Connect`] when the node does not answer, [`Error::Bincode`] for an answer that
+    /// cannot be deserialized, and the [`Error`] the node reports back. An embedded client
+    /// reads its own metrics and never fails.
     #[cfg(feature = "sqlite")]
     pub async fn metrics_db(&self) -> Result<RaftMetrics<TypeConfigSqlite>, Error> {
         if let Some(state) = &self.inner.state {
@@ -52,6 +59,13 @@ impl Client {
     }
 
     /// Get cluster metrics for the cache Raft.
+    ///
+    /// # Errors
+    ///
+    /// Only the remote path can fail: [`Error::Token`] when the client has no API secret,
+    /// [`Error::Connect`] when the node does not answer, [`Error::Bincode`] for an answer that
+    /// cannot be deserialized, and the [`Error`] the node reports back. An embedded client
+    /// reads its own metrics and never fails.
     #[cfg(feature = "cache")]
     pub async fn metrics_cache(&self) -> Result<RaftMetrics<TypeConfigCache>, Error> {
         if let Some(state) = &self.inner.state {
@@ -104,6 +118,14 @@ impl Client {
     /// An embedded client knows its own node only, so it reports that one. A remote client asks
     /// every node address it was built with and leaves out the nodes that do not answer. It is an
     /// error only when no node answers at all.
+    ///
+    /// # Errors
+    ///
+    /// An embedded client reports its own node and never fails. A remote client answers
+    /// [`Error::Token`] when the client has no API secret, [`Error::Connect`] when the node
+    /// does not answer, [`Error::Bincode`] for an answer that cannot be deserialized, and the
+    /// [`Error`] the node reports back. Nodes that do not answer at all are skipped, so only a
+    /// cluster where nobody answers is an error.
     pub async fn cluster_election_state(&self) -> Result<BTreeMap<NodeId, ElectionState>, Error> {
         let mut map = BTreeMap::new();
         for (_, state) in self.election_states().await? {
@@ -117,6 +139,14 @@ impl Client {
     /// `openraft` keeps this in its runtime config, so the change is in memory only: a restart
     /// applies the `election_disable` marker of that node's own node line again. An embedded client
     /// can change its own node only.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Error`] when an embedded client asks for a node that is not its own, and the
+    /// [`Error`] of the change itself, locally from `openraft` and remotely as [`Error::Token`]
+    /// when the client has no API secret, [`Error::Connect`] when the node does not answer,
+    /// [`Error::Bincode`] for an answer that cannot be deserialized, and the [`Error`] the node
+    /// reports back.
     pub async fn set_node_election(
         &self,
         node_id: NodeId,
@@ -144,6 +174,14 @@ impl Client {
     /// node cannot win. With `force`, that round is bypassed and the term climbs unconditionally -
     /// use it only when you know the node's log is at the cluster tip. A learner is refused, and an
     /// embedded client can elect its own node only.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Error`] when an embedded client asks another node to campaign, and the
+    /// [`Error`] of the campaign itself, locally from `openraft` and remotely as
+    /// [`Error::Token`] when the client has no API secret, [`Error::Connect`] when the node
+    /// does not answer, [`Error::Bincode`] for an answer that cannot be deserialized, and the
+    /// [`Error`] the node reports back.
     pub async fn elect_node(&self, node_id: NodeId, force: bool) -> Result<ElectionState, Error> {
         if let Some(state) = &self.inner.state {
             if node_id != state.id {
@@ -163,6 +201,14 @@ impl Client {
     /// It answers who is voter and who is learner in each Raft group, and which node each group
     /// follows. Like `cluster_election_state()`: an embedded client reports its own node, a remote
     /// client asks every node address it was built with and leaves out the nodes that do not answer.
+    ///
+    /// # Errors
+    ///
+    /// An embedded client reports its own node and never fails. A remote client answers
+    /// [`Error::Token`] when the client has no API secret, [`Error::Connect`] when the node
+    /// does not answer, [`Error::Bincode`] for an answer that cannot be deserialized, and the
+    /// [`Error`] the node reports back. Nodes that do not answer at all are skipped, so only a
+    /// cluster where nobody answers is an error.
     pub async fn cluster_membership(&self) -> Result<BTreeMap<NodeId, MembersState>, Error> {
         let mut map = BTreeMap::new();
         for (_, state) in self.members_states().await? {
@@ -177,6 +223,15 @@ impl Client {
     /// node that leads the cluster: a remote client sends it to its known leader and follows a
     /// leader redirect, an embedded client runs it locally and fails with the redirect payload when
     /// its own node is not the leader.
+    ///
+    /// # Errors
+    ///
+    /// The [`Error`] of the change: on an embedded client a [`Error::ClientWriteErrorDb`] style
+    /// redirect when its own node is not the leader, on a remote client [`Error::Token`] when
+    /// the client has no API secret, [`Error::Connect`] when the node does not answer,
+    /// [`Error::Bincode`] for an answer that cannot be deserialized, and the [`Error`] the node
+    /// reports back, and [`Error::Connect`] when the leader keeps changing during all three
+    /// attempts.
     pub async fn promote_node(&self, node_id: NodeId) -> Result<MembersState, Error> {
         if let Some(state) = &self.inner.state {
             return management::local_promote(state, node_id).await;
@@ -198,6 +253,15 @@ impl Client {
     /// cannot complete the change. Hand the leadership over with
     /// [`transfer_leadership`](Self::transfer_leadership) first and run this call on the node that
     /// took it.
+    ///
+    /// # Errors
+    ///
+    /// The [`Error`] of the change: on an embedded client a [`Error::ClientWriteErrorDb`] style
+    /// redirect when its own node is not the leader, on a remote client [`Error::Token`] when
+    /// the client has no API secret, [`Error::Connect`] when the node does not answer,
+    /// [`Error::Bincode`] for an answer that cannot be deserialized, and the [`Error`] the node
+    /// reports back, and [`Error::Connect`] when the leader keeps changing during all three
+    /// attempts.
     pub async fn demote_node(
         &self,
         node_id: NodeId,
@@ -220,6 +284,15 @@ impl Client {
     /// A transfer is a request, not a command: a target that is unreachable, or whose log is
     /// behind, ignores it, and the answer then shows the leadership where it was. A learner can
     /// never take over and is refused. It must run on the current leader, like `promote_node()`.
+    ///
+    /// # Errors
+    ///
+    /// The [`Error`] of the change: on an embedded client a [`Error::ClientWriteErrorDb`] style
+    /// redirect when its own node is not the leader, on a remote client [`Error::Token`] when
+    /// the client has no API secret, [`Error::Connect`] when the node does not answer,
+    /// [`Error::Bincode`] for an answer that cannot be deserialized, and the [`Error`] the node
+    /// reports back, and [`Error::Connect`] when the leader keeps changing during all three
+    /// attempts.
     pub async fn transfer_leadership(&self, node_id: NodeId) -> Result<MembersState, Error> {
         if let Some(state) = &self.inner.state {
             return management::local_transfer_leader(state, node_id).await;
@@ -261,7 +334,7 @@ impl Client {
 
         for attempt in 0..3 {
             let addr = leader.read().await.1.clone();
-            let url = format!("{}://{}{}", scheme, addr, path);
+            let url = format!("{scheme}://{addr}{path}");
             let res = client
                 .request(method.clone(), &url)
                 .bearer_auth(secret)
@@ -335,7 +408,7 @@ impl Client {
 
         let mut out = Vec::new();
         for addr in &self.inner.nodes {
-            let url = format!("{}://{}{}", scheme, addr, path);
+            let url = format!("{scheme}://{addr}{path}");
             let res = client.get(&url).bearer_auth(secret).send().await;
             match res {
                 Ok(res) if res.status().is_success() => {
@@ -397,7 +470,7 @@ impl Client {
             .as_ref()
             .ok_or_else(|| Error::Connect("Client has no http client".into()))?;
 
-        let url = format!("{}://{}/cluster/election{}", scheme, addr, query);
+        let url = format!("{scheme}://{addr}/cluster/election{query}");
         let mut req = client.request(method, &url).bearer_auth(secret);
         if let Some(body) = body {
             req = req.body(body);
@@ -413,6 +486,12 @@ impl Client {
     }
 
     /// Check the cluster health state for the database Raft.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::metrics_db`] can return, plus the [`Error::RaftErrorDb`] of a running
+    /// state that is not ready, [`Error::Connect`] while the leader voting of the group has not
+    /// finished, and [`Error::LeaderChange`] when it has no leader at all.
     #[cfg(feature = "sqlite")]
     pub async fn is_healthy_db(&self) -> Result<(), Error> {
         let metrics = self.metrics_db().await?;
@@ -438,6 +517,12 @@ impl Client {
     }
 
     /// Check the cluster health state for the cache Raft.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::metrics_cache`] can return, plus the [`Error::RaftErrorCache`] of a
+    /// running state that is not ready, [`Error::Connect`] while the leader voting of the group
+    /// has not finished, and [`Error::LeaderChange`] when it has no leader at all.
     #[cfg(feature = "cache")]
     pub async fn is_healthy_cache(&self) -> Result<(), Error> {
         let metrics = self.metrics_cache().await?;
@@ -467,7 +552,7 @@ impl Client {
     pub async fn wait_until_healthy_db(&self) {
         loop {
             match self.is_healthy_db().await {
-                Ok(_) => {
+                Ok(()) => {
                     return;
                 }
                 Err(err) => {
@@ -481,6 +566,11 @@ impl Client {
     }
 
     /// Wait until the database Raft is healthy.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Timeout`] only, when the database Raft is not healthy within `timeout`. The
+    /// health errors in between are logged and retried, never returned.
     #[cfg(feature = "sqlite")]
     pub async fn wait_until_healthy_db_timeout(&self, timeout: Duration) -> Result<(), Error> {
         tokio::time::timeout(timeout, self.wait_until_healthy_db())
@@ -497,7 +587,7 @@ impl Client {
     pub async fn wait_until_healthy_cache(&self) {
         loop {
             match self.is_healthy_cache().await {
-                Ok(_) => {
+                Ok(()) => {
                     return;
                 }
                 Err(err) => {
@@ -510,6 +600,11 @@ impl Client {
     }
 
     /// Wait until the cache Raft is healthy.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Timeout`] only, when the cache Raft is not healthy within `timeout`. The health
+    /// errors in between are logged and retried, never returned.
     #[cfg(feature = "cache")]
     pub async fn wait_until_healthy_cache_timeout(&self, timeout: Duration) -> Result<(), Error> {
         tokio::time::timeout(timeout, self.wait_until_healthy_cache())
@@ -600,6 +695,12 @@ impl Client {
     }
 
     /// Same as `wait_for_cluster_sync()`, but returns a timeout error after `timeout`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Error`] for a remote client - only a node that runs its own Raft can measure
+    /// its sync gap - and [`Error::Timeout`] when the node is not within the allowed log gap of
+    /// the cluster tip after `timeout`.
     pub async fn wait_for_cluster_sync_timeout(&self, timeout: Duration) -> Result<(), Error> {
         if self.inner.state.is_none() {
             return Err(Error::Error(
@@ -629,7 +730,7 @@ impl Client {
         our_metrics.running_state.clone()?;
 
         // Our own state machine progress - what is actually servable to queries right now.
-        let applied = our_metrics.last_applied.map(|l| l.index).unwrap_or(0);
+        let applied = our_metrics.last_applied.map_or(0, |l| l.index);
         let own_last_log_index = our_metrics.last_log_index.unwrap_or(0);
 
         // Keep the cached leader address up to date and fail loud on stale metrics, like
@@ -675,7 +776,7 @@ impl Client {
         our_metrics.running_state.clone()?;
 
         // Our own state machine progress - what is actually servable to queries right now.
-        let applied = our_metrics.last_applied.map(|l| l.index).unwrap_or(0);
+        let applied = our_metrics.last_applied.map_or(0, |l| l.index);
         let own_last_log_index = our_metrics.last_log_index.unwrap_or(0);
 
         // Keep the cached leader address up to date and fail loud on stale metrics, like
@@ -745,6 +846,12 @@ impl Client {
     ///
     /// In future versions, there will be the possibility to trigger a graceful leader election
     /// upfront, but this has not been stabilized in this version.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Error`] for a remote client, because only a node that runs its own Raft can be
+    /// shut down this way, and [`Error::Error`] when the ordered teardown does not finish
+    /// within its 20 seconds.
     pub async fn shutdown(&self) -> Result<(), Error> {
         if let Some(state) = &self.inner.state {
             // Must exceed the 9.5 s Kubernetes rolling-release pre-sleep inside
@@ -761,7 +868,7 @@ impl Client {
                     &self.inner.tx_client_cache,
                     #[cfg(feature = "sqlite")]
                     &self.inner.tx_client_db,
-                    &self.inner.tx_shutdown,
+                    self.inner.tx_shutdown.as_ref(),
                 ),
             )
             .await
@@ -788,7 +895,7 @@ impl Client {
         #[cfg(feature = "cache")] tls_no_verify: bool,
         #[cfg(feature = "cache")] tx_client_cache: &flume::Sender<ClientStreamReq>,
         #[cfg(feature = "sqlite")] tx_client_db: &flume::Sender<ClientStreamReq>,
-        tx_shutdown: &Option<watch::Sender<bool>>,
+        tx_shutdown: Option<&watch::Sender<bool>>,
     ) -> Result<(), Error> {
         info!("Starting Node shutdown");
 

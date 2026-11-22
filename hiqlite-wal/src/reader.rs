@@ -48,10 +48,10 @@ pub struct LogReadMemo {
 pub fn spawn(
     meta: Arc<RwLock<Metadata>>,
     wal_locked: Arc<RwLock<WalFileSet>>,
-) -> Result<flume::Sender<Action>, Error> {
+) -> flume::Sender<Action> {
     let (tx, rx) = flume::bounded::<Action>(1);
-    thread::spawn(move || run(meta, wal_locked, rx));
-    Ok(tx)
+    thread::spawn(move || run(&meta, &wal_locked, &rx));
+    tx
 }
 
 /// There are a lot of `unwrap()`s in this task. The reason is simply, if most of these fail, it can
@@ -61,9 +61,9 @@ pub fn spawn(
 /// Everything related to locking and memory mapping is being `unwrap()`ped. If anything fails in
 /// this regard, it's either a physical storage or OS issue and this code an do nothing about it.
 fn run(
-    meta: Arc<RwLock<Metadata>>,
-    wal_locked: Arc<RwLock<WalFileSet>>,
-    rx: flume::Receiver<Action>,
+    meta: &Arc<RwLock<Metadata>>,
+    wal_locked: &Arc<RwLock<WalFileSet>>,
+    rx: &flume::Receiver<Action>,
 ) {
     // we keep the local set for faster access inside the loop and lazily update if necessary
     let mut wal = wal_locked.read().unwrap().clone_no_map();
@@ -87,11 +87,11 @@ fn run(
 
                 if until == NO_END {
                     // an open-ended request is bounded by the end of what we actually hold
-                    until = wal.files.back().map(|f| f.id_until).unwrap_or(until);
+                    until = wal.files.back().map_or(until, |f| f.id_until);
                 }
 
                 let mut from_next = from;
-                'logs: for log in wal.files.iter_mut() {
+                'logs: for log in &mut wal.files {
                     if log.id_until < from_next {
                         debug!(
                             "log.id_until < from_next -> {} < {}",
@@ -110,7 +110,7 @@ fn run(
                             Ok(_) => {
                                 for (_id, data) in buf.drain(..) {
                                     debug_assert!(_id >= from_next && _id <= until);
-                                    ack.send(Some(Ok(data))).unwrap()
+                                    ack.send(Some(Ok(data))).unwrap();
                                 }
 
                                 // If the until goes beyond our current file, we want to remove the `mmap`
@@ -142,7 +142,7 @@ fn run(
                             }
                         }
                         break;
-                    };
+                    }
                 }
 
                 ack.send(None).unwrap();
@@ -234,7 +234,7 @@ mod tests {
         // Regression test: a read error while serving `Action::Logs` used to be swallowed (or,
         // for files entirely before `until`, even panicked the reader thread), so callers got a
         // silent short read instead of an error.
-        let base_path = format!("{}/reader_logs_error", PATH);
+        let base_path = format!("{PATH}/reader_logs_error");
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path)?;
 
@@ -266,7 +266,7 @@ mod tests {
             vote: None,
         }));
 
-        let tx = spawn(meta, Arc::new(RwLock::new(set)))?;
+        let tx = spawn(meta, Arc::new(RwLock::new(set)));
         let (ack, rx) = flume::bounded(2);
         tx.send(Action::Logs {
             from: 2,

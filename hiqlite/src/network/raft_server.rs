@@ -5,7 +5,6 @@ use axum::response::IntoResponse;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use openraft::errors::{Fatal, RaftError, StreamingError, Unreachable};
 use serde::{Deserialize, Serialize};
-use std::ops::Deref;
 use std::sync::atomic::Ordering;
 use tokio::task;
 use tracing::{debug, error, warn};
@@ -243,7 +242,7 @@ async fn handle_socket(
                 break;
             }
             OpCode::Binary => {
-                let bytes = frame.payload.deref();
+                let bytes = &*frame.payload;
                 match deserialize_serde::<RaftStreamRequest>(bytes) {
                     Ok(req) => req,
                     Err(err) => {
@@ -345,13 +344,10 @@ async fn handle_socket(
         };
 
         if let Err(err) = tx_write
-            .send_async(WsWriteMsg::Payload(
-                serialize_serde(&RaftStreamResponse {
-                    request_id,
-                    payload,
-                })
-                .expect("Network payload serialization should always succeed"),
-            ))
+            .send_async(WsWriteMsg::Payload(serialize_serde(&RaftStreamResponse {
+                request_id,
+                payload,
+            })))
             .await
         {
             error!(

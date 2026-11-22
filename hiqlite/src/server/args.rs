@@ -19,7 +19,7 @@ pub enum Args {
 
 #[derive(Debug, Clone, Parser)]
 pub struct ArgsConfig {
-    /// If you provide the node_id here, it will overwrite the value from the config file
+    /// If you provide the `node_id` here, it will overwrite the value from the config file
     #[clap(long)]
     pub node_id: Option<u64>,
 

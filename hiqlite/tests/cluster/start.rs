@@ -58,6 +58,9 @@ pub async fn build_config(node_id: u64, combo: TlsCombo) -> NodeConfig {
     build_config_with_nodes(node_id, nodes(), TEST_DATA_DIR, combo).await
 }
 
+// `BackupConfig` is not re-exported by the crate, so an integration test cannot name the type
+// for `default_trait_access`.
+#[allow(clippy::default_trait_access)]
 pub async fn build_config_with_nodes(
     node_id: u64,
     nodes: Vec<Node>,
@@ -73,9 +76,9 @@ pub async fn build_config_with_nodes(
     fs::create_dir_all(&dir_3).await.unwrap();
 
     let data_dir = match node_id {
-        1 => dir_1.to_string().into(),
-        2 => dir_2.to_string().into(),
-        3 => dir_3.to_string().into(),
+        1 => dir_1.clone().into(),
+        2 => dir_2.clone().into(),
+        3 => dir_3.clone().into(),
         _ => unreachable!(),
     };
 
@@ -128,11 +131,10 @@ pub async fn wait_for_healthy_cluster(
             let healthy_cache = client.is_healthy_cache().await;
 
             if healthy_db.is_ok() && healthy_cache.is_ok() {
-                log(format!("Node {} is healthy", i));
+                log(format!("Node {i} is healthy"));
                 break;
-            } else {
-                log(format!("Waiting for Node {} to become healthy", i));
             }
+            log(format!("Waiting for Node {i} to become healthy"));
         }
     }
 

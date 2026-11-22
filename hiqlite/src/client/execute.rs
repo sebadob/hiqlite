@@ -1,7 +1,7 @@
 use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientExecutePayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
-use crate::query::rows::RowOwned;
+use crate::query::rows::RowsOwnedChecked;
 use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
 use crate::{Client, Error, Params, Response};
 use std::borrow::Cow;
@@ -19,6 +19,15 @@ impl Client {
     ///     )
     ///     .await?;
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the DB request rate limit is exhausted,
+    /// [`Error::PrepareStatement`] and [`Error::QueryParams`] for a statement that cannot be
+    /// built from the given SQL and params, [`Error::Sqlite`] when it fails inside the state
+    /// machine, and [`Error::Error`] when the request cannot be handed to the leader's stream,
+    /// [`Error::Connect`] when its answer times out, and exactly one re-send after
+    /// [`Error::LeaderChange`].
     pub async fn execute<S>(&self, sql: S, params: Params) -> Result<usize, Error>
     where
         S: Into<Cow<'static, str>>,
@@ -45,7 +54,7 @@ impl Client {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     async fn execute_req(&self, sql: Query) -> Result<usize, Error> {
         if let Some(state) = self.is_leader_db_with_state().await {
             let res =
@@ -78,6 +87,12 @@ impl Client {
     ///
     /// Returns the rows mapped to the output type on success. This only works for types that
     /// `impl From<&mut hiqlite::Row<'_>>`
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::execute_returning`] returns is passed through unchanged. A row that
+    /// cannot be mapped into `T` is the `Err` of its slot in the returned `Vec`, not an error
+    /// of this call.
     pub async fn execute_returning_map<S, T>(
         &self,
         sql: S,
@@ -92,7 +107,7 @@ impl Client {
         let rows: Vec<Result<crate::Row, Error>> = self.execute_returning::<S>(sql, params).await?;
         let mut res: Vec<Result<T, Error>> = Vec::with_capacity(rows.len());
         for row in rows {
-            res.push(row.map(|mut row| T::from(&mut row)))
+            res.push(row.map(|mut row| T::from(&mut row)));
         }
         Ok(res)
     }
@@ -103,6 +118,12 @@ impl Client {
     /// `impl From<&mut hiqlite::Row<'_>>`.
     ///
     /// Throws an error if not exactly 1 row has been returned.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::execute_returning_map`] returns, plus [`Error::QueryReturnedNoRows`]
+    /// when the query returns no row at all and [`Error::Sqlite`] when it returns more than
+    /// one.
     pub async fn execute_returning_map_one<S, T>(&self, sql: S, params: Params) -> Result<T, Error>
     where
         S: Into<Cow<'static, str>>,
@@ -124,6 +145,15 @@ impl Client {
 
     /// Execute a query on the database that includes a `RETURNING` statement.
     /// Returns the raw rows on success.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the DB request rate limit is exhausted,
+    /// [`Error::PrepareStatement`] and [`Error::QueryParams`] for a statement that cannot be
+    /// built, [`Error::Sqlite`] for a failure inside the state machine, and [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`]. A row that
+    /// cannot be mapped is the `Err` of its slot in the returned `Vec`.
     pub async fn execute_returning<S>(
         &self,
         sql: S,
@@ -153,9 +183,11 @@ impl Client {
             }
         };
 
+        let (cols, rows) = rows.into_parts();
+
         let mut res: Vec<Result<crate::Row, Error>> = Vec::with_capacity(rows.len());
         for row in rows {
-            res.push(row.map(crate::Row::Owned))
+            res.push(row.map(|row| crate::Row::Owned(row, cols.clone())));
         }
         Ok(res)
     }
@@ -163,6 +195,11 @@ impl Client {
     /// Execute a query on the database that includes a `RETURNING` statement.
     ///
     /// Returns a single raw row. Will throw an error if rows returned is not exactly 1.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::execute_returning`] returns, plus [`Error::QueryReturnedNoRows`] when
+    /// the query returns no row at all and [`Error::Sqlite`] when it returns more than one.
     pub async fn execute_returning_one<S>(
         &self,
         sql: S,
@@ -189,7 +226,7 @@ impl Client {
     pub(crate) async fn execute_returning_req(
         &self,
         sql: Query,
-    ) -> Result<Vec<Result<RowOwned, Error>>, Error> {
+    ) -> Result<RowsOwnedChecked, Error> {
         if let Some(state) = self.is_leader_db_with_state().await {
             let res = state
                 .raft_db

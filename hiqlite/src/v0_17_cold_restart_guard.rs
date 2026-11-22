@@ -16,13 +16,13 @@ const ENV_DISABLE: &str = "HQL_DISABLE_COLD_RESTART_GUARD";
 const RECHECK_DELAY: Duration = Duration::from_secs(5);
 
 /// The block that is logged after the concrete error of a found old cluster member.
-const ERR: &str = r#"
+const ERR: &str = r"
 
     You are trying to do an invalid version upgrade!
     Read the changelog! v0.17 needs a full cold restart of the cluster. Shut
     down every node before starting this version. You MUST NOT do a rolling release!
 
-            "#;
+            ";
 
 /// This function enforces the cold restart that the upgrade to v0.17 requires.
 ///
@@ -142,12 +142,12 @@ async fn ensure_no_old_members_running(
                     // node running a version from way before this endpoint existed -> MUST NOT
                     // happen for a valid upgrade.
                     let msg = format!(
-                        r#"
+                        r"
     Remote node {url} does not have a /version endpoint: HTTP {status}.
     This means it can only be a running node with an old version. You MUST shut
     down the full cluster before attempting an upgrade to this version.
     Check the changelog!
-"#
+"
                     );
                     error!("{msg}");
                     return Err(Error::Request(msg));
@@ -162,27 +162,27 @@ async fn ensure_no_old_members_running(
                     .unwrap_or_default()
                     .split('.')
                     .map(str::parse::<u64>);
-                let version = match (numbers.next(), numbers.next(), numbers.next()) {
-                    (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch))) => (major, minor, patch),
-                    _ => {
-                        // This should really never happen. If we get a success from that endpoint,
-                        // it can only be a proper version string, unless it's a completely
-                        // different application.
-                        let msg =
-                            format!("Invalid remote node version from {url} with body: {body}");
-                        error!("{msg}");
-                        return Err(Error::Request(msg));
-                    }
+                let version = if let (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch))) =
+                    (numbers.next(), numbers.next(), numbers.next())
+                {
+                    (major, minor, patch)
+                } else {
+                    // This should really never happen. If we get a success from that endpoint,
+                    // it can only be a proper version string, unless it's a completely
+                    // different application.
+                    let msg = format!("Invalid remote node version from {url} with body: {body}");
+                    error!("{msg}");
+                    return Err(Error::Request(msg));
                 };
 
                 if version < MIN_MEMBER_VERSION {
                     let msg = format!(
-                        r#"
+                        r"
     Cluster member {url} is running the old version {body}.
     This version cannot sync with any node below 0.17.0 because the Raft network
     layer is incompatible. Shut down the full cluster, update every node, and
     start them all again. Check the changelog!
-"#
+"
                     );
                     error!("{msg}");
                     return Err(Error::Request(msg));

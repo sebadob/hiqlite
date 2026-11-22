@@ -54,7 +54,7 @@ pub use openraft::raft::ReadPolicy;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug, Display, Write as _};
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::state_machine::Response;
@@ -92,9 +92,9 @@ pub use migration::AppliedMigration;
 #[cfg(any(feature = "sqlite", feature = "external-state-machine"))]
 pub use rusqlite;
 
-/// SQLite state-machine machinery for applications that already own consensus.
-///
-/// This module does not start a Hiqlite Raft group or network service.
+// No doc comment here on purpose: an outer doc merges with the `//!` block of the module, and
+// rustdoc then resolves the intra-doc links of that block at crate root, where the module's items
+// are not in scope. All of this module's docs live in `external_state_machine.rs`.
 #[cfg(feature = "external-state-machine")]
 pub mod external_state_machine;
 
@@ -167,11 +167,14 @@ pub trait CacheVariants {
     /// pair per line in ascending index order (e.g. `0 App\n1 AuthCodes\n`). This is the
     /// on-disk metadata format written by the cache state machine; parse each line with
     /// `split_once(' ')`.
+    #[must_use]
     fn hiqlite_cache_variants_normalized() -> String {
-        Self::hiqlite_cache_variants()
-            .iter()
-            .map(|&(idx, name)| format!("{idx} {name}\n"))
-            .collect()
+        let mut out = String::new();
+        for &(idx, name) in Self::hiqlite_cache_variants() {
+            // appending to a String can never fail
+            let _ = writeln!(out, "{idx} {name}");
+        }
+        out
     }
 
     /// Returns `true` when every `(index, name)` pair recorded in `stored` (the normalized
@@ -183,12 +186,12 @@ pub trait CacheVariants {
     /// re-initializes the persisted metadata from the current enum. A removal needs that plus a
     /// full cache clear on every node before anything reads a cache; the entries of the removed
     /// index are persisted, and every index behind it has shifted.
+    #[must_use]
     fn hiqlite_cache_compatible_with(stored: &str) -> bool {
         let variants = Self::hiqlite_cache_variants();
         for line in stored.lines() {
-            let (idx, name) = match line.split_once(' ') {
-                Some((idx, name)) => (idx, name),
-                None => return false,
+            let Some((idx, name)) = line.split_once(' ') else {
+                return false;
             };
             let idx: usize = match idx.parse() {
                 Ok(idx) => idx,
@@ -250,6 +253,14 @@ mod empty {
 }
 
 /// The main entry function to start a Raft / Hiqlite node.
+///
+/// # Errors
+///
+/// Anything that keeps the node from booting: [`Error::Config`] for a node config and Raft
+/// config that does not validate and for a `node_id` no node line carries, [`Error::WAL`]
+/// and [`Error::Error`] for the log directory, its lock file and the snapshots,
+/// [`Error::InitializeErrorDb`] from `openraft` while the cluster bootstraps, and the
+/// [`Error`] of the backup restore when one is asked for.
 #[cfg(feature = "sqlite")]
 pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
     start::start_node_inner::<empty::Empty>(
@@ -263,6 +274,14 @@ pub async fn start_node(node_config: NodeConfig) -> Result<Client, Error> {
 /// The main entry function to start a Raft / Hiqlite node.
 /// With the `cache` feature enabled, you need to provide the generic enum which
 /// will function as the Cache Index value to decide between multiple caches.
+///
+/// # Errors
+///
+/// Anything that keeps the node from booting: [`Error::Config`] for a node config and Raft
+/// config that does not validate and for a `node_id` no node line carries, [`Error::WAL`]
+/// and [`Error::Error`] for the log directory, its lock file and the snapshots,
+/// [`Error::InitializeErrorDb`] from `openraft` while the cluster bootstraps, and the
+/// [`Error`] of the backup restore when one is asked for.
 #[cfg(feature = "cache")]
 pub async fn start_node_with_cache<C>(node_config: NodeConfig) -> Result<Client, Error>
 where
@@ -287,6 +306,14 @@ where
 /// delete their own state and join the restored cluster clean. A source that points at S3 needs
 /// the `s3` feature. Restoring wipes what the node has today - it is a deliberate act, and it
 /// happens before the node writes anything.
+///
+/// # Errors
+///
+/// Anything that keeps the node from booting: [`Error::Config`] for a node config and Raft
+/// config that does not validate and for a `node_id` no node line carries, [`Error::WAL`]
+/// and [`Error::Error`] for the log directory, its lock file and the snapshots,
+/// [`Error::InitializeErrorDb`] from `openraft` while the cluster bootstraps, and the
+/// [`Error`] of the backup restore when one is asked for.
 #[cfg(feature = "backup")]
 pub async fn start_node_from_backup(
     node_config: NodeConfig,
@@ -301,6 +328,14 @@ pub async fn start_node_from_backup(
 /// Same as [`start_node_from_backup`], with the cache variant enum of [`start_node_with_cache`].
 /// The restore wipes the caches as well - they are rebuilt from the restored Raft log, and
 /// cache-only data that was in them is gone.
+///
+/// # Errors
+///
+/// Anything that keeps the node from booting: [`Error::Config`] for a node config and Raft
+/// config that does not validate and for a `node_id` no node line carries, [`Error::WAL`]
+/// and [`Error::Error`] for the log directory, its lock file and the snapshots,
+/// [`Error::InitializeErrorDb`] from `openraft` while the cluster bootstraps, and the
+/// [`Error`] of the backup restore when one is asked for.
 #[cfg(all(feature = "backup", feature = "cache"))]
 pub async fn start_node_with_cache_from_backup<C>(
     node_config: NodeConfig,

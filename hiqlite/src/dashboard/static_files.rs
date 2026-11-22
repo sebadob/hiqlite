@@ -21,15 +21,14 @@ pub async fn handler(uri: Uri, req: Request) -> response::Response {
     let mime = mime_guess::from_path(path);
 
     // skip encoding on already compressed data types
-    let (_, path_ending) = path.rsplit_once(".").unwrap_or((path, ""));
+    let (_, path_ending) = path.rsplit_once('.').unwrap_or((path, ""));
     let (path, encoding) = if ["ico", "jpg", "jpeg", "png", "svg"].contains(&path_ending) {
         (Cow::from(path), "none")
     } else {
         let accept_encoding = req
             .headers()
             .get("accept-encoding")
-            .map(|h| h.to_str().unwrap_or("none"))
-            .unwrap_or("none");
+            .map_or("none", |h| h.to_str().unwrap_or("none"));
         if accept_encoding.contains("br") {
             (Cow::from(format!("{path}.br")), "br")
         } else if accept_encoding.contains("gzip") {
@@ -45,23 +44,21 @@ pub async fn handler(uri: Uri, req: Request) -> response::Response {
         "max-age=3600, public"
     };
 
-    match DashboardHtml::get(path.as_ref()) {
-        Some(content) => Response::builder()
+    if let Some(content) = DashboardHtml::get(path.as_ref()) {
+        Response::builder()
             .header(header::CACHE_CONTROL, cache_ctrl)
             .header(header::CONTENT_TYPE, mime.first_or_octet_stream().as_ref())
             .header(header::CONTENT_ENCODING, encoding)
             .body(Body::from(content.data))
-            .unwrap(),
-
-        None => {
-            debug!("Asset {path} not found");
-            // for a in DashboardHtml::iter() {
-            //     warn!("Available asset: {}", a);
-            // }
-            Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Body::from("not found"))
-                .unwrap()
-        }
+            .unwrap()
+    } else {
+        debug!("Asset {path} not found");
+        // for a in DashboardHtml::iter() {
+        //     warn!("Available asset: {}", a);
+        // }
+        Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("not found"))
+            .unwrap()
     }
 }

@@ -90,7 +90,7 @@ pub(crate) struct AppState {
 
 #[cfg(any(feature = "backup", feature = "dashboard"))]
 impl AppState {
-    #[inline(always)]
+    #[inline]
     pub fn new_request_id(&self) -> usize {
         self.client_request_id.fetch_add(1, Ordering::Relaxed)
     }

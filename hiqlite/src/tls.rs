@@ -47,6 +47,7 @@ impl ServerTlsConfigCerts {
 }
 
 impl ServerTlsConfig {
+    #[must_use]
     pub fn danger_tls_no_verify(&self) -> bool {
         match self {
             ServerTlsConfig::TlsAutoCertificates => true,
@@ -54,10 +55,18 @@ impl ServerTlsConfig {
         }
     }
 
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] when only one of `HQL_TLS_{variant}_KEY` and `HQL_TLS_{variant}_CERT`
+    /// is set - a certificate is useless without its key.
+    ///
+    /// # Panics
+    ///
+    /// If `HQL_TLS_{variant}_NO_VERIFY` is set to a value that does not parse as a bool.
     pub fn from_env(variant: &str) -> Result<Option<Self>, Error> {
-        let tls_auto_certificates = env::var("HQL_TLS_AUTO_CERTS")
-            .map(|v| v.parse::<bool>().unwrap_or(false))
-            .unwrap_or(false);
+        let tls_auto_certificates =
+            env::var("HQL_TLS_AUTO_CERTS").is_ok_and(|v| v.parse::<bool>().unwrap_or(false));
 
         let key = env::var(format!("HQL_TLS_{variant}_KEY")).ok();
         let cert = env::var(format!("HQL_TLS_{variant}_CERT")).ok();
@@ -68,27 +77,28 @@ impl ServerTlsConfig {
                     .expect("Cannot parse HQL_TLS_*_NO_VERIFY to bool")
             });
 
-        #[allow(clippy::unnecessary_unwrap)]
-        if key.is_some() && cert.is_some() {
-            Ok(Some(Self::Specific(ServerTlsConfigCerts {
-                key: key.unwrap().into(),
-                cert: cert.unwrap().into(),
+        match (key, cert) {
+            (Some(key), Some(cert)) => Ok(Some(Self::Specific(ServerTlsConfigCerts {
+                key: key.into(),
+                cert: cert.into(),
                 danger_tls_no_verify: no_verify.unwrap_or(false),
-            })))
-        } else if key.is_some() != cert.is_some() {
-            Err(Error::Config(
+            }))),
+            (Some(_), None) | (None, Some(_)) => Err(Error::Config(
                 format!(
                     "You must provide at least both HQL_TLS_{variant}_KEY + HQL_TLS_{variant}_CERT"
                 )
                 .into(),
-            ))
-        } else if tls_auto_certificates {
-            Ok(Some(Self::TlsAutoCertificates))
-        } else {
-            Ok(None)
+            )),
+            (None, None) if tls_auto_certificates => Ok(Some(Self::TlsAutoCertificates)),
+            (None, None) => Ok(None),
         }
     }
 
+    ///
+    /// # Panics
+    ///
+    /// If the configured certificate and key files cannot be loaded, and on the
+    /// auto-certificate variant everything [`Self::server_config_self_signed`] panics on.
     pub async fn server_config(&self, url: &str) -> axum_server::tls_rustls::RustlsConfig {
         match self {
             ServerTlsConfig::TlsAutoCertificates => Self::server_config_self_signed(url).await,
@@ -101,6 +111,11 @@ impl ServerTlsConfig {
         }
     }
 
+    ///
+    /// # Panics
+    ///
+    /// If no self-signed key pair can be generated, and for certificate parameters that cannot
+    /// be built or signed.
     pub async fn server_config_self_signed(url: &str) -> axum_server::tls_rustls::RustlsConfig {
         let key_pair = if let Some(kp) = KEY_PAIR.get() {
             kp
@@ -119,7 +134,7 @@ impl ServerTlsConfig {
             KEY_PAIR.get().unwrap()
         };
 
-        let name = if let Some((name, _)) = url.rsplit_once(":") {
+        let name = if let Some((name, _)) = url.rsplit_once(':') {
             name
         } else {
             url
@@ -140,7 +155,7 @@ impl ServerTlsConfig {
         // not be verified anyway. The 3-way handshake with the secrets will validate client and
         // server once the connection is established. We only want to take advantage of the
         // encryption at this point.
-        let exp = now.add(Duration::from_secs(3600 * 365 * 3));
+        let exp = now.add(Duration::from_hours(24 * 365 * 3));
         params.not_after = exp;
 
         let iss = Issuer::from_params(&params, &key_pair);
@@ -154,6 +169,7 @@ impl ServerTlsConfig {
             .expect("Cannot build self-signed TLS certificates")
     }
 
+    #[must_use]
     pub fn client_config(&self) -> Arc<ClientConfig> {
         match self {
             ServerTlsConfig::TlsAutoCertificates => build_tls_config(true),
@@ -162,6 +178,11 @@ impl ServerTlsConfig {
     }
 }
 
+///
+/// # Panics
+///
+/// When the `webpki-roots` feature is off and the platform verifier is not available.
+#[must_use]
 pub fn build_tls_config(tls_no_verify: bool) -> Arc<ClientConfig> {
     let config = if tls_no_verify {
         tokio_rustls::rustls::ClientConfig::builder()
@@ -199,6 +220,14 @@ pub fn build_tls_config(tls_no_verify: bool) -> Arc<ClientConfig> {
     Arc::new(config)
 }
 
+///
+/// # Errors
+///
+/// [`Error::Error`] when the TLS handshake on the given stream fails.
+///
+/// # Panics
+///
+/// If `host` is not a valid DNS name.
 pub async fn into_tls_stream(
     host: &str,
     stream: TcpStream,

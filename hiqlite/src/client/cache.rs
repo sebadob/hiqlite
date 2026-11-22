@@ -13,6 +13,13 @@ use tokio::sync::oneshot;
 
 impl Client {
     /// Clears a single cache.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted. Otherwise the answer of the
+    /// cache write: a Raft write error like [`Error::ClientWriteErrorCache`], [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`].
     pub async fn clear_cache<C>(&self, cache: C) -> Result<(), Error>
     where
         C: CacheVariants,
@@ -31,6 +38,13 @@ impl Client {
     }
 
     /// Clears all counters for the given Cache
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted. Otherwise the answer of the
+    /// cache write: a Raft write error like [`Error::ClientWriteErrorCache`], [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`].
     #[cfg(feature = "counters")]
     pub async fn clear_counters<C>(&self, cache: C) -> Result<(), Error>
     where
@@ -50,6 +64,13 @@ impl Client {
     }
 
     /// Clears all available caches.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted. Otherwise the answer of the
+    /// cache write: a Raft write error like [`Error::ClientWriteErrorCache`], [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`].
     pub async fn clear_cache_all(&self) -> Result<(), Error> {
         self.rate_limit_cache().await?;
 
@@ -73,6 +94,11 @@ impl Client {
     /// let v: Value = client.get(Cache::One, key).await?.unwrap();
     //  assert_eq!(v, value);
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Bincode`] when the stored value cannot be deserialized into `V`. Everything
+    /// [`Self::get_bytes`] can return is passed through unchanged.
     pub async fn get<C, K, V>(&self, cache: C, key: K) -> Result<Option<V>, Error>
     where
         C: CacheVariants,
@@ -94,6 +120,16 @@ impl Client {
     /// GET a raw bytes value from the cache.
     ///
     /// Works in the same way as `.get()` without any value mapping.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Error`] when the answer channel of the cache handler is closed,
+    /// [`Error::Connect`] when it times out, and on a node that is not the leader the answer of
+    /// the remote read, with exactly one re-send after [`Error::LeaderChange`].
+    ///
+    /// # Panics
+    ///
+    /// If the cache handler for the requested cache index is not running.
     pub async fn get_bytes<C, K>(&self, cache: C, key: K) -> Result<Option<Vec<u8>>, Error>
     where
         C: CacheVariants,
@@ -135,6 +171,16 @@ impl Client {
     /// This function does not for remote caches, only if this node is actually a Raft member.
     ///
     /// CAUTION: Entry expiry does not work on a snapshot. This is frozen in time and not live data!
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Error`] when this node is not a Raft member - a snapshot only exists on a
+    /// member. [`Error::Error`] and [`Error::Connect`] when the local cache handler does not
+    /// answer, and [`Error::Bincode`] for a value that cannot be deserialized into `V`.
+    ///
+    /// # Panics
+    ///
+    /// If the cache handler for the requested cache index is not running.
     pub async fn get_snapshot<C, V>(&self, cache: C) -> Result<BTreeMap<String, V>, Error>
     where
         C: CacheVariants,
@@ -180,6 +226,14 @@ impl Client {
     /// let v: Value = client.get(Cache::One, key).await?.unwrap();
     ///  assert_eq!(v, value);
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::put_bytes`] returns is passed through unchanged.
+    ///
+    /// # Panics
+    ///
+    /// If the given value cannot be serialized with serde.
     pub async fn put<C, K, V>(
         &self,
         cache: C,
@@ -193,17 +247,19 @@ impl Client {
         V: Serialize,
     {
         // `put_bytes` below applies the cache rate limit itself
-        self.put_bytes(
-            cache,
-            key,
-            serialize_serde(value).expect("Network payload serialization should always succeed"),
-            ttl,
-        )
-        .await?;
+        self.put_bytes(cache, key, serialize_serde(value), ttl)
+            .await?;
         Ok(())
     }
 
     /// PUT a raw bytes value into the cache
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted. Otherwise the answer of the
+    /// cache write: a Raft write error like [`Error::ClientWriteErrorCache`], [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`].
     pub async fn put_bytes<C, K>(
         &self,
         cache: C,
@@ -236,6 +292,13 @@ impl Client {
     }
 
     /// `Delete` a value from the cache.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted. Otherwise the answer of the
+    /// cache write: a Raft write error like [`Error::ClientWriteErrorCache`], [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`].
     pub async fn delete<C, K>(&self, cache: C, key: K) -> Result<(), Error>
     where
         C: CacheVariants,
@@ -259,6 +322,11 @@ impl Client {
     ///
     /// Of several concurrent `get_remove` calls for the same key, exactly one
     /// returns the value; all others get `None`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Bincode`] when the stored value cannot be deserialized into `V`. Everything
+    /// [`Self::get_remove_bytes`] returns is passed through unchanged.
     pub async fn get_remove<C, K, V>(&self, cache: C, key: K) -> Result<Option<V>, Error>
     where
         C: CacheVariants,
@@ -281,6 +349,13 @@ impl Client {
     /// GET and REMOVE a raw bytes value from the cache in one atomic step.
     ///
     /// Works in the same way as `.get_remove()` without any value mapping.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted. Otherwise the answer of the
+    /// cache write: a Raft write error like [`Error::ClientWriteErrorCache`], [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`].
     pub async fn get_remove_bytes<C, K>(&self, cache: C, key: K) -> Result<Option<Vec<u8>>, Error>
     where
         C: CacheVariants,
@@ -305,6 +380,15 @@ impl Client {
 
     /// REPLACE a value in the cache and return the previous value (if the key existed).
     /// The optional `ttl` is the lifetime of the value in seconds from *now* on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Bincode`] when the previous value cannot be deserialized into `V`. Everything
+    /// [`Self::replace_bytes`] returns is passed through unchanged.
+    ///
+    /// # Panics
+    ///
+    /// If the given value cannot be serialized with serde.
     pub async fn replace<C, K, V>(
         &self,
         cache: C,
@@ -319,13 +403,7 @@ impl Client {
     {
         // `replace_bytes` below applies the cache rate limit itself
         match self
-            .replace_bytes(
-                cache,
-                key,
-                serialize_serde(value)
-                    .expect("Network payload serialization should always succeed"),
-                ttl,
-            )
+            .replace_bytes(cache, key, serialize_serde(value), ttl)
             .await
         {
             Ok(value) => {
@@ -340,6 +418,13 @@ impl Client {
     }
 
     /// REPLACE a raw bytes value in the cache and return the previous value.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted. Otherwise the answer of the
+    /// cache write: a Raft write error like [`Error::ClientWriteErrorCache`], [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`].
     pub async fn replace_bytes<C, K>(
         &self,
         cache: C,
@@ -375,6 +460,16 @@ impl Client {
     }
 
     /// Get the current counter value for the Cache + Key
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Error`] when the answer channel of the cache handler is closed,
+    /// [`Error::Connect`] when it times out, and on a node that is not the leader the answer of
+    /// the remote read, with exactly one re-send after [`Error::LeaderChange`].
+    ///
+    /// # Panics
+    ///
+    /// If the cache handler for the requested cache index is not running.
     #[cfg(feature = "counters")]
     pub async fn counter_get<C, K>(&self, cache: C, key: K) -> Result<Option<i64>, Error>
     where
@@ -413,6 +508,13 @@ impl Client {
     }
 
     /// Sets the counter to a fixed value, no matter what the current one is.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted. Otherwise the answer of the
+    /// cache write: a Raft write error like [`Error::ClientWriteErrorCache`], [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`].
     #[cfg(feature = "counters")]
     pub async fn counter_set<C, K>(&self, cache: C, key: K, value: i64) -> Result<(), Error>
     where
@@ -435,6 +537,17 @@ impl Client {
     }
 
     /// Adds the given value to the Cache + Key and returns the new value.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted. Otherwise the answer of the
+    /// cache write: a Raft write error like [`Error::ClientWriteErrorCache`], [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`].
+    ///
+    /// # Panics
+    ///
+    /// If the cache answers the counter add with anything but a counter value.
     #[cfg(feature = "counters")]
     pub async fn counter_add<C, K>(&self, cache: C, key: K, value: i64) -> Result<i64, Error>
     where
@@ -463,6 +576,13 @@ impl Client {
 
     /// Deletes the counter for the given Cache + Key and frees up the memory, while setting it to
     /// `0` would keep it in memory.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted. Otherwise the answer of the
+    /// cache write: a Raft write error like [`Error::ClientWriteErrorCache`], [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`].
     #[cfg(feature = "counters")]
     pub async fn counter_del<C, K>(&self, cache: C, key: K) -> Result<(), Error>
     where

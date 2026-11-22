@@ -31,7 +31,7 @@ pub fn bin_to_u32(buf: &[u8]) -> Result<u32, Error> {
     Ok((&buf[0..4]).read_u32::<BigEndian>()?)
 }
 
-#[inline(always)]
+#[inline]
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     Ok(bincode_next::serde::encode_to_vec(
         value,
@@ -39,7 +39,7 @@ pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     )?)
 }
 
-#[inline(always)]
+#[inline]
 pub fn deserialize<T>(bytes: &[u8]) -> Result<T, Error>
 where
     T: for<'a> Deserialize<'a>,

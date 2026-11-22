@@ -40,7 +40,7 @@ impl ShutdownHandle {
                 &self.tx_client_cache,
                 #[cfg(feature = "sqlite")]
                 &self.tx_client_db,
-                &self.tx_shutdown,
+                self.tx_shutdown.as_ref(),
             ),
         )
         .await
@@ -53,6 +53,16 @@ impl ShutdownHandle {
 }
 
 impl Client {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Error`] for a remote client - only a node that runs its own Raft has something
+    /// a handle can shut down.
+    ///
+    /// # Panics
+    ///
+    /// If a Ctrl-C handler is already registered and `ctrlc` therefore refuses to install its
+    /// own.
     #[allow(unused)]
     pub fn shutdown_handle(&self) -> Result<ShutdownHandle, Error> {
         if let Some(state) = self.inner.state.clone() {

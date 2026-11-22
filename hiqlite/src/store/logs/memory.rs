@@ -228,6 +228,9 @@ impl RaftLogStorage<TypeConfigCache> for LogStoreMemory {
         Ok(())
     }
 
+    // openraft declares this trait method `async`, so the impl has to keep `async`; our reader
+    // is a plain `Clone` of the log and has nothing to await.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn get_log_reader(&mut self) -> Self::LogReader {
         self.clone()
     }

@@ -13,7 +13,7 @@ use openraft::ServerState;
 use openraft::type_config::async_runtime::watch::WatchReceiver;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::ops::{Deref, Sub};
+use std::ops::Sub;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::{task, time};
@@ -36,7 +36,10 @@ use openraft::raft::ReadPolicy;
 #[cfg(feature = "sqlite")]
 use crate::{
     migration::Migration,
-    query::{query_consistent_local, query_owned_local, rows::RowOwned},
+    query::{
+        query_consistent_local, query_owned_local,
+        rows::{RowsOwned, RowsOwnedChecked},
+    },
     store::state_machine::sqlite::state_machine::{Query, QueryWrite},
 };
 
@@ -49,10 +52,10 @@ pub async fn health(state: AppStateExt) -> Result<(), Error> {
 
     #[cfg(any(feature = "sqlite", feature = "cache"))]
     {
-        if check_health(&state).await.is_err() {
+        if check_health(&state).is_err() {
             // after at least 3 seconds, we should have a new leader
             time::sleep(Duration::from_secs(3)).await;
-            check_health(&state).await?;
+            check_health(&state)?;
         }
     }
 
@@ -60,7 +63,7 @@ pub async fn health(state: AppStateExt) -> Result<(), Error> {
 }
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
-async fn check_health(state: &AppStateExt) -> Result<(), Error> {
+fn check_health(state: &AppStateExt) -> Result<(), Error> {
     if Utc::now().sub(state.health_check_delay) < state.app_start {
         info!("Early health check within the HQL_HEALTH_CHECK_DELAY timeframe - returning true");
         return Ok(());
@@ -587,13 +590,13 @@ pub(crate) enum ApiStreamResponsePayload {
     #[cfg(feature = "sqlite")]
     Execute(Result<usize, Error>),
     #[cfg(feature = "sqlite")]
-    ExecuteReturning(Result<Vec<Result<RowOwned, Error>>, Error>),
+    ExecuteReturning(Result<RowsOwnedChecked, Error>),
     #[cfg(feature = "sqlite")]
     Transaction(Result<Vec<Result<usize, Error>>, Error>),
     #[cfg(feature = "sqlite")]
-    Query(Result<Vec<RowOwned>, Error>),
+    Query(Result<RowsOwned, Error>),
     #[cfg(feature = "sqlite")]
-    QueryConsistent(Result<Vec<RowOwned>, Error>),
+    QueryConsistent(Result<RowsOwned, Error>),
     #[cfg(feature = "sqlite")]
     Batch(Result<Vec<Result<usize, Error>>, Error>),
     #[cfg(feature = "sqlite")]
@@ -727,7 +730,7 @@ async fn handle_socket_concurrent(
                 break;
             }
             OpCode::Binary => {
-                let bytes = frame.payload.deref();
+                let bytes = &*frame.payload;
                 match deserialize::<ApiStreamRequest>(bytes) {
                     Ok(req) => req,
                     Err(err) => {
@@ -813,9 +816,8 @@ async fn handle_socket_concurrent(
                     {
                         Ok(resp) => {
                             let resp: crate::Response = resp.data;
-                            let res = match resp {
-                                crate::Response::Transaction(res) => res,
-                                _ => unreachable!(),
+                            let crate::Response::Transaction(res) = resp else {
+                                unreachable!()
                             };
                             ApiStreamResponse {
                                 request_id,
@@ -857,9 +859,8 @@ async fn handle_socket_concurrent(
                     {
                         Ok(resp) => {
                             let resp: crate::Response = resp.data;
-                            let res = match resp {
-                                crate::Response::Batch(res) => res,
-                                _ => unreachable!(),
+                            let crate::Response::Batch(res) = resp else {
+                                unreachable!()
                             };
                             ApiStreamResponse {
                                 request_id,
@@ -883,9 +884,8 @@ async fn handle_socket_concurrent(
                     {
                         Ok(resp) => {
                             let resp: crate::Response = resp.data;
-                            let res = match resp {
-                                crate::Response::Migrate(res) => res,
-                                _ => unreachable!(),
+                            let crate::Response::Migrate(res) = resp else {
+                                unreachable!()
                             };
                             ApiStreamResponse {
                                 request_id,
@@ -909,9 +909,8 @@ async fn handle_socket_concurrent(
                     {
                         Ok(resp) => {
                             let resp: crate::Response = resp.data;
-                            let res = match resp {
-                                crate::Response::Backup(res) => res,
-                                _ => unreachable!(),
+                            let crate::Response::Backup(res) = resp else {
+                                unreachable!()
                             };
                             ApiStreamResponse {
                                 request_id,
@@ -996,9 +995,8 @@ async fn handle_socket_concurrent(
 
                 #[cfg(feature = "cache")]
                 ApiStreamRequestPayload::CacheGet(cache_req) => {
-                    let (cache_idx, key) = match cache_req {
-                        CacheRequest::Get { cache_idx, key } => (cache_idx, key),
-                        _ => unreachable!(),
+                    let CacheRequest::Get { cache_idx, key } = cache_req else {
+                        unreachable!()
                     };
 
                     // Bounds-check the cache index before touching the handler channel.
@@ -1036,9 +1034,8 @@ async fn handle_socket_concurrent(
 
                 #[cfg(feature = "dlock")]
                 ApiStreamRequestPayload::LockAwait(cache_req) => {
-                    let (key, id) = match cache_req {
-                        CacheRequest::LockAwait((key, id)) => (key, id),
-                        _ => unreachable!(),
+                    let CacheRequest::LockAwait((key, id)) = cache_req else {
+                        unreachable!()
                     };
 
                     let (ack, rx) = tokio::sync::oneshot::channel();
@@ -1059,9 +1056,8 @@ async fn handle_socket_concurrent(
 
                 #[cfg(feature = "listen_notify")]
                 ApiStreamRequestPayload::Notify(cache_req) => {
-                    let (ts, data) = match cache_req {
-                        CacheRequest::Notify((ts, data)) => (ts, data),
-                        _ => unreachable!(),
+                    let CacheRequest::Notify((ts, data)) = cache_req else {
+                        unreachable!()
                     };
 
                     match state

@@ -40,7 +40,7 @@ where
     Ok(())
 }
 
-#[inline(always)]
+#[inline]
 pub fn serialize<T: Encode>(value: &T) -> Result<Vec<u8>, EncodeError> {
     // We are using the legacy config on purpose here. It uses fixed-width integer fields, which
     // uses a bit more space, but is faster.
@@ -53,7 +53,7 @@ pub fn serialize<T: Encode>(value: &T) -> Result<Vec<u8>, EncodeError> {
     bincode_next::encode_to_vec(value, bincode_next::config::legacy())
 }
 
-#[inline(always)]
+#[inline]
 pub fn deserialize<T: Decode<()>>(bytes: &[u8]) -> Result<T, DecodeError> {
     bincode_next::decode_from_slice::<T, _>(bytes, bincode_next::config::legacy())
         .map(|(res, _)| res)
@@ -63,13 +63,18 @@ pub fn deserialize<T: Decode<()>>(bytes: &[u8]) -> Result<T, DecodeError> {
 /// payload types like `SnapshotMeta` or `StateMachineData` fields). Byte-identical to what the
 /// native path above produces for the same values; kept until those boundaries move to native
 /// derives with `#[bincode(with_serde)]` fields.
-#[inline(always)]
-pub fn serialize_serde<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
+/// # Panics
+/// If `value` cannot be serialized with bincode-next. Every type flowing through here is a
+/// plain payload of our own protocol, so a failure is always a bug in the type, not a condition
+/// a caller can recover from.
+#[inline]
+pub fn serialize_serde<T: Serialize>(value: &T) -> Vec<u8> {
     bincode_next::serde::encode_to_vec(value, bincode_next::config::legacy())
+        .expect("Network payload serialization should always succeed")
 }
 
-/// Counterpart of [serialize_serde] for deserialization.
-#[inline(always)]
+/// Counterpart of [`serialize_serde`] for deserialization.
+#[inline]
 pub fn deserialize_serde<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
     bincode_next::serde::decode_from_slice::<T, _>(bytes, bincode_next::config::legacy())
         .map(|(res, _)| res)
@@ -603,8 +608,8 @@ pub fn parse_duration<T: AsRef<str>>(input: T) -> Option<Duration> {
         .parse::<u32>()
         .ok()
         // i64 casting here is necessary to guarantee safety when we downcast later on
-        // for cache TTL and so on.
-        .map(|v| Duration::from_secs((v as i64).saturating_mul(mul) as u64))
+        // for cache TTL and so on: the saturating product can never exceed an `i64`.
+        .map(|v| Duration::from_secs((v as i64).saturating_mul(mul).cast_unsigned()))
 }
 
 /// Restricts the access for the given path.

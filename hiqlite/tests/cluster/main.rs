@@ -63,13 +63,13 @@ async fn test_cluster() {
         .init();
 
     match exec_tests().await {
-        Ok(_) => {
+        Ok(()) => {
             log("All tests successful");
             // TODO sometimes the test gets stuck here
             process::exit(0);
         }
         Err(err) => {
-            panic!("\n!!!\n{}\n!!!\n", err);
+            panic!("\n!!!\n{err}\n!!!\n");
         }
     }
 }
@@ -268,7 +268,7 @@ async fn exec_tests() -> Result<(), Error> {
 
 fn set_panic_hook() {
     std::panic::set_hook(Box::new(|panic| {
-        eprintln!("{}\n", panic);
+        eprintln!("{panic}\n");
 
         if let Some(location) = panic.location() {
             tracing::error!(

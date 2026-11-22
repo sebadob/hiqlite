@@ -26,6 +26,6 @@ async fn router(client: Client, tx: flume::Sender<NotifyRequest>) {
 // we just need to make sure that the channel does not fill up
 async fn listener(rx: flume::Receiver<(i64, Vec<u8>)>) {
     while let Ok((ts, _)) = rx.recv_async().await {
-        debug!("Event from {}", ts);
+        debug!("Event from {ts}");
     }
 }

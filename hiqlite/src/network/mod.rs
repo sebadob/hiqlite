@@ -1,6 +1,6 @@
 use crate::Error;
 use crate::app_state::AppState;
-use crate::helpers::{deserialize, serialize, serialize_serde};
+use crate::helpers::{deserialize, serialize};
 use axum::http::header::{ACCEPT, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
@@ -148,8 +148,8 @@ pub const HEADER_NAME_SECRET: &str = "authorization";
 /// exactly `Bearer <secret_api>`.
 pub const BEARER_SCHEME: &str = "Bearer ";
 
-#[inline(always)]
-fn get_payload<T>(headers: &HeaderMap, body: body::Bytes) -> Result<T, Error>
+#[inline]
+fn get_payload<T>(headers: &HeaderMap, body: &body::Bytes) -> Result<T, Error>
 where
     T: for<'a> Deserialize<'a> + Decode<()>,
 {
@@ -161,9 +161,12 @@ where
     Ok(deserialize(body.as_ref())?)
 }
 
-#[inline(always)]
+/// Answer a `/cluster` request in the format the client asked for with its `Accept` header.
+/// # Errors
+/// - [`Error::Bincode`] - if `payload` cannot be serialized on the native wire format
+#[inline]
 fn fmt_ok<S: Debug + Serialize + Encode>(
-    headers: HeaderMap,
+    headers: &HeaderMap,
     payload: S,
 ) -> Result<Response, Error> {
     if let Some(accept) = headers.get(ACCEPT)
@@ -171,32 +174,38 @@ fn fmt_ok<S: Debug + Serialize + Encode>(
     {
         return Ok(Json(payload).into_response());
     }
-    Ok(serialize_network(&payload).into_response())
+    Ok(serialize_network(&payload)?.into_response())
 }
 
 // Types we don't own - openraft's - only have serde impls, so this path keeps the serde adapter,
 // which the goldens pin as byte-identical to the native one for everything carried here.
-#[inline(always)]
-fn fmt_ok_serde<S: Debug + Serialize>(headers: HeaderMap, payload: S) -> Result<Response, Error> {
+/// Answer a `/cluster` request like `fmt_ok`, but on the serde wire format.
+/// # Errors
+/// - [`Error::Bincode`] - if `payload` cannot be serialized on the serde wire format
+#[inline]
+fn fmt_ok_serde<S: Debug + Serialize>(headers: &HeaderMap, payload: S) -> Result<Response, Error> {
     if let Some(accept) = headers.get(ACCEPT)
         && accept == HeaderValue::from_static("application/json")
     {
         return Ok(Json(payload).into_response());
     }
-    Ok(serialize_serde(&payload)
-        .expect("Network payload serialization should always succeed")
-        .into_response())
+    // Not `serialize_serde`: a request answer is a response a client waits for, so a broken payload
+    // is answered with an error there instead of panicking.
+    Ok(
+        bincode_next::serde::encode_to_vec(&payload, bincode_next::config::legacy())?
+            .into_response(),
+    )
 }
 
 /// Serialization used for all network requests for non-raft-internal traffic and types.
-/// # Panics
-/// If the given type cannot be serialized with bincode-next successfully
-#[inline(always)]
-pub fn serialize_network<T: Encode>(value: &T) -> Vec<u8> {
-    serialize(value).expect("Network payload serialization should always succeed")
+/// # Errors
+/// - [`Error::Bincode`] - if `value` cannot be serialized with bincode-next
+#[inline]
+pub fn serialize_network<T: Encode>(value: &T) -> Result<Vec<u8>, Error> {
+    Ok(serialize(value)?)
 }
 
-#[inline(always)]
+#[inline]
 fn validate_secret(state: &AppStateExt, headers: &HeaderMap) -> Result<(), Error> {
     validate_bearer(&state.secret_api, headers)
 }
@@ -235,7 +244,7 @@ pub(crate) fn validate_bearer(secret_api: &str, headers: &HeaderMap) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::deserialize_serde;
+    use crate::helpers::{deserialize_serde, serialize_serde};
     use axum::http::{HeaderName, header::AUTHORIZATION};
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -333,36 +342,36 @@ mod tests {
     #[expect(deprecated)]
     #[test]
     fn raft_metrics_layout_is_config_independent() {
-        let wire_bytes = serialize_serde(&sample_metrics!(TypeConfigWire)).unwrap();
+        let wire_bytes = serialize_serde(&sample_metrics!(TypeConfigWire));
 
         // The samples are equal by construction, so identical bytes mean identical layouts. Each
         // direction is then proven through the decoder the shared code paths use.
         #[cfg(feature = "sqlite")]
         {
             type Sqlite = crate::store::state_machine::sqlite::TypeConfigSqlite;
-            let group_bytes = serialize_serde(&sample_metrics!(Sqlite)).unwrap();
+            let group_bytes = serialize_serde(&sample_metrics!(Sqlite));
             assert_eq!(
                 group_bytes, wire_bytes,
                 "the sqlite group's metrics no longer read as the wire config's"
             );
             let read = deserialize_serde::<WireMetrics>(&group_bytes).unwrap();
-            assert_eq!(serialize_serde(&read).unwrap(), group_bytes);
+            assert_eq!(serialize_serde(&read), group_bytes);
             let read = deserialize_serde::<openraft::RaftMetrics<Sqlite>>(&wire_bytes).unwrap();
-            assert_eq!(serialize_serde(&read).unwrap(), group_bytes);
+            assert_eq!(serialize_serde(&read), group_bytes);
         }
 
         #[cfg(feature = "cache")]
         {
             type Cache = crate::store::state_machine::memory::TypeConfigCache;
-            let group_bytes = serialize_serde(&sample_metrics!(Cache)).unwrap();
+            let group_bytes = serialize_serde(&sample_metrics!(Cache));
             assert_eq!(
                 group_bytes, wire_bytes,
                 "the cache group's metrics no longer read as the wire config's"
             );
             let read = deserialize_serde::<WireMetrics>(&group_bytes).unwrap();
-            assert_eq!(serialize_serde(&read).unwrap(), group_bytes);
+            assert_eq!(serialize_serde(&read), group_bytes);
             let read = deserialize_serde::<openraft::RaftMetrics<Cache>>(&wire_bytes).unwrap();
-            assert_eq!(serialize_serde(&read).unwrap(), group_bytes);
+            assert_eq!(serialize_serde(&read), group_bytes);
         }
     }
 

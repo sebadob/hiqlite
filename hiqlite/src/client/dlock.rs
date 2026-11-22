@@ -52,6 +52,7 @@ impl Lock {
     /// You can check if the lock is still locked. It may be unlocked if your network went down,
     /// and it was not possible to send out alive-heartbeats. The timeout is 10 seconds (2s in
     /// debug builds).
+    #[must_use]
     pub fn is_locked(&self) -> bool {
         self.is_locked.load(Ordering::Relaxed)
     }
@@ -109,11 +110,10 @@ fn spawn_alive_ticker(
 
                     // As long as this lock is still within the timeout window before the next
                     // retry, we can still consider it as being locked.
-                    if (Utc::now().sub(last_renew).as_seconds_f32() * 1000.0) as u64
-                        > Duration::from_secs(LOCK_VALID_SECONDS as u64)
-                            .sub(LOCK_ALIVE_INTERVAL)
-                            .as_millis() as u64
-                    {
+                    let elapsed_ms = Utc::now().sub(last_renew).num_milliseconds().unsigned_abs();
+                    let valid_window = Duration::from_secs(LOCK_VALID_SECONDS.cast_unsigned())
+                        .saturating_sub(LOCK_ALIVE_INTERVAL);
+                    if u128::from(elapsed_ms) > valid_window.as_millis() {
                         is_locked.store(false, Ordering::Relaxed);
                         warn!(
                             "Distributed lock for {} / {} is no longer held (timed out); stopping \
@@ -158,6 +158,15 @@ impl Client {
     /// // prevents deadlocks just because some client or server crashed.
     /// drop(lock);
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted, and the [`Error`] of the
+    /// lock request itself: a Raft write error like [`Error::ClientWriteErrorCache`],
+    /// [`Error::Error`] when the request cannot be handed to the leader's stream,
+    /// [`Error::Connect`] when its answer times out, and exactly one re-send after
+    /// [`Error::LeaderChange`]. A lock that is queued is not an error - this call waits for its
+    /// turn.
     pub async fn lock<K>(&self, key: K) -> Result<Lock, Error>
     where
         K: Into<Cow<'static, str>>,
@@ -187,10 +196,19 @@ impl Client {
                         // Released: the handler promoted our ticket. Re-request with the same
                         // ticket to claim it.
                         LockState::Released => ticket = Some(id),
-                        s => unreachable!("{:?}", s),
+                        // An `Await` is answered with `Locked` when our ticket is promoted and
+                        // with `Released` when the key goes away - a queue position is never
+                        // pushed to a waiter.
+                        LockState::Queued(id) => {
+                            unreachable!("lock {key} answered our await with ticket {id}")
+                        }
                     }
                 }
-                s => unreachable!("{:?}", s),
+                // A first-try `Lock` is answered with `Locked` or `Queued`; only an `Await` and
+                // a `Release` ever answer `Released`.
+                LockState::Released => {
+                    unreachable!("lock {key} answered a lock request as released")
+                }
             }
         }
     }

@@ -27,6 +27,12 @@ impl Client {
     /// You might want to take a look at the
     /// [sqlite-only](https://github.com/sebadob/hiqlite/tree/main/examples/sqlite-only) example.
     ///
+    /// # Errors
+    ///
+    /// [`Error::Sqlite`] for a migration the state machine cannot apply, and everything
+    /// [`Self::query_map`] returns while the already applied migrations are read.
+    ///
+    ///
     /// # Panics
     ///
     /// If the given Migrations have an invalid format.
@@ -54,6 +60,11 @@ impl Client {
     ///
     /// You might want to take a look at the
     /// [sqlite-only](https://github.com/sebadob/hiqlite/tree/main/examples/sqlite-only) example.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Sqlite`] when the embedded migrations have an invalid format, and everything
+    /// [`Self::migrate`] can return.
     pub async fn try_migrate<T: RustEmbed>(&self) -> Result<(), Error> {
         let migrations = Migrations::try_build::<T>().map_err(Error::Sqlite)?;
         self.migrate_execute_dedup::<T>(migrations).await
@@ -110,7 +121,7 @@ impl Client {
         }
 
         match self.migrate_execute(migrations).await {
-            Ok(_) => Ok(()),
+            Ok(()) => Ok(()),
             Err(err) => {
                 if self
                     .was_leader_update_error(&err, &self.inner.leader_db, &self.inner.tx_client_db)

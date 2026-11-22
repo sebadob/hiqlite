@@ -90,14 +90,14 @@ pub async fn test_backup_restore_prerequisites(client: &Client) -> Result<(), Er
     // backup that has been backed up right beforehand.
     client
         .execute(
-            r#"
+            r"
     CREATE TABLE test_changed
     (
         id INTEGER NOT NULL
              CONSTRAINT test_pk
                PRIMARY KEY
     )
-    "#,
+    ",
             params!(),
         )
         .await?;
@@ -115,7 +115,7 @@ pub async fn test_backup_restore_prerequisites(client: &Client) -> Result<(), Er
 }
 
 pub async fn find_backup_file(node_id: u64) -> String {
-    let path_base = format!("{}/node_{}/state_machine/backups", TEST_DATA_DIR, node_id);
+    let path_base = format!("{TEST_DATA_DIR}/node_{node_id}/state_machine/backups");
     let mut ls = fs::read_dir(&path_base).await.unwrap();
 
     // the dir can hold planted foreign files; only our own prefix is a test backup
@@ -123,7 +123,7 @@ pub async fn find_backup_file(node_id: u64) -> String {
         let file_name = file.file_name();
         let name = file_name.to_str().unwrap();
         if name.starts_with(&format!("{TEST_FILE_PREFIX}_")) {
-            return format!("{}/{}", path_base, name);
+            return format!("{path_base}/{name}");
         }
     }
     panic!("Backup folder is empty when it should not be");

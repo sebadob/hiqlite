@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-/// The "listen_notify" feature currently enables _remote_.
+/// The `listen_notify` feature currently enables _remote_.
 #[cfg(feature = "listen_notify")]
 pub(crate) mod remote {
     use crate::helpers::deserialize;
@@ -18,7 +18,6 @@ pub(crate) mod remote {
     use hyper::upgrade::Upgraded;
     use hyper_util::rt::TokioIo;
     use std::mem;
-    use std::ops::Deref;
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::ReadHalf;
@@ -32,11 +31,12 @@ pub(crate) mod remote {
     const LISTEN_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 
     /// Maximum time without any frame from the server before the client declares the /listen
-    /// connection dead and reconnects. Must be a multiple of LISTEN_KEEPALIVE_INTERVAL with margin.
+    /// connection dead and reconnects. Must be a multiple of `LISTEN_KEEPALIVE_INTERVAL` with
+    /// margin.
     const LISTEN_READ_TIMEOUT: Duration = Duration::from_secs(35);
 
     /// Number of consecutive connection failures that retry at the fast (1 s) interval before the
-    /// reconnect loop backs off to RECONNECT_SLOW_INTERVAL.
+    /// reconnect loop backs off to `RECONNECT_SLOW_INTERVAL`.
     const RECONNECT_FAST_RETRIES: u32 = 5;
 
     const RECONNECT_SLOW_INTERVAL: Duration = Duration::from_secs(5);
@@ -137,7 +137,7 @@ pub(crate) mod remote {
                             }
                             None
                         }
-                        _ = time::sleep(LISTEN_READ_TIMEOUT.saturating_sub(last_frame.elapsed())) => {
+                        () = time::sleep(LISTEN_READ_TIMEOUT.saturating_sub(last_frame.elapsed())) => {
                             error!(
                                 "No frames from server for {:?} on /listen - assuming dead connection, reconnecting",
                                 LISTEN_READ_TIMEOUT
@@ -201,7 +201,7 @@ pub(crate) mod remote {
             {
                 match frame.opcode {
                     OpCode::Binary => {
-                        let bytes = frame.payload.deref();
+                        let bytes = &*frame.payload;
                         let (ts, data) = match deserialize::<(i64, Vec<u8>)>(bytes) {
                             Ok(v) => v,
                             Err(err) => {
@@ -255,6 +255,11 @@ pub(crate) mod remote {
 
 impl Client {
     /// Listen to events on the distributed event bus
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Channel`] when the event receiver of the listener is closed, and
+    /// [`Error::Bincode`] for an event whose payload does not deserialize into `T`.
     pub async fn listen<T>(&self) -> Result<T, Error>
     where
         T: for<'de> Deserialize<'de>,
@@ -264,11 +269,20 @@ impl Client {
     }
 
     /// Listen to events on the distributed event bus and get the raw bytes response
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Channel`] when the event receiver of the listener is closed.
     pub async fn listen_bytes(&self) -> Result<(i64, Vec<u8>), Error> {
         Ok(self.listen_rx().recv_async().await?)
     }
 
     /// Tries to receive an event and returns immediately, if none is currently waiting.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Bincode`] for an event whose payload does not deserialize into `T`. An empty
+    /// queue is `Ok(None)`.
     pub fn try_listen<T>(&self) -> Result<Option<T>, Error>
     where
         T: for<'de> Deserialize<'de>,
@@ -283,6 +297,13 @@ impl Client {
     /// Listen to events on the distributed event bus when their unix timestamp in microseconds
     /// is > `after_ts_micros`. This is helpful in case of applications restarts when cache
     /// events may be replayed to avoid duplicate event handling, if this applies to your case.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Channel`] when the event receiver of the listener is closed, and
+    /// [`Error::Bincode`] for an event whose payload does not deserialize into `T`. Events at
+    /// or before `after_ts_micros` are skipped, which means this call keeps waiting for a newer
+    /// one.
     pub async fn listen_after<T>(&self, after_ts_micros: i64) -> Result<T, Error>
     where
         T: for<'de> Deserialize<'de>,
@@ -298,6 +319,11 @@ impl Client {
 
     /// Listen to events on the distributed event bus that are "new" in the sense that they must
     /// have been created after this application has been started.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::listen_after`] can return, with the app start timestamp as the
+    /// cutoff.
     pub async fn listen_after_start<T>(&self) -> Result<T, Error>
     where
         T: for<'de> Deserialize<'de>,
@@ -318,6 +344,18 @@ impl Client {
     }
 
     /// Notify all other Raft members with this new event data.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the cache rate limit is exhausted, [`Error::Channel`] when the
+    /// notify channel is closed, and the answer of the cache write: a Raft write error like
+    /// [`Error::ClientWriteErrorCache`], [`Error::Error`] when the request cannot be handed to
+    /// the leader's stream, [`Error::Connect`] when its answer times out, and exactly one
+    /// re-send after [`Error::LeaderChange`].
+    ///
+    /// # Panics
+    ///
+    /// If the given payload cannot be serialized with serde.
     pub async fn notify<P>(&self, payload: &P) -> Result<(), Error>
     where
         P: Serialize,
@@ -326,14 +364,10 @@ impl Client {
         let now = Utc::now().timestamp_micros();
 
         match self
-            .notify_req(CacheRequest::Notify((
-                now,
-                serialize_serde(payload)
-                    .expect("Network payload serialization should always succeed"),
-            )))
+            .notify_req(CacheRequest::Notify((now, serialize_serde(payload))))
             .await
         {
-            Ok(_) => Ok(()),
+            Ok(()) => Ok(()),
             Err(err) => {
                 if self
                     .was_leader_update_error(
@@ -343,12 +377,8 @@ impl Client {
                     )
                     .await
                 {
-                    self.notify_req(CacheRequest::Notify((
-                        now,
-                        serialize_serde(payload)
-                            .expect("Network payload serialization should always succeed"),
-                    )))
-                    .await
+                    self.notify_req(CacheRequest::Notify((now, serialize_serde(payload))))
+                        .await
                 } else {
                     Err(err)
                 }
@@ -372,9 +402,12 @@ impl Client {
                 .await
                 .map_err(|err| Error::Error(err.to_string().into()))?;
             let res = await_channel_response(rx).await??;
-            match res {
-                ApiStreamResponsePayload::Notify(res) => res,
-                _ => unreachable!(),
+            // An `if let` and not a `match`: the payload enum is feature-gated, so the wildcard a
+            // `match` needs to stay exhaustive would hide a single-variant wildcard from clippy.
+            if let ApiStreamResponsePayload::Notify(res) = res {
+                res
+            } else {
+                unreachable!("cache notify answered with {res:?}")
             }
         }
     }

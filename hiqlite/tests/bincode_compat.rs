@@ -16,8 +16,8 @@
 //!     read data written by an old one and vice versa.
 //!
 //! Configs mirror `hiqlite-wal/src/log_store_impl.rs`:
-//!   * legacy   = LittleEndian + Fixint  (the persisted Raft-log format today)
-//!   * standard = LittleEndian + Varint  (bincode's default; the wire format)
+//!   * legacy   = `LittleEndian` + Fixint  (the persisted Raft-log format today)
+//!   * standard = `LittleEndian` + Varint  (bincode's default; the wire format)
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -65,20 +65,20 @@ enum NestedEnum {
 }
 
 /// Assert the 1:1 + cross-decode contract for one value under both configs.
-fn check<T>(v: T, label: &str)
+fn check<T>(v: &T, label: &str)
 where
     T: Serialize + DeserializeOwned + std::fmt::Debug + PartialEq,
 {
     // legacy = LittleEndian + Fixint (the persisted Raft-log format).
-    let b2 = bincode::serde::encode_to_vec(&v, bincode::config::legacy()).unwrap();
-    let bn = bincode_next::serde::encode_to_vec(&v, bincode_next::config::legacy()).unwrap();
+    let b2 = bincode::serde::encode_to_vec(v, bincode::config::legacy()).unwrap();
+    let bn = bincode_next::serde::encode_to_vec(v, bincode_next::config::legacy()).unwrap();
     assert_eq!(b2, bn, "{label}: legacy bytes differ");
 
     let (d, n) =
         bincode_next::serde::decode_from_slice::<T, _>(&b2, bincode_next::config::legacy())
             .unwrap();
     assert_eq!(
-        d, v,
+        d, *v,
         "{label}: bincode-next failed to decode bincode2 legacy bytes"
     );
     assert_eq!(
@@ -89,7 +89,7 @@ where
 
     let (d, n) = bincode::serde::decode_from_slice::<T, _>(&bn, bincode::config::legacy()).unwrap();
     assert_eq!(
-        d, v,
+        d, *v,
         "{label}: bincode2 failed to decode bincode-next legacy bytes"
     );
     assert_eq!(
@@ -99,15 +99,15 @@ where
     );
 
     // standard = LittleEndian + Varint (the default wire format).
-    let b2s = bincode::serde::encode_to_vec(&v, bincode::config::standard()).unwrap();
-    let bns = bincode_next::serde::encode_to_vec(&v, bincode_next::config::standard()).unwrap();
+    let b2s = bincode::serde::encode_to_vec(v, bincode::config::standard()).unwrap();
+    let bns = bincode_next::serde::encode_to_vec(v, bincode_next::config::standard()).unwrap();
     assert_eq!(b2s, bns, "{label}: standard bytes differ");
 
     let (d, n) =
         bincode_next::serde::decode_from_slice::<T, _>(&b2s, bincode_next::config::standard())
             .unwrap();
     assert_eq!(
-        d, v,
+        d, *v,
         "{label}: bincode-next failed to decode bincode2 standard bytes"
     );
     assert_eq!(
@@ -119,7 +119,7 @@ where
     let (d, n) =
         bincode::serde::decode_from_slice::<T, _>(&bns, bincode::config::standard()).unwrap();
     assert_eq!(
-        d, v,
+        d, *v,
         "{label}: bincode2 failed to decode bincode-next standard bytes"
     );
     assert_eq!(
@@ -161,52 +161,55 @@ fn full_data_model_is_byte_identical() {
         },
         nested: NestedEnum::Struct { a: -3, b: true },
     };
-    check(sink.clone(), "KitchenSink");
+    check(&sink.clone(), "KitchenSink");
 
     // Exercise the other three enum variant shapes at the top level too.
-    check(NestedEnum::Unit, "enum::unit");
-    check(NestedEnum::Newtype(42), "enum::newtype");
-    check(NestedEnum::Tuple(3usize, "x".into(), 1.5f64), "enum::tuple");
+    check(&NestedEnum::Unit, "enum::unit");
+    check(&NestedEnum::Newtype(42), "enum::newtype");
+    check(
+        &NestedEnum::Tuple(3usize, "x".into(), 1.5f64),
+        "enum::tuple",
+    );
 }
 
 #[test]
 fn edge_values_are_byte_identical() {
     // Every integer width, both extremes where meaningful.
-    check(i8::MIN, "i8::MIN");
-    check(i16::MAX, "i16::MAX");
-    check(i32::MIN, "i32::MIN");
-    check(i64::MAX, "i64::MAX");
-    check(u8::MAX, "u8::MAX");
-    check(u16::MIN, "u16::MIN");
-    check(u32::MAX, "u32::MAX");
-    check(u64::MIN, "u64::MIN");
+    check(&i8::MIN, "i8::MIN");
+    check(&i16::MAX, "i16::MAX");
+    check(&i32::MIN, "i32::MIN");
+    check(&i64::MAX, "i64::MAX");
+    check(&u8::MAX, "u8::MAX");
+    check(&u16::MIN, "u16::MIN");
+    check(&u32::MAX, "u32::MAX");
+    check(&u64::MIN, "u64::MIN");
 
     // Floats (finite, non-NaN so we test the value path, not NaN bit quirks).
-    check(0.0f32, "f32 zero");
-    check(f64::MIN_POSITIVE, "f64 min positive");
+    check(&0.0f32, "f32 zero");
+    check(&f64::MIN_POSITIVE, "f64 min positive");
 
-    check(true, "bool true");
-    check(false, "bool false");
+    check(&true, "bool true");
+    check(&false, "bool false");
 
     // Option at the top level (serde discriminant 0/1).
-    check(Option::<i64>::None, "Option None");
-    check(Some(5i64), "Option Some(i64)");
-    check(Some("s".to_string()), "Option Some(String)");
+    check(&Option::<i64>::None, "Option None");
+    check(&Some(5i64), "Option Some(i64)");
+    check(&Some("s".to_string()), "Option Some(String)");
 
     // Strings and Cow<str> (Cow serializes as the inner str).
-    check(String::new(), "empty String");
-    check(Cow::<str>::Borrowed(""), "empty Cow<str>");
-    check(Cow::<str>::Owned("owned".into()), "owned Cow<str>");
+    check(&String::new(), "empty String");
+    check(&Cow::<str>::Borrowed(""), "empty Cow<str>");
+    check(&Cow::<str>::Owned("owned".into()), "owned Cow<str>");
 
     // Collections, including empty (length prefix == 0) and blobs.
-    check(Vec::<i64>::new(), "empty Vec<i64>");
-    check(vec![0i64; 1], "Vec<i64> len 1");
-    check(BTreeMap::<String, i64>::new(), "empty BTreeMap");
-    check(vec![0u8; 32], "Vec<u8> blob len 32");
+    check(&Vec::<i64>::new(), "empty Vec<i64>");
+    check(&vec![0i64; 1], "Vec<i64> len 1");
+    check(&BTreeMap::<String, i64>::new(), "empty BTreeMap");
+    check(&vec![0u8; 32], "Vec<u8> blob len 32");
 
     // Tuples and arrays.
-    check((0usize, 0usize), "(usize, usize) zero");
-    check([0u8; 16], "[u8; 16]");
+    check(&(0usize, 0usize), "(usize, usize) zero");
+    check(&[0u8; 16], "[u8; 16]");
 }
 
 /// Sanity that the two configs really are different code paths (so a passing

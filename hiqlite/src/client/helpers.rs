@@ -41,7 +41,7 @@ pub(crate) async fn await_channel_response<T>(rx: oneshot::Receiver<T>) -> Resul
 }
 
 impl Client {
-    #[inline(always)]
+    #[inline]
     pub(crate) async fn build_addr(
         &self,
         path: &str,
@@ -60,7 +60,7 @@ impl Client {
         url
     }
 
-    /// Wraps a direct `client_write` on the local leader with [LOCAL_CLIENT_WRITE_TIMEOUT] so a
+    /// Wraps a direct `client_write` on the local leader with [`LOCAL_CLIENT_WRITE_TIMEOUT`] so a
     /// stalled cluster (no quorum) fails loudly instead of hanging the caller forever. The bounds
     /// mirror openraft's own `client_write`, so `C` and `E` are inferred exactly as at a plain call
     /// site.
@@ -115,7 +115,7 @@ impl Client {
                 let mut metrics = self.remote_metrics_loop_db().await;
                 loop {
                     match Self::find_set_leader(metrics, &self.inner.leader_db).await {
-                        Ok(_) => {
+                        Ok(()) => {
                             break;
                         }
                         Err(_) => {
@@ -130,7 +130,7 @@ impl Client {
                 let mut metrics = self.remote_metrics_loop_cache().await;
                 loop {
                     match Self::find_set_leader(metrics, &self.inner.leader_cache).await {
-                        Ok(_) => {
+                        Ok(()) => {
                             break;
                         }
                         Err(_) => {
@@ -198,11 +198,8 @@ impl Client {
                 Membership = openraft::impls::Membership<u64, Node>,
             >,
     {
-        let leader_id = match metrics.current_leader {
-            None => {
-                return Err(Error::Connect("Leader vote is in progress".to_string()));
-            }
-            Some(leader_id) => leader_id,
+        let Some(leader_id) = metrics.current_leader else {
+            return Err(Error::Connect("Leader vote is in progress".to_string()));
         };
 
         // Stale-metrics race: the reported leader may no longer be part of the membership (e.g. a
@@ -247,7 +244,7 @@ impl Client {
     }
 
     #[cfg(feature = "sqlite")]
-    #[inline(always)]
+    #[inline]
     pub(crate) async fn is_leader_db_with_state(&self) -> Option<&Arc<AppState>> {
         if let Some(state) = &self.inner.state
             && state.id == self.inner.leader_db.read().await.0
@@ -258,7 +255,7 @@ impl Client {
     }
 
     #[cfg(feature = "cache")]
-    #[inline(always)]
+    #[inline]
     pub(crate) async fn is_leader_cache_with_state(&self) -> Option<&Arc<AppState>> {
         if let Some(state) = &self.inner.state
             && state.id == self.inner.leader_cache.read().await.0
@@ -269,13 +266,13 @@ impl Client {
     }
 
     #[cfg(not(feature = "dashboard"))]
-    #[inline(always)]
+    #[inline]
     pub(crate) fn new_request_id(&self) -> usize {
         self.inner.request_id.fetch_add(1, Ordering::Relaxed)
     }
 
     #[cfg(feature = "dashboard")]
-    #[inline(always)]
+    #[inline]
     pub(crate) fn new_request_id(&self) -> usize {
         if let Some(st) = &self.inner.state {
             st.new_request_id()
