@@ -3,6 +3,7 @@ hiqlite/tests/data_test_*
 hiqlite/tests/data_09_run
 examples/*/target
 target
+.hiqlite-sql/
 .idea
 *.log
 .lapce

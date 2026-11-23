@@ -50,6 +50,83 @@ datetimes, `url::Url`, `uuid::Uuid`, `Option` of these, and column bindings via 
 Never build SQL by concatenating values. Non-deterministic functions are refused on the write path,
 see `limits.md`.
 
+## Checked SQL
+
+`sql!()` checks a query string while your crate compiles and hands it back as the string itself, so
+it takes the place of a string literal at any call site that takes a query:
+
+```rust, notest
+use hiqlite::macros::sql;
+
+let rows = client.query_map(sql!("SELECT id, num FROM test"), params!()).await?;
+```
+
+`sql_map!(Type, "…")` is the shape that also checks the **columns** of the query against the
+fields of the type it maps to. They must be the same names, in any order and any case, which is
+the same matching a mapped row does, and a mismatch stops the build at the call site:
+
+```rust, notest
+use hiqlite::macros::sql_map;
+
+let row = client
+    .query_map_one(sql_map!(Test, "SELECT id, num FROM test WHERE id = $1"), params!(1))
+    .await?;
+```
+
+```text, notest
+error: this query returns the columns (id, ts) - the mapped type must read exactly these, in any
+order and case; `sql_map!` checks them at compile time
+```
+
+The `FromRow` derive publishes the shape of every type it maps, including the parts it
+flattens, so a derived type needs nothing. A type mapped only through `TryFromRow`, and a
+hand-written mapping, publishes it with `#[derive(SqlShape)]` next to that mapping: same fields, same `column`
+attributes, and no mapping emitted. A type that is not a struct lists the names it reads
+(`impl SqlShape for T { const SHAPE: u64 = sql_shape(&["id", "num"]); }`).
+
+The string is prepared against an in-memory SQLite built from the `migrations` directory that sits
+next to your crate's `Cargo.toml`, the same directory `Client::migrate` applies (see Migrations
+below). A table that is not there, a column that is not there, a keyword SQLite cannot parse: the
+build stops with SQLite's own message, pointing at the string.
+
+- `sql!()` takes exactly one statement. `sql_batch!()` is the multi-statement shape for
+  `Client::batch` and `Client::txn`.
+- The macro emits your literal unchanged, so nothing about your calls adapts and nothing runs at
+  runtime.
+- Results are cached in `.hiqlite-sql/` in the workspace root, keyed by your migrations and the
+  query text. The directory is gitignored, deleting it is always safe, and compiling refills it.
+  Editing a migration file recompiles the crates that check against it and invalidates their
+  verdicts. Adding one does not: a compiler notices a file it reads, not a file that appeared, so
+  after you add a migration, rebuild the crates that use `sql!()` against it - a clean build of
+  them, or any change to their code - to get their queries checked against the new schema.
+- A crate without a `migrations` directory is not checked: you get one `warning:` line per compile
+  and your queries behave exactly as before. The check never breaks a build for a reason inside
+  itself.
+- Migrations somewhere else are set with `HQL_MIGRATIONS`, which cargo hands to the compiler from
+  `.cargo/config.toml`. The value is relative to the `Cargo.toml` of the crate that uses the macro,
+  like the `#[folder]` of `RustEmbed`, and an absolute path is used as it is:
+
+  ```toml, notest
+  # .cargo/config.toml of the crate, or of the workspace it lives in
+  [env]
+  HQL_MIGRATIONS = "src/migrations"
+
+  # relative to the directory of this config file, for a workspace member
+  HQL_MIGRATIONS = { value = "../shared/migrations", relative = true }
+  ```
+
+  The macro reads it while it compiles and never at runtime, and it never loads a `.env` file. A
+  directory that cannot be read, and one without `.sql` files, is a warning naming `HQL_MIGRATIONS`
+  and leaves your queries unchecked.
+- A shape exists exactly where a check can run: a release build that does not opt into
+  `sql-check-release` gets no shape impl from the derives at all, and compares nothing.
+- The checks run in debug builds. A release build compiles your literals untouched: no SQLite is
+  built, no cache is read, nothing extra is emitted. The `sql-check-release` feature of `hiqlite`
+  turns the checks on for release builds as well.
+- Not checked: the parameters (they are `params!()`, a separate call), the **types** of the columns
+  you map (that is what `query_try_map()` reports as an error at runtime), and any query you build
+  at runtime with `format!`.
+
 ## Writes that give rows back
 
 ```rust, notest
@@ -123,6 +200,16 @@ struct Test {
 field is a code bug, and a panic is faster to find than a logged error. `TryFromRow` gives you a
 `Result` per row instead. Both take optional `column` attributes for names and conversions; the
 `derive-complex-types` example shows them.
+
+A `flatten` field is mapped by the `From<&mut Row>` of its own type: the way a nested struct, an
+`enum` or any custom type gets in. Every part of it has to publish the names it reads, by deriving
+`FromRow` or `SqlShape`, or by a `SqlShape` impl, because a `sql_map!()` of the parent checks all of
+them together: a part that publishes nothing is an error at its parent, naming that part.
+
+A field whose column is not in the result set is reported by the first row that would read it: the
+panicking family names that field in its panic, `TryFromRow` answers it as an error. A query that
+returns no rows answers an empty `Vec`, whatever its fields are named - there is no row to read the
+missing column.
 
 A SQLite `INTEGER` is an `i64`. To read it as `u32`, `i16`, `u8` and friends, enable `cast_ints`
 (checked) or `cast_ints_unchecked` (faster, assumes your inserts are in range). `VecText` stores a

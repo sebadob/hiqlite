@@ -1,12 +1,15 @@
 use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientQueryPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
-use crate::query::rows::RowsOwned;
+use crate::query::rows::{
+    ColIdx, Mapper, MapperTry, Row, RowMapper, RowOwned, RowsOwned, TryRowMapper,
+};
 use crate::store::state_machine::sqlite::state_machine::Query;
 use crate::{Client, Error, Params, query};
 use openraft::raft::ReadPolicy;
 use serde::de::DeserializeOwned;
 use std::borrow::Cow;
+use std::sync::Arc;
 use tokio::sync::oneshot;
 
 impl Client {
@@ -92,14 +95,19 @@ impl Client {
     {
         self.rate_limit_db().await?;
 
-        Ok(self
-            .query_remote(stmt, params, Some(read_policy))
-            .await?
+        let mapper = Mapper::<T>::new();
+        let (cols, rows) = self
+            .query_remote_parts(stmt, params, Some(read_policy))
+            .await?;
+        let setup = mapper.setup_owned(&cols)?;
+        Ok(rows
             .into_iter()
-            .map(|mut row| T::from(&mut row))
+            .map(|row| {
+                let mut row = Row::Owned(row, setup.row_cols_owned());
+                mapper.map(&mut row, &setup)
+            })
             .collect())
     }
-
     /// Query data from the database and map it to the given `struct`.
     ///
     /// The `struct` must implement `impl From<&mut hiqlite::Row<'_>>` for this to work:
@@ -127,6 +135,12 @@ impl Client {
     /// you the most amount of flexibility to achieve more complicated or optimized mapping.
     /// If you want a more comfortable and easier way, take a look at `.query_as()`.
     ///
+    /// A type derived with `FromRow` is mapped through the hoisted index path: its field names are
+    /// resolved against the result set once, before the first row, and every row reads its columns
+    /// by index, so a row never looks a name up.  The first query of a type is the one that
+    /// registers it, so that one maps by name.  A hand-written `impl From<&mut Row>` is mapped by
+    /// the names it reads in its own body.
+    ///
     /// ```rust, notest
     /// let res: Vec<MyStruct> = client
     ///     .query_map("SELECT * FROM test", params!())
@@ -153,11 +167,15 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_map(state, stmt, params, query::ROWS_HINT).await
         } else {
-            Ok(self
-                .query_remote(stmt, params, None)
-                .await?
+            let mapper = Mapper::<T>::new();
+            let (cols, rows) = self.query_remote_parts(stmt, params, None).await?;
+            let setup = mapper.setup_owned(&cols)?;
+            Ok(rows
                 .into_iter()
-                .map(|mut row| T::from(&mut row))
+                .map(|row| {
+                    let mut row = Row::Owned(row, setup.row_cols_owned());
+                    mapper.map(&mut row, &setup)
+                })
                 .collect())
         }
     }
@@ -184,11 +202,15 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_try_map(state, stmt, params, query::ROWS_HINT).await
         } else {
-            Ok(self
-                .query_remote(stmt, params, None)
-                .await?
+            let mapper = MapperTry::<T>::new();
+            let (cols, rows) = self.query_remote_parts(stmt, params, None).await?;
+            let setup = mapper.setup_owned(&cols)?;
+            Ok(rows
                 .into_iter()
-                .map(|mut row| T::try_from(&mut row))
+                .map(|row| {
+                    let mut row = Row::Owned(row, setup.row_cols_owned());
+                    mapper.map(&mut row, &setup)
+                })
                 .collect())
         }
     }
@@ -224,7 +246,9 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_map_one(state, stmt, params).await
         } else {
-            let mut rows = self.query_remote(stmt, params, None).await?;
+            let mapper = Mapper::<T>::new();
+            let (cols, mut rows) = self.query_remote_parts(stmt, params, None).await?;
+            let setup = mapper.setup_owned(&cols)?;
             if rows.is_empty() {
                 Err(Error::QueryReturnedNoRows("No rows returned".into()))
             } else if rows.len() > 1 {
@@ -232,7 +256,8 @@ impl Client {
                     format!("cannot map {} rows into one", rows.len()).into(),
                 ))
             } else {
-                Ok(T::from(&mut rows.swap_remove(0)))
+                let mut row = Row::Owned(rows.swap_remove(0), setup.row_cols_owned());
+                Ok(mapper.map(&mut row, &setup))
             }
         }
     }
@@ -260,7 +285,9 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_try_map_one(state, stmt, params).await
         } else {
-            let mut rows = self.query_remote(stmt, params, None).await?;
+            let mapper = MapperTry::<T>::new();
+            let (cols, mut rows) = self.query_remote_parts(stmt, params, None).await?;
+            let setup = mapper.setup_owned(&cols)?;
             if rows.is_empty() {
                 Err(Error::QueryReturnedNoRows("No rows returned".into()))
             } else if rows.len() > 1 {
@@ -268,7 +295,8 @@ impl Client {
                     format!("cannot map {} rows into one", rows.len()).into(),
                 ))
             } else {
-                Ok(T::try_from(&mut rows.swap_remove(0)))
+                let mut row = Row::Owned(rows.swap_remove(0), setup.row_cols_owned());
+                Ok(mapper.map(&mut row, &setup))
             }
         }
     }
@@ -301,11 +329,14 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_map_optional(state, stmt, params).await
         } else {
-            let mut rows = self.query_remote(stmt, params, None).await?;
+            let mapper = Mapper::<T>::new();
+            let (cols, mut rows) = self.query_remote_parts(stmt, params, None).await?;
+            let setup = mapper.setup_owned(&cols)?;
             if rows.is_empty() {
                 Ok(None)
             } else {
-                Ok(Some(T::from(&mut rows.swap_remove(0))))
+                let mut row = Row::Owned(rows.swap_remove(0), setup.row_cols_owned());
+                Ok(Some(mapper.map(&mut row, &setup)))
             }
         }
     }
@@ -333,15 +364,17 @@ impl Client {
         if let Some(state) = &self.inner.state {
             query::query_try_map_optional(state, stmt, params).await
         } else {
-            let mut rows = self.query_remote(stmt, params, None).await?;
+            let mapper = MapperTry::<T>::new();
+            let (cols, mut rows) = self.query_remote_parts(stmt, params, None).await?;
+            let setup = mapper.setup_owned(&cols)?;
             if rows.is_empty() {
                 Ok(None)
             } else {
-                Ok(Some(T::try_from(&mut rows.swap_remove(0))))
+                let mut row = Row::Owned(rows.swap_remove(0), setup.row_cols_owned());
+                Ok(Some(mapper.map(&mut row, &setup)))
             }
         }
     }
-
     /// Converts data returned from a sql query into a struct which derives `serde::Deserialize`.
     ///
     /// This is the easiest and most straight forward way of getting data. This is most often the
@@ -510,6 +543,24 @@ impl Client {
     where
         S: Into<Cow<'static, str>>,
     {
+        let (cols, rows) = self.query_remote_parts(stmt, params, read_policy).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| crate::Row::Owned(row, cols.clone()))
+            .collect())
+    }
+
+    /// Executes a query on a remote host and hands back its rows together with the column index of
+    /// the result set they belong to, which is what the hoisted index path resolves against.
+    async fn query_remote_parts<S>(
+        &self,
+        stmt: S,
+        params: Params,
+        read_policy: Option<ReadPolicy>,
+    ) -> Result<(Arc<ColIdx>, Vec<RowOwned>), Error>
+    where
+        S: Into<Cow<'static, str>>,
+    {
         let query = Query {
             sql: stmt.into(),
             params,
@@ -532,12 +583,7 @@ impl Client {
             }
         }?
         .into_parts();
-        let res = rows
-            .into_iter()
-            .map(|row| crate::Row::Owned(row, cols.clone()))
-            .collect();
-
-        Ok(res)
+        Ok((cols, rows))
     }
 
     pub(crate) async fn query_remote_req(

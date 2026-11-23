@@ -22,5 +22,9 @@ CREATE TABLE complex
     secret     TEXT    NULL,
 
     -- will be mapped to `MyEnum`
-    enum_value TEXT    NOT NULL
+    enum_value TEXT    NOT NULL,
+
+    -- mapped by the hand-written `Geo`, flattened into `Entity`
+    lat        INTEGER NOT NULL,
+    lon        INTEGER NOT NULL
 ) STRICT;

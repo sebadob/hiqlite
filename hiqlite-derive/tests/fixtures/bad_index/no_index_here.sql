@@ -1,0 +1,1 @@
+CREATE TABLE bad (a INTEGER);

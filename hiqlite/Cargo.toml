@@ -21,6 +21,11 @@ workspace = true
 all-features = false
 features = ["full", "external-state-machine"]
 
+# `sql!()` needs the sqlite engine and the derive crate to exist at all.
+[[test]]
+name = "sql_macro"
+required-features = ["sqlite", "macros"]
+
 [[bench]]
 name = "bincode"
 path = "benches/bincode.rs"
@@ -101,6 +106,13 @@ server = [
   "tokio/macros",
 ]
 shutdown-handle = ["dep:ctrlc"]
+# Opt-in: run the compile-time checks of `sql!()`, `sql_map!()` and `sql_batch!()` in release
+# builds as well. Debug builds always check; without this a release build is untouched by them.
+sql-check-release = [
+  "macros",
+  "sqlite",
+  "hiqlite-derive/sql-check-release",
+]
 sqlite = [
   "__cluster",
   "dep:deadpool",
@@ -110,6 +122,7 @@ sqlite = [
   "dep:rust-embed",
   "dep:rustc-hash",
   "dep:serde_rusqlite",
+  "hiqlite-derive?/sql-check",
   "rusqlite/backup",
   "rusqlite/cache",
   "rusqlite/chrono",

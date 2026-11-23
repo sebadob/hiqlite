@@ -5,8 +5,11 @@ use rusqlite::types::FromSql;
 use rusqlite::{Error as SqliteError, Row as SqliteRow, Statement};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use std::any::{Any, TypeId};
 use std::cmp::Ordering;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use tracing::error;
 
 /// A column name -> index map of a prepared statement, built once per query.
@@ -47,6 +50,16 @@ impl ColIdx {
         Self { map }
     }
 
+    /// An index with no columns, for rows whose field names were resolved to positions upfront.
+    ///
+    /// Only the name lookups of a `Row` touch this map, and the hoisted path does all its reads by
+    /// index, so it stays empty and a map of it never allocates.
+    pub(crate) fn empty() -> Self {
+        Self {
+            map: FxHashMap::default(),
+        }
+    }
+
     /// The index a column name resolves to, an exact match like the owned rows always did.
     fn index(&self, idx: &str) -> Option<usize> {
         self.map.get(idx).map(|i| usize::from(*i))
@@ -60,6 +73,694 @@ impl ColIdx {
         match cols.map.get(idx) {
             Some(i) => row.get(*i as usize),
             None => row.get(idx),
+        }
+    }
+}
+
+/// One column of a result set, resolved by name before the first row is read.
+///
+/// The indexed mapping path resolves every field name of a mapped type once per query and hands
+/// the result to every row, so a row never looks a name up again.  A `ColIndex` can only be
+/// created by that resolution, which keeps a hand-written, order-dependent index out of reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColIndex(u16);
+
+impl ColIndex {
+    /// The state of a field that no column matched yet.
+    const UNRESOLVED: Self = Self(u16::MAX);
+
+    #[inline]
+    fn pos(self) -> usize {
+        usize::from(self.0)
+    }
+
+    /// A column position of a result set as an index; results never have more than `u16::MAX`
+    /// columns in practice, and a wider one clamps to the unresolved marker.
+    #[inline]
+    fn to_pos(pos: usize) -> u16 {
+        u16::try_from(pos).unwrap_or(Self::UNRESOLVED.0)
+    }
+
+    #[inline]
+    fn from_pos(pos: usize) -> Self {
+        Self(Self::to_pos(pos))
+    }
+}
+
+/// The field names of one mapped type, sorted by name, each with the slot it reads.
+///
+/// The `FromRow` derive emits this as a `static` slice of sorted pairs, and the query resolves it
+/// into column positions once per statement; the resolution only ever binary searches it.
+pub struct FieldNames {
+    fields: &'static [(&'static str, u16)],
+}
+
+impl FieldNames {
+    /// Builds a segment from its sorted field list; `fields` must be sorted by name.
+    #[must_use]
+    pub const fn new(fields: &'static [(&'static str, u16)]) -> Self {
+        Self { fields }
+    }
+
+    /// The slot of a field name, exact match.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<u16> {
+        self.fields
+            .binary_search_by_key(&name, |(field, _)| *field)
+            .ok()
+            .map(|pos| self.fields[pos].1)
+    }
+
+    /// Every field of this segment, in name order.
+    #[must_use]
+    pub const fn entries(&self) -> &'static [(&'static str, u16)] {
+        self.fields
+    }
+
+    /// The number of fields of this segment.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Whether this segment maps no field at all; a mapped type always has one.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+}
+
+/// The field names of a mapped type as compile-time field segments, each with the slot offset its
+/// fields start at.  A type without flattened fields has exactly one segment.
+pub type FieldMaps<'a> = Vec<(&'a FieldNames, u16)>;
+
+/// The compile-time fingerprint of a set of column names.
+///
+/// Order and case do not change the value, and the parts of a flattened type merge by wrapping
+/// addition - a plain `+` of two of these values overflows in most real structs, and a debug build
+/// would stop the compile over it - which is what lets a nested type contribute its own names.  The
+/// `FromRow` derive computes it for the field names of a type and `sql_map!()` for the columns a
+/// query returns; the check is a `const` comparison of the two.  It is a fingerprint for the compiler,
+/// not data for storage: a collision is a missed check, never a wrong row.  The derive publishes a
+/// shape by calling this very function, so there is a single algorithm, and its value is pinned to a
+/// literal in the tests of this module.
+#[must_use]
+pub const fn sql_shape(names: &[&str]) -> u64 {
+    let mut shape = (names.len() as u64) << 48;
+    let mut i = 0;
+    while i < names.len() {
+        shape = shape.wrapping_add(shape_of_name(names[i]));
+        i += 1;
+    }
+    shape
+}
+
+/// The FNV-1a hash of one column name, lowercased to match the case-insensitive name lookup a row
+/// falls back to.
+const fn shape_of_name(name: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let bytes = name.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i].to_ascii_lowercase() as u64;
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+        i += 1;
+    }
+    hash
+}
+
+/// The column names a mapped type reads, published as a fingerprint for the `sql_map!()` check.
+///
+/// The `FromRow` derive implements it for every type it maps, and a `flatten` field contributes the
+/// shape of its own type; the `TryFromRow` derive does not, because `query_try_map()` reports a
+/// column mismatch as an error at runtime.  A hand-written [`FromRowIndexed`] impl, any type mapped
+/// only through `TryFromRow`, and any type whose row mapping you write yourself, add it with the
+/// `SqlShape` derive of `hiqlite-derive`, or by listing the column names the mapping reads.  The
+/// derives emit it in debug builds, and in a release build only when `sql-check-release` is on: a
+/// plain release build compares nothing.
+///
+/// ```
+/// # use hiqlite::{sql_shape, SqlShape};
+/// struct Point {
+///     x: i64,
+///     y: i64,
+/// }
+///
+/// impl SqlShape for Point {
+///     const SHAPE: u64 = sql_shape(&["x", "y"]);
+/// }
+/// ```
+pub trait SqlShape {
+    /// The fingerprint of the column names this type reads; build it with [`sql_shape`].
+    const SHAPE: u64;
+}
+
+/// A mapped type that builds its rows from indices that were resolved once per query.
+///
+/// `query_map()`, `query_map_one()` and `query_map_optional()` of the [`Client`](crate::Client)
+/// map a type through this path once the type is registered, which the `FromRow` derive does from
+/// the `From<&mut Row>` impl it emits; every other type is mapped by the column names its
+/// `From<&mut Row>` impl reads.  The result set is resolved before the first row, so no row ever
+/// looks a name up again.
+///
+/// A hand-written impl registers its type with [`register_hoisted`], which needs `Self: 'static`.
+pub trait FromRowIndexed: Sized {
+    /// The number of column slots this type reads, every flattened part included: the total of the
+    /// segments [`field_maps`](Self::field_maps) describes, because the mapping below reads one
+    /// column per slot of it.
+    const FIELD_COUNT: usize;
+
+    /// The field names of this type, and the slot offset each segment starts at.  Their total is
+    /// [`FIELD_COUNT`](Self::FIELD_COUNT).
+    fn field_maps() -> FieldMaps<'static>;
+
+    /// Maps the current row from the resolved indices.
+    ///
+    /// The row is handed to you with an index that has no column names, because its names were
+    /// resolved upfront; read every column through the indices you are given.
+    ///
+    /// # Panics
+    ///
+    /// If the value of a column cannot be converted into the declared type.
+    fn from_row_indices(row: &mut Row<'_>, idx: &[ColIndex]) -> Self;
+}
+
+/// The non-panicking counterpart of [`FromRowIndexed`], which `query_try_map()`,
+/// `query_try_map_one()` and `query_try_map_optional()` pick the same way; the `TryFromRow` derive
+/// implements and registers it, and a hand-written impl registers with [`register_hoisted_try`].
+pub trait TryFromRowIndexed: Sized {
+    /// The number of column slots this type reads, every flattened part included: the total of the
+    /// segments [`field_maps`](Self::field_maps) describes, because the mapping below reads one
+    /// column per slot of it.
+    const FIELD_COUNT: usize;
+
+    /// The field names of this type, and the slot offset each segment starts at.  Their total is
+    /// [`FIELD_COUNT`](Self::FIELD_COUNT).
+    fn field_maps() -> FieldMaps<'static>;
+
+    /// Maps the current row from the resolved indices.
+    ///
+    /// The row is handed to you with an index that has no column names, because its names were
+    /// resolved upfront; read every column through the indices you are given.
+    ///
+    /// # Errors
+    ///
+    /// The [`Error`] of a column that cannot be converted into the declared type; on a borrowed row
+    /// that is the [`Error::Sqlite`] of `rusqlite`.
+    fn try_from_row_indices(row: &mut Row<'_>, idx: &[ColIndex]) -> Result<Self, Error>;
+}
+
+impl ColIdx {
+    /// The field index of a mapped type over a prepared statement, resolved once per query.
+    pub(crate) fn resolve_indexed(
+        maps: &FieldMaps<'_>,
+        stmt: &Statement,
+    ) -> Result<Vec<ColIndex>, String> {
+        let mut idx = Self::new_index(maps);
+        for pos in 0..stmt.column_count() {
+            let name = stmt.column_name(pos).map_err(|e| e.to_string())?;
+            Self::fill_index(maps, name, ColIndex::to_pos(pos), &mut idx);
+        }
+        Self::resolve_fallback(maps, &mut idx, |name| stmt.column_index(name).ok())?;
+        Ok(idx)
+    }
+
+    /// The same index over a column index of a result set that travelled through the network layer.
+    /// The exact matches come out of the map, and a name that only matches case-insensitively
+    /// resolves to the lowest column that matches it, the column the scan above answers for that
+    /// name.  Iterating the map is hash order, so the case-insensitive half picks by position:
+    /// two columns whose names differ only in case are two keys of that map.
+    pub(crate) fn resolve_indexed_owned(
+        &self,
+        maps: &FieldMaps<'_>,
+    ) -> Result<Vec<ColIndex>, String> {
+        let mut idx = Self::new_index(maps);
+        for (name, pos) in &self.map {
+            Self::fill_index(maps, name, *pos, &mut idx);
+        }
+        Self::resolve_fallback(maps, &mut idx, |name| {
+            self.map
+                .iter()
+                .filter(|(col, _)| col.eq_ignore_ascii_case(name))
+                .map(|(_, pos)| usize::from(*pos))
+                .min()
+        })?;
+        Ok(idx)
+    }
+
+    /// The index vector that gives every field of a mapped type its slot.
+    fn new_index(maps: &FieldMaps<'_>) -> Vec<ColIndex> {
+        vec![ColIndex::UNRESOLVED; Self::slots(maps)]
+    }
+
+    /// The number of slots the segments of a mapped type describe: the highest slot a field of any
+    /// of them can reach.
+    pub(crate) fn slots(maps: &FieldMaps<'_>) -> usize {
+        maps.iter()
+            .map(|(map, off)| usize::from(*off) + map.len())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Records `pos` for every segment whose field is exactly this column name, keeping the first
+    /// column that matched it.  This is the exact half of the resolution; a field that no column
+    /// matches exactly is resolved by [`ColIdx::resolve_fallback`], at the lowest matching position
+    /// like rusqlite's own scan.  A field named in a case no column matches exactly, and a result
+    /// set that holds two columns differing only in case, is where the two halves differ: the exact
+    /// half takes the column spelled like the field, rusqlite's scan the first one it comes to.
+    fn fill_index(maps: &FieldMaps<'_>, name: &str, pos: u16, idx: &mut [ColIndex]) {
+        for (map, off) in maps {
+            if let Some(local) = map.get(name) {
+                let slot = usize::from(*off) + usize::from(local);
+                if idx[slot] == ColIndex::UNRESOLVED {
+                    idx[slot] = ColIndex(pos);
+                }
+            }
+        }
+    }
+
+    /// Resolves every field that no column matched exactly through a case-insensitive lookup, which
+    /// is the behaviour `Row::get("name")` always had.  A name nothing matches comes back as that
+    /// name, and the mapping that asked for it decides what a missing column means.
+    ///
+    /// The fields are walked in slot order, the order a type declares them in, so the first field a
+    /// result set is missing is the same one a name-based `From<&mut Row>` impl fails on first.
+    fn resolve_fallback(
+        maps: &FieldMaps<'_>,
+        idx: &mut [ColIndex],
+        mut lookup: impl FnMut(&str) -> Option<usize>,
+    ) -> Result<(), String> {
+        for (map, off) in maps {
+            let off = usize::from(*off);
+            if map
+                .entries()
+                .iter()
+                .all(|(_, local)| idx[off + usize::from(*local)] != ColIndex::UNRESOLVED)
+            {
+                continue;
+            }
+            let mut fields = map.entries().to_vec();
+            fields.sort_by_key(|(_, local)| *local);
+            for (name, local) in fields {
+                let slot = off + usize::from(local);
+                if idx[slot] == ColIndex::UNRESOLVED {
+                    match lookup(name) {
+                        Some(pos) => idx[slot] = ColIndex::from_pos(pos),
+                        None => return Err(name.to_string()),
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A field of the panicking family whose column is missing from the result set: a mapping that
+    /// can never read its fields requires a code change, so it is loud, exactly like `Row::get()`
+    /// panics.
+    fn missing_column(name: &str) {
+        panic!("column '{name}' is not in the result set")
+    }
+
+    /// The same for the non-panicking family: an [`Error::QueryParams`] that names the column.
+    fn missing_column_err(name: &str) -> Error {
+        Error::QueryParams(format!("column '{name}' is not in the result set").into())
+    }
+}
+
+/// The per-query state a mapper works from: the hoisted path has resolved the field indices of the
+/// mapped type, the name-based path has the name map of the result set.
+///
+/// A query always picks a mapper and its setup together, so a mapper only ever sees its own
+/// variant.
+pub(crate) enum Setup {
+    Named(Arc<ColIdx>),
+    Indexed(Hoisted),
+}
+
+/// The field indices a hoisted setup resolved, and the first field no column of the result set
+/// matched.
+///
+/// A missing column is a verdict about a mapping that reads it, not about the query: it is handed
+/// to the first row that would have read it, so a query whose result set is empty answers the way
+/// it always did, and a query that does have rows is as loud as `Row::get()` is.
+pub(crate) struct Hoisted {
+    idx: Box<[ColIndex]>,
+    missing: Option<Box<str>>,
+}
+
+impl Hoisted {
+    /// The setup of a resolution, keeping the name of a field no column matched.
+    fn of(resolution: Result<Vec<ColIndex>, String>) -> Self {
+        match resolution {
+            Ok(idx) => Self {
+                idx: idx.into_boxed_slice(),
+                missing: None,
+            },
+            Err(name) => Self {
+                idx: Vec::new().into_boxed_slice(),
+                missing: Some(name.into()),
+            },
+        }
+    }
+
+    /// The panicking side of a missing column: the field name that no column matched.
+    ///
+    /// # Panics
+    ///
+    /// If a field of the mapped type has no column in the result set, naming that field.  The
+    /// `FromRowIndexed` family panics on such a field exactly like `Row::get()` does.
+    fn require(&self) {
+        if let Some(name) = &self.missing {
+            ColIdx::missing_column(name);
+        }
+    }
+}
+
+impl Setup {
+    /// The column index of a result set that no mapping touches: a hoisted setup reads every column
+    /// by index, so the names of its rows are never looked up and this map stays empty, which an
+    /// empty hash map never allocates for.
+    fn empty_cols() -> &'static ColIdx {
+        static EMPTY: OnceLock<ColIdx> = OnceLock::new();
+        EMPTY.get_or_init(ColIdx::empty)
+    }
+
+    /// The owned-row counterpart of [`Setup::empty_cols`]: one shared, empty index for every row of
+    /// every hoisted query, so mapping a row allocates nothing for a map it never reads.
+    fn empty_cols_owned() -> &'static Arc<ColIdx> {
+        static EMPTY: OnceLock<Arc<ColIdx>> = OnceLock::new();
+        EMPTY.get_or_init(|| Arc::new(ColIdx::empty()))
+    }
+
+    /// The hoisted setup of a type of the panicking family: its field names are resolved against
+    /// the prepared statement once, and a field whose column is missing is carried to the rows.
+    fn hoisted<T: FromRowIndexed>(stmt: &Statement) -> Self {
+        let maps = T::field_maps();
+        Self::assert_slots(T::FIELD_COUNT, &maps);
+        Self::Indexed(Hoisted::of(ColIdx::resolve_indexed(&maps, stmt)))
+    }
+
+    /// The [`Setup::hoisted`] of a result set that travelled through the network layer.
+    fn hoisted_owned<T: FromRowIndexed>(cols: &Arc<ColIdx>) -> Self {
+        let maps = T::field_maps();
+        Self::assert_slots(T::FIELD_COUNT, &maps);
+        Self::Indexed(Hoisted::of(ColIdx::resolve_indexed_owned(cols, &maps)))
+    }
+
+    /// The [`Setup::hoisted`] of the non-panicking family, which reports a missing column as an
+    /// [`Error::QueryParams`] naming it.
+    fn hoisted_try<T: TryFromRowIndexed>(stmt: &Statement) -> Self {
+        let maps = T::field_maps();
+        Self::assert_slots(T::FIELD_COUNT, &maps);
+        Self::Indexed(Hoisted::of(ColIdx::resolve_indexed(&maps, stmt)))
+    }
+
+    /// The [`Setup::hoisted_try`] of a result set that travelled through the network layer.
+    fn hoisted_try_owned<T: TryFromRowIndexed>(cols: &Arc<ColIdx>) -> Self {
+        let maps = T::field_maps();
+        Self::assert_slots(T::FIELD_COUNT, &maps);
+        Self::Indexed(Hoisted::of(ColIdx::resolve_indexed_owned(cols, &maps)))
+    }
+
+    /// The contract of a hand-written [`FromRowIndexed`] / [`TryFromRowIndexed`] impl:
+    /// `FIELD_COUNT` is the total of the slots its `field_maps()` describes, because its mapping
+    /// reads the resolved indices with every slot below that count.  A derive computes both from
+    /// the same plan, so only a hand-written impl can split them, and it is asserted where a debug
+    /// build can name the two items that disagree.
+    fn assert_slots(count: usize, maps: &FieldMaps<'_>) {
+        debug_assert_eq!(
+            count,
+            ColIdx::slots(maps),
+            "FIELD_COUNT ({count}) must be the total slots of field_maps() \
+             ({})",
+            ColIdx::slots(maps)
+        );
+    }
+
+    /// A row of the panicking family, read through the indices this setup resolved.
+    ///
+    /// # Panics
+    ///
+    /// If a field of the mapped type has no column in the result set; see [`Hoisted::require`].
+    fn hoisted_map<T: FromRowIndexed>(row: &mut Row<'_>, setup: &Self) -> T {
+        let Self::Indexed(hoisted) = setup else {
+            unreachable!("a query always uses the setup of its own mapper");
+        };
+        hoisted.require();
+        T::from_row_indices(row, &hoisted.idx)
+    }
+
+    /// A row of the non-panicking family, read through the indices this setup resolved.
+    fn hoisted_try_map<T: TryFromRowIndexed>(row: &mut Row<'_>, setup: &Self) -> Result<T, Error> {
+        let Self::Indexed(hoisted) = setup else {
+            unreachable!("a query always uses the setup of its own mapper");
+        };
+        if let Some(name) = &hoisted.missing {
+            return Err(ColIdx::missing_column_err(name));
+        }
+        T::try_from_row_indices(row, &hoisted.idx)
+    }
+
+    /// The column index a [`Row::Borrowed`] of this query carries.
+    pub(crate) fn row_cols(&self) -> &ColIdx {
+        match self {
+            Self::Named(cols) => cols,
+            Self::Indexed(_) => Self::empty_cols(),
+        }
+    }
+
+    /// The column index a [`Row::Owned`] of this query carries.
+    pub(crate) fn row_cols_owned(&self) -> Arc<ColIdx> {
+        match self {
+            Self::Named(cols) => cols.clone(),
+            Self::Indexed(_) => Self::empty_cols_owned().clone(),
+        }
+    }
+}
+
+/// The hoisted mapping of one mapped type, as the row loop of a query receives it.
+///
+/// `setup` runs once per query and `map` once per row; a `map` of a type that only has a
+/// hand-written `From<&mut Row>` reads the row by its names and ignores the setup.
+pub(crate) trait RowMapper<T> {
+    fn setup(&self, stmt: &Statement) -> Result<Setup, Error>;
+    /// The same setup for the owned rows of a result set that came through the network layer.
+    fn setup_owned(&self, cols: &Arc<ColIdx>) -> Result<Setup, Error>;
+    fn map<'r>(&self, row: &'r mut Row<'r>, setup: &Setup) -> T;
+}
+
+/// The non-panicking counterpart of [`RowMapper`].
+pub(crate) trait TryRowMapper<T> {
+    fn setup(&self, stmt: &Statement) -> Result<Setup, Error>;
+    fn setup_owned(&self, cols: &Arc<ColIdx>) -> Result<Setup, Error>;
+    fn map<'r>(&self, row: &'r mut Row<'r>, setup: &Setup) -> Result<T, Error>;
+}
+
+/// The hoisted mapping of one mapped type, all of it the monomorphized functions of exactly that
+/// type: the setup that resolves its field names and the mapping that reads a row through the
+/// resolved indices.
+///
+/// A registry keeps one of these per type, behind a `dyn Any` box, which is how the type comes
+/// back out: a lookup only succeeds when the `TypeId` of the asking type is the `TypeId` the entry
+/// was inserted under, so the function pointer a query calls is always the one of its own type.
+pub(crate) struct HoistedFn<T> {
+    setup: fn(&Statement) -> Setup,
+    setup_owned: fn(&Arc<ColIdx>) -> Setup,
+    map: for<'a> fn(&'a mut Row<'a>, &Setup) -> T,
+}
+
+// Every field is a function pointer, so the type is `Copy` for any `T`, which the derived impl
+// would only give it with a `T: Copy` bound.
+impl<T> Clone for HoistedFn<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for HoistedFn<T> {}
+
+/// The [`HoistedFn`] of the non-panicking family: its `map` answers with a `Result`.
+pub(crate) struct HoistedTryFn<T> {
+    setup: fn(&Statement) -> Setup,
+    setup_owned: fn(&Arc<ColIdx>) -> Setup,
+    map: for<'a> fn(&'a mut Row<'a>, &Setup) -> Result<T, Error>,
+}
+
+impl<T> Clone for HoistedTryFn<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for HoistedTryFn<T> {}
+
+/// The types a process has mapped so far, keyed by their `TypeId`, one map per family.  A
+/// `FromRow` / `TryFromRow` derive registers its type from the body of the `From` / `TryFrom` impl
+/// it emits, which is the first row of the first query that maps that type.
+///
+/// An entry is written by one `insert` of a finished value and never touched again, so a panic on a
+/// thread holding the lock cannot leave a half-written map: every lock of this type is taken with
+/// `into_inner()` after a poison, which keeps a process mapping a type after an unrelated panic
+/// instead of failing every query that comes after it.
+struct Registry {
+    hoisted: FxHashMap<TypeId, Box<dyn Any + Send>>,
+    hoisted_try: FxHashMap<TypeId, Box<dyn Any + Send>>,
+}
+
+impl Registry {
+    fn get() -> &'static Mutex<Self> {
+        static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
+        REGISTRY.get_or_init(|| {
+            Mutex::new(Registry {
+                hoisted: FxHashMap::default(),
+                hoisted_try: FxHashMap::default(),
+            })
+        })
+    }
+
+    /// The mapping of `T` enters the registry once; a type that is in there already is a lookup and
+    /// nothing else.
+    fn register<T: FromRowIndexed + 'static>() {
+        let mut reg = Self::get().lock().unwrap_or_else(|e| e.into_inner());
+        if reg.hoisted.contains_key(&TypeId::of::<T>()) {
+            return;
+        }
+        reg.hoisted.insert(
+            TypeId::of::<T>(),
+            Box::new(HoistedFn::<T> {
+                setup: Setup::hoisted::<T>,
+                setup_owned: Setup::hoisted_owned::<T>,
+                map: Setup::hoisted_map::<T>,
+            }),
+        );
+    }
+
+    fn register_try<T: TryFromRowIndexed + 'static>() {
+        let mut reg = Self::get().lock().unwrap_or_else(|e| e.into_inner());
+        if reg.hoisted_try.contains_key(&TypeId::of::<T>()) {
+            return;
+        }
+        reg.hoisted_try.insert(
+            TypeId::of::<T>(),
+            Box::new(HoistedTryFn::<T> {
+                setup: Setup::hoisted_try::<T>,
+                setup_owned: Setup::hoisted_try_owned::<T>,
+                map: Setup::hoisted_try_map::<T>,
+            }),
+        );
+    }
+
+    fn lookup<T: 'static>() -> Option<HoistedFn<T>> {
+        let reg = Self::get().lock().unwrap_or_else(|e| e.into_inner());
+        reg.hoisted
+            .get(&TypeId::of::<T>())
+            .and_then(|entry| entry.downcast_ref::<HoistedFn<T>>())
+            .copied()
+    }
+
+    fn lookup_try<T: 'static>() -> Option<HoistedTryFn<T>> {
+        let reg = Self::get().lock().unwrap_or_else(|e| e.into_inner());
+        reg.hoisted_try
+            .get(&TypeId::of::<T>())
+            .and_then(|entry| entry.downcast_ref::<HoistedTryFn<T>>())
+            .copied()
+    }
+}
+
+/// Registers the hoisted mapping of a type that implements [`FromRowIndexed`].
+///
+/// The `FromRow` derive calls this from the `From<&mut Row>` impl it generates, once per type, so
+/// calling it by hand is never needed, and it is a cheap lookup for a type that is registered
+/// already.
+#[doc(hidden)]
+pub fn register_hoisted<T: FromRowIndexed + 'static>() {
+    Registry::register::<T>();
+}
+
+/// The [`register_hoisted`] of the non-panicking family, for the [`TryFromRowIndexed`] side of a
+/// type.
+#[doc(hidden)]
+pub fn register_hoisted_try<T: TryFromRowIndexed + 'static>() {
+    Registry::register_try::<T>();
+}
+
+/// The mapping a query of the panicking family runs: the hoisted one of a registered type, or the
+/// `From<&mut Row>` body of a type that has nothing registered.
+pub(crate) enum Mapper<T> {
+    Named,
+    Hoisted(HoistedFn<T>),
+}
+
+impl<T: for<'r> From<&'r mut Row<'r>> + 'static> Mapper<T> {
+    pub(crate) fn new() -> Self {
+        match Registry::lookup::<T>() {
+            Some(entry) => Self::Hoisted(entry),
+            None => Self::Named,
+        }
+    }
+}
+
+impl<T: for<'r> From<&'r mut Row<'r>> + 'static> RowMapper<T> for Mapper<T> {
+    fn setup(&self, stmt: &Statement) -> Result<Setup, Error> {
+        match self {
+            Self::Named => Ok(Setup::Named(Arc::new(ColIdx::from_stmt(stmt)))),
+            Self::Hoisted(fn_) => Ok((fn_.setup)(stmt)),
+        }
+    }
+
+    fn setup_owned(&self, cols: &Arc<ColIdx>) -> Result<Setup, Error> {
+        match self {
+            Self::Named => Ok(Setup::Named(cols.clone())),
+            Self::Hoisted(fn_) => Ok((fn_.setup_owned)(cols)),
+        }
+    }
+
+    #[inline]
+    fn map<'r>(&self, row: &'r mut Row<'r>, setup: &Setup) -> T {
+        match self {
+            Self::Named => T::from(row),
+            Self::Hoisted(fn_) => (fn_.map)(row, setup),
+        }
+    }
+}
+
+/// The [`Mapper`] of the non-panicking family.
+pub(crate) enum MapperTry<T> {
+    Named,
+    Hoisted(HoistedTryFn<T>),
+}
+
+impl<T: for<'r> TryFrom<&'r mut Row<'r>, Error = crate::Error> + 'static> MapperTry<T> {
+    pub(crate) fn new() -> Self {
+        match Registry::lookup_try::<T>() {
+            Some(entry) => Self::Hoisted(entry),
+            None => Self::Named,
+        }
+    }
+}
+
+impl<T: for<'r> TryFrom<&'r mut Row<'r>, Error = crate::Error> + 'static> TryRowMapper<T>
+    for MapperTry<T>
+{
+    fn setup(&self, stmt: &Statement) -> Result<Setup, Error> {
+        match self {
+            Self::Named => Ok(Setup::Named(Arc::new(ColIdx::from_stmt(stmt)))),
+            Self::Hoisted(fn_) => Ok((fn_.setup)(stmt)),
+        }
+    }
+
+    fn setup_owned(&self, cols: &Arc<ColIdx>) -> Result<Setup, Error> {
+        match self {
+            Self::Named => Ok(Setup::Named(cols.clone())),
+            Self::Hoisted(fn_) => Ok((fn_.setup_owned)(cols)),
+        }
+    }
+
+    #[inline]
+    fn map<'r>(&self, row: &'r mut Row<'r>, setup: &Setup) -> Result<T, Error> {
+        match self {
+            Self::Named => T::try_from(row),
+            Self::Hoisted(fn_) => (fn_.map)(row, setup),
         }
     }
 }
@@ -108,6 +809,45 @@ impl Row<'_> {
         match self {
             Self::Borrowed(r, cols) => ColIdx::borrowed_get(r, cols, idx).map_err(Error::from),
             Self::Owned(o, cols) => o.try_get(cols.as_ref(), idx),
+        }
+    }
+
+    /// Reads the column behind a resolved index; the indexed counterpart of [`Row::get`].
+    ///
+    /// # Panics
+    ///
+    /// If the column was already read, or its value cannot be converted into `T`.
+    pub fn get_idx<T>(&mut self, idx: ColIndex) -> T
+    where
+        T: TryFrom<ValueOwned, Error = crate::Error> + FromSql,
+    {
+        match self {
+            Row::Borrowed(b, _) => {
+                let res = b.get(idx.pos());
+                if res.is_err() {
+                    error!("Cannot convert column {} to requested type", idx.pos());
+                }
+                res.unwrap()
+            }
+            Row::Owned(o, _) => o
+                .try_get_index(idx.pos())
+                .unwrap_or_else(|err| panic!("Cannot convert a column: {err}")),
+        }
+    }
+
+    /// Reads the column behind a resolved index; the indexed counterpart of [`Row::try_get`].
+    ///
+    /// # Errors
+    ///
+    /// The [`Error`] of a column that was already read, or whose value cannot be converted into
+    /// `T`; on a borrowed row that is the [`Error::Sqlite`] of `rusqlite`.
+    pub fn try_get_idx<T>(&mut self, idx: ColIndex) -> Result<T, Error>
+    where
+        T: TryFrom<ValueOwned, Error = crate::Error> + FromSql,
+    {
+        match self {
+            Self::Borrowed(r, _) => r.get(idx.pos()).map_err(Error::from),
+            Self::Owned(o, _) => o.try_get_index(idx.pos()),
         }
     }
 }
@@ -256,6 +996,18 @@ impl RowOwned {
                 Some(value) => T::try_from(value),
                 None => Err(not_found()),
             },
+            None => Err(not_found()),
+        }
+    }
+
+    /// Reads a column by its position; the indexed counterpart of [`RowOwned::try_get`].
+    pub(crate) fn try_get_index<T: TryFrom<ValueOwned, Error = crate::Error>>(
+        &mut self,
+        pos: usize,
+    ) -> Result<T, Error> {
+        let not_found = || Error::QueryParams(format!("column {pos} not found").into());
+        match self.values.get_mut(pos).and_then(|slot| slot.take()) {
+            Some(value) => T::try_from(value),
             None => Err(not_found()),
         }
     }
@@ -976,5 +1728,429 @@ mod owned_row_tests {
         assert_eq!(cols.index("id"), Some(0));
         assert_eq!(cols.index("ts"), Some(1));
         assert_eq!(cols.index("other"), None);
+    }
+}
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    /// A mapped type with both a name-based and a hoisted mapping, written by hand so the registry
+    /// is exercised without the derive.
+    struct Plain {
+        pub id: i64,
+        pub name: String,
+    }
+
+    impl From<&mut Row<'_>> for Plain {
+        fn from(row: &mut Row<'_>) -> Self {
+            Self {
+                id: row.get("id"),
+                name: row.get("name"),
+            }
+        }
+    }
+
+    impl FromRowIndexed for Plain {
+        const FIELD_COUNT: usize = 2;
+
+        fn field_maps() -> FieldMaps<'static> {
+            const NAMES: &FieldNames = &FieldNames::new(&[("id", 0u16), ("name", 1u16)]);
+            vec![(NAMES, 0u16)]
+        }
+
+        fn from_row_indices(row: &mut Row<'_>, idx: &[ColIndex]) -> Self {
+            Self {
+                id: row.get_idx(idx[0]),
+                name: row.get_idx(idx[1]),
+            }
+        }
+    }
+
+    /// A type that only the test below registers.  The registry is one map for the whole process,
+    /// so an assertion that a type is not in it yet needs a type no other test touches.
+    struct Late {
+        pub id: i64,
+    }
+
+    impl From<&mut Row<'_>> for Late {
+        fn from(row: &mut Row<'_>) -> Self {
+            Self { id: row.get("id") }
+        }
+    }
+
+    impl FromRowIndexed for Late {
+        const FIELD_COUNT: usize = 1;
+
+        fn field_maps() -> FieldMaps<'static> {
+            const NAMES: &FieldNames = &FieldNames::new(&[("id", 0u16)]);
+            vec![(NAMES, 0u16)]
+        }
+
+        fn from_row_indices(row: &mut Row<'_>, idx: &[ColIndex]) -> Self {
+            Self {
+                id: row.get_idx(idx[0]),
+            }
+        }
+    }
+
+    /// A type that only has the name-based mapping.
+    struct NameOnly {
+        pub id: i64,
+    }
+
+    impl From<&mut Row<'_>> for NameOnly {
+        fn from(row: &mut Row<'_>) -> Self {
+            Self { id: row.get("id") }
+        }
+    }
+
+    /// A type of the non-panicking family, hand-written like [`Plain`] is for the panicking one.
+    #[derive(Debug)]
+    struct TryPlain {
+        pub id: i64,
+        pub name: String,
+    }
+
+    impl TryFrom<&mut Row<'_>> for TryPlain {
+        type Error = Error;
+
+        fn try_from(row: &mut Row<'_>) -> Result<Self, Self::Error> {
+            Ok(Self {
+                id: row.try_get("id")?,
+                name: row.try_get("name")?,
+            })
+        }
+    }
+
+    impl TryFromRowIndexed for TryPlain {
+        const FIELD_COUNT: usize = 2;
+
+        fn field_maps() -> FieldMaps<'static> {
+            const NAMES: &FieldNames = &FieldNames::new(&[("id", 0u16), ("name", 1u16)]);
+            vec![(NAMES, 0u16)]
+        }
+
+        fn try_from_row_indices(row: &mut Row<'_>, idx: &[ColIndex]) -> Result<Self, Error> {
+            Ok(Self {
+                id: row.try_get_idx(idx[0])?,
+                name: row.try_get_idx(idx[1])?,
+            })
+        }
+    }
+
+    fn conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE t (id INTEGER, name TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO t VALUES (7, 'seven')", [])
+            .unwrap();
+        conn
+    }
+
+    #[test]
+    fn an_unregistered_type_is_mapped_by_its_names() {
+        // Nothing registers `NameOnly`, so a query of it runs the body of its `From` impl, reading
+        // the names that body passes to `row.get`.
+        assert!(Registry::lookup::<NameOnly>().is_none());
+
+        let conn = conn();
+        let mut stmt = conn
+            .prepare_cached("SELECT id, name FROM t WHERE id = 7")
+            .unwrap();
+        let mapper = Mapper::<NameOnly>::new();
+        assert!(matches!(mapper, Mapper::Named));
+        let setup = mapper.setup(&stmt).unwrap();
+        assert!(matches!(setup, Setup::Named(_)));
+
+        let mut rows = stmt.raw_query();
+        let row = rows.next().unwrap().unwrap();
+        let mut row = Row::Borrowed(row, setup.row_cols());
+        assert_eq!(mapper.map(&mut row, &setup).id, 7);
+    }
+
+    /// Registration is what moves a type onto the hoisted path, and the type of this test is
+    /// registered by no other test, so the assertion about the registry before the registration
+    /// cannot depend on the order the tests run in.
+    #[test]
+    fn a_type_is_mapped_by_its_names_until_it_registers() {
+        assert!(
+            Registry::lookup::<Late>().is_none(),
+            "no other test registers this type"
+        );
+
+        let conn = conn();
+        let mut stmt = conn
+            .prepare_cached("SELECT name, id FROM t WHERE id = 7")
+            .unwrap();
+        let mapper = Mapper::<Late>::new();
+        assert!(
+            matches!(mapper, Mapper::Named),
+            "the type is not registered yet"
+        );
+        let setup = mapper.setup(&stmt).unwrap();
+        assert!(matches!(setup, Setup::Named(_)));
+
+        register_hoisted::<Late>();
+        let mapper = Mapper::<Late>::new();
+        assert!(matches!(mapper, Mapper::Hoisted(_)));
+        let setup = mapper.setup(&stmt).unwrap();
+        let Setup::Indexed(hoisted) = &setup else {
+            panic!("a registered type resolves to its field indices");
+        };
+        assert_eq!(hoisted.idx[0].pos(), 1);
+
+        let mut rows = stmt.raw_query();
+        let row = rows.next().unwrap().unwrap();
+        let mut row = Row::Borrowed(row, setup.row_cols());
+        assert_eq!(mapper.map(&mut row, &setup).id, 7);
+    }
+
+    #[test]
+    fn a_registered_type_is_mapped_through_resolved_indices() {
+        register_hoisted::<Plain>();
+        assert!(matches!(Mapper::<Plain>::new(), Mapper::Hoisted(_)));
+
+        let conn = conn();
+        // The columns come in the opposite order of the fields: resolution is by name.
+        let mut stmt = conn
+            .prepare_cached("SELECT name, id FROM t WHERE id = 7")
+            .unwrap();
+        let mapper = Mapper::<Plain>::new();
+        let setup = mapper.setup(&stmt).unwrap();
+        let Setup::Indexed(hoisted) = &setup else {
+            panic!("a registered type resolves to its field indices");
+        };
+        assert_eq!((hoisted.idx[0].pos(), hoisted.idx[1].pos()), (1, 0));
+
+        let mut rows = stmt.raw_query();
+        let row = rows.next().unwrap().unwrap();
+        let mut row = Row::Borrowed(row, setup.row_cols());
+        let mapped = mapper.map(&mut row, &setup);
+        assert_eq!(mapped.id, 7);
+        assert_eq!(mapped.name, "seven");
+    }
+
+    /// The case-insensitive half of the resolution has to answer the same column on both paths.
+    /// The borrowed path asks rusqlite, which scans the columns in order and takes the first name
+    /// that matches; the owned path reads the map of a result set that travelled through the
+    /// network layer, and that map iterates in hash order.  `name` and `NAME` are two keys of it,
+    /// and the field of this test matches neither of them exactly.
+    #[test]
+    fn a_case_only_match_resolves_to_the_same_column_on_both_paths() {
+        const NAMES: &FieldNames = &FieldNames::new(&[("NaMe", 0u16)]);
+        let maps = vec![(NAMES, 0u16)];
+        let names = ["id", "name", "NAME"];
+        let sql = "SELECT id, name, id AS NAME FROM t WHERE id = 7";
+
+        let conn = conn();
+        let stmt = conn.prepare_cached(sql).unwrap();
+        let borrowed = ColIdx::resolve_indexed(&maps, &stmt).unwrap();
+
+        let cols = ColIdx::from_names(
+            &names
+                .iter()
+                .map(|n| (*n).to_string())
+                .collect::<Vec<String>>(),
+        );
+        let owned = cols.resolve_indexed_owned(&maps).unwrap();
+
+        assert_eq!(
+            borrowed[0].pos(),
+            1,
+            "the TEXT column is the first name match"
+        );
+        assert_eq!(
+            owned[0].pos(),
+            borrowed[0].pos(),
+            "the same query resolves the same column on both paths"
+        );
+
+        // Both paths then read that TEXT column, not the integer the alias points at.
+        let mut stmt = conn.prepare_cached(sql).unwrap();
+        let mut rows = stmt.raw_query();
+        let row = rows.next().unwrap().unwrap();
+        let empty = ColIdx::empty();
+        let mut row = Row::Borrowed(row, &empty);
+        assert_eq!(row.get_idx::<String>(borrowed[0]), "seven");
+
+        let mut row = Row::Owned(
+            RowOwned {
+                values: names
+                    .iter()
+                    .map(|n| match *n {
+                        "name" => Some(ValueOwned::Text("seven".to_string())),
+                        _ => Some(ValueOwned::Integer(7)),
+                    })
+                    .collect::<Vec<Option<ValueOwned>>>(),
+            },
+            Arc::new(cols),
+        );
+        assert_eq!(row.get_idx::<String>(owned[0]), "seven");
+    }
+
+    #[test]
+    fn a_missing_column_names_the_field_it_belongs_to() {
+        let conn = conn();
+        let stmt = conn
+            .prepare_cached("SELECT id FROM t WHERE id = 7")
+            .unwrap();
+
+        // The panicking family panics with this name, the non-panicking one answers
+        // `Error::QueryParams` built from it.
+        let name = ColIdx::resolve_indexed(&Plain::field_maps(), &stmt).unwrap_err();
+        assert_eq!(name, "name");
+    }
+
+    /// A missing column is a verdict about the row that reads it, not about the query: the setup of
+    /// a result set that has no rows carries the name, and nothing reports it while no row is
+    /// mapped, which is what an empty result set has always answered with.
+    #[test]
+    fn an_empty_result_set_with_a_missing_column_still_answers_empty() {
+        register_hoisted::<Plain>();
+        let conn = conn();
+        let mut stmt = conn
+            .prepare_cached("SELECT id FROM t WHERE id = 0")
+            .unwrap();
+        let mapper = Mapper::<Plain>::new();
+        let setup = mapper.setup(&stmt).unwrap();
+        let Setup::Indexed(hoisted) = &setup else {
+            panic!("a registered type resolves to its field indices");
+        };
+        assert_eq!(
+            hoisted.missing.as_deref(),
+            Some("name"),
+            "the setup carries the field no column matched"
+        );
+
+        let mut rows = stmt.raw_query();
+        assert!(
+            rows.next().unwrap().is_none(),
+            "this result set has no rows"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "column 'name' is not in the result set")]
+    fn a_row_reading_a_missing_column_panics_naming_that_field() {
+        register_hoisted::<Plain>();
+        let conn = conn();
+        let mut stmt = conn
+            .prepare_cached("SELECT id FROM t WHERE id = 7")
+            .unwrap();
+        let mapper = Mapper::<Plain>::new();
+        let setup = mapper.setup(&stmt).unwrap();
+
+        let mut rows = stmt.raw_query();
+        let row = rows.next().unwrap().unwrap();
+        let mut row = Row::Borrowed(row, setup.row_cols());
+        mapper.map(&mut row, &setup);
+    }
+
+    /// The non-panicking family answers the same missing column as an [`Error::QueryParams`]
+    /// naming it, and only for a row that reads it.
+    #[test]
+    fn a_try_row_reading_a_missing_column_reports_the_field_it_cannot_read() {
+        register_hoisted_try::<TryPlain>();
+        let conn = conn();
+        let mut stmt = conn
+            .prepare_cached("SELECT id FROM t WHERE id = 7")
+            .unwrap();
+        let mapper = MapperTry::<TryPlain>::new();
+        let setup = mapper.setup(&stmt).unwrap();
+
+        let mut rows = stmt.raw_query();
+        let row = rows.next().unwrap().unwrap();
+        let mut row = Row::Borrowed(row, setup.row_cols());
+        let err = mapper.map(&mut row, &setup).unwrap_err();
+        assert!(
+            matches!(&err, Error::QueryParams(msg) if msg == "column 'name' is not in the result set"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_try_setup_of_an_empty_result_set_reports_nothing() {
+        register_hoisted_try::<TryPlain>();
+        let conn = conn();
+        let stmt = conn
+            .prepare_cached("SELECT id FROM t WHERE id = 0")
+            .unwrap();
+        let mapper = MapperTry::<TryPlain>::new();
+        // Setting up a query that returns no rows cannot fail, whatever its fields are named.
+        assert!(mapper.setup(&stmt).is_ok());
+    }
+
+    /// The happy path of the non-panicking family: every field has its column, and the row maps.
+    #[test]
+    fn a_try_row_maps_every_field_it_has() {
+        register_hoisted_try::<TryPlain>();
+        let conn = conn();
+        let mut stmt = conn
+            .prepare_cached("SELECT name, id FROM t WHERE id = 7")
+            .unwrap();
+        let mapper = MapperTry::<TryPlain>::new();
+        let setup = mapper.setup(&stmt).unwrap();
+
+        let mut rows = stmt.raw_query();
+        let row = rows.next().unwrap().unwrap();
+        let mut row = Row::Borrowed(row, setup.row_cols());
+        let mapped = mapper.map(&mut row, &setup).unwrap();
+        assert_eq!(mapped.id, 7);
+        assert_eq!(mapped.name, "seven");
+    }
+}
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    #[test]
+    fn the_shape_of_columns_ignores_their_order_and_case() {
+        assert_eq!(sql_shape(&["id", "ts"]), sql_shape(&["ts", "id"]));
+        assert_eq!(sql_shape(&["ID", "ts"]), sql_shape(&["id", "TS"]));
+    }
+
+    #[test]
+    fn a_different_set_of_columns_is_a_different_shape() {
+        assert_ne!(sql_shape(&["id", "ts"]), sql_shape(&["id"]));
+        assert_ne!(sql_shape(&["id", "ts"]), sql_shape(&["id", "ts2"]));
+        // The count of the names is part of the value, so one name is never the shape of two.
+        assert_ne!(sql_shape(&["id"]), sql_shape(&["id", "id"]));
+    }
+
+    #[test]
+    fn a_flattened_type_merges_the_shapes_of_its_parts() {
+        let own = sql_shape(&["id"]);
+        let inner = sql_shape(&["x", "y"]);
+        assert_eq!(
+            own.wrapping_add(inner),
+            sql_shape(&["id", "x", "y"]),
+            "a flattened type is checked against all the columns its parts read"
+        );
+    }
+
+    const PARENT: u64 = sql_shape(&["id", "name_db", "desc", "vec_wrap"]);
+    const PART: u64 = sql_shape(&["sub_id", "sub_name", "url", "uuid"]);
+    /// The merge the derive performs, evaluated at compile time: a debug build must not stop here.
+    const MERGED: u64 = PARENT.wrapping_add(PART);
+    /// The reason it is a `wrapping_add`: these column names overflow a plain `+`, and a debug build
+    /// that evaluated one would stop the compile of a `sql_map!()` that has nothing wrong with it.
+    const _: () = assert!(PARENT > u64::MAX - PART);
+
+    #[test]
+    fn a_merged_shape_is_summed_with_wrapping_addition() {
+        assert_eq!(
+            MERGED,
+            sql_shape(&[
+                "id", "name_db", "desc", "vec_wrap", "sub_id", "sub_name", "url", "uuid"
+            ]),
+            "the merge of the two parts is the shape of all their columns"
+        );
+    }
+
+    #[test]
+    fn the_shape_algorithm_is_pinned() {
+        // The value a `sql_map!()` comparison is built from: changing the algorithm here changes
+        // every shape, so it is pinned to a literal.
+        assert_eq!(sql_shape(&["id", "ts"]), 0x8925_040f_6ac7_0230);
     }
 }

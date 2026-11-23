@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::query::rows::{ColumnInfo, RowOwned, RowsOwned};
+use crate::query::rows::{ColumnInfo, RowMapper, RowOwned, RowsOwned, TryRowMapper};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine::SqlitePool;
 use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
@@ -116,12 +116,16 @@ where
             idx += 1;
         }
 
-        let cols = rows::ColIdx::from_stmt(&stmt);
+        let mapper = rows::Mapper::<T>::new();
+        let setup = mapper.setup(&stmt)?;
         let mut rows = stmt.raw_query();
         let mut res = Vec::with_capacity(hint);
         loop {
             match rows.next() {
-                Ok(Some(row)) => res.push(T::from(&mut rows::Row::Borrowed(row, &cols))),
+                Ok(Some(row)) => {
+                    let mut row = rows::Row::Borrowed(row, setup.row_cols());
+                    res.push(mapper.map(&mut row, &setup));
+                }
                 Ok(None) => break,
                 Err(err) => return Err(Error::Sqlite(err.to_string().into())),
             }
@@ -161,12 +165,16 @@ where
             idx += 1;
         }
 
-        let cols = rows::ColIdx::from_stmt(&stmt);
+        let mapper = rows::MapperTry::<T>::new();
+        let setup = mapper.setup(&stmt)?;
         let mut rows = stmt.raw_query();
         let mut res = Vec::with_capacity(hint);
         loop {
             match rows.next() {
-                Ok(Some(row)) => res.push(T::try_from(&mut rows::Row::Borrowed(row, &cols))),
+                Ok(Some(row)) => {
+                    let mut row = rows::Row::Borrowed(row, setup.row_cols());
+                    res.push(mapper.map(&mut row, &setup));
+                }
                 Ok(None) => break,
                 Err(err) => return Err(Error::Sqlite(err.to_string().into())),
             }
