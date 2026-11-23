@@ -7,7 +7,6 @@ use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocket, W
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{ReadHalf, WriteHalf};
@@ -34,16 +33,16 @@ const STREAM_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 /// Maximum time without any frame from the server before the client declares the connection dead
 /// and reconnects. A healthy connection always receives the auto-pong of our keepalive pings, so
 /// this only trips on genuinely stalled connections. Must be a multiple of
-/// STREAM_KEEPALIVE_INTERVAL with margin.
+/// `STREAM_KEEPALIVE_INTERVAL` with margin.
 const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(35);
 
 /// Number of consecutive connection failures that retry at the fast (1 s) interval before the
-/// reconnect loop backs off to RECONNECT_SLOW_INTERVAL. A restarting node is only briefly
+/// reconnect loop backs off to `RECONNECT_SLOW_INTERVAL`. A restarting node is only briefly
 /// unreachable, so a handful of quick attempts is enough; anything more just delays reconnection.
 const RECONNECT_FAST_RETRIES: u32 = 5;
 
-/// Interval between connection attempts once RECONNECT_FAST_RETRIES consecutive failures have been
-/// exhausted. Kept short on purpose so reconnection stays responsive; do not grow it further.
+/// Interval between connection attempts once `RECONNECT_FAST_RETRIES` consecutive failures have
+/// been exhausted. Kept short on purpose so reconnection stays responsive; do not grow it further.
 const RECONNECT_SLOW_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
@@ -162,13 +161,16 @@ impl Client {
         rx_client_stream: flume::Receiver<ClientStreamReq>,
         raft_type: RaftType,
     ) {
-        task::spawn(Box::pin(client_stream(
-            self.clone(),
-            secret,
-            leader,
-            rx_client_stream,
-            raft_type,
-        )));
+        let client = self.clone();
+        task::spawn(async move {
+            // The stream only ever fails on a payload it cannot serialize, which is a bug in our
+            // own request types - report it loudly instead of letting the task die silently.
+            if let Err(err) =
+                client_stream(client, secret, leader, rx_client_stream, raft_type).await
+            {
+                error!("Client API stream task ended with an error: {err}");
+            }
+        });
     }
 }
 
@@ -180,7 +182,7 @@ async fn client_stream(
     leader: Arc<RwLock<(NodeId, String)>>,
     rx_req: flume::Receiver<ClientStreamReq>,
     raft_type: RaftType,
-) {
+) -> Result<(), Error> {
     let mut in_flight: HashMap<usize, oneshot::Sender<Result<ApiStreamResponsePayload, Error>>> =
         HashMap::with_capacity(8);
     let mut in_flight_buf: HashMap<
@@ -271,7 +273,7 @@ async fn client_stream(
                     }
                     None
                 }
-                _ = time::sleep(STREAM_READ_TIMEOUT.saturating_sub(last_frame.elapsed())) => {
+                () = time::sleep(STREAM_READ_TIMEOUT.saturating_sub(last_frame.elapsed())) => {
                     error!(
                         "No frames from server for {:?} - assuming dead connection, reconnecting",
                         STREAM_READ_TIMEOUT
@@ -313,7 +315,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Execute(sql),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         req.request_id,
                         ack,
                     ))
@@ -330,7 +332,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::ExecuteReturning(sql),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         request_id,
                         ack,
                     ))
@@ -347,7 +349,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Transaction(queries),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         request_id,
                         ack,
                     ))
@@ -364,7 +366,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Query(query),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         request_id,
                         ack,
                     ))
@@ -387,7 +389,7 @@ async fn client_stream(
                         ),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         request_id,
                         ack,
                     ))
@@ -404,7 +406,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Batch(sql),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         request_id,
                         ack,
                     ))
@@ -421,7 +423,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Migrate(migrations),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         request_id,
                         ack,
                     ))
@@ -439,7 +441,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Backup((node_id, ts)),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         request_id,
                         ack,
                     ))
@@ -456,7 +458,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Cache(cache_req),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         request_id,
                         ack,
                     ))
@@ -473,7 +475,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::CacheGet(cache_req),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         request_id,
                         ack,
                     ))
@@ -490,7 +492,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::LockAwait(cache_req),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         request_id,
                         ack,
                     ))
@@ -507,7 +509,7 @@ async fn client_stream(
                         payload: ApiStreamRequestPayload::Notify(cache_req),
                     };
                     Some((
-                        WritePayload::Payload(serialize_network(&req)),
+                        WritePayload::Payload(serialize_network(&req)?),
                         request_id,
                         ack,
                     ))
@@ -538,8 +540,7 @@ async fn client_stream(
                         &mut in_flight_buf,
                         awaiting_timeout,
                         resp,
-                    )
-                    .await;
+                    );
                     None
                 }
 
@@ -566,7 +567,7 @@ async fn client_stream(
 
             if let Some((payload, request_id, ack)) = payload {
                 match tx_write.send_async(payload).await {
-                    Ok(_) => {
+                    Ok(()) => {
                         in_flight.insert(request_id, ack);
                     }
                     Err(err) => {
@@ -653,7 +654,7 @@ async fn client_stream(
                     update_leader(&leader, node_id, node).await;
                 }
                 ClientStreamReq::StreamResponse(resp) => {
-                    try_forward_response(&mut in_flight, &mut in_flight_buf, false, resp).await;
+                    try_forward_response(&mut in_flight, &mut in_flight_buf, false, resp);
                 }
                 ClientStreamReq::CleanupBuffer => {
                     // ignore - we are re-connecting anyway
@@ -677,10 +678,12 @@ async fn client_stream(
 
         debug!("client stream tasks killed - re-connecting now");
     }
+
+    Ok(())
 }
 
-#[inline(always)]
-async fn try_forward_response(
+#[inline]
+fn try_forward_response(
     in_flight: &mut HashMap<usize, Sender<Result<ApiStreamResponsePayload, Error>>>,
     in_flight_buf: &mut HashMap<usize, Sender<Result<ApiStreamResponsePayload, Error>>>,
     awaiting_timeout: bool,
@@ -694,7 +697,7 @@ async fn try_forward_response(
                         error!("client ack for ApiStreamResponse missing");
                     }
                     Some(ack) => match ack.send(Ok(response.result)) {
-                        Ok(_) => {
+                        Ok(()) => {
                             debug!("ApiStreamResponse sent to client from in_flight_buf");
                         }
                         Err(err) => {
@@ -708,7 +711,7 @@ async fn try_forward_response(
         }
 
         Some(ack) => match ack.send(Ok(response.result)) {
-            Ok(_) => {
+            Ok(()) => {
                 debug!("ApiStreamResponse sent to client");
             }
             Err(err) => {
@@ -762,10 +765,9 @@ async fn stream_reader(
         .await
     {
         match frame.opcode {
-            OpCode::Continuation => {}
-            OpCode::Text => {}
+            OpCode::Continuation | OpCode::Text => {}
             OpCode::Binary => {
-                let bytes = frame.payload.deref();
+                let bytes = &*frame.payload;
                 let payload = match deserialize::<ApiStreamResponse>(bytes) {
                     Ok(payload) => payload,
                     Err(err) => {

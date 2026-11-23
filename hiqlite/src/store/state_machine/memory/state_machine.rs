@@ -27,7 +27,9 @@ use tracing::warn;
 use uuid::Uuid;
 
 #[cfg(feature = "dlock")]
-use crate::store::state_machine::memory::dlock_handler::{self, *};
+use crate::store::state_machine::memory::dlock_handler::{
+    self, LockAlivePayload, LockReleasePayload, LockRequest, LockRequestPayload, LockState,
+};
 #[cfg(feature = "listen_notify")]
 use crate::store::state_machine::memory::notify_handler::{self, NotifyRequest};
 #[cfg(feature = "in-memory-snapshots")]
@@ -451,7 +453,7 @@ impl StateMachineMemory {
             let locks = rx
                 .await
                 .expect("to always receive an answer from locks handler");
-            serialize_serde(&locks).unwrap()
+            serialize_serde(&locks)
         };
         #[cfg(not(feature = "dlock"))]
         let locks_bytes: Vec<u8> = Vec::default();
@@ -462,8 +464,7 @@ impl StateMachineMemory {
         };
 
         let snap: SnapshotDataContent = (meta.clone(), caches, locks_bytes);
-        let snapshot_bytes =
-            serialize_serde(&snap).map_err(|err| io::Error::other(format!("{err}")))?;
+        let snapshot_bytes = serialize_serde(&snap);
 
         Ok((meta, snapshot_bytes))
     }
@@ -510,7 +511,7 @@ impl StateMachineMemory {
             if !name.is_empty()
                 && name != id
                 // skip the in-flight snapshot receive temp file (`begin_receiving_snapshot`)
-                && !(name.ends_with("~") || name.ends_with("tmp") || name.ends_with("temp"))
+                && !(name.ends_with('~') || name.ends_with("tmp") || name.ends_with("temp"))
                 && let Err(err) = fs::remove_file(format!("{dir}/{name}")).await
             {
                 warn!("Error removing old snapshot {name}: {err:?}");
@@ -1022,6 +1023,9 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
         Ok(())
     }
 
+    // openraft declares this trait method `async`, so the impl has to keep `async`; building a
+    // snapshot of the in-memory state is a plain `Clone` with nothing to await.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
         self.clone()
     }

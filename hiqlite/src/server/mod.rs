@@ -11,6 +11,14 @@ mod logging;
 mod password;
 mod proxy;
 
+///
+/// # Errors
+///
+/// The [`Error`] of the subcommand it runs: for `serve` everything
+/// [`build_node_config`](crate::server::config::build_node_config) and
+/// [`start_node_with_cache`] can return plus the [`Error::Error`] of a missing shutdown
+/// handle, and for `proxy` the config errors of its file, its validation, and the [`Error`]
+/// of the running proxy.
 pub async fn server() -> Result<(), Error> {
     match Args::parse() {
         Args::Serve(args) => {

@@ -46,8 +46,7 @@ where
     let tls_no_verify_api = node_config
         .tls_api
         .as_ref()
-        .map(|c| c.danger_tls_no_verify())
-        .unwrap_or(false);
+        .is_some_and(|c| c.danger_tls_no_verify());
 
     if let Err(err) = crate::v0_17_cold_restart_guard::check_cold_restart(&node_config).await {
         error!("Error during the v0.17 cold restart check for the cluster: {err:?}");
@@ -221,7 +220,7 @@ where
             .await
             .map_err(|err| error!("Raft server stopped: {err}"))
         }));
-    };
+    }
 
     let default_routes = Router::new()
         .nest(
@@ -349,7 +348,7 @@ where
             .await
             .map_err(|err| error!("API server stopped: {err}"))
         }));
-    };
+    }
 
     #[cfg(feature = "sqlite")]
     let member_db = {

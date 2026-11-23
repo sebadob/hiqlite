@@ -120,7 +120,7 @@ fn handle_request(req: LockRequest, locks: &mut HashMap<String, LockQueue>, wait
     match req {
         LockRequest::Lock(p) => handle_lock(locks, waiters, p),
         LockRequest::Acquire(p) => handle_acquire(locks, waiters, p),
-        LockRequest::Release(p) => handle_release(locks, waiters, p),
+        LockRequest::Release(p) => handle_release(locks, waiters, &p),
         LockRequest::Alive(p) => handle_alive(locks, p),
         LockRequest::Await(p) => handle_await(locks, waiters, p),
         LockRequest::SnapshotBuild(ack) => ack.send(locks.clone()).unwrap(),
@@ -134,7 +134,7 @@ fn handle_request(req: LockRequest, locks: &mut HashMap<String, LockQueue>, wait
                 }
             }
             debug!("DLock snapshot installed");
-            ack.send(()).unwrap()
+            ack.send(()).unwrap();
         }
     }
 }
@@ -225,29 +225,26 @@ fn handle_lock(
     promote_key(locks, waiters, key);
 
     let now = Utc::now().timestamp();
-    match locks.get_mut(key) {
-        Some(lock) => {
-            if lock.current_ticket.is_none() || is_free(lock, now) {
-                // The queue was empty: grant directly.
-                lock.current_ticket = Some(p.log_id);
-                lock.exp = now + LOCK_VALID_SECONDS;
-                p.ack.send(LockState::Locked(p.log_id)).unwrap();
-            } else {
-                lock.queue.push_back(p.log_id);
-                p.ack.send(LockState::Queued(p.log_id)).unwrap();
-            }
-        }
-        None => {
-            locks.insert(
-                key.to_string(),
-                LockQueue {
-                    current_ticket: Some(p.log_id),
-                    exp: now + LOCK_VALID_SECONDS,
-                    queue: Default::default(),
-                },
-            );
+    if let Some(lock) = locks.get_mut(key) {
+        if lock.current_ticket.is_none() || is_free(lock, now) {
+            // The queue was empty: grant directly.
+            lock.current_ticket = Some(p.log_id);
+            lock.exp = now + LOCK_VALID_SECONDS;
             p.ack.send(LockState::Locked(p.log_id)).unwrap();
+        } else {
+            lock.queue.push_back(p.log_id);
+            p.ack.send(LockState::Queued(p.log_id)).unwrap();
         }
+    } else {
+        locks.insert(
+            key.to_string(),
+            LockQueue {
+                current_ticket: Some(p.log_id),
+                exp: now + LOCK_VALID_SECONDS,
+                queue: VecDeque::default(),
+            },
+        );
+        p.ack.send(LockState::Locked(p.log_id)).unwrap();
     }
 }
 
@@ -263,46 +260,43 @@ fn handle_acquire(
     promote_key(locks, waiters, key);
 
     let now = Utc::now().timestamp();
-    match locks.get_mut(key) {
-        Some(lock) => {
-            if lock.current_ticket == Some(p.log_id) && lock.exp >= now {
-                // This ticket already holds the lock (granted directly, or reserved for us):
-                // claim it.
-                p.ack.send(LockState::Locked(p.log_id)).unwrap();
-            } else if lock.current_ticket.is_none() || is_free(lock, now) {
-                // The lock is free and nobody ahead of us was promoted: grant directly.
-                lock.current_ticket = Some(p.log_id);
-                lock.exp = now + LOCK_VALID_SECONDS;
-                p.ack.send(LockState::Locked(p.log_id)).unwrap();
-            } else {
-                // Behind another ticket (held, or just promoted): keep (or restore) our position
-                // at the back of the queue.
-                if !lock.queue.contains(&p.log_id) {
-                    lock.queue.push_back(p.log_id);
-                }
-                p.ack.send(LockState::Queued(p.log_id)).unwrap();
-            }
-        }
-        None => {
-            // The lock was fully removed while this request was in flight. Grant a fresh one so
-            // the client never hangs.
-            locks.insert(
-                key.to_string(),
-                LockQueue {
-                    current_ticket: Some(p.log_id),
-                    exp: now + LOCK_VALID_SECONDS,
-                    queue: Default::default(),
-                },
-            );
+    if let Some(lock) = locks.get_mut(key) {
+        if lock.current_ticket == Some(p.log_id) && lock.exp >= now {
+            // This ticket already holds the lock (granted directly, or reserved for us):
+            // claim it.
             p.ack.send(LockState::Locked(p.log_id)).unwrap();
+        } else if lock.current_ticket.is_none() || is_free(lock, now) {
+            // The lock is free and nobody ahead of us was promoted: grant directly.
+            lock.current_ticket = Some(p.log_id);
+            lock.exp = now + LOCK_VALID_SECONDS;
+            p.ack.send(LockState::Locked(p.log_id)).unwrap();
+        } else {
+            // Behind another ticket (held, or just promoted): keep (or restore) our position
+            // at the back of the queue.
+            if !lock.queue.contains(&p.log_id) {
+                lock.queue.push_back(p.log_id);
+            }
+            p.ack.send(LockState::Queued(p.log_id)).unwrap();
         }
+    } else {
+        // The lock was fully removed while this request was in flight. Grant a fresh one so
+        // the client never hangs.
+        locks.insert(
+            key.to_string(),
+            LockQueue {
+                current_ticket: Some(p.log_id),
+                exp: now + LOCK_VALID_SECONDS,
+                queue: VecDeque::default(),
+            },
+        );
+        p.ack.send(LockState::Locked(p.log_id)).unwrap();
     }
 }
 
 fn handle_release(
     locks: &mut HashMap<String, LockQueue>,
     waiters: &mut Waiters,
-    p: LockReleasePayload,
+    p: &LockReleasePayload,
 ) {
     let key = p.key.as_ref();
     let mut full_remove = false;

@@ -131,13 +131,11 @@ async fn loads_an_openraft_09_data_dir() {
 }
 
 fn count_files(dir: impl AsRef<Path>) -> usize {
-    std::fs::read_dir(dir.as_ref())
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(dir.as_ref()).map_or(0, |rd| {
+        rd.filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .count()
+    })
 }
 
 fn copy_dir(from: &Path, to: &Path) {

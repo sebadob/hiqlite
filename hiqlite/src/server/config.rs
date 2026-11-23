@@ -8,6 +8,12 @@ use tokio::fs;
 
 static REFERENCE_PROXY_CONFIG: &str = include_str!("../../../REFERENCE_CONFIG_PROXY.toml");
 
+///
+/// # Errors
+///
+/// Everything [`NodeConfig::from_toml`] answers for the config file of the server:
+/// [`Error::Config`] for a file it cannot read, that is not valid TOML, or whose values the
+/// config cannot use.
 pub async fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
     let config_path = if args.config_file == "$HOME/.hiqlite/hiqlite.toml" {
         default_config_file_path()
@@ -26,6 +32,11 @@ pub async fn build_node_config(args: ArgsConfig) -> Result<NodeConfig, Error> {
     Ok(config)
 }
 
+///
+/// # Errors
+///
+/// [`Error::Error`] for the config directory and config file it writes, for the answer read
+/// from stdin, and for a password that cannot be hashed.
 pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
     let path = default_config_dir();
     fs::create_dir_all(&path).await?;
@@ -33,10 +44,7 @@ pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
 
     let path_file = default_config_file_path();
     if fs::File::open(&path_file).await.is_ok() {
-        eprint!(
-            "Config file {} exists already. Overwrite? (yes): ",
-            path_file
-        );
+        eprint!("Config file {path_file} exists already. Overwrite? (yes): ");
         let line = read_line_stdin().await?;
         if line != "yes" {
             return Ok(());
@@ -53,18 +61,17 @@ pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
             if line.chars().count() >= 16 {
                 plain = line;
                 break;
-            } else {
-                eprintln!(
-                    "Input too short - has only {} characters",
-                    line.chars().count()
-                );
             }
+            eprintln!(
+                "Input too short - has only {} characters",
+                line.chars().count()
+            );
         }
         plain
     } else {
         utils::secure_random_alnum(24)
     };
-    println!("New password for the dashboard: {}", pwd_plain);
+    println!("New password for the dashboard: {pwd_plain}");
     let password_dashboard = password::hash_password_b64(pwd_plain).await?;
 
     let default_config = default_config(&password_dashboard, args.insecure_cookie)?;
@@ -89,11 +96,16 @@ pub async fn generate(args: ArgsGenerate) -> Result<(), Error> {
         fs::write(&path_file, default_config).await?;
     }
 
-    println!("New default proxy config file created: {}", path_file);
+    println!("New default proxy config file created: {path_file}");
 
     Ok(())
 }
 
+///
+/// # Errors
+///
+/// [`Error::Error`] for the config directory and the proxy config file it writes, and for
+/// the answer read from stdin.
 pub async fn generate_proxy() -> Result<(), Error> {
     let path = default_config_dir();
     fs::create_dir_all(&path).await?;
@@ -101,10 +113,7 @@ pub async fn generate_proxy() -> Result<(), Error> {
 
     let path_file = default_proxy_config_file_path();
     if fs::File::open(&path_file).await.is_ok() {
-        eprint!(
-            "Proxy Config file {} exists already. Overwrite? (yes): ",
-            path_file
-        );
+        eprint!("Proxy Config file {path_file} exists already. Overwrite? (yes): ");
         let line = read_line_stdin().await?;
         if line != "yes" {
             return Ok(());
@@ -133,7 +142,7 @@ pub async fn generate_proxy() -> Result<(), Error> {
         fs::write(&path_file, REFERENCE_PROXY_CONFIG).await?;
     }
 
-    println!("New default proxy config file created: {}", path_file);
+    println!("New default proxy config file created: {path_file}");
 
     Ok(())
 }

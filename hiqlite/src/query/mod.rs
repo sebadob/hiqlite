@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::query::rows::{ColumnOwned, RowOwned};
+use crate::query::rows::{ColumnInfo, RowOwned, RowsOwned};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine::SqlitePool;
 use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
@@ -18,6 +18,10 @@ use crate::store::state_machine::sqlite::writer;
 pub mod cust_types;
 pub mod rows;
 
+/// Capacity for the rows of a query where we don't know the result size upfront. A query with a
+/// single row never grows past it, a big result pays one reallocation per doubling.
+pub(crate) const ROWS_HINT: usize = 4;
+
 pub(crate) async fn query_consistent_local<S>(
     raft: &Raft<TypeConfigSqlite, StateMachineSqlite>,
     log_statements: bool,
@@ -25,7 +29,7 @@ pub(crate) async fn query_consistent_local<S>(
     stmt: S,
     params: Params,
     read_policy: ReadPolicy,
-) -> Result<Vec<RowOwned>, Error>
+) -> Result<RowsOwned, Error>
 where
     S: Into<Cow<'static, str>>,
 {
@@ -38,20 +42,20 @@ pub(crate) async fn query_owned_local<S>(
     read_pool: SqlitePool,
     sql: S,
     params: Params,
-) -> Result<Vec<RowOwned>, Error>
+) -> Result<RowsOwned, Error>
 where
     S: Into<Cow<'static, str>>,
 {
     let sql: Cow<'static, str> = sql.into();
     if log_statements {
-        info!("query_owned_local:\n{}\n{:?}", sql, params)
+        info!("query_owned_local:\n{sql}\n{params:?}");
     }
 
     let conn = read_pool.get().await?;
 
     task::spawn_blocking(move || {
         let mut stmt = conn.prepare_cached(sql.as_ref())?;
-        let columns = ColumnOwned::mapping_cols_from_stmt(stmt.columns(), params.len())?;
+        let columns = ColumnInfo::mapping_cols_from_stmt(stmt.columns());
 
         #[cfg(debug_assertions)]
         writer::check_stmt_params_count(&stmt, &params, &sql);
@@ -64,7 +68,7 @@ where
         }
 
         let mut rows = stmt.raw_query();
-        let mut rows_owned = Vec::new();
+        let mut rows_owned = Vec::with_capacity(ROWS_HINT);
         loop {
             match rows.next() {
                 Ok(Some(row)) => rows_owned.push(RowOwned::from_row_column(row, &columns)),
@@ -76,16 +80,18 @@ where
             }
         }
 
-        Ok::<Vec<RowOwned>, Error>(rows_owned)
+        let names = columns.into_iter().map(|c| c.name).collect();
+        Ok::<RowsOwned, Error>(RowsOwned::new(names, rows_owned))
     })
     .await?
 }
 
-#[inline(always)]
+#[inline]
 pub(crate) async fn query_map<T, S>(
     state: &Arc<AppState>,
     sql: S,
     params: Params,
+    hint: usize,
 ) -> Result<Vec<T>, Error>
 where
     T: for<'r> From<&'r mut rows::Row<'r>> + Send + 'static,
@@ -93,7 +99,7 @@ where
 {
     let sql: Cow<'static, str> = sql.into();
     if state.raft_db.log_statements {
-        info!("query_map_typed:\n{}\n{:?}", sql, params)
+        info!("query_map_typed:\n{sql}\n{params:?}");
     }
 
     let conn = state.raft_db.read_pool.get().await?;
@@ -110,11 +116,12 @@ where
             idx += 1;
         }
 
+        let cols = rows::ColIdx::from_stmt(&stmt);
         let mut rows = stmt.raw_query();
-        let mut res = Vec::new();
+        let mut res = Vec::with_capacity(hint);
         loop {
             match rows.next() {
-                Ok(Some(row)) => res.push(T::from(&mut rows::Row::Borrowed(row))),
+                Ok(Some(row)) => res.push(T::from(&mut rows::Row::Borrowed(row, &cols))),
                 Ok(None) => break,
                 Err(err) => return Err(Error::Sqlite(err.to_string().into())),
             }
@@ -124,11 +131,12 @@ where
     .await?
 }
 
-#[inline(always)]
+#[inline]
 pub(crate) async fn query_try_map<T, S>(
     state: &Arc<AppState>,
     sql: S,
     params: Params,
+    hint: usize,
 ) -> Result<Vec<Result<T, Error>>, Error>
 where
     T: for<'r> TryFrom<&'r mut rows::Row<'r>, Error = crate::Error> + Send + 'static,
@@ -136,7 +144,7 @@ where
 {
     let sql: Cow<'static, str> = sql.into();
     if state.raft_db.log_statements {
-        info!("query_try_map_typed:\n{}\n{:?}", sql, params)
+        info!("query_try_map_typed:\n{sql}\n{params:?}");
     }
 
     let conn = state.raft_db.read_pool.get().await?;
@@ -153,11 +161,12 @@ where
             idx += 1;
         }
 
+        let cols = rows::ColIdx::from_stmt(&stmt);
         let mut rows = stmt.raw_query();
-        let mut res = Vec::new();
+        let mut res = Vec::with_capacity(hint);
         loop {
             match rows.next() {
-                Ok(Some(row)) => res.push(T::try_from(&mut rows::Row::Borrowed(row))),
+                Ok(Some(row)) => res.push(T::try_from(&mut rows::Row::Borrowed(row, &cols))),
                 Ok(None) => break,
                 Err(err) => return Err(Error::Sqlite(err.to_string().into())),
             }
@@ -177,7 +186,7 @@ where
     T: for<'r> From<&'r mut rows::Row<'r>> + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
-    let mut rows: Vec<T> = query_map(state, sql, params).await?;
+    let mut rows: Vec<T> = query_map(state, sql, params, 1).await?;
     if rows.is_empty() {
         Err(Error::QueryReturnedNoRows("no rows returned".into()))
     } else if rows.len() > 1 {
@@ -199,7 +208,7 @@ where
     T: for<'r> TryFrom<&'r mut rows::Row<'r>, Error = crate::Error> + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
-    let mut rows: Vec<Result<T, Error>> = query_try_map(state, sql, params).await?;
+    let mut rows: Vec<Result<T, Error>> = query_try_map(state, sql, params, 1).await?;
     if rows.is_empty() {
         Err(Error::QueryReturnedNoRows("no rows returned".into()))
     } else if rows.len() > 1 {
@@ -221,7 +230,7 @@ where
     T: for<'r> From<&'r mut rows::Row<'r>> + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
-    let mut rows: Vec<T> = query_map(state, sql, params).await?;
+    let mut rows: Vec<T> = query_map(state, sql, params, 1).await?;
     if rows.is_empty() {
         Ok(None)
     } else {
@@ -239,7 +248,7 @@ where
     T: for<'r> TryFrom<&'r mut rows::Row<'r>, Error = crate::Error> + Send + 'static,
     S: Into<Cow<'static, str>>,
 {
-    let mut rows: Vec<Result<T, Error>> = query_try_map(state, sql, params).await?;
+    let mut rows: Vec<Result<T, Error>> = query_try_map(state, sql, params, 1).await?;
     if rows.is_empty() {
         Ok(None)
     } else {
@@ -259,7 +268,7 @@ where
 {
     let sql: Cow<'static, str> = sql.into();
     if state.raft_db.log_statements {
-        info!("query_as:\n{}\n{:?}", sql, params)
+        info!("query_as:\n{sql}\n{params:?}");
     }
 
     let conn = state.raft_db.read_pool.get().await?;

@@ -39,6 +39,13 @@ impl Client {
     ///
     /// The backup will be created in the background and run on other threads. This means it will
     /// not be finished immediately when this function returns.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the DB request rate limit is exhausted. Then the [`Error`] of
+    /// the backup run itself: a Raft write error, [`Error::Error`] for a backup file the local
+    /// disk refuses to write, [`Error::S3`] for a failed upload, and exactly one re-send after
+    /// [`Error::LeaderChange`].
     #[cold]
     pub async fn backup(&self) -> Result<(), Error> {
         self.rate_limit_db().await?;
@@ -114,6 +121,12 @@ impl Client {
     /// The name must be exactly `{backup_file_prefix}_{node_id}_{unix_ts}.sqlite` - the shape Hiqlite
     /// writes - so a caller cannot reach outside of the backups directory (e.g. via `../` or an
     /// embedded path separator).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BadRequest`] when the name does not match the backup file shape,
+    /// [`Error::Config`] for a remote client that has no local node, and [`Error::Error`] when
+    /// the file itself cannot be opened.
     pub async fn backup_file_local(&self, filename: &str) -> Result<fs::File, Error> {
         if let Some(state) = self.inner.state.clone() {
             if !valid_backup_filename(&state.backup_file_prefix, filename) {
@@ -137,11 +150,16 @@ impl Client {
         }
     }
 
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] when no S3 bucket is configured, or when this client is remote and has
+    /// no local node.
     #[cfg(feature = "s3")]
     pub fn backup_s3_stream(&self, object: String) -> Result<ChannelReceiver, Error> {
         if let Some(state) = self.inner.state.clone() {
             if let Some(s3) = state.s3_config.clone() {
-                s3.pull_channel(object)
+                Ok(s3.pull_channel(object))
             } else {
                 Err(Error::Config("No S3 bucket configured".into()))
             }
@@ -156,6 +174,11 @@ impl Client {
     ///
     /// Only files with the exact `{backup_file_prefix}_{node_id}_{unix_ts}.sqlite` shape are listed -
     /// the in-flight temp file and anything a shared directory may hold are not.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for a remote client that has no local node, and [`Error::Error`] when
+    /// the backups directory cannot be read.
     pub async fn backup_list_local(&self) -> Result<Vec<BackupListing>, Error> {
         if let Some(state) = self.inner.state.clone() {
             let mut res = Vec::with_capacity(4);
@@ -201,6 +224,11 @@ impl Client {
     ///
     /// Only objects with the exact `{backup_file_prefix}_{node_id}_{unix_ts}.sqlite` shape are listed,
     /// so a shared bucket reports your cluster's backups and nothing else.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for a remote client that has no local node, and [`Error::S3`] when the
+    /// bucket listing fails or answers with a `last_modified` that cannot be parsed.
     #[cfg(feature = "s3")]
     pub async fn backup_list_s3(&self) -> Result<Vec<BackupListing>, Error> {
         if let Some(state) = self.inner.state.clone() {
@@ -272,9 +300,8 @@ fn valid_backup_filename(prefix: &str, filename: &str) -> bool {
     };
     // `stem` is `{node_id}_{ts}`; both must be plain integers, which also rules out any embedded
     // path separator.
-    let (node_id, ts) = match stem.rsplit_once('_') {
-        Some(parts) => parts,
-        None => return false,
+    let Some((node_id, ts)) = stem.rsplit_once('_') else {
+        return false;
     };
     node_id.parse::<u64>().is_ok() && ts.parse::<i64>().is_ok()
 }

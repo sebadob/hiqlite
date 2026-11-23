@@ -56,7 +56,7 @@ pub(crate) async fn start_raft_db(
 
     let log_store = hiqlite_wal::LogStore::<TypeConfigSqlite>::start(
         logs::logs_dir_db(&node_config.data_dir),
-        node_config.wal_sync.clone(),
+        node_config.wal_sync,
         node_config.wal_size,
     )
     .await?;
@@ -112,8 +112,7 @@ pub(crate) async fn start_raft_db(
         node_config
             .tls_api
             .as_ref()
-            .map(|c| c.danger_tls_no_verify())
-            .unwrap_or(false),
+            .is_some_and(|c| c.danger_tls_no_verify()),
     )
     .await?;
 
@@ -180,7 +179,7 @@ where
     let (raft, shutdown_handle) = if node_config.cache_storage_disk {
         let log_store = hiqlite_wal::LogStore::<TypeConfigCache>::start(
             logs::logs_dir_cache(&node_config.data_dir),
-            node_config.wal_sync.clone(),
+            node_config.wal_sync,
             node_config.wal_size,
         )
         .await?;
@@ -219,8 +218,7 @@ where
         node_config
             .tls_api
             .as_ref()
-            .map(|c| c.danger_tls_no_verify())
-            .unwrap_or(false),
+            .is_some_and(|c| c.danger_tls_no_verify()),
     )
     .await?;
 

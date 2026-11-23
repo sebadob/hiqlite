@@ -1,6 +1,6 @@
 use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::migration::Migration;
-use crate::query::rows::{ColumnOwned, RowOwned, ValueOwned};
+use crate::query::rows::{ColumnInfo, RowOwned, RowsOwnedChecked, ValueOwned};
 use crate::store::logs;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine;
@@ -67,7 +67,7 @@ pub struct SqlExecuteReturning {
     pub sql: Cow<'static, str>,
     pub params: Params,
     pub last_applied_log_id: Option<LogIdOf<TypeConfigSqlite>>,
-    pub tx: oneshot::Sender<Result<Vec<Result<RowOwned, Error>>, Error>>,
+    pub tx: oneshot::Sender<Result<RowsOwnedChecked, Error>>,
 }
 
 #[derive(Debug)]
@@ -167,14 +167,14 @@ pub fn spawn_writer(
 
         // we want to handle our metadata manually to not interfere with migrations in apps later on
         conn.execute(
-            r#"
+            r"
 CREATE TABLE IF NOT EXISTS _metadata
 (
     key  TEXT    NOT NULL
         CONSTRAINT _metadata_pk
             PRIMARY KEY,
     data BLOB    NOT NULL
-)"#,
+)",
             (),
         )
         .expect("_metadata table creation to always succeed");
@@ -252,17 +252,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                             #[cfg(debug_assertions)]
                             check_stmt_params_count(&stmt, &q.params, &q.sql);
 
-                            let columns = match ColumnOwned::mapping_cols_from_stmt(
-                                stmt.columns(),
-                                q.params.len(),
-                            ) {
-                                Ok(c) => c,
-                                Err(err) => {
-                                    q.tx.send(Err(Error::PrepareStatement(err.to_string().into())))
-                                        .expect("oneshot tx to never be dropped");
-                                    continue;
-                                }
-                            };
+                            let columns = ColumnInfo::mapping_cols_from_stmt(stmt.columns());
 
                             // let params_len = q.params.len();
                             let mut params_err = None;
@@ -287,22 +277,24 @@ CREATE TABLE IF NOT EXISTS _metadata
                             }
 
                             let mut rows = stmt.raw_query();
-                            let mut res = Vec::new();
+                            let mut rows_owned = Vec::new();
                             loop {
                                 match rows.next() {
                                     Ok(Some(row)) => {
-                                        res.push(Ok(RowOwned::from_row_column(row, &columns)));
+                                        rows_owned
+                                            .push(Ok(RowOwned::from_row_column(row, &columns)));
                                     }
                                     Ok(None) => {
                                         break;
                                     }
                                     Err(err) => {
-                                        res.push(Err(Error::Sqlite(err.to_string().into())));
+                                        rows_owned.push(Err(Error::Sqlite(err.to_string().into())));
                                     }
                                 }
                             }
 
-                            Ok(res)
+                            let names = columns.into_iter().map(|c| c.name).collect();
+                            Ok(RowsOwnedChecked::new(names, rows_owned))
                         };
 
                         q.tx.send(res).expect("oneshot tx to never be dropped");
@@ -337,8 +329,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                                 Ok(stmt) => stmt,
                                 Err(err) => {
                                     let err = format!("Preparing cached query {sql}: {err:?}");
-                                    query_err =
-                                        Some(Error::PrepareStatement(err.to_string().into()));
+                                    query_err = Some(Error::PrepareStatement(err.clone().into()));
                                     break;
                                 }
                             };
@@ -361,7 +352,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                                                 {sql}: {err:?}"
                                             );
                                             query_err =
-                                                Some(Error::QueryParams(err.to_string().into()));
+                                                Some(Error::QueryParams(err.clone().into()));
                                             break 'outer;
                                         }
                                     }
@@ -442,7 +433,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                                         break;
                                     }
                                 }
-                            };
+                            }
                         }
 
                         if let Some(err) = query_err {
@@ -536,7 +527,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                         // sm_data.last_applied_log_id,
                         // sm_data.last_membership.clone(),
                     ) {
-                        Ok(_) => {
+                        Ok(()) => {
                             if let Err(err) = conn.execute("PRAGMA optimize", []) {
                                 error!("Error during 'PRAGMA optimize': {}", err);
                             }
@@ -665,7 +656,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                         &conn,
                         req.node_id,
                         req.ts,
-                        req.target_folder.clone(),
+                        &req.target_folder,
                         #[cfg(feature = "backup")]
                         &backup_file_prefix,
                         #[cfg(feature = "s3")]
@@ -741,7 +732,7 @@ fn persist_metadata(
     conn: &rusqlite::Connection,
     metadata: &StateMachineData,
 ) -> Result<(), rusqlite::Error> {
-    let meta_bytes = serialize_serde(metadata).unwrap();
+    let meta_bytes = serialize_serde(metadata);
     let mut stmt = conn.prepare("REPLACE INTO _metadata (key, data) VALUES ('meta', $1)")?;
     stmt.execute([meta_bytes])?;
     Ok(())
@@ -751,7 +742,7 @@ fn persist_metadata(
 pub(crate) fn check_stmt_params_count(stmt: &CachedStatement, params: &[Param], sql: &str) {
     if stmt.parameter_count() != params.len() {
         error!(
-            r#"
+            r"
 
 !!!!!!!!!!!!!!!!!!!!!!!
 !!!!!!!!!!!!!!!!!!!!!!!
@@ -769,7 +760,7 @@ Got:      {}
 !!!!!!!!!!!!!!!!!!!!!!!
 !!!!!!!!!!!!!!!!!!!!!!!
 !!!!!!!!!!!!!!!!!!!!!!!
-"#,
+",
             sql,
             stmt.parameter_count(),
             params.len()
@@ -813,7 +804,7 @@ fn create_backup(
     conn: &rusqlite::Connection,
     node_id: NodeId,
     ts: i64,
-    target_folder: String,
+    target_folder: &str,
     #[cfg(feature = "backup")] file_prefix: &str,
     #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
     #[cfg(feature = "s3")] rt: &runtime::Handle,
@@ -868,7 +859,7 @@ fn create_backup(
             loop {
                 attempt += 1;
                 match s3.push(&path_full, &file).await {
-                    Ok(_) => {
+                    Ok(()) => {
                         info!("Push backup to S3 has been finished");
                         break;
                     }
@@ -900,7 +891,7 @@ fn migrate(
 ) -> Result<(), Error> {
     // The migration `ts` must be identical on all nodes: the wall clock would diverge, the
     // raft log id is deterministic.
-    let migration_ts = last_applied_log_id.map(|l| l.index as i64).unwrap_or(0);
+    let migration_ts = last_applied_log_id.map_or(0, |l| l.index.cast_signed());
 
     info!("Applying database migrations");
 
@@ -934,7 +925,7 @@ fn migrate(
 #[inline]
 fn create_migrations_table(conn: &rusqlite::Connection) -> Result<(), Error> {
     conn.execute(
-        r#"
+        r"
     CREATE TABLE IF NOT EXISTS _migrations
     (
         id   INTEGER    NOT NULL
@@ -944,7 +935,7 @@ fn create_migrations_table(conn: &rusqlite::Connection) -> Result<(), Error> {
         ts   INTEGER    NOT NULL,
         hash TEXT       NOT NULL
     )
-    "#,
+    ",
         [],
     )?;
 
@@ -1060,10 +1051,10 @@ fn apply_migration(
 
     {
         let mut stmt = txn.prepare(
-            r#"
+            r"
         INSERT INTO _migrations (id, name, ts, hash)
         VALUES ($1, $2, $3, $4)
-        "#,
+        ",
         )?;
         stmt.execute((migration.id, migration.name, migration_ts, migration.hash))?;
     }

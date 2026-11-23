@@ -30,8 +30,7 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
         config
             .tls_config
             .as_ref()
-            .map(|c| c.danger_tls_no_verify())
-            .unwrap_or(false),
+            .is_some_and(|c| c.danger_tls_no_verify()),
         config.secret_api.clone(),
         false,
         config.rate_limit_cache,
@@ -92,7 +91,7 @@ pub async fn start_proxy(config: Config) -> Result<(), Error> {
             .serve(router.into_make_service())
             .await
             .unwrap();
-    };
+    }
 
     Ok(())
 }

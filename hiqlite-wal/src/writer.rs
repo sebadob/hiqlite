@@ -46,7 +46,7 @@ impl Debug for Action {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LogSync {
     Immediate,
     ImmediateAsync,
@@ -80,6 +80,18 @@ impl TryFrom<&str> for LogSync {
     }
 }
 
+///
+/// # Errors
+///
+/// [`Error::IO`] for the WAL files and the mmap of the repair path, [`Error::Integrity`]
+/// for a file set that does not pass its integrity check, [`Error::Decode`] and
+/// [`Error::Encode`] for the log entries that repair reads and writes, and
+/// [`Error::Generic`] when the meta data cannot be locked.
+///
+/// # Panics
+///
+/// In the repair path for a missing `last_purged_log_id`: it reads the first log entry of
+/// the front WAL file and panics when that file holds none.
 #[allow(clippy::type_complexity)]
 pub fn spawn(
     base_path: String,
@@ -123,13 +135,13 @@ pub fn spawn(
         front.mmap_drop();
 
         meta.write()?.last_purged_log_id = Some(serialize(&log_id)?);
-        Metadata::write(meta.clone(), &set.base_path)?;
+        Metadata::write(&meta, &set.base_path)?;
     }
 
     let (tx, rx) = flume::bounded::<Action>(1);
     let wal = wal_locked.clone();
-    let snc = sync.clone();
-    thread::spawn(move || run(lockfile, meta, wal, set, rx, snc, wal_size));
+    let snc = sync;
+    thread::spawn(move || run(lockfile, &meta, &wal, set, &rx, &snc, wal_size));
 
     if let LogSync::IntervalMillis(millis) = &sync {
         let interval = time::interval(Duration::from_millis(*millis));
@@ -181,11 +193,11 @@ fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
 /// this regard, it's either a physical storage or OS issue and this code an do nothing about it.
 fn run(
     lockfile: LockFile,
-    meta: Arc<RwLock<Metadata>>,
-    wal_locked: Arc<RwLock<WalFileSet>>,
+    meta: &Arc<RwLock<Metadata>>,
+    wal_locked: &Arc<RwLock<WalFileSet>>,
     mut wal: WalFileSet,
-    rx: flume::Receiver<Action>,
-    sync: LogSync,
+    rx: &flume::Receiver<Action>,
+    sync: &LogSync,
     wal_size: u32,
 ) -> Result<(), Error> {
     let _ = ThreadPriority::Max.set_for_current();
@@ -278,7 +290,7 @@ fn run(
                 }
 
                 let mut res_cb = match &res {
-                    Ok(_) => Ok(()),
+                    Ok(()) => Ok(()),
                     Err(err) => Err(io::Error::other(err.to_string())),
                 };
                 // We want to ack before flush for throughput. If anything goes wrong during flush,
@@ -376,13 +388,13 @@ fn run(
                 let persist_purged = last_log.is_some();
                 if persist_purged {
                     meta.write()?.last_purged_log_id = last_log;
-                    Metadata::write(meta.clone(), &wal.base_path)?;
+                    Metadata::write(meta, &wal.base_path)?;
                 }
 
                 buf.clear();
                 buf_logs.clear();
                 match wal.shift_delete_logs(from, until, wal_size, &mut buf, &mut buf_logs) {
-                    Ok(_) => {
+                    Ok(()) => {
                         {
                             let mut lock = wal_locked.write().unwrap();
                             lock.active = wal.active;
@@ -403,7 +415,7 @@ fn run(
                                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                                 m.last_purged_log_id = previous_purged;
                                 drop(m);
-                                Metadata::write(meta.clone(), &wal.base_path)
+                                Metadata::write(meta, &wal.base_path)
                             };
                             if let Err(revert_err) = revert_res {
                                 error!(
@@ -428,7 +440,7 @@ fn run(
                 flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
 
                 meta.write()?.vote = Some(value);
-                let res = Metadata::write(meta.clone(), &wal.base_path);
+                let res = Metadata::write(meta, &wal.base_path);
 
                 if ack.send(res).is_err() {
                     error!("WAL writer ack channel closed after vote - stopping writer");

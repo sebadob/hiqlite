@@ -1,6 +1,6 @@
 use crate::log;
 use chrono::Utc;
-use hiqlite::macros::{TryFromRow, params};
+use hiqlite::macros::{FromRow, TryFromRow, params};
 use hiqlite::{Client, Error, ReadPolicy};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -40,6 +40,20 @@ pub struct NarrowTsRow {
     pub id: i64,
     #[column(from_i32)]
     pub ts: i32,
+}
+
+// Reads the column `id`.  The query below selects `id` twice, so this pins down which of the two
+// equally named result columns a mapping resolves to.
+#[derive(Debug, Clone, PartialEq, FromRow)]
+pub struct FirstDupId {
+    pub id: i64,
+}
+
+// Reads the column `idx`.  The query below aliases `id` as `IdX`, which only rusqlite's own,
+// case-insensitive name resolution matches.
+#[derive(Debug, Clone, PartialEq, FromRow)]
+pub struct AliasCaseRow {
+    pub idx: i64,
 }
 
 pub async fn test_execute_query(
@@ -149,7 +163,7 @@ pub async fn test_execute_query(
         )
         .await;
     assert!(res.is_err());
-    let err = format!("{:?}", res);
+    let err = format!("{res:?}");
     assert!(err.starts_with("Err(ConstraintViolation("));
 
     log("DELETE query and make sure data is gone");
@@ -328,7 +342,7 @@ async fn test_try_map(client_1: &Client) -> Result<(), Error> {
             assert!(
                 msg.contains("does not fit into i32"),
                 "unexpected message: {msg}"
-            )
+            );
         }
         other => panic!("expected an Err(Sqlite) for id=102, got {other:?}"),
     }
@@ -360,7 +374,7 @@ async fn test_try_map(client_1: &Client) -> Result<(), Error> {
             assert!(
                 msg.contains("does not fit into i32"),
                 "unexpected message: {msg}"
-            )
+            );
         }
         other => panic!("expected an Err(Sqlite) for id=102, got {other:?}"),
     }
@@ -392,10 +406,26 @@ async fn test_try_map(client_1: &Client) -> Result<(), Error> {
             assert!(
                 msg.contains("does not fit into i32"),
                 "unexpected message: {msg}"
-            )
+            );
         }
         other => panic!("expected Some(Err(Sqlite)), got {other:?}"),
     }
+
+    log("query_map: a duplicated result column name maps to the first occurrence");
+    let rows: Vec<FirstDupId> = client_1
+        .query_map(
+            "SELECT id, ts AS id FROM test WHERE id = $1",
+            params!(100i64),
+        )
+        .await?;
+    // `ts` is far above any id, so the value tells us which of the two `id` columns was read.
+    assert_eq!(rows, vec![FirstDupId { id: 100 }]);
+
+    log("query_map: a column name that only differs in case is resolved as well");
+    let rows: Vec<AliasCaseRow> = client_1
+        .query_map("SELECT id AS IdX FROM test WHERE id = $1", params!(101i64))
+        .await?;
+    assert_eq!(rows, vec![AliasCaseRow { idx: 101 }]);
 
     log("Cleaning up the non-panicking query_try_map* test rows");
     let rows_affected = client_1

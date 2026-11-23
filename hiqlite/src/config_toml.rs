@@ -29,6 +29,12 @@ impl NodeConfig {
     /// 1. the `secrets` table passed in here, if `Some`;
     /// 2. otherwise a `secrets_file` config option (or the `HQL_SECRETS_FILE` env var) pointing to
     ///    a TOML file that mirrors the config structure (i.e. holds the same `[{table}]` table).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for a config file that cannot be read, a file that is not valid TOML,
+    /// and a `[table]` that the file does not have. Everything [`Self::from_toml_table`]
+    /// answers is passed through unchanged.
     pub async fn from_toml(
         path: &str,
         table: Option<&str>,
@@ -67,6 +73,14 @@ impl NodeConfig {
     /// See [`NodeConfig::from_toml`] for how the `secrets` table and the `"$SECRETS"` sentinel
     /// work. If `secrets` is `None`, a `secrets_file` config option (or `HQL_SECRETS_FILE`) is
     /// honored as a fallback.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for every value the table provides in a shape the config cannot use: a
+    /// number that is not a number, a duration string that does not parse, an enum value that
+    /// does not exist, a half TLS key/cert pair, and a `"$SECRETS"` sentinel whose key is
+    /// missing in the secrets source. Also for a secrets file that cannot be read, is not valid
+    /// TOML, or misses its table.
     pub async fn from_toml_table(
         table: toml::Table,
         table_name: &str,
@@ -134,18 +148,14 @@ impl NodeConfig {
             };
 
         let listen_addr_api = t_str(&mut map, t_name, "listen_addr_api", "HQL_LISTEN_ADDR_API")?
-            .map(Cow::from)
-            .unwrap_or_else(|| "0.0.0.0".into());
+            .map_or_else(|| "0.0.0.0".into(), Cow::from);
         let listen_addr_raft = t_str(&mut map, t_name, "listen_addr_raft", "HQL_LISTEN_ADDR_RAFT")?
-            .map(Cow::from)
-            .unwrap_or_else(|| "0.0.0.0".into());
+            .map_or_else(|| "0.0.0.0".into(), Cow::from);
 
         let data_dir = t_str(&mut map, t_name, "data_dir", "HQL_DATA_DIR")?
-            .map(Cow::from)
-            .unwrap_or_else(|| "data".into());
+            .map_or_else(|| "data".into(), Cow::from);
         let filename_db = t_str(&mut map, t_name, "filename_db", "HQL_FILENAME_DB")?
-            .map(Cow::from)
-            .unwrap_or_else(|| "hiqlite.db".into());
+            .map_or_else(|| "hiqlite.db".into(), Cow::from);
         let log_statements =
             t_bool(&mut map, t_name, "log_statements", "HQL_LOG_STATEMENTS")?.unwrap_or(false);
         let prepared_statement_cache_capacity =
@@ -204,17 +214,16 @@ impl NodeConfig {
             return Err(Error::Config("Incomplete Raft TLS config given".into()));
         }
 
-        #[allow(clippy::unnecessary_unwrap)]
-        let tls_raft = if tls_raft_key.is_some() && tls_raft_cert.is_some() {
-            Some(ServerTlsConfig::Specific(ServerTlsConfigCerts {
-                key: tls_raft_key.unwrap().into(),
-                cert: tls_raft_cert.unwrap().into(),
+        // A half pair already left the function above with a config error, so only the complete
+        // pair and the empty case are left to handle here.
+        let tls_raft = match (tls_raft_key, tls_raft_cert) {
+            (Some(key), Some(cert)) => Some(ServerTlsConfig::Specific(ServerTlsConfigCerts {
+                key: key.into(),
+                cert: cert.into(),
                 danger_tls_no_verify: tls_raft_danger_tls_no_verify,
-            }))
-        } else if tls_auto_certificates {
-            Some(ServerTlsConfig::TlsAutoCertificates)
-        } else {
-            None
+            })),
+            _ if tls_auto_certificates => Some(ServerTlsConfig::TlsAutoCertificates),
+            _ => None,
         };
 
         let tls_api_key = t_str(&mut map, t_name, "tls_api_key", "HQL_TLS_API_KEY")?;
@@ -231,17 +240,16 @@ impl NodeConfig {
             return Err(Error::Config("Incomplete API TLS config given".into()));
         }
 
-        #[allow(clippy::unnecessary_unwrap)]
-        let tls_api = if tls_api_key.is_some() && tls_api_cert.is_some() {
-            Some(ServerTlsConfig::Specific(ServerTlsConfigCerts {
-                key: tls_api_key.unwrap().into(),
-                cert: tls_api_cert.unwrap().into(),
+        // A half pair already left the function above with a config error, so only the complete
+        // pair and the empty case are left to handle here.
+        let tls_api = match (tls_api_key, tls_api_cert) {
+            (Some(key), Some(cert)) => Some(ServerTlsConfig::Specific(ServerTlsConfigCerts {
+                key: key.into(),
+                cert: cert.into(),
                 danger_tls_no_verify: tls_api_danger_tls_no_verify,
-            }))
-        } else if tls_auto_certificates {
-            Some(ServerTlsConfig::TlsAutoCertificates)
-        } else {
-            None
+            })),
+            _ if tls_auto_certificates => Some(ServerTlsConfig::TlsAutoCertificates),
+            _ => None,
         };
 
         let Some(secret_raft) =
@@ -280,22 +288,24 @@ impl NodeConfig {
             #[cfg(feature = "s3")]
             let backup_keep_for =
                 t_duration(&mut map, t_name, "backup_keep_for", "HQL_BACKUP_KEEP_FOR")?
-                    .unwrap_or(Duration::from_secs(30 * 24 * 3600));
+                    .unwrap_or(Duration::from_hours(30 * 24));
             let backup_keep_for_local = t_duration(
                 &mut map,
                 t_name,
                 "backup_keep_for_local",
                 "HQL_BACKUP_KEEP_FOR_LOCAL",
             )?
-            .unwrap_or(Duration::from_secs(3 * 24 * 3600));
+            .unwrap_or(Duration::from_hours(3 * 24));
             let backup_file_prefix = t_str(
                 &mut map,
                 t_name,
                 "backup_file_prefix",
                 "HQL_BACKUP_FILE_PREFIX",
             )?
-            .map(Cow::from)
-            .unwrap_or_else(|| crate::backup::DEFAULT_BACKUP_FILE_PREFIX.into());
+            .map_or_else(
+                || crate::backup::DEFAULT_BACKUP_FILE_PREFIX.into(),
+                Cow::from,
+            );
 
             let backup_config = crate::backup::BackupConfig::new(
                 backup_cron.as_ref(),
@@ -417,7 +427,7 @@ impl NodeConfig {
             }
         };
 
-        check_empty(map, table_name)?;
+        check_empty(&map, table_name)?;
 
         let mut config = NodeConfig {
             node_id,
@@ -466,7 +476,7 @@ impl NodeConfig {
     }
 }
 
-fn check_empty(table: toml::Table, tbl_name: &str) -> Result<(), Error> {
+fn check_empty(table: &toml::Table, tbl_name: &str) -> Result<(), Error> {
     if table.is_empty() {
         Ok(())
     } else {
@@ -563,13 +573,10 @@ fn t_duration(
             None => Err(Error::config(err_t(key, parent, "Duration"))),
             Some(d) => Ok(Some(d)),
         },
-        Value::Integer(i) => {
-            if i < 0 {
-                Err(Error::config(err_t(key, parent, "Duration")))
-            } else {
-                Ok(Some(Duration::from_secs(i as u64)))
-            }
-        }
+        Value::Integer(i) => match u64::try_from(i) {
+            Ok(secs) => Ok(Some(Duration::from_secs(secs))),
+            Err(_) => Err(Error::config(err_t(key, parent, "Duration"))),
+        },
         _ => Err(Error::config(err_t(key, parent, "Duration"))),
     }
 }
@@ -608,10 +615,10 @@ fn t_u64(
     env_var: &str,
 ) -> Result<Option<u64>, Error> {
     if let Ok(Some(v)) = t_i64(map, parent, key, env_var) {
-        if v < 0 {
-            return Err(Error::config(err_t(key, parent, "u64")));
+        match u64::try_from(v) {
+            Ok(v) => Ok(Some(v)),
+            Err(_) => Err(Error::config(err_t(key, parent, "u64"))),
         }
-        Ok(Some(v as u64))
     } else {
         Ok(None)
     }
@@ -624,10 +631,10 @@ pub(crate) fn t_u32(
     env_var: &str,
 ) -> Result<Option<u32>, Error> {
     if let Ok(Some(v)) = t_i64(map, parent, key, env_var) {
-        if v < 0 || v > u32::MAX as i64 {
-            return Err(Error::config(err_t(key, parent, "u32")));
+        match u32::try_from(v) {
+            Ok(v) => Ok(Some(v)),
+            Err(_) => Err(Error::config(err_t(key, parent, "u32"))),
         }
-        Ok(Some(v as u32))
     } else {
         Ok(None)
     }
@@ -639,10 +646,10 @@ pub(crate) fn t_u16(
     env_var: &str,
 ) -> Result<Option<u16>, Error> {
     if let Ok(Some(v)) = t_i64(map, parent, key, env_var) {
-        if v < 0 || v > u16::MAX as i64 {
-            return Err(Error::config(err_t(key, parent, "u16")));
+        match u16::try_from(v) {
+            Ok(v) => Ok(Some(v)),
+            Err(_) => Err(Error::config(err_t(key, parent, "u16"))),
         }
-        Ok(Some(v as u16))
     } else {
         Ok(None)
     }

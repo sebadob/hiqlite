@@ -13,12 +13,12 @@ use std::ops::RangeBounds;
 use tokio::sync::oneshot;
 use tracing::debug;
 
-#[inline(always)]
+#[inline]
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
     bincode_next::serde::encode_to_vec(value, bincode_next::config::legacy())
 }
 
-#[inline(always)]
+#[inline]
 pub fn deserialize<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
     bincode_next::serde::decode_from_slice::<T, _>(bytes, bincode_next::config::legacy())
         .map(|(res, _)| res)
@@ -89,7 +89,7 @@ where
 }
 
 #[tracing::instrument(skip_all)]
-#[inline(always)]
+#[inline]
 async fn try_get_log_entries<
     T: RaftTypeConfig,
     RB: RangeBounds<u64> + Clone + Debug + OptionalSend,
@@ -179,7 +179,6 @@ where
         debug!("Entering get_log_reader()");
 
         self.spawn_reader()
-            .expect("Error spawning additional LogStoreReader")
     }
 
     #[tracing::instrument(level = "debug", skip_all)]

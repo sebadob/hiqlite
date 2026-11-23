@@ -19,6 +19,11 @@ impl ShutdownHandle {
         Self { tx_write, tx_read }
     }
 
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`] when the WAL writer task is no longer reachable, and
+    /// [`Error::Generic`] when its shutdown acknowledgement is never sent.
     #[allow(unused)]
     pub async fn shutdown(&self) -> Result<(), Error> {
         let (tx_ack, ack) = oneshot::channel();

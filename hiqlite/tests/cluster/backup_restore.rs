@@ -50,10 +50,10 @@ pub async fn start_test_cluster_with_backup(
                 match &source {
                     #[cfg(feature = "s3")]
                     BackupSource::S3(obj) => {
-                        env::set_var("HQL_BACKUP_RESTORE", format!("s3:{}", obj));
+                        env::set_var("HQL_BACKUP_RESTORE", format!("s3:{obj}"));
                     }
                     BackupSource::File(path) => {
-                        env::set_var("HQL_BACKUP_RESTORE", format!("file:{}", path));
+                        env::set_var("HQL_BACKUP_RESTORE", format!("file:{path}"));
                     }
                 }
             }

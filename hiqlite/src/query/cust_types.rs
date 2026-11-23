@@ -75,10 +75,16 @@ where
 }
 
 impl<const S: char> VecText<S> {
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    ///
+    /// # Errors
+    ///
+    /// The [`Error::Error`] of a value whose `Display` cannot be written into the joined
+    /// string.
     pub fn new<T>(value: &[T]) -> Result<VecText<S>, Error>
     where
         T: Debug + Display,
@@ -99,6 +105,10 @@ impl<const S: char> VecText<S> {
         Ok(VecText(s))
     }
 
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Error`] for a segment that does not parse into `T`.
     #[inline]
     pub fn parse<T>(&self) -> Result<Vec<T>, Error>
     where
@@ -117,6 +127,10 @@ impl<const S: char> VecText<S> {
         Ok(res)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Error`] for a segment its `TryFrom<&str>` cannot convert into `T`.
     #[inline]
     pub fn try_into_vec<T>(self) -> Result<Vec<T>, Error>
     where
@@ -135,6 +149,11 @@ impl<const S: char> VecText<S> {
     }
 
     /// Will be `None` if the inner `String` is empty.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::try_into_vec`] answers for a segment it cannot convert. An empty
+    /// value is `Ok(None)`.
     #[inline]
     pub fn try_into_vec_opt<T>(self) -> Result<Option<Vec<T>>, Error>
     where
@@ -147,6 +166,7 @@ impl<const S: char> VecText<S> {
         }
     }
 
+    #[must_use]
     pub fn values(&self) -> Split<'_, char> {
         self.0.split(S)
     }

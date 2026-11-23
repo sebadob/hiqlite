@@ -13,7 +13,7 @@ how many logs or how much data they contain.
 
 Each WAL will have its own tiny header with some metadata information:
 
-- 7 bytes MAGIC_NO (`HQL_WAL`)
+- 7 bytes `MAGIC_NO` (`HQL_WAL`)
 - 1 byte WAL file version No
 - 8 bytes Log ID from
 - 8 bytes Log ID until

@@ -143,6 +143,7 @@ impl Error {
     }
 
     /// Checks if the inner wrapped error is a `ForwardToLeader` error
+    #[must_use]
     pub fn is_forward_to_leader(&self) -> Option<(Option<u64>, &Option<Node>)> {
         if let Self::ClientWriteErrorDb(err) = self
             && let Some(err) = err.api_error()
@@ -179,54 +180,48 @@ impl Error {
 
 impl IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
+        // One arm per HTTP status, the variants inside each arm sorted alphabetically. The
+        // ClientWrite pair is the only conditional: a forward-to-leader hint becomes a redirect.
         let status = match &self {
-            Error::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Error::Bincode(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::Cache(_) => StatusCode::BAD_REQUEST,
-            Error::Channel(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::CheckIsLeaderErrorDb(_) => StatusCode::CONFLICT,
-            Error::CheckIsLeaderErrorCache(_) => StatusCode::CONFLICT,
-            Error::ConstraintViolation(_) => StatusCode::BAD_REQUEST,
-            Error::Cryptr(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::LeaderChange(_) => StatusCode::CONFLICT,
-            Error::QueryParams(_) => StatusCode::BAD_REQUEST,
+            Error::ClientWriteErrorCache(_) | Error::ClientWriteErrorDb(_) => {
+                if self.is_forward_to_leader().is_some() {
+                    StatusCode::PERMANENT_REDIRECT
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            }
+            Error::BadRequest(_)
+            | Error::Cache(_)
+            | Error::Config(_)
+            | Error::ConstraintViolation(_)
+            | Error::Error(_)
+            | Error::InitializeErrorCache(_)
+            | Error::InitializeErrorDb(_)
+            | Error::PrepareStatement(_)
+            | Error::QueryParams(_)
+            | Error::Request(_)
+            | Error::S3(_)
+            | Error::Sqlite(_)
+            | Error::WebSocket(_) => StatusCode::BAD_REQUEST,
+            Error::CheckIsLeaderErrorCache(_)
+            | Error::CheckIsLeaderErrorDb(_)
+            | Error::LeaderChange(_) => StatusCode::CONFLICT,
+            Error::Bincode(_)
+            | Error::Channel(_)
+            | Error::Cryptr(_)
+            | Error::RaftErrorCache(_)
+            | Error::RaftErrorDb(_)
+            | Error::RaftErrorFatalCache(_)
+            | Error::RaftErrorFatalDb(_)
+            | Error::SnapshotErrorCache(_)
+            | Error::SnapshotErrorDb(_)
+            | Error::Transaction(_)
+            | Error::WAL(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::QueryReturnedNoRows(_) => StatusCode::NOT_FOUND,
-            Error::PrepareStatement(_) => StatusCode::BAD_REQUEST,
-            Error::ClientWriteErrorDb(_) => {
-                if self.is_forward_to_leader().is_some() {
-                    StatusCode::PERMANENT_REDIRECT
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                }
-            }
-            Error::ClientWriteErrorCache(_) => {
-                if self.is_forward_to_leader().is_some() {
-                    StatusCode::PERMANENT_REDIRECT
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                }
-            }
-            Error::Config(_) => StatusCode::BAD_REQUEST,
-            Error::Connect(_) => StatusCode::SERVICE_UNAVAILABLE,
-            Error::Error(_) => StatusCode::BAD_REQUEST,
-            Error::InitializeErrorDb(_) => StatusCode::BAD_REQUEST,
-            Error::InitializeErrorCache(_) => StatusCode::BAD_REQUEST,
-            Error::RaftErrorDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::RaftErrorCache(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::RaftErrorFatalDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::RaftErrorFatalCache(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
-            Error::Request(_) => StatusCode::BAD_REQUEST,
-            Error::S3(_) => StatusCode::BAD_REQUEST,
-            Error::SnapshotErrorDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::SnapshotErrorCache(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::Sqlite(_) => StatusCode::BAD_REQUEST,
             Error::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
-            Error::Token(_) => StatusCode::UNAUTHORIZED,
-            Error::Transaction(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
-            Error::WAL(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::WebSocket(_) => StatusCode::BAD_REQUEST,
+            Error::Connect(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Error::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
+            Error::Token(_) | Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         };
 
         (status, Json(self)).into_response()

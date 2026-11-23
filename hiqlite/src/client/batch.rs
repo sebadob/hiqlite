@@ -34,6 +34,15 @@ impl Client {
     /// The queries executed with this `.batch()` are **NOT PREPARED**!
     /// This means you **must validate and sanitize** the input manually.
     /// Executing unvalidated user input in a batch can open your app to SQL Injections!
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the DB request rate limit is exhausted, and the [`Error`] of
+    /// the batch write itself: a Raft write error like [`Error::ClientWriteErrorDb`],
+    /// [`Error::Error`] when the request cannot be handed to the leader's stream,
+    /// [`Error::Connect`] when its answer times out, and exactly one re-send after
+    /// [`Error::LeaderChange`]. A single statement that fails is the `Err` of its slot in the
+    /// returned `Vec`, not an error of this call.
     pub async fn batch<S>(&self, sql: S) -> Result<Vec<Result<usize, Error>>, Error>
     where
         S: Into<Cow<'static, str>>,

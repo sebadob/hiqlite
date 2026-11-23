@@ -40,6 +40,9 @@ where
 {
     type Rejection = Error;
 
+    // axum declares `FromRequestParts::from_request_parts` as `async`, so an impl has to keep
+    // `async`. Session extraction is header and cookie work only, so there is nothing to await.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn from_request_parts(
         parts: &mut request::Parts,
         _state: &S,
@@ -51,7 +54,7 @@ where
         //     .expect("AppState to be available");
 
         let headers = &parts.headers;
-        check_csrf(&parts.method, headers).await?;
+        check_csrf(&parts.method, headers)?;
 
         let jar = CookieJar::from_headers(headers);
         Session::try_from_jar(&jar)
@@ -67,7 +70,7 @@ impl Session {
 
     fn as_cookie(&self) -> Result<String, Error> {
         // TODO decide between dev and prod
-        let bytes = serialize_network(self);
+        let bytes = serialize_network(self)?;
         let enc = EncValue::encrypt(&bytes)?;
         let enc_bytes = enc.into_bytes().to_vec();
         let b64 = b64_encode(&enc_bytes);
@@ -85,10 +88,6 @@ impl Session {
         Ok(cookie_header)
     }
 
-    // async fn try_from_headers(headers: &HeaderMap, method: &Method) -> Result<Self, Error> {
-    //     check_csrf(&method, headers).await?;
-    //     let jar = CookieJar::from_headers(headers);
-    //     Ok(Session::try_from_jar(&jar)?)
     // }
 
     fn try_from_jar(jar: &CookieJar) -> Result<Self, Error> {
@@ -127,7 +126,7 @@ pub async fn set_session_verify(
     headers: &HeaderMap,
     password: String,
 ) -> Result<Response, Error> {
-    check_csrf(&method, headers).await?;
+    check_csrf(&method, headers)?;
     // Reject login attempts during the global cooldown before any password work.
     if let Some(pwd) = state.dashboard.password_dashboard.clone() {
         password::verify_password(password, pwd).await?;
@@ -140,7 +139,7 @@ pub async fn set_session_verify(
     }
 }
 
-async fn check_csrf(method: &Method, headers: &HeaderMap) -> Result<(), Error> {
+fn check_csrf(method: &Method, headers: &HeaderMap) -> Result<(), Error> {
     if let Some(site) = headers.get("sec-fetch-site") {
         let site = site.to_str().unwrap_or_default();
 

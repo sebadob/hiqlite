@@ -121,6 +121,11 @@ impl Client {
     /// If your client will be unable to reach all nodes, you can run the Hiqlite Server in proxy
     /// mode like mentioned in the [README](https://github.com/sebadob/hiqlite/blob/main/README.md).
     /// In this case, only provide the proxy's IP in the `nodes: Vec<String>`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] when `nodes` is empty: a remote client needs at least one address to
+    /// start its leader lookup from.
     #[allow(clippy::too_many_arguments)]
     pub async fn remote(
         nodes: Vec<String>,

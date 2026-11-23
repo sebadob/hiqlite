@@ -32,6 +32,10 @@ pub trait ExternalCodec: Sized {
 
     /// Decodes one value from the front of `input`, advancing it past the
     /// consumed bytes.
+    ///
+    /// # Errors
+    ///
+    /// A codec failure string for an input that does not hold a complete encoded value.
     fn decode_from(input: &mut &[u8]) -> Result<Self, String>;
 
     /// Encodes the value into a new buffer.
@@ -42,6 +46,11 @@ pub trait ExternalCodec: Sized {
     }
 
     /// Decodes a value that must consume `bytes` exactly.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::decode_from`] answers, plus a codec failure string when `bytes` has
+    /// trailing bytes left over.
     fn from_external_bytes(mut bytes: &[u8]) -> Result<Self, String> {
         let value = Self::decode_from(&mut bytes)?;
         if !bytes.is_empty() {
@@ -234,13 +243,13 @@ mod tests {
         bincode::serde::encode_to_vec(value, bincode::config::legacy()).unwrap()
     }
 
-    fn assert_compat<T>(value: T)
+    fn assert_compat<T>(value: &T)
     where
         T: ExternalCodec + Serialize + PartialEq + std::fmt::Debug,
     {
         let bytes = value.to_external_bytes();
-        assert_eq!(bytes, legacy(&value), "legacy bincode bytes differ");
-        assert_eq!(T::from_external_bytes(&bytes).unwrap(), value);
+        assert_eq!(bytes, legacy(value), "legacy bincode bytes differ");
+        assert_eq!(T::from_external_bytes(&bytes).unwrap(), *value);
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,21 +288,21 @@ mod tests {
 
     #[test]
     fn matches_legacy_bincode() {
-        assert_compat(());
-        assert_compat(u64::MAX);
-        assert_compat(-7i32);
-        assert_compat(true);
-        assert_compat((3u64, 9u64, 27u64));
-        assert_compat(Some(5u16));
-        assert_compat(None::<u16>);
-        assert_compat("node-a".to_string());
-        assert_compat(vec![1u8, 2, 3]);
-        assert_compat(Coordinate {
+        assert_compat(&());
+        assert_compat(&u64::MAX);
+        assert_compat(&-7i32);
+        assert_compat(&true);
+        assert_compat(&(3u64, 9u64, 27u64));
+        assert_compat(&Some(5u16));
+        assert_compat(&None::<u16>);
+        assert_compat(&"node-a".to_string());
+        assert_compat(&vec![1u8, 2, 3]);
+        assert_compat(&Coordinate {
             term: 7,
             node_id: 3,
             index: 123_456,
         });
-        assert_compat(Mixed {
+        assert_compat(&Mixed {
             epoch: 2,
             leader: Some(11),
             tag: "workspace".into(),

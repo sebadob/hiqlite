@@ -26,7 +26,7 @@ impl HandshakeSecret {
         Ok((challenge, Challenge::WIRE_SIZE))
     }
 
-    /// Server step 2: verify the client's ChallengeResponse and write the ResponseFinal into
+    /// Server step 2: verify the client's `ChallengeResponse` and write the `ResponseFinal` into
     /// `wire`. Returns the client's node id, plus the payload length.
     pub(crate) fn server_finish(
         input: &[u8],
@@ -41,7 +41,7 @@ impl HandshakeSecret {
     }
 
     /// Client step 1: parse the server's Challenge (magic checked inside) and answer with the
-    /// ChallengeResponse written into `wire`. Returns the state needed to verify the server's
+    /// `ChallengeResponse` written into `wire`. Returns the state needed to verify the server's
     /// final answer, plus the payload length.
     pub(crate) fn client_answer(
         input: &[u8],
@@ -56,7 +56,7 @@ impl HandshakeSecret {
         Ok((cr, ChallengeResponse::WIRE_SIZE))
     }
 
-    /// Client step 2: verify the server's ResponseFinal.
+    /// Client step 2: verify the server's `ResponseFinal`.
     pub(crate) fn client_finish(
         input: &[u8],
         challenge_response: &ChallengeResponse,
@@ -190,7 +190,7 @@ mod tests {
         }
     }
 
-    /// The secret_id gate: a peer without the secret is refused before any secret-derived byte,
+    /// The `secret_id` gate: a peer without the secret is refused before any secret-derived byte,
     /// and the final verification of a wrong secret fails on both sides.
     #[test]
     fn wrong_secret_is_refused() {

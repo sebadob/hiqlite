@@ -214,18 +214,18 @@ impl ResponseFinal {
             .finalize()
             .to_vec();
 
-        if !constant_time_eq_32(
+        if constant_time_eq_32(
             <&[u8; HASH_LEN]>::try_from(fin).unwrap(),
             <&[u8; HASH_LEN]>::try_from(verify.as_slice()).unwrap(),
         ) {
-            Err(Error::BadRequest("invalid challenge response".into()))
-        } else {
             Ok(())
+        } else {
+            Err(Error::BadRequest("invalid challenge response".into()))
         }
     }
 }
 
-#[inline(always)]
+#[inline]
 fn secret_id(secret: &[u8]) -> [u8; SECRET_ID_LEN] {
     let hash = Sha256::digest(secret);
     let mut id = [0u8; SECRET_ID_LEN];

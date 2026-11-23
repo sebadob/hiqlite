@@ -36,18 +36,15 @@ pub struct DashboardState {
 
 impl DashboardState {
     pub fn from_env() -> Self {
-        match env::var("HQL_PASSWORD_DASHBOARD") {
-            Ok(b64) => {
-                let hash = String::from_utf8(b64_decode(&b64).unwrap()).unwrap();
-                Self {
-                    password_dashboard: Some(hash),
-                }
+        if let Ok(b64) = env::var("HQL_PASSWORD_DASHBOARD") {
+            let hash = String::from_utf8(b64_decode(&b64).unwrap()).unwrap();
+            Self {
+                password_dashboard: Some(hash),
             }
-            Err(_) => {
-                warn!("HQL_PASSWORD_DASHBOARD has not been set and the dashboard will be disabled");
-                Self {
-                    password_dashboard: None,
-                }
+        } else {
+            warn!("HQL_PASSWORD_DASHBOARD has not been set and the dashboard will be disabled");
+            Self {
+                password_dashboard: None,
             }
         }
     }

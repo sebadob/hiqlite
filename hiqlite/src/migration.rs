@@ -57,11 +57,8 @@ impl Migrations {
             let hash = hex::encode(data.metadata.sha256_hash());
             let content = data.data.to_vec();
 
-            let stripped = match file_name.strip_suffix(".sql") {
-                Some(s) => s,
-                None => {
-                    return Err("Migration scripts must always end with .sql".into());
-                }
+            let Some(stripped) = file_name.strip_suffix(".sql") else {
+                return Err("Migration scripts must always end with .sql".into());
             };
             // was valid above already
             let (_, name) = stripped.split_once('_').unwrap();
@@ -80,13 +77,12 @@ impl Migrations {
                     return Err(
                         format!("Migration index has a duplicate id {}", migration.id).into(),
                     );
-                } else {
-                    return Err(format!(
-                        "Migration index has a gap: {} does not follow {}",
-                        migration.id, last_id,
-                    )
-                    .into());
                 }
+                return Err(format!(
+                    "Migration index has a gap: {} does not follow {}",
+                    migration.id, last_id,
+                )
+                .into());
             }
 
             res.push(migration);
@@ -120,7 +116,8 @@ pub struct AppliedMigration {
 impl From<&mut crate::Row<'_>> for AppliedMigration {
     fn from(row: &mut crate::Row<'_>) -> Self {
         Self {
-            id: row.get::<i64>("id") as u32,
+            // Ids are written by the migration writer itself, always a positive counter.
+            id: row.get::<i64>("id").cast_unsigned() as u32,
             name: row.get("name"),
             ts: row.get("ts"),
             hash: row.get("hash"),

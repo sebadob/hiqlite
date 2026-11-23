@@ -28,7 +28,17 @@ impl<T> LogStore<T>
 where
     T: RaftTypeConfig,
 {
-    /// Start the LogStore
+    /// Start the `LogStore`
+    ///
+    /// # Errors
+    ///
+    /// Any [`Error`] from the log directory setup: [`Error::IO`] for the directory itself, its
+    /// lock file and the meta file, [`Error::Decode`] and [`Error::Integrity`] for a meta file
+    /// that cannot be decoded, and [`Error::Generic`] when the blocking setup task fails.
+    ///
+    /// # Panics
+    ///
+    /// If `base_path` already holds a lock file that is locked by another process.
     pub async fn start(base_path: String, sync: LogSync, wal_size: u32) -> Result<Self, Error> {
         let slf = task::spawn_blocking(move || {
             fs::create_dir_all(&base_path)?;
@@ -62,14 +72,14 @@ where
                 lock_exists,
                 meta.clone(),
             )?;
-            let reader = reader::spawn(meta.clone(), wal.clone())?;
+            let reader = reader::spawn(meta.clone(), wal.clone());
 
             Ok::<Self, Error>(Self {
                 meta,
                 wal,
                 writer,
                 reader,
-                _marker: Default::default(),
+                _marker: PhantomData,
             })
         })
         .await??;
@@ -79,6 +89,16 @@ where
 
     /// Gives you a raw handle to the writer channel to perform manual migrations. Does not start
     /// a log store and does not do anything on its own.
+    ///
+    /// # Errors
+    ///
+    /// Any [`Error`] from the log directory setup: [`Error::IO`] for the directory itself, its
+    /// lock file and the meta file, [`Error::Decode`] and [`Error::Integrity`] for a meta file
+    /// that cannot be decoded, and [`Error::Generic`] when the blocking setup task fails.
+    ///
+    /// # Panics
+    ///
+    /// If `base_path` already holds a lock file that is locked by another process.
     #[cfg(feature = "migration")]
     pub async fn start_writer_migration(
         base_path: String,
@@ -110,10 +130,16 @@ where
         .await?
     }
 
+    #[must_use]
     pub fn shutdown_handle(&self) -> ShutdownHandle {
         ShutdownHandle::new(self.writer.clone(), self.reader.clone())
     }
 
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`] when the WAL writer task is no longer reachable, and
+    /// [`Error::Generic`] when its shutdown acknowledgement is never sent.
     pub async fn stop(self) -> Result<(), Error> {
         let (tx_ack, ack) = oneshot::channel();
         self.writer
@@ -126,13 +152,13 @@ where
         Ok(())
     }
 
-    pub(crate) fn spawn_reader(&self) -> Result<LogStoreReader<T>, Error> {
-        let tx = reader::spawn(self.meta.clone(), self.wal.clone())?;
+    pub(crate) fn spawn_reader(&self) -> LogStoreReader<T> {
+        let tx = reader::spawn(self.meta.clone(), self.wal.clone());
 
-        Ok(LogStoreReader {
+        LogStoreReader {
             tx,
             _marker: self._marker,
-        })
+        }
     }
 }
 

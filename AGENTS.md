@@ -1,6 +1,6 @@
 # Hiqlite — Code Map for Agents & Contributors
 
-> This file is an **index, not documentation**: it tells you *where things are* so you can read the code directly.
+> This file is an **index, not documentation**: it tells you _where things are_ so you can read the code directly.
 > Maintenance rule: if you do any major changes to the code layout, check if mentions in this file need an update before
 > git commit. Markdown files should always wrap lines at 100 characters.
 

@@ -1,52 +1,179 @@
 use crate::Error;
 use bincode_next::{Decode, Encode};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+use rusqlite::types::FromSql;
+use rusqlite::{Error as SqliteError, Row as SqliteRow, Statement};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::sync::Arc;
 use tracing::error;
+
+/// A column name -> index map of a prepared statement, built once per query.
+///
+/// rusqlite resolves a column name with a linear scan that asks SQLite for the name of every
+/// candidate column, so a `Row::get("name")` costs one C call per column of the result set, for
+/// every single row. A struct with N fields over a result set with N columns therefore does
+/// N * (N + 1) / 2 of those calls per row.  Building the map once per query turns every later
+/// lookup into a hash probe over names we already fetched.
+#[derive(Debug)]
+pub struct ColIdx {
+    map: FxHashMap<String, u16>,
+}
+
+impl ColIdx {
+    pub(crate) fn from_stmt(stmt: &Statement) -> Self {
+        let names = stmt.column_names();
+        let mut map = FxHashMap::default();
+        // The result set tells us its column count upfront, so the map is reserved once and never
+        // has to grow while we fill it.
+        map.reserve(names.len());
+        // `entry().or_insert()` keeps the lowest index, so a query with duplicate column names,
+        // like a join over two tables sharing one, maps to the first column exactly like
+        // rusqlite's own scan does.
+        for (idx, name) in names.enumerate() {
+            map.entry(name.to_string()).or_insert(idx as u16);
+        }
+        Self { map }
+    }
+
+    /// The same index over the column names of a result set that was read into owned rows.
+    pub(crate) fn from_names(columns: &[String]) -> Self {
+        let mut map = FxHashMap::default();
+        map.reserve(columns.len());
+        for (idx, name) in columns.iter().enumerate() {
+            map.entry(name.clone()).or_insert(idx as u16);
+        }
+        Self { map }
+    }
+
+    /// The index a column name resolves to, an exact match like the owned rows always did.
+    fn index(&self, idx: &str) -> Option<usize> {
+        self.map.get(idx).map(|i| usize::from(*i))
+    }
+
+    /// Reads a column of a borrowed row, resolving its name through the map.
+    ///
+    /// A name that is not in the map goes through rusqlite's own resolution, which matches
+    /// column names case-insensitively, so that behaviour is preserved.
+    fn borrowed_get<T: FromSql>(row: &SqliteRow, cols: &Self, idx: &str) -> Result<T, SqliteError> {
+        match cols.map.get(idx) {
+            Some(i) => row.get(*i as usize),
+            None => row.get(idx),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum Row<'a> {
-    Borrowed(&'a rusqlite::Row<'a>),
-    Owned(RowOwned),
+    /// A row borrowed from a local statement, with the column index of that statement.
+    Borrowed(&'a SqliteRow<'a>, &'a ColIdx),
+    /// A row that was mapped into owned values to travel through the network layer, together with
+    /// the column index of the result set it is part of.
+    Owned(RowOwned, Arc<ColIdx>),
 }
 
 impl Row<'_> {
+    ///
+    /// # Panics
+    ///
+    /// If the column `idx` is not on the row, or its value cannot be converted into `T`.
     pub fn get<T>(&mut self, idx: &str) -> T
     where
         T: TryFrom<ValueOwned, Error = crate::Error> + rusqlite::types::FromSql,
     {
         match self {
-            Row::Borrowed(b) => {
-                let res = b.get(idx);
+            Row::Borrowed(b, cols) => {
+                let res = ColIdx::borrowed_get(b, cols, idx);
                 if res.is_err() {
                     error!("Cannot convert column index '{idx}' to requested type");
                 }
                 res.unwrap()
             }
-            Row::Owned(o) => o.try_get(idx).unwrap_or_else(|err| {
+            Row::Owned(o, cols) => o.try_get(cols.as_ref(), idx).unwrap_or_else(|err| {
                 panic!("Cannot convert column index '{idx}' to requested type: {err:?}")
             }),
         }
     }
 
+    ///
+    /// # Errors
+    ///
+    /// The [`Error`] of a column that is not on the row, or whose value cannot be converted
+    /// into `T`; on a borrowed row that is the [`Error::Sqlite`] of `rusqlite`.
     pub fn try_get<T>(&mut self, idx: &str) -> Result<T, Error>
     where
         T: TryFrom<ValueOwned, Error = crate::Error> + rusqlite::types::FromSql,
     {
         match self {
-            Self::Borrowed(r) => r.get(idx).map_err(Error::from),
-            Self::Owned(o) => o.try_get(idx),
+            Self::Borrowed(r, cols) => ColIdx::borrowed_get(r, cols, idx).map_err(Error::from),
+            Self::Owned(o, cols) => o.try_get(cols.as_ref(), idx),
         }
     }
 }
 
+/// The values of one row, in the column order of the result set it was read from.  The names of
+/// those columns are not repeated per row; they are the `columns` of the [`RowsOwned`] this row
+/// belongs to.
+///
+/// Reading a value takes it out of its slot, so a column can be read exactly once, like the
+/// per-row name scan did before.  Slots stay in place, which is what keeps the shared column
+/// index of the result set valid for every lookup of the row.
 #[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct RowOwned {
-    pub(crate) columns: Vec<ColumnOwned>,
+    pub(crate) values: Vec<Option<ValueOwned>>,
+}
+
+/// A result set that travels through the network, or into the dashboard: the column names of the
+/// query once, and the values of every row in that same order.
+#[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
+pub struct RowsOwned {
+    pub(crate) columns: Vec<String>,
+    pub(crate) rows: Vec<RowOwned>,
+}
+
+/// [`RowsOwned`] for statements that report every row as its own `Result`, like
+/// `execute_returning`, where one failing row sits next to the rows that succeeded.
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct RowsOwnedChecked {
+    pub(crate) columns: Vec<String>,
+    pub(crate) rows: Vec<Result<RowOwned, Error>>,
+}
+
+impl RowsOwned {
+    pub(crate) fn new(columns: Vec<String>, rows: Vec<RowOwned>) -> Self {
+        Self { columns, rows }
+    }
+
+    /// Split into the shared column index and the rows, the shape [`Row::Owned`] is built from.
+    pub(crate) fn into_parts(self) -> (Arc<ColIdx>, Vec<RowOwned>) {
+        let cols = self.col_idx();
+        (cols, self.rows)
+    }
+
+    fn col_idx(&self) -> Arc<ColIdx> {
+        Arc::new(ColIdx::from_names(&self.columns))
+    }
+}
+
+impl RowsOwnedChecked {
+    pub(crate) fn new(columns: Vec<String>, rows: Vec<Result<RowOwned, Error>>) -> Self {
+        Self { columns, rows }
+    }
+
+    /// Split into the shared column index and the rows, keeping each row's `Result`.
+    pub(crate) fn into_parts(self) -> (Arc<ColIdx>, Vec<Result<RowOwned, Error>>) {
+        let cols = self.col_idx();
+        (cols, self.rows)
+    }
+
+    fn col_idx(&self) -> Arc<ColIdx> {
+        Arc::new(ColIdx::from_names(&self.columns))
+    }
 }
 
 impl RowOwned {
-    #[inline(always)]
+    #[inline]
     pub(crate) fn from_row_column(row: &rusqlite::Row, columns: &[ColumnInfo]) -> Self {
         let mut cols = Vec::with_capacity(columns.len());
 
@@ -110,38 +237,27 @@ impl RowOwned {
                 },
             };
 
-            cols.push(ColumnOwned {
-                name: info.name.clone(),
-                value,
-            })
+            cols.push(Some(value));
         }
 
-        Self { columns: cols }
+        Self { values: cols }
     }
 }
 
 impl RowOwned {
-    /// # Panics
-    /// If the type cannot be converted correctly
-    pub fn get<T: TryFrom<ValueOwned, Error = crate::Error>>(&mut self, idx: &str) -> T {
-        self.try_get(idx).unwrap()
-    }
-
-    /// TODO decide which version to use - this is with remove -> benchmark them!
-    pub fn try_get<T: TryFrom<ValueOwned, Error = crate::Error>>(
+    pub(crate) fn try_get<T: TryFrom<ValueOwned, Error = crate::Error>>(
         &mut self,
+        cols: &ColIdx,
         idx: &str,
     ) -> Result<T, Error> {
-        for i in 0..self.columns.len() {
-            if self.columns[i].name == idx {
-                // swap_remove is fine because we don't allow access by raw integer index
-                return T::try_from(self.columns.swap_remove(i).value);
-            }
+        let not_found = || Error::QueryParams(format!("column '{idx}' not found").into());
+        match cols.index(idx).and_then(|i| self.values.get_mut(i)) {
+            Some(slot) => match slot.take() {
+                Some(value) => T::try_from(value),
+                None => Err(not_found()),
+            },
+            None => Err(not_found()),
         }
-
-        Err(Error::QueryParams(
-            format!("column '{idx}' not found").into(),
-        ))
     }
 }
 
@@ -149,6 +265,23 @@ impl RowOwned {
 pub struct ColumnInfo {
     pub name: String,
     pub typ: ColumnType,
+}
+
+impl ColumnInfo {
+    /// The mapping information of every column of a prepared statement, in result-set order.
+    #[inline]
+    pub(crate) fn mapping_cols_from_stmt<'a>(
+        columns: impl ExactSizeIterator<Item = rusqlite::Column<'a>>,
+    ) -> Vec<Self> {
+        let mut cols = Vec::with_capacity(columns.len());
+        for col in columns {
+            cols.push(Self {
+                name: col.name().to_string(),
+                typ: ColumnType::from_decl_type(col.decl_type()),
+            });
+        }
+        cols
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,7 +294,7 @@ pub enum ColumnType {
 }
 
 impl ColumnType {
-    #[inline(always)]
+    #[inline]
     fn from_decl_type(typ: Option<&str>) -> Self {
         // we will always match as few character as possible for improved speed
         if let Some(t) = typ {
@@ -236,31 +369,6 @@ impl ColumnType {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
-pub struct ColumnOwned {
-    // TODO find a way to include all the column names only once at the very top level and
-    // somehow get a reference of them into a `From<_>` impl, probably with a new Trait.
-    pub(crate) name: String,
-    pub(crate) value: ValueOwned,
-}
-
-impl ColumnOwned {
-    #[inline(always)]
-    pub(crate) fn mapping_cols_from_stmt<'a>(
-        columns: impl ExactSizeIterator<Item = rusqlite::Column<'a>>,
-        params_len: usize,
-    ) -> Result<Vec<ColumnInfo>, Error> {
-        let mut cols = Vec::with_capacity(params_len);
-        for col in columns {
-            cols.push(ColumnInfo {
-                name: col.name().to_string(),
-                typ: ColumnType::from_decl_type(col.decl_type()),
-            });
-        }
-        Ok(cols)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub enum ValueOwned {
     Null,
@@ -305,6 +413,12 @@ impl TryFrom<ValueOwned> for Option<i64> {
 }
 
 #[cfg(any(feature = "cast_ints", feature = "cast_ints_unchecked"))]
+#[allow(clippy::cast_sign_loss)]
+// Both `cast_ints` features exist to downcast the DB's `i64` into a smaller integer on purpose:
+// the unchecked one wraps exactly like `as`, the checked one clamps to the target's bounds.
+// Clippy cannot see that clamp, so the sign loss it warns about is exactly what these features
+// ask for. The allow sits on the module because the casts come out of a macro, where an allow on
+// the generated function does not reach them.
 mod cast_ints {
     impl TryFrom<super::ValueOwned> for u64 {
         type Error = crate::Error;
@@ -312,7 +426,8 @@ mod cast_ints {
         #[inline]
         fn try_from(value: super::ValueOwned) -> Result<Self, Self::Error> {
             let i = i64::try_from(value)?;
-            if i < 0 { Ok(0) } else { Ok(i as u64) }
+            // `cast_ints` clamps: anything below zero lands on 0.
+            Ok(i.max(0).cast_unsigned())
         }
     }
 
@@ -322,7 +437,7 @@ mod cast_ints {
         #[inline]
         fn try_from(value: super::ValueOwned) -> Result<Option<u64>, Self::Error> {
             let i: Option<i64> = value.try_into()?;
-            Ok(i.map(|i| i as u64))
+            Ok(i.map(|i| i.cast_unsigned()))
         }
     }
 
@@ -411,7 +526,9 @@ impl TryFrom<ValueOwned> for bool {
     fn try_from(value: ValueOwned) -> Result<Self, Self::Error> {
         match value {
             ValueOwned::Integer(i) => Ok(i == 1),
-            ValueOwned::Real(i) => Ok(i == 1.0),
+            // SQLite stores a boolean as an exact 1.0, and only that: a margin of error would
+            // make near-values true, which is exactly what a stored flag must never do.
+            ValueOwned::Real(i) => Ok(i.total_cmp(&1.0) == Ordering::Equal),
             ValueOwned::Text(s) => Ok(s.as_str() == "true"),
             _ => Err(Error::Sqlite("Cannot convert into bool".into())),
         }
@@ -737,14 +854,11 @@ mod try_from_row_tests {
     }
 
     fn make_row(cols: &[(&str, ValueOwned)]) -> Row<'static> {
-        let columns = cols
-            .iter()
-            .map(|(name, value)| ColumnOwned {
-                name: (*name).to_string(),
-                value: value.clone(),
-            })
-            .collect();
-        Row::Owned(RowOwned { columns })
+        let names: Vec<String> = cols.iter().map(|(name, _)| (*name).to_string()).collect();
+        let values: Vec<Option<ValueOwned>> =
+            cols.iter().map(|(_, value)| Some(value.clone())).collect();
+        let cols = Arc::new(ColIdx::from_names(&names));
+        Row::Owned(RowOwned { values }, cols)
     }
 
     // Pin the target type so `TryFrom` resolves unambiguously (both `Inner` and `Outer`
@@ -801,5 +915,66 @@ mod try_from_row_tests {
             matches!(err, Error::Sqlite(_)),
             "expected Sqlite error: {err:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod owned_row_tests {
+    use super::*;
+
+    fn owned(values: Vec<Option<ValueOwned>>, names: &[&str]) -> (Row<'static>, Arc<ColIdx>) {
+        let cols = Arc::new(ColIdx::from_names(
+            &names
+                .iter()
+                .map(|n| (*n).to_string())
+                .collect::<Vec<String>>(),
+        ));
+        (Row::Owned(RowOwned { values }, cols.clone()), cols)
+    }
+
+    #[test]
+    fn a_column_can_only_be_read_once() {
+        let (mut row, _) = owned(
+            vec![
+                Some(ValueOwned::Integer(1)),
+                Some(ValueOwned::Integer(2)),
+                Some(ValueOwned::Integer(3)),
+            ],
+            &["a", "b", "c"],
+        );
+        assert_eq!(row.try_get::<i64>("a").unwrap(), 1);
+        assert!(
+            matches!(row.try_get::<i64>("a"), Err(Error::QueryParams(_))),
+            "a second read of the same column must be an error"
+        );
+        // a taken slot never touches the other columns of the row
+        assert_eq!(row.try_get::<i64>("c").unwrap(), 3);
+        assert_eq!(row.try_get::<i64>("b").unwrap(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "not found")]
+    fn get_after_a_taken_slot_panics() {
+        let (mut row, _) = owned(vec![Some(ValueOwned::Integer(1))], &["a"]);
+        assert_eq!(row.get::<i64>("a"), 1);
+        let _ = row.get::<i64>("a");
+    }
+
+    #[test]
+    fn a_name_that_is_not_on_the_row_is_an_error() {
+        let (mut row, _) = owned(vec![Some(ValueOwned::Integer(1))], &["a"]);
+        assert!(
+            matches!(row.try_get::<i64>("missing"), Err(Error::QueryParams(_))),
+            "an unknown column must be an error"
+        );
+    }
+
+    #[test]
+    fn duplicate_names_map_to_the_first_column() {
+        // rusqlite's own scan returns the first match, the index has to do the same.
+        let cols = ColIdx::from_names(&["id".to_string(), "ts".to_string(), "id".to_string()]);
+        assert_eq!(cols.index("id"), Some(0));
+        assert_eq!(cols.index("ts"), Some(1));
+        assert_eq!(cols.index("other"), None);
     }
 }

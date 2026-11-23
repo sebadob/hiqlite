@@ -37,7 +37,7 @@ pub fn impl_cache_variants(input: DeriveInput) -> syn::Result<TokenStream> {
 
     Ok(quote! {
         impl ::hiqlite::CacheVariants for #name {
-            #[inline(always)]
+            #[inline]
             fn hiqlite_cache_index(&self) -> usize {
                 match self {
                     #(#index_matches)*

@@ -32,6 +32,15 @@ impl Client {
     ///     assert_eq!(rows_affected, 1);
     /// }
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RateLimit`] when the DB request rate limit is exhausted, and the [`Error`] of
+    /// the transaction write itself: a Raft write error like [`Error::ClientWriteErrorDb`],
+    /// [`Error::Transaction`] for a transaction the state machine rolls back, [`Error::Error`]
+    /// when the request cannot be handed to the leader's stream, [`Error::Connect`] when its
+    /// answer times out, and exactly one re-send after [`Error::LeaderChange`]. A statement
+    /// that fails is the `Err` of its slot in the returned `Vec`.
     pub async fn txn<C, Q>(&self, sql: Q) -> Result<Vec<Result<usize, Error>>, Error>
     where
         Q: IntoIterator<Item = (C, Params)>,
@@ -62,7 +71,7 @@ impl Client {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub(crate) async fn txn_execute(
         &self,
         queries: Vec<Query>,

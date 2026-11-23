@@ -70,7 +70,7 @@ check:
     clear
     cargo update
     cargo fmt --check
-    cargo clippy -- -D warnings
+    cargo clippy
     cargo minimal-versions check -p hiqlite --features server
     cargo minimal-versions check -p hiqlite --no-default-features --features external-state-machine
     cargo minimal-versions check -p hiqlite-wal
@@ -85,39 +85,39 @@ clippy:
     clear
 
     # base features, each standalone: sqlite here, cache and external-state-machine below
-    cargo clippy --no-default-features --features sqlite -- -D warnings
+    cargo clippy --no-default-features --features sqlite
 
-    cargo clippy --no-default-features --features sqlite,cast_ints -- -D warnings
-    cargo clippy --no-default-features --features sqlite,cast_ints_unchecked -- -D warnings
+    cargo clippy --no-default-features --features sqlite,cast_ints
+    cargo clippy --no-default-features --features sqlite,cast_ints_unchecked
     # auto-heal needs one of the base features - cover both
-    cargo clippy --no-default-features --features cache,auto-heal -- -D warnings
-    cargo clippy --no-default-features --features sqlite,auto-heal -- -D warnings
+    cargo clippy --no-default-features --features cache,auto-heal
+    cargo clippy --no-default-features --features sqlite,auto-heal
     # backup / s3 should only apply to sqlite
-    cargo clippy --no-default-features --features backup -- -D warnings
-    cargo clippy --no-default-features --features sqlite,backup -- -D warnings
-    cargo clippy --no-default-features --features sqlite,auto-heal,backup -- -D warnings
+    cargo clippy --no-default-features --features backup
+    cargo clippy --no-default-features --features sqlite,backup
+    cargo clippy --no-default-features --features sqlite,auto-heal,backup
 
-    cargo clippy --no-default-features --features cache -- -D warnings
-    cargo clippy --no-default-features --features cache,toml -- -D warnings
-    cargo clippy --no-default-features --features in-memory-snapshots -- -D warnings
-    cargo clippy --no-default-features --features counters -- -D warnings
-    cargo clippy --no-default-features --features dlock -- -D warnings
-    cargo clippy --no-default-features --features listen_notify -- -D warnings
-    cargo clippy --no-default-features --features sqlite,cache,webpki-roots -- -D warnings
+    cargo clippy --no-default-features --features cache
+    cargo clippy --no-default-features --features cache,toml
+    cargo clippy --no-default-features --features in-memory-snapshots
+    cargo clippy --no-default-features --features counters
+    cargo clippy --no-default-features --features dlock
+    cargo clippy --no-default-features --features listen_notify
+    cargo clippy --no-default-features --features sqlite,cache,webpki-roots
 
-    cargo clippy --no-default-features --features dashboard -- -D warnings
+    cargo clippy --no-default-features --features dashboard
     # shutdown-handle needs one of the base features - cover both
-    cargo clippy --no-default-features --features cache,shutdown-handle -- -D warnings
-    cargo clippy --no-default-features --features sqlite,shutdown-handle -- -D warnings
+    cargo clippy --no-default-features --features cache,shutdown-handle
+    cargo clippy --no-default-features --features sqlite,shutdown-handle
 
     # external-state-machine must build standalone without pulling in the
     # internal `__cluster` boundary, and must not break any regular combination
-    cargo clippy --no-default-features --features external-state-machine -- -D warnings
-    cargo clippy --no-default-features --features sqlite,external-state-machine -- -D warnings
-    cargo clippy --no-default-features --features full,external-state-machine -- -D warnings
-    cargo clippy --features external-state-machine -- -D warnings
+    cargo clippy --no-default-features --features external-state-machine
+    cargo clippy --no-default-features --features sqlite,external-state-machine
+    cargo clippy --no-default-features --features full,external-state-machine
+    cargo clippy --features external-state-machine
 
-    cargo clippy --no-default-features --features server -- -D warnings
+    cargo clippy --no-default-features --features server
 
 clippy-examples:
     #!/usr/bin/env bash
@@ -132,9 +132,23 @@ clippy-examples:
     done
     cd ..
 
-# build and open the docs
+# build and open the docs - the same feature set docs.rs uses (see [package.metadata.docs.rs])
 docs:
-    cargo +nightly doc --all-features --no-deps --open
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    clear
+
+    # `doc_cfg` is a nightly feature, so this crate documents itself with nightly only.
+    # `--all-features` is not an option: `cast_ints` and `cast_ints_unchecked` exclude each other.
+    cargo +nightly doc --no-deps --open --features full,external-state-machine
+
+# builds the docs and fails on any rustdoc warning: broken links, links to private items, ...
+docs-check:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    clear
+
+    RUSTDOCFLAGS="-D warnings" cargo +nightly doc --no-deps --features full,external-state-machine
 
 # runs the full set of tests
 test test="":
@@ -238,6 +252,7 @@ verify:
     just check
     just clippy
     just clippy-examples
+    just docs-check
     just test
     just msrv-verify
 

@@ -9,7 +9,6 @@ use crate::store::state_machine::sqlite::state_machine::Query;
 use crate::{Client, Error};
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use openraft::raft::ReadPolicy;
-use std::ops::Deref;
 use tokio::task;
 use tracing::{debug, error};
 
@@ -25,7 +24,7 @@ pub async fn handle_socket(
         ws.write_frame(Frame::close(1000, b"Invalid Handshake"))
             .await?;
         return Ok(());
-    };
+    }
 
     let (tx_write, rx_write) = flume::bounded::<WsWriteMsg>(1);
 
@@ -112,7 +111,7 @@ pub async fn handle_socket(
                 break;
             }
             OpCode::Binary => {
-                let bytes = frame.payload.deref();
+                let bytes = &*frame.payload;
                 match deserialize::<ApiStreamRequest>(bytes) {
                     Ok(req) => req,
                     Err(err) => {

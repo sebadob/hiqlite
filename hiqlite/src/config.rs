@@ -63,6 +63,10 @@ pub type EncKeysArg = Option<()>;
 /// network, you might want to tune the `RaftConfig`. However, you should never adjust the
 /// `max_in_snapshot_log_to_keep`, because this will play a crucial role if you need to restore
 /// from a backup in case of disaster recovery.
+// The four flags are the flat `[hiqlite]` TOML keys 1:1 - `log_statements`, `cache_storage_disk`,
+// `insecure_cookie`, `learner_only` - and each is read on its own path. Grouping them into enums
+// would move those keys and break existing config files, so the flat shape stays.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub struct NodeConfig {
     /// The `node_id` defines which entry from the `nodes` is "this node"
@@ -248,11 +252,11 @@ impl Default for NodeConfig {
             secret_raft: String::default(),
             secret_api: String::default(),
             #[cfg(any(feature = "s3", feature = "dashboard"))]
-            enc_keys: Default::default(),
+            enc_keys: cryptr::EncKeys::default(),
             #[cfg(feature = "backup")]
             backup_config: backup::BackupConfig::default(),
             #[cfg(feature = "backup")]
-            backup_keep_for_local: Duration::from_secs(3 * 24 * 3600),
+            backup_keep_for_local: Duration::from_hours(3 * 24),
             #[cfg(feature = "backup")]
             backup_file_prefix: backup::DEFAULT_BACKUP_FILE_PREFIX.into(),
             #[cfg(feature = "s3")]
@@ -273,11 +277,17 @@ impl Default for NodeConfig {
 }
 
 impl NodeConfig {
+    #[must_use]
     pub fn from_env() -> Self {
         dotenvy::dotenv().ok();
         Self::from_env_parse()
     }
 
+    ///
+    /// # Panics
+    ///
+    /// If the given env file cannot be read.
+    #[must_use]
     pub fn from_env_file(filename: &str) -> Self {
         dotenvy::from_filename(filename).expect("env file to parse does not exist");
         Self::from_env_parse()
@@ -338,8 +348,9 @@ impl NodeConfig {
         let backup_keep_for_local = env::var("HQL_BACKUP_KEEP_FOR_LOCAL")
             .ok()
             .as_deref()
-            .map(|v| parse_duration(v).expect("Cannot parse HQL_BACKUP_KEEP_FOR_LOCAL as Duration"))
-            .unwrap_or(Duration::from_secs(3 * 24 * 3600));
+            .map_or(Duration::from_hours(3 * 24), |v| {
+                parse_duration(v).expect("Cannot parse HQL_BACKUP_KEEP_FOR_LOCAL as Duration")
+            });
 
         #[cfg(feature = "dashboard")]
         let insecure_cookie = env::var("HQL_INSECURE_COOKIE")
@@ -421,8 +432,9 @@ impl NodeConfig {
             wal_size: env::var("HQL_WAL_SIZE")
                 .ok()
                 .as_deref()
-                .map(|v| v.parse::<u32>().expect("Cannot parse HQL_WAL_SIZE as u32"))
-                .unwrap_or(2 * 1024 * 1024),
+                .map_or(2 * 1024 * 1024, |v| {
+                    v.parse::<u32>().expect("Cannot parse HQL_WAL_SIZE as u32")
+                }),
             #[cfg(feature = "cache")]
             cache_storage_disk,
             raft_config: Self::default_raft_config(logs_keep),
@@ -443,10 +455,9 @@ impl NodeConfig {
             health_check_delay: env::var("HQL_HEALTH_CHECK_DELAY")
                 .ok()
                 .as_deref()
-                .map(|v| {
+                .map_or(Duration::from_secs(30), |v| {
                     parse_duration(v).expect("Cannot parse HQL_HEALTH_CHECK_DELAY as Duration")
-                })
-                .unwrap_or(Duration::from_secs(30)),
+                }),
             learner_only: env::var("HQL_LEARNER_ONLY")
                 .as_deref()
                 .unwrap_or("false")
@@ -471,6 +482,7 @@ impl NodeConfig {
     }
 
     /// Provides good defaults for a `RaftConfig` inside a fast network.
+    #[must_use]
     pub fn default_raft_config(logs_until_snapshot: u64) -> RaftConfig {
         RaftConfig {
             cluster_name: "hiqlite".to_string(),
@@ -532,6 +544,14 @@ impl NodeConfig {
     }
 
     /// Validates the config
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for an empty node list, a `node_id` below 1 or carried by no node
+    /// line, duplicate node ids, an `election_disable` id that no node has, a
+    /// `backup_file_prefix` that is not a plain file name prefix, secrets shorter than 16
+    /// characters, an empty encryption key set, an `enc_key_active` that points to no key, and
+    /// a dashboard password shorter than 16 characters.
     pub fn is_valid(&self) -> Result<(), Error> {
         if self.nodes.is_empty() {
             return Err(Error::Config("'nodes' must not be empty".into()));
@@ -619,14 +639,14 @@ impl NodeConfig {
 
         if self.log_statements {
             warn!(
-                r#"
+                r"
 
 !!! CAUTION !!!
 Statement logging is activated - this can leak sensitive information into your logs,
 as it will log query parameters as well. Be careful when using this in production and
 clean up logs after debugging!
-"#
-            )
+"
+            );
         }
 
         Ok(())
@@ -660,6 +680,12 @@ impl Node {
     /// The format is `id addr_raft addr_api`, and it accepts the optional fourth value
     /// `election_disable`, which marks a node that never starts an election on its own. The second
     /// return value is `true` for such a line. Anything else is a config error and panics loudly.
+    ///
+    /// # Panics
+    ///
+    /// If the line is not `id addr_raft addr_api` with the optional `election_disable` flag, or
+    /// the id does not parse as a `u64`.
+    #[must_use]
     pub fn parse_line(s: &str) -> (Self, bool) {
         let mut tokens = s.split_whitespace();
         let (id, addr_raft, addr_api, flag, extra) = (
@@ -722,12 +748,19 @@ impl Node {
         (nodes, election_disable)
     }
 
+    #[must_use]
     pub fn parse_from_env(env_var: &str) -> Vec<Self> {
         Self::parse_from_env_with_flags(env_var).0
     }
 
     /// Parse the node list from the given env var, where every node is one line, and collect the
     /// ids of all nodes that carry the `election_disable` marker. See [`Node::parse_line`].
+    ///
+    /// # Panics
+    ///
+    /// If the given env var does not exist, and everything [`Node::parse_line`] panics on for a
+    /// broken node line.
+    #[must_use]
     pub fn parse_from_env_with_flags(env_var: &str) -> (Vec<Self>, Vec<NodeId>) {
         let value = env::var(env_var).unwrap_or_else(|_| panic!("{env_var} does not exist"));
         Self::parse_lines(value.lines())
@@ -741,7 +774,7 @@ mod tests {
     #[test]
     fn test_config_from_env() {
         let c = NodeConfig::from_env_file("hiqlite.env");
-        println!("{:?}", c);
+        println!("{c:?}");
 
         assert_eq!(c.node_id, 1);
         assert_eq!(

@@ -80,7 +80,7 @@ pub fn spawn(cache_name: &'static str) -> flume::Sender<CacheRequestHandler> {
 
 /// Removes the key's pending expiry from the index. The index mirrors the `expires` field of
 /// `values`, so call this before changing or removing an entry in `values`.
-#[inline(always)]
+#[inline]
 fn drop_expiry(
     values: &mut BTreeMap<String, (Vec<u8>, Option<i64>)>,
     expiries: &mut BTreeMap<i64, Vec<String>>,
@@ -95,13 +95,13 @@ fn drop_expiry(
 /// the matching change of `values` (no await between), so the index mirrors `values` again
 /// before the next top-of-loop iteration; it may come before that change - so the key can be
 /// moved into the map without a clone - or after it.
-#[inline(always)]
+#[inline]
 fn register_expiry(expiries: &mut BTreeMap<i64, Vec<String>>, key: &str, exp: i64) {
     expiries.entry(exp).or_default().push(key.to_string());
 }
 
 /// Removes one key from its timestamp bucket; drops the bucket once it is empty.
-#[inline(always)]
+#[inline]
 fn remove_expiry(expiries: &mut BTreeMap<i64, Vec<String>>, exp: i64, key: &str) {
     if let Some(keys) = expiries.get_mut(&exp) {
         keys.retain(|k| k != key);
@@ -139,7 +139,8 @@ async fn kv_handler(cache_name: &'static str, rx: flume::Receiver<CacheRequestHa
             let first_exp = expiries.first_key_value().map(|(k, _)| *k);
 
             if let Some(exp) = first_exp {
-                if exp - Utc::now().timestamp_micros() < 1 {
+                let delta = exp - Utc::now().timestamp_micros();
+                if delta < 1 {
                     // The earliest expiry is due: remove every key registered at that instant.
                     // The index mirrors `values`, so each of them still carries exactly this
                     // expiry; a refresh already moved it to its new bucket.
@@ -152,9 +153,9 @@ async fn kv_handler(cache_name: &'static str, rx: flume::Receiver<CacheRequestHa
                         values.remove(&key);
                     }
                     continue;
-                } else {
-                    Duration::from_micros((exp - Utc::now().timestamp_micros()) as u64)
                 }
+                // `delta >= 1` here: the earliest expiry is in the future.
+                Duration::from_micros(u64::try_from(delta).unwrap_or_default())
             } else {
                 Duration::from_secs(u64::MAX)
             }
@@ -303,7 +304,7 @@ async fn kv_handler(cache_name: &'static str, rx: flume::Receiver<CacheRequestHa
                 },
                 Err(_) => break,
             },
-            _ = time::sleep(sleep_exp) => {
+            () = time::sleep(sleep_exp) => {
                 debug!("Timeout reached - first entry in map expires");
             }
         }
@@ -324,7 +325,7 @@ mod tests {
         spawn("test")
     }
 
-    /// A SnapshotBuild roundtrip: guarantees everything sent before it has been processed.
+    /// A `SnapshotBuild` roundtrip: guarantees everything sent before it has been processed.
     async fn sync(tx: &flume::Sender<CacheRequestHandler>) {
         let (ack, rx) = oneshot::channel();
         tx.send(CacheRequestHandler::SnapshotBuild { reply: ack })

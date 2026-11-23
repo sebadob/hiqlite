@@ -50,7 +50,7 @@ pub(crate) fn plan_fields(input: DeriveInput) -> syn::Result<RowPlan> {
     let mut columns: Vec<(String, String)> = Vec::new();
     let mut fields = Vec::new();
 
-    for field in data.fields.iter() {
+    for field in &data.fields {
         let Some(id) = &field.ident else {
             return Err(syn::Error::new(
                 field.ty.span(),
@@ -63,8 +63,7 @@ pub(crate) fn plan_fields(input: DeriveInput) -> syn::Result<RowPlan> {
         let col_name = ch
             .rename
             .as_ref()
-            .map(|r| r.value())
-            .unwrap_or_else(|| id.to_string());
+            .map_or_else(|| id.to_string(), |r| r.value());
 
         // skip and flatten do not read a single named column, so they cannot collide.
         if !matches!(ch.attr, ColumnAttr::Skip | ColumnAttr::Flatten) {
@@ -239,7 +238,7 @@ impl TryFrom<&[Attribute]> for ColumnHandler {
         let mut rename: Option<LitStr> = None;
         let mut column_span = None;
 
-        for a in attrs.iter() {
+        for a in attrs {
             if !a.path().is_ident("column") {
                 continue;
             }
@@ -508,7 +507,7 @@ mod tests {
     #[test]
     fn from_i32_uses_try_from_and_never_clamps() {
         let out = generate(
-            r#"struct Test { #[column(from_i32)] a: i32, #[column(from_i32)] b: Option<i32> }"#,
+            r"struct Test { #[column(from_i32)] a: i32, #[column(from_i32)] b: Option<i32> }",
         );
         let compact = out.replace(' ', "");
         assert!(
@@ -532,26 +531,26 @@ mod tests {
     #[test]
     fn trailing_comma_is_accepted() {
         let out =
-            generate(r#"struct Test { #[column(from_i32,)] a: i16, #[column(skip,)] b: bool }"#);
+            generate(r"struct Test { #[column(from_i32,)] a: i16, #[column(skip,)] b: bool }");
         let compact = out.replace(' ', "");
         assert!(compact.contains("TryFrom<i64>>::try_from"), "got: {out}");
     }
 
     #[test]
     fn trailing_junk_is_rejected() {
-        let err = generate_err(r#"struct Test { #[column(from_i32 junk)] a: i16 }"#);
+        let err = generate_err(r"struct Test { #[column(from_i32 junk)] a: i16 }");
         assert!(err.contains("expected `,`"), "got: {err}");
     }
 
     #[test]
     fn rename_requires_string_literal() {
-        let err = generate_err(r#"struct Test { #[column(rename = 123)] a: i64 }"#);
+        let err = generate_err(r"struct Test { #[column(rename = 123)] a: i64 }");
         assert!(err.contains("string literal"), "got: {err}");
     }
 
     #[test]
     fn unknown_keyword_is_rejected() {
-        let err = generate_err(r#"struct Test { #[column(from_i16)] a: i16 }"#);
+        let err = generate_err(r"struct Test { #[column(from_i16)] a: i16 }");
         assert!(
             err.contains("unknown column attribute 'from_i16'"),
             "got: {err}"
@@ -560,7 +559,7 @@ mod tests {
 
     #[test]
     fn empty_attribute_is_rejected() {
-        let err = generate_err(r#"struct Test { #[column()] a: i64 }"#);
+        let err = generate_err(r"struct Test { #[column()] a: i64 }");
         assert!(
             err.contains("expected at least one column attribute"),
             "got: {err}"
@@ -590,27 +589,27 @@ mod tests {
 
     #[test]
     fn tuple_struct_is_rejected() {
-        let err = generate_err(r#"struct Test(i64);"#);
+        let err = generate_err(r"struct Test(i64);");
         assert!(err.contains("named fields"), "got: {err}");
     }
 
     #[test]
     fn enum_input_is_rejected() {
-        let err = generate_err(r#"enum Test { A }"#);
+        let err = generate_err(r"enum Test { A }");
         assert!(err.contains("only be derived for a `struct`"), "got: {err}");
     }
 
     #[test]
     fn unsigned_target_is_rejected() {
-        let err = generate_err(r#"struct Test { #[column(from_i32)] a: u8 }"#);
+        let err = generate_err(r"struct Test { #[column(from_i32)] a: u8 }");
         assert!(err.contains("cast_ints"), "got: {err}");
-        let err = generate_err(r#"struct Test { #[column(from_i64)] b: Option<u64> }"#);
+        let err = generate_err(r"struct Test { #[column(from_i64)] b: Option<u64> }");
         assert!(err.contains("cast_ints"), "got: {err}");
     }
 
     #[test]
     fn flatten_uses_try_from_on_row() {
-        let out = generate(r#"struct Test { #[column(flatten)] inner: Inner, plain: i64 }"#);
+        let out = generate(r"struct Test { #[column(flatten)] inner: Inner, plain: i64 }");
         let compact = out.replace(' ', "");
         assert!(
             compact.contains("TryFrom::try_from(&mut*row)"),

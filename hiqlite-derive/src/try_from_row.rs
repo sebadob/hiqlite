@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn from_i32_non_opt_returns_error_instead_of_panicking() {
-        let out = generate(r#"struct Test { #[column(from_i32)] a: i32 }"#);
+        let out = generate(r"struct Test { #[column(from_i32)] a: i32 }");
         let compact = out.replace(' ', "");
         assert!(
             compact.contains("TryFrom<i64>>::try_from"),
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn from_i32_opt_uses_transpose() {
-        let out = generate(r#"struct Test { #[column(from_i32)] a: Option<i32> }"#);
+        let out = generate(r"struct Test { #[column(from_i32)] a: Option<i32> }");
         let compact = out.replace(' ', "");
         assert!(
             compact.contains(".transpose()"),
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn parse_non_opt_maps_parse_error() {
-        let out = generate(r#"struct Test { #[column(parse)] a: u64 }"#);
+        let out = generate(r"struct Test { #[column(parse)] a: u64 }");
         let compact = out.replace(' ', "");
         assert!(compact.contains(".parse()"), "missing parse call: {out}");
         assert!(
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn from_string_uses_into() {
-        let out = generate(r#"struct Test { #[column(from_string)] a: MyType }"#);
+        let out = generate(r"struct Test { #[column(from_string)] a: MyType }");
         let compact = out.replace(' ', "");
         assert!(
             compact.contains("try_get::<String>(\"a\")?.into()"),
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn skip_uses_default() {
-        let out = generate(r#"struct Test { #[column(skip)] a: i64, b: i64 }"#);
+        let out = generate(r"struct Test { #[column(skip)] a: i64, b: i64 }");
         let compact = out.replace(' ', "");
         assert!(
             compact.contains("Default::default()"),
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn flatten_uses_try_from_on_row() {
-        let out = generate(r#"struct Test { #[column(flatten)] inner: Inner, plain: i64 }"#);
+        let out = generate(r"struct Test { #[column(flatten)] inner: Inner, plain: i64 }");
         let compact = out.replace(' ', "");
         assert!(
             compact.contains("TryFrom::try_from(&mut*row)?"),
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn impl_declares_hiqlite_error_as_error_type() {
-        let out = generate(r#"struct Test { a: i64 }"#);
+        let out = generate(r"struct Test { a: i64 }");
         let compact = out.replace(' ', "");
         assert!(
             compact.contains("typeError=::hiqlite::Error;"),
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn generics_are_preserved() {
         // Where clauses on structs sit between the generics and the brace, like rustc requires.
-        let out = generate(r#"struct Test<T> where T: Default { #[column(skip)] a: T }"#);
+        let out = generate(r"struct Test<T> where T: Default { #[column(skip)] a: T }");
         let compact = out.replace(' ', "");
         assert!(
             compact.contains("forTest<T>"),

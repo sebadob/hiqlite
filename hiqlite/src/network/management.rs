@@ -13,7 +13,7 @@ use axum::response::Response;
 use bincode_next::{Decode, Encode};
 use openraft::RaftTypeConfig;
 use openraft::ServerState;
-use openraft::errors::{ForwardToLeader, LinearizableReadError, RaftError};
+use openraft::errors::{ForwardReason, ForwardToLeader, LinearizableReadError, RaftError};
 use openraft::type_config::async_runtime::watch::WatchReceiver;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -55,7 +55,7 @@ pub(crate) async fn add_learner(
         node_id,
         addr_api,
         addr_raft,
-    } = get_payload(&headers, body)?;
+    } = get_payload(&headers, &body)?;
     let node = Node {
         id: node_id,
         addr_raft,
@@ -66,7 +66,7 @@ pub(crate) async fn add_learner(
     let nid = node.id;
     let res = helpers::add_new_learner(&state, &raft_type, node).await;
     match res {
-        Ok(_) => {
+        Ok(()) => {
             if let Err(err) = wait_for_membership_commit(
                 &state,
                 &raft_type,
@@ -87,7 +87,7 @@ pub(crate) async fn add_learner(
             time::sleep(Duration::from_millis(1000)).await;
             drop(lock);
             info!("Added node {nid} as commited {:?} learner", raft_type);
-            fmt_ok(headers, ())
+            fmt_ok(&headers, ())
         }
         Err(err) => {
             error!("Error adding node as {:?} learner: {:?}", raft_type, err);
@@ -114,7 +114,7 @@ pub(crate) async fn become_member(
     are_we_leader(&state, &raft_type).await?;
 
     let lock = state.raft_lock.lock().await;
-    let payload = get_payload::<LearnerReq>(&headers, body)?;
+    let payload = get_payload::<LearnerReq>(&headers, &body)?;
     info!("{:?} Node membership request: {:?}", raft_type, payload);
 
     let view = helpers::get_raft_view(&state, &raft_type)?;
@@ -126,14 +126,14 @@ pub(crate) async fn become_member(
             "Node {} is a voter already - nothing left to do",
             payload.node_id
         );
-        return fmt_ok(headers, ());
+        return fmt_ok(&headers, ());
     }
 
     let mut nodes_set = view.membership.voter_ids().collect::<BTreeSet<u64>>();
     nodes_set.insert(payload.node_id);
 
     match helpers::change_membership(&state, &raft_type, nodes_set, true).await {
-        Ok(_) => {
+        Ok(()) => {
             if let Err(err) = wait_for_membership_commit(
                 &state,
                 &raft_type,
@@ -154,7 +154,7 @@ pub(crate) async fn become_member(
             time::sleep(Duration::from_millis(1000)).await;
             drop(lock);
             info!("Added node {} as {:?} member", payload.node_id, raft_type);
-            fmt_ok(headers, ())
+            fmt_ok(&headers, ())
         }
         Err(err) => {
             error!("Error adding node as member: {:?}", err);
@@ -211,7 +211,7 @@ where
     RaftError::APIError(LinearizableReadError::ForwardToLeader(ForwardToLeader {
         leader_id: Some(leader_id),
         leader_node: Some(leader.clone()),
-        reason: Default::default(),
+        reason: ForwardReason::default(),
     }))
 }
 
@@ -242,7 +242,7 @@ pub(crate) async fn get_membership(
         ));
     }
 
-    fmt_ok_serde(headers, members.membership())
+    fmt_ok_serde(&headers, members.membership())
 }
 
 /// Changes specified learners to members, or remove members.
@@ -262,7 +262,7 @@ pub(crate) async fn post_membership(
 
     are_we_leader(&state, &raft_type).await?;
 
-    let payload = get_payload::<BTreeSet<NodeId>>(&headers, body)?;
+    let payload = get_payload::<BTreeSet<NodeId>>(&headers, &body)?;
 
     // Take the shared raft_lock like the other membership endpoints so this full-set change
     // cannot race with join/leave flows that poll for their commit.
@@ -305,7 +305,7 @@ pub(crate) async fn post_membership(
     }
 
     // retain false removes current cluster members if they do not appear in the new list
-    fmt_ok(headers, ())
+    fmt_ok(&headers, ())
 }
 
 #[tracing::instrument(skip_all)]
@@ -324,7 +324,7 @@ pub async fn leave_cluster(
     }
     are_we_leader(&state, &raft_type).await?;
 
-    let payload = get_payload::<ClusterLeaveReq>(&headers, body)?;
+    let payload = get_payload::<ClusterLeaveReq>(&headers, &body)?;
     leave_cluster_exec(&state.0, &raft_type, payload).await?;
 
     Ok(Response::new(Body::empty()))
@@ -485,12 +485,12 @@ pub(crate) async fn metrics(
         #[cfg(feature = "sqlite")]
         RaftType::Sqlite => {
             let metrics = state.raft_db.raft.metrics().borrow_watched().clone();
-            fmt_ok_serde(headers, &metrics)
+            fmt_ok_serde(&headers, &metrics)
         }
         #[cfg(feature = "cache")]
         RaftType::Cache => {
             let metrics = state.raft_cache.raft.metrics().borrow_watched().clone();
-            fmt_ok_serde(headers, &metrics)
+            fmt_ok_serde(&headers, &metrics)
         }
         RaftType::Unknown => Err(Error::Error("Unknown Raft type".into())),
     }
@@ -572,6 +572,7 @@ pub(crate) fn election_state(state: &Arc<AppState>) -> Result<ElectionState, Err
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 impl ElectionState {
     /// The id of the node this state comes from - every group reports the same one.
+    #[must_use]
     pub fn node_id(&self) -> NodeId {
         #[cfg(feature = "sqlite")]
         {
@@ -649,7 +650,7 @@ pub(crate) async fn get_election(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    fmt_ok(headers, election_state(&state)?)
+    fmt_ok(&headers, election_state(&state)?)
 }
 
 /// Change this node's own right to start elections: `PUT /cluster/election`.
@@ -665,10 +666,10 @@ pub(crate) async fn put_election(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    let req = get_payload::<ElectionReq>(&headers, body)?;
+    let req = get_payload::<ElectionReq>(&headers, &body)?;
 
     fmt_ok(
-        headers,
+        &headers,
         local_set_enable_elect(&state, req.enable_elect).await?,
     )
 }
@@ -687,7 +688,7 @@ pub(crate) async fn post_election(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    fmt_ok(headers, local_elect(&state, query.force).await?)
+    fmt_ok(&headers, local_elect(&state, query.force).await?)
 }
 
 /// The membership of one Raft group, as this node sees it.
@@ -724,6 +725,7 @@ pub struct NodeReq {
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 impl MembersState {
     /// The id of the node this state comes from - every group reports the same one.
+    #[must_use]
     pub fn node_id(&self) -> NodeId {
         #[cfg(feature = "sqlite")]
         {
@@ -984,7 +986,7 @@ pub(crate) async fn local_transfer_leader(
 pub(crate) async fn get_members(state: AppStateExt, headers: HeaderMap) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    fmt_ok(headers, members_state(&state)?)
+    fmt_ok(&headers, members_state(&state)?)
 }
 
 /// Make a learner a voter in every group: `POST /cluster/promote`.
@@ -996,9 +998,9 @@ pub(crate) async fn post_promote(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    let req = get_payload::<NodeReq>(&headers, body)?;
+    let req = get_payload::<NodeReq>(&headers, &body)?;
 
-    fmt_ok(headers, local_promote(&state, req.node_id).await?)
+    fmt_ok(&headers, local_promote(&state, req.node_id).await?)
 }
 
 /// Take a voter out of the voter set of every group: `DELETE /cluster/membership`.
@@ -1010,10 +1012,10 @@ pub(crate) async fn delete_members(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    let req = get_payload::<ClusterLeaveReq>(&headers, body)?;
+    let req = get_payload::<ClusterLeaveReq>(&headers, &body)?;
 
     fmt_ok(
-        headers,
+        &headers,
         local_demote(&state, req.node_id, req.stay_as_learner).await?,
     )
 }
@@ -1027,15 +1029,15 @@ pub(crate) async fn post_transfer_leader(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    let req = get_payload::<NodeReq>(&headers, body)?;
+    let req = get_payload::<NodeReq>(&headers, &body)?;
 
-    fmt_ok(headers, local_transfer_leader(&state, req.node_id).await?)
+    fmt_ok(&headers, local_transfer_leader(&state, req.node_id).await?)
 }
 
 /// Maximum time to wait for a membership change to be committed while holding `state.raft_lock`.
 /// A leader change mid-operation can lose the uncommitted entry, so this wait is bounded and
 /// re-checks leadership on every poll - otherwise the shared lock could be held forever (see
-/// SECURITY_ANALYSIS_PLAN.md, L4). 40 s exceeds the ~30 s HTTP client timeout, so API callers
+/// `SECURITY_ANALYSIS_PLAN.md`, L4). 40 s exceeds the ~30 s HTTP client timeout, so API callers
 /// get their own timeout first; for shutdown paths it acts as a loud backstop.
 const MEMBERSHIP_COMMIT_TIMEOUT: Duration = Duration::from_secs(40);
 
@@ -1086,11 +1088,7 @@ async fn wait_for_membership_commit(
 
         if start.elapsed() > MEMBERSHIP_COMMIT_TIMEOUT {
             return Err(Error::Error(
-                format!(
-                    "Timeout after {:?} waiting for {what}",
-                    MEMBERSHIP_COMMIT_TIMEOUT
-                )
-                .into(),
+                format!("Timeout after {MEMBERSHIP_COMMIT_TIMEOUT:?} waiting for {what}").into(),
             ));
         }
     }
@@ -1107,9 +1105,9 @@ const DEMOTION_TIMEOUT: Duration = Duration::from_secs(10);
 /// applied (`io_applied() >= effective().log_id()`). Until that tick, `server_state` stays
 /// `Leader` while the membership no longer contains us: any membership entry appended in that
 /// window hits openraft's `append_membership` debug assert ("Only leader is allowed to call
-/// update_effective_membership()") and panics. Callers must hold `state.raft_lock`, which
+/// `update_effective_membership()`") and panics. Callers must hold `state.raft_lock`, which
 /// serializes every membership mutation on this node - so once we return as Follower the window
-/// is closed and queued writes are rejected with a graceful ForwardToLeader instead.
+/// is closed and queued writes are rejected with a graceful `ForwardToLeader` instead.
 ///
 /// On timeout we emit loudly and continue: the leave itself is already committed, and the node
 /// steps down on the very next tick regardless.

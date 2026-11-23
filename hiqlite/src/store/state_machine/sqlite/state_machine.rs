@@ -4,7 +4,7 @@ use crate::helpers::{
     atomic_file_switch, deserialize_serde, set_path_access, validate_db_backup_snapshot,
 };
 use crate::migration::Migration;
-use crate::query::rows::RowOwned;
+use crate::query::rows::RowsOwnedChecked;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::param::Param;
 use crate::store::state_machine::sqlite::snapshot_builder::SQLiteSnapshotBuilder;
@@ -47,7 +47,7 @@ pub type SqlitePool = deadpool::unmanaged::Pool<rusqlite::Connection>;
 pub type Params = Vec<Param>;
 
 /// Total wall-clock budget for retrying read-pool connections at startup. Each attempt already
-/// waits up to 30 s (busy_timeout) for exclusive lock holders, so this covers a full contention
+/// waits up to 30 s (`busy_timeout`) for exclusive lock holders, so this covers a full contention
 /// cycle plus margin; beyond that the failure is unrecoverable and we panic instead of hanging
 /// forever.
 const READ_POOL_CONNECT_BUDGET: Duration = Duration::from_secs(60);
@@ -119,7 +119,7 @@ pub struct ResponseExecute {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResponseExecuteReturning {
-    pub result: Result<Vec<Result<RowOwned, Error>>, Error>,
+    pub result: Result<RowsOwnedChecked, Error>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -186,7 +186,7 @@ impl StateMachineSqlite {
 
         // Always start the writer first! -> creates mandatory tables
         let conn = Self::connect(
-            path_db.to_string(),
+            path_db.clone(),
             filename_db.to_string(),
             false,
             prepared_statement_cache_capacity,
@@ -313,6 +313,9 @@ impl StateMachineSqlite {
     /// file existence, which also survives a crash. If the file is both present and held, another
     /// process is still using this state machine, so we refuse to start on top of it instead of
     /// silently deleting and rebuilding the DB.
+    // openraft declares this trait method `async`, so the impl has to keep `async`; the lock file
+    // check is pure `fs4` file work and has nothing to await.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn check_set_lock_file(
         path_lock_file: &str,
         path_db: &str,
@@ -366,9 +369,8 @@ impl StateMachineSqlite {
 
             #[cfg(not(feature = "auto-heal"))]
             panic!(
-                "Lock file already exists: {}\n\
-                Node did not shut down gracefully - needs manual interaction",
-                path_lock_file
+                "Lock file already exists: {path_lock_file}\n\
+                Node did not shut down gracefully - needs manual interaction"
             );
         }
 
@@ -562,12 +564,9 @@ impl StateMachineSqlite {
             };
             let file_name = entry.file_name();
             let name = file_name.to_str().unwrap_or("UNKNOWN");
-            let id = match Uuid::parse_str(name) {
-                Ok(uuid) => uuid,
-                Err(_) => {
-                    debug!("Non-UUID in snapshots folder");
-                    continue;
-                }
+            let Ok(id) = Uuid::parse_str(name) else {
+                debug!("Non-UUID in snapshots folder");
+                continue;
             };
 
             let meta = entry.metadata().await?;
@@ -604,11 +603,8 @@ impl StateMachineSqlite {
                 .prepare("SELECT data FROM _metadata WHERE key = 'meta'")
                 .map_err(|err| {
                     Error::Sqlite(
-                        format!(
-                            "Error preparing metadata read stmt in read from snapshot: {}",
-                            err
-                        )
-                        .into(),
+                        format!("Error preparing metadata read stmt in read from snapshot: {err}")
+                            .into(),
                     )
                 })?;
             let mut metadata = stmt
@@ -620,11 +616,7 @@ impl StateMachineSqlite {
                 })
                 .map_err(|err| {
                     Error::Sqlite(
-                        format!(
-                            "Error reading metadata from Snapshot '{}': {}",
-                            path_dbg, err
-                        )
-                        .into(),
+                        format!("Error reading metadata from Snapshot '{path_dbg}': {err}").into(),
                     )
                 })?;
 
@@ -1465,7 +1457,7 @@ mod raft_wire_goldens {
                 out.push('=');
             }
             if chunk.len() > 2 {
-                out.push(ALPHA[(b2 & 0b111111) as usize] as char);
+                out.push(ALPHA[(b2 & 0b11_1111) as usize] as char);
             } else {
                 out.push('=');
             }

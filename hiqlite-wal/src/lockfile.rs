@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn lockfile() {
-        let base_path = format!("{}/lockfile", PATH);
+        let base_path = format!("{PATH}/lockfile");
         let _ = fs::remove_dir_all(&base_path);
         fs::create_dir_all(&base_path).unwrap();
 

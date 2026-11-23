@@ -14,6 +14,11 @@ pub struct S3Config {
 }
 
 impl S3Config {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::S3`] for an endpoint that is not a URL, for a bucket that cannot be built from
+    /// the given credentials, and for a bucket that does not answer the connection test.
     pub async fn new<S>(
         endpoint: &str,
         bucket_name: S,
@@ -52,6 +57,13 @@ impl S3Config {
         Ok(Arc::new(Self { bucket }))
     }
 
+    ///
+    /// # Panics
+    ///
+    /// If `HQL_S3_URL` is set and `HQL_S3_BUCKET`, `HQL_S3_REGION`, `HQL_S3_PATH_STYLE`,
+    /// `HQL_S3_KEY` or `HQL_S3_SECRET` is missing, `HQL_S3_PATH_STYLE` does not parse as a
+    /// bool, or `HQL_S3_URL` is not a URL.
+    #[must_use]
     pub fn try_from_env() -> Option<Arc<Self>> {
         if let Ok(url) = env::var("HQL_S3_URL") {
             // we assume that all values exist when we can read the url successfully
@@ -116,7 +128,7 @@ impl S3Config {
             .map_err(|err| Error::S3(err.to_string()))
     }
 
-    pub(crate) fn pull_channel(&self, object: String) -> Result<ChannelReceiver, Error> {
+    pub(crate) fn pull_channel(&self, object: String) -> ChannelReceiver {
         let (channel_writer, rx) = ChannelWriter::new();
         let writer = StreamWriter::Channel(channel_writer.clone());
 
@@ -133,6 +145,6 @@ impl S3Config {
             }
         });
 
-        Ok(rx)
+        rx
     }
 }

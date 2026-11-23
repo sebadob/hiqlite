@@ -21,11 +21,11 @@ pub async fn test_self_healing(
     time::sleep(Duration::from_secs(2)).await;
     let metrics = client_1.metrics_cache().await?;
     assert!(metrics.last_log_index.unwrap() > 5);
-    if !is_leader(&client_1, 1).await? {
-        client_1 = modify_cache_restart_after_purge(client_1, 1, combo).await?;
-    } else {
+    if is_leader(&client_1, 1).await? {
         client_2 = modify_cache_restart_after_purge(client_2, 2, combo).await?;
-    };
+    } else {
+        client_1 = modify_cache_restart_after_purge(client_1, 1, combo).await?;
+    }
     check::is_client_db_healthy(&client_1, Some(1)).await?;
     check::is_client_db_healthy(&client_2, Some(2)).await?;
     check::is_client_db_healthy(&client_3, Some(3)).await?;
@@ -34,12 +34,12 @@ pub async fn test_self_healing(
     // A record with a broken CRC rolls the WAL back to the last healthy one, which means the
     // leader has to re-replicate a log range it already counted as matching for that node.
     log("Check recovery from a corrupted WAL record (auto-heal)");
-    let client_healed = if !is_leader(&client_1, 1).await? {
-        client_1 = shutdown_corrupt_wal_restart(client_1, &client_2, 1, combo).await?;
-        &client_1
-    } else {
+    let client_healed = if is_leader(&client_1, 1).await? {
         client_2 = shutdown_corrupt_wal_restart(client_2, &client_1, 2, combo).await?;
         &client_2
+    } else {
+        client_1 = shutdown_corrupt_wal_restart(client_1, &client_2, 1, combo).await?;
+        &client_1
     };
     check::is_client_db_healthy(client_healed, None).await?;
     check::is_client_db_healthy(&client_1, Some(1)).await?;
@@ -49,11 +49,11 @@ pub async fn test_self_healing(
 
     log("Test recovery in case of state machine crash on non-leader");
     time::sleep(Duration::from_secs(2)).await;
-    if !is_leader(&client_1, 1).await? {
-        client_1 = shutdown_lock_sm_db_restart(client_1, 1, combo).await?;
-    } else {
+    if is_leader(&client_1, 1).await? {
         client_2 = shutdown_lock_sm_db_restart(client_2, 2, combo).await?;
-    };
+    } else {
+        client_1 = shutdown_lock_sm_db_restart(client_1, 1, combo).await?;
+    }
     check::is_client_db_healthy(&client_1, Some(1)).await?;
     check::is_client_db_healthy(&client_2, Some(2)).await?;
     check::is_client_db_healthy(&client_3, Some(3)).await?;
@@ -61,12 +61,12 @@ pub async fn test_self_healing(
 
     log("Test recovery from state machine data loss on non-leader");
     time::sleep(Duration::from_secs(2)).await;
-    let client_healed = if !is_leader(&client_1, 1).await? {
-        client_1 = shutdown_remove_sm_db_restart(client_1, 1, combo).await?;
-        &client_1
-    } else {
+    let client_healed = if is_leader(&client_1, 1).await? {
         client_2 = shutdown_remove_sm_db_restart(client_2, 2, combo).await?;
         &client_2
+    } else {
+        client_1 = shutdown_remove_sm_db_restart(client_1, 1, combo).await?;
+        &client_1
     };
     client_healed.wait_until_healthy_db().await;
     check::is_client_db_healthy(client_healed, None).await?;
@@ -76,12 +76,12 @@ pub async fn test_self_healing(
     log("Client has self-healed successfully");
 
     log("Check recovery from full volume loss");
-    let client_healed = if !is_leader(&client_1, 1).await? {
-        client_1 = shutdown_remove_all_restart(client_1, 1, combo).await?;
-        &client_1
-    } else {
+    let client_healed = if is_leader(&client_1, 1).await? {
         client_2 = shutdown_remove_all_restart(client_2, 2, combo).await?;
         &client_2
+    } else {
+        client_1 = shutdown_remove_all_restart(client_1, 1, combo).await?;
+        &client_1
     };
     // full replication will take a few moments, vote takes a bit longer sometimes
     client_healed.wait_until_healthy_db().await;
@@ -131,7 +131,7 @@ async fn modify_cache_restart_after_purge(
     let ttl = 15u64;
     let inserted = Instant::now();
     client
-        .put(Cache::One, key, &value, Some(ttl as i64))
+        .put(Cache::One, key, &value, Some(ttl.cast_signed()))
         .await?;
 
     // a `get_remove` entry after the snapshot point must be replayed on recovery
@@ -146,7 +146,7 @@ async fn modify_cache_restart_after_purge(
         .expect("value to be present before the restart");
     assert_eq!(v, value_claimed);
 
-    log(format!("Shutting down client {}", node_id));
+    log(format!("Shutting down client {node_id}"));
     client.shutdown().await?;
 
     // delete all cache files and make sure, we can re-sync just fine
@@ -154,7 +154,7 @@ async fn modify_cache_restart_after_purge(
     let _ = fs::remove_dir_all(format!("{}/logs_cache", folder_base(node_id))).await;
     let _ = fs::remove_dir_all(format!("{}/state_machine_cache", folder_base(node_id))).await;
 
-    log(format!("Re-starting client {}", node_id));
+    log(format!("Re-starting client {node_id}"));
     let client = start_node_with_cache::<Cache>(build_config(node_id, combo).await).await?;
     time::sleep(Duration::from_millis(100)).await;
 
@@ -171,7 +171,7 @@ async fn modify_cache_restart_after_purge(
 
     let millis = inserted.elapsed().as_millis() as u64;
     assert!(millis < ttl * 1000);
-    log(format!("Elapsed: {} ms", millis));
+    log(format!("Elapsed: {millis} ms"));
     time::sleep(Duration::from_millis(ttl * 1000 - millis - 1000)).await;
     let v: String = client
         .get(Cache::One, key)
@@ -194,17 +194,16 @@ async fn shutdown_lock_sm_db_restart(
     node_id: u64,
     combo: TlsCombo,
 ) -> Result<Client, Error> {
-    log(format!("Shutting down client {}", node_id));
+    log(format!("Shutting down client {node_id}"));
     client.shutdown().await?;
 
     let path_lock_file = format!("{}/lock", folder_state_machine(node_id));
     log(format!(
-        "Mocking crashed instance - lock file not correctly cleaned up {}",
-        path_lock_file
+        "Mocking crashed instance - lock file not correctly cleaned up {path_lock_file}"
     ));
     fs::File::create_new(path_lock_file).await?;
 
-    log(format!("Re-starting client {}", node_id));
+    log(format!("Re-starting client {node_id}"));
     let client = start_node_with_cache::<Cache>(build_config(node_id, combo).await).await?;
     time::sleep(Duration::from_millis(150)).await;
 
@@ -216,17 +215,16 @@ async fn shutdown_remove_all_restart(
     node_id: u64,
     combo: TlsCombo,
 ) -> Result<Client, Error> {
-    log(format!("Shutting down client {}", node_id));
+    log(format!("Shutting down client {node_id}"));
     client.shutdown().await?;
     time::sleep(Duration::from_secs(1)).await;
 
     let folder = folder_base(node_id);
-    log(format!("Deleting {}", folder));
+    log(format!("Deleting {folder}"));
     fs::remove_dir_all(folder).await?;
 
     log(format!(
-        "Re-starting client {} after full data deletion",
-        node_id
+        "Re-starting client {node_id} after full data deletion"
     ));
     let client = start_node_with_cache::<Cache>(build_config(node_id, combo).await).await?;
     time::sleep(Duration::from_millis(150)).await;
@@ -239,15 +237,15 @@ async fn shutdown_remove_sm_db_restart(
     node_id: u64,
     combo: TlsCombo,
 ) -> Result<Client, Error> {
-    log(format!("Shutting down client {}", node_id));
+    log(format!("Shutting down client {node_id}"));
     client.shutdown().await?;
     // time::sleep(Duration::from_millis(200)).await;
 
     let folder_sm_db = format!("{}/db", folder_state_machine(node_id));
-    log(format!("Deleting {}", folder_sm_db));
+    log(format!("Deleting {folder_sm_db}"));
     fs::remove_dir_all(folder_sm_db).await?;
 
-    log(format!("Re-starting client {}", node_id));
+    log(format!("Re-starting client {node_id}"));
     let client = start_node_with_cache::<Cache>(build_config(node_id, combo).await).await?;
     time::sleep(Duration::from_millis(150)).await;
 
@@ -276,7 +274,10 @@ async fn shutdown_corrupt_wal_restart(
     node_id: u64,
     combo: TlsCombo,
 ) -> Result<Client, Error> {
-    log(format!("Shutting down client {}", node_id));
+    // the record layout is: log id (8), CRC (4), data length (4), data
+    const RECORD_HEADER_LEN: usize = 8 + 4 + 4;
+
+    log(format!("Shutting down client {node_id}"));
     client.shutdown().await?;
     time::sleep(Duration::from_secs(1)).await;
 
@@ -295,8 +296,6 @@ async fn shutdown_corrupt_wal_restart(
         .expect("the node has at least one WAL file");
 
     let mut buf = fs::read(&wal_path).await?;
-    // the record layout is: log id (8), CRC (4), data length (4), data
-    const RECORD_HEADER_LEN: usize = 8 + 4 + 4;
     // magic no (7), version (1), id_from (8), id_until (8), data_start (4), data_end (4) - and
     // the first record starts right at the end of that header
     let mut offset = 7 + 1 + 8 + 8 + 4 + 4;
@@ -329,12 +328,11 @@ async fn shutdown_corrupt_wal_restart(
     // a leftover lock file is what makes the WAL run its deep integrity check on startup
     let path_lock_file = format!("{}/lock.hql", folder_logs(node_id));
     log(format!(
-        "Mocking crashed instance - lock file not correctly cleaned up {}",
-        path_lock_file
+        "Mocking crashed instance - lock file not correctly cleaned up {path_lock_file}"
     ));
     fs::File::create_new(path_lock_file).await?;
 
-    log(format!("Re-starting client {}", node_id));
+    log(format!("Re-starting client {node_id}"));
     let client = start_node_with_cache::<Cache>(build_config(node_id, combo).await).await?;
     time::sleep(Duration::from_millis(150)).await;
 
@@ -362,7 +360,7 @@ async fn is_leader(client: &Client, node_id: u64) -> Result<bool, Error> {
 }
 
 fn folder_base(node_id: u64) -> String {
-    format!("{}/node_{}", TEST_DATA_DIR, node_id)
+    format!("{TEST_DATA_DIR}/node_{node_id}")
 }
 
 fn folder_logs(node_id: u64) -> String {
