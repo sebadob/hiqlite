@@ -108,10 +108,153 @@ state machine, snapshots) is unaffected, and the dashboard's JSON shape for a qu
 Resolving a column name of a row was a linear scan through the result set, and SQLite was asked
 for the name of every candidate column: a struct with N fields over N columns did N * (N + 1) / 2
 of those calls, for every single row. Every query now builds the name-to-index map of its result
-set once, which turns each later lookup into a single hash probe. For a 24-column result set over
-2000 rows, mapping rows by name dropped to about a third of the time it took (Apple silicon); for
-8 columns it is about 1.7x. Queries with a single short row pay a small per-query build instead,
-in the range of 0.4 - 1.2 µs.
+set once, which turns each later lookup into a single hash probe.
+
+`cargo bench -p hiqlite --features sqlite,macros` maps the same 2000 rows into the same struct and
+only changes how the columns are read (release build, Apple silicon, medians):
+
+- 8 columns: `query_map()` went from 691 µs to 398 µs, a **1.7x** speedup
+- 24 columns: from 3.88 ms to 1.19 ms, a **3.3x** speedup
+
+`query_map()` did not catch up to `query_as()`, it passed it. The same 2000 rows through
+`serde_rusqlite`, the positional read `query_as()` uses, take 468 µs at 8 columns and 1.37 ms at
+24, so the name-based path is about 12 - 18% faster on the narrow and 14 - 15% on the wide result
+set. `row.get(idx)`, rusqlite's direct positional read, is the floor of this work at 374 µs and
+1.06 ms, and the new name lookup is within 6 - 12% of it.
+
+The map is built once per query, so a single-row query pays that build instead: 0.29 µs for 8
+columns and 0.79 µs for 24. Everything that maps more than a handful of rows is ahead, and wide
+result sets gain the most, because the old scan grew with the square of the column count.
+
+Owned rows, what a remote `query_map()` and the `execute_returning()` calls hand back, gained on
+top of this: with the names on the result set instead of on every row (see `Owned Rows`), building
+2000 rows over 24 columns got about 38% cheaper, and reading them by name dropped from 1.26 ms to
+0.24 ms, a **5.3x** speedup. Those numbers are from the same kind of harness as above, but owned
+rows are built by hand there, so they are not the numbers of the bench file.
+
+#### Hoisted Field Mapping
+
+The name lookup above is per row and per field. Mapping a type that derives `FromRow` /
+`TryFromRow` hoists it out of the row: the field names are resolved against the result set once,
+before the first row, and every row reads its columns by index only.
+
+```rust, notest
+#[derive(Debug, FromRow)]
+struct MyStruct {
+    pub id: i64,
+    pub ts: i64,
+}
+
+// no new call and no changed call: the hoisted path is picked from the mapped type
+let rows: Vec<MyStruct> = client.query_map("SELECT ts, id FROM test", params!()).await?;
+```
+
+`query_map()`, `query_try_map()`, their `_one` and `_optional` variants and `query_consistent_map()`
+are unchanged, and each of them picks its mapping from the type it maps. The derive registers its
+type in a per-process registry of hoisted mappings, from the body of the `From` / `TryFrom` impl it
+emits, and a query of a registered type takes the hoisted path. A type with only a hand-written
+`impl From<&mut Row>` is never registered, so it is mapped by the names its own body reads, exactly
+like it always was. One call handles both, and no existing `From<&mut Row>` impl needs any change.
+
+Registration is emitted for the types whose hoisted mapping needs no bounds beyond their own: a flat
+type with no lifetime parameter.  A type that flattens a field, and a generic type, have their
+hoisted mapping only under the bounds of their parts, which is more than the body of their `From`
+impl can assume - a flattened type only has to provide a `From<&mut Row>` at all - so those types
+stay on the name-based path.  Nothing about them changed, and nothing about them has to change:
+their mapping reads its columns by name like it always did, and the field mapping they get is the
+same values in the same order.
+
+Two details of a registry that lives in the process: the very first query of a type is the one that
+registers it, so it maps its rows by name, and a type with a lifetime parameter is never `'static`,
+so it stays on the name-based path for good.
+
+The derive implements the hoisted side for `flatten` fields too: the names of a nested type are
+merged into the index of the parent, each behind the segment before it.
+
+- 8 columns: 407 µs to 388 µs for 2000 rows, **4.8%** faster and within 2% of rusqlite's
+  positional floor of 380 µs
+- 24 columns: 1.25 ms to 1.07 ms, **14%** faster and at the positional floor of 1.11 ms
+- the resolution is cheaper than the map it replaces, because the field names of a derived type are
+  a sorted compile-time table: 0.29 µs to 0.18 µs at 8 columns, 0.79 µs to 0.42 µs at 24
+- single-row mapping: 17% faster at 8 columns, 28% at 24
+
+The row loop is the `hoisted` group of the bench file, run with `cargo bench --features
+sqlite,macros`. The resolve step and the single-row numbers are not in the bench file, because they
+are crate-internal; they are measured in the same style of harness on the same machine, and the
+`build` group of the bench file shows the map cost the resolve step replaces.  A real
+`query_map()` call reaches the registered mapping through one function pointer per row, which
+measures within the noise of the direct call in the same harness, so a query of a derived type
+lands a hair above the `hoisted` group rather than exactly on it.
+
+Resolution is by name, so the order of your fields and the order of the columns in the query stay
+independent, a column that only differs in case is matched like `row.get("name")` always matched it,
+and a duplicated column name maps to the first occurrence. A field whose column is missing from the
+result set is loud on the first row that reads it: the panicking family (`FromRow` with
+`query_map()`) panics naming that column, the non-panicking family (`TryFromRow` with
+`query_try_map()`) answers `Error::QueryParams` naming it. A query whose result set has no rows
+answers empty like it always did, because there is no row that would read the missing column.
+
+Public items added for this, all of them additive: the `FromRowIndexed` / `TryFromRowIndexed`
+traits, `Row::get_idx()` / `Row::try_get_idx()`, `ColIndex`, `FieldMaps`, `FieldNames` and the two
+`#[doc(hidden)]` registration functions the derive calls. A hand-written `From<&mut Row>` impl
+needs none of them; implement `FromRowIndexed` by hand, call `register_hoisted()` once for the type,
+and it maps through the hoisted path as well.
+
+#### Compile-time SQL Checking with `sql!()`
+
+`sql!()` checks a query string at compile time and hands it back as the string itself, so it takes
+the place of a plain string literal at any call site that takes a query:
+
+```rust
+let rows = client.query_map(sql!("SELECT id, ts FROM test"), params!()).await?;
+```
+
+The string is prepared against an in-memory SQLite built from the `migrations` directory that sits
+next to the `Cargo.toml` of the crate using the macro - the same directory `Client::migrate()`
+applies - so a typo in a table name, a column that does not exist, or a broken keyword fails the
+build with SQLite's own message, pointing at the string:
+
+```text
+error: no such column: descrption in SELECT descrption FROM test at offset 7
+  --> src/db.rs:41:25
+   |
+41 |     let rows = client.query_map(sql!("SELECT id, descrption FROM test"), params!()).await?;
+   |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+- The macro is a validator only: it emits the literal it was given, byte for byte. Nothing to
+  adapt, no runtime cost, and no new dependencies.
+- `sql!()` takes exactly one statement, the shape of `execute()`, `query()` and all their variants.
+  `sql_batch!()` is the multi-statement shape for `batch()` and `txn()`.
+- `sql_map!(Type, "…")` checks the columns the query returns against the fields of the type it
+  maps to: the same names, in any order and any case, which is the matching a mapped row does. A
+  query that reads a column the type has no field for, or a field the query does not return, fails
+  the build. The `FromRow` derive publishes the shape of every type it maps; a `TryFromRow` type
+  and a hand-written mapping publish it by listing its column names with `SqlShape::SHAPE`.
+- One in-memory database per schema and compiler process, and every verdict is cached in
+  `.hiqlite-sql/` in the workspace root, keyed by a fingerprint of your migrations and a hash of the
+  query string. A query the compiler has seen before costs a hash lookup, so hundreds of `sql!()`
+  calls in one repo do not build hundreds of databases. The directory is gitignored and you can
+  delete it whenever you want.
+- Editing a migration file recompiles the crates that use `sql!()` and changes the fingerprint, so
+  the cache invalidates itself; the version of SQLite Hiqlite checks against is part of it too.
+  Adding a migration file is not something a compiler can see from the outside, so a new file does
+  not recompile anything by itself: after you add one, rebuild the crates that check against it
+  (`cargo build` after a `touch`, or a clean build of them) to fold it into their schema and get
+  the fresh verdicts.
+- A crate without a `migrations` directory, and any failure inside the checker itself, produces one
+  `warning:` line and leaves queries unchecked. The check can never break a build.
+- The checks run in debug builds. A release build compiles your literals untouched - no database
+  is built, no cache is read, nothing extra is emitted - unless you opt into the
+  `sql-check-release` feature, which checks release builds the same way.
+- Not checked: the number of bound parameters (that is `params!()`, a separate call the macro
+  cannot see), the types of the columns you map (`query_try_map()` reports those as an error at
+  runtime), and queries built at runtime with `format!`.
+
+The `sqlite` and `macros` features enable it, which is what a `FromRow` derive needs anyway. The
+proc-macro crate builds the bundled SQLite once per target (a C compile at build-script time, not
+in your runtime), and each `rustc` process pays one in-memory database plus one migration replay,
+a few milliseconds, before every check after that is a hash lookup.
 
 #### `backup_file_prefix` config var
 

@@ -743,4 +743,6 @@ macro_rules! params {
 }
 
 pub use hiqlite_derive::{CacheVariants, FromRow, TryFromRow};
+#[cfg(feature = "sqlite")]
+pub use hiqlite_derive::{sql, sql_batch, sql_map};
 pub use params;

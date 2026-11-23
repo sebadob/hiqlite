@@ -42,6 +42,30 @@ pub struct NarrowTsRow {
     pub ts: i32,
 }
 
+// Hand-written counterpart of `NarrowTsRow`, with the non-panicking family written by hand: a
+// `TryFrom<&mut Row>` impl reading the names it passes to `row.try_get`.  The derive is what puts
+// a type into the registry of hoisted mappings, so this type has no hoisted mapping, and
+// `query_try_map*` runs this body on every row, exactly like it did before.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManualTryRow {
+    pub id: i64,
+    pub ts: i32,
+}
+
+impl TryFrom<&mut hiqlite::Row<'_>> for ManualTryRow {
+    type Error = hiqlite::Error;
+
+    fn try_from(row: &mut hiqlite::Row<'_>) -> Result<Self, Self::Error> {
+        // The same narrowing the `#[column(from_i32)]` attribute of the derive does, by hand.
+        let ts = row.try_get::<i64>("ts")?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            ts: i32::try_from(ts)
+                .map_err(|_| hiqlite::Error::Sqlite("does not fit into i32".into()))?,
+        })
+    }
+}
+
 // Reads the column `id`.  The query below selects `id` twice, so this pins down which of the two
 // equally named result columns a mapping resolves to.
 #[derive(Debug, Clone, PartialEq, FromRow)]
@@ -54,6 +78,48 @@ pub struct FirstDupId {
 #[derive(Debug, Clone, PartialEq, FromRow)]
 pub struct AliasCaseRow {
     pub idx: i64,
+}
+
+// Derived types are mapped by `query_map*` through the hoisted index path: the names of these
+// fields are resolved against the result set once per query, so the queries below feed them a
+// permuted, an aliased and a duplicated column order without changing what they read.  A struct
+// with a `flatten` field is the exception this suite also covers - it stays on the name-based path.
+#[derive(Debug, Clone, PartialEq, FromRow)]
+pub struct IndexedRow {
+    pub id: i64,
+    pub ts: i64,
+    #[column(rename = "description")]
+    pub desc: Option<String>,
+    #[column(skip)]
+    pub extra: u32,
+}
+
+/// The nested half of `IndexedOuter`; its field names are part of the parent's shape, and reading
+/// it goes through its own `From<&mut Row>`.
+#[derive(Debug, Clone, PartialEq, FromRow)]
+pub struct IndexedInner {
+    pub ts: i64,
+}
+
+/// A flattened field keeps this type on the name-based mapping, which is what the queries of
+/// `IndexedOuter` below exercise.
+#[derive(Debug, Clone, PartialEq, FromRow)]
+pub struct IndexedOuter {
+    pub id: i64,
+    #[column(flatten)]
+    pub inner: IndexedInner,
+}
+
+/// The field `desc` is named in a case that matches `description` and `DESCRIPTION`
+/// case-insensitively and neither of them exactly, which is the shape of a name lookup that has to
+/// fall back to the case-insensitive scan.  The query in `test_execute_query` answers those two
+/// names as a text and an integer column, so a fallback that picks the wrong one is visible in the
+/// mapped value.
+#[derive(Debug, Clone, PartialEq, FromRow)]
+pub struct IndexedCaseRow {
+    pub id: i64,
+    #[column(rename = "dEscRiPtIoN")]
+    pub desc: Option<String>,
 }
 
 pub async fn test_execute_query(
@@ -263,7 +329,7 @@ pub async fn test_execute_query(
     assert_eq!(row.description, data.description);
 
     log("Running the non-panicking query_try_map* tests");
-    test_try_map(client_1).await?;
+    test_try_map(client_1, client_2).await?;
 
     Ok(())
 }
@@ -271,7 +337,7 @@ pub async fn test_execute_query(
 // Exercises the non-panicking `query_try_map*` counterparts against a live cluster. A row that
 // cannot be converted is reported as an `Error` (per row) instead of aborting the whole query,
 // which is exactly what these functions exist to guarantee.
-async fn test_try_map(client_1: &Client) -> Result<(), Error> {
+async fn test_try_map(client_1: &Client, client_2: &Client) -> Result<(), Error> {
     log("Inserting rows for the non-panicking query_try_map* tests");
     let rows_affected = client_1
         .execute(
@@ -426,6 +492,243 @@ async fn test_try_map(client_1: &Client) -> Result<(), Error> {
         .query_map("SELECT id AS IdX FROM test WHERE id = $1", params!(101i64))
         .await?;
     assert_eq!(rows, vec![AliasCaseRow { idx: 101 }]);
+
+    log("query_map: a derived struct maps by name, in any column order");
+    let rows: Vec<IndexedRow> = client_1
+        .query_map(
+            "SELECT ts, description, id FROM test WHERE id = $1",
+            params!(100i64),
+        )
+        .await?;
+    assert_eq!(
+        rows,
+        vec![IndexedRow {
+            id: 100,
+            ts: 111,
+            desc: Some("try row 100".to_string()),
+            extra: 0,
+        }]
+    );
+
+    log("query_map: a flattened struct reads its parent and its nested fields from one result set");
+    let rows: Vec<IndexedOuter> = client_1
+        .query_map("SELECT ts, id FROM test WHERE id = $1", params!(101i64))
+        .await?;
+    assert_eq!(
+        rows,
+        vec![IndexedOuter {
+            id: 101,
+            inner: IndexedInner { ts: 222 },
+        }]
+    );
+
+    log("query_map: names that only differ in case are resolved as well");
+    let rows: Vec<IndexedRow> = client_1
+        .query_map(
+            "SELECT id AS Id, ts AS TS, description AS Description FROM test WHERE id = $1",
+            params!(100i64),
+        )
+        .await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, 100);
+    assert_eq!(rows[0].ts, 111);
+
+    // A field that no column matches exactly resolves through the case-insensitive scan, and that
+    // scan has one answer on the leader's own rows (rusqlite walks the columns in order) and,
+    // before, a hash-ordered one on the rows of a remote client.  `description` and `DESCRIPTION`
+    // are the same name twice, a text column and an integer column, so a wrong pick lands in the
+    // mapped value.
+    log("query_map: a case-only name match reads the same column on a local and a remote client");
+    let sql = "SELECT id, description, ts AS DESCRIPTION FROM test WHERE id = $1";
+    let rows: Vec<IndexedCaseRow> = client_1.query_map(sql, params!(100i64)).await?;
+    assert_eq!(
+        rows,
+        vec![IndexedCaseRow {
+            id: 100,
+            desc: Some("try row 100".to_string()),
+        }],
+        "the leader reads the column its scan comes to first"
+    );
+    let rows: Vec<IndexedCaseRow> = client_2.query_map(sql, params!(100i64)).await?;
+    assert_eq!(
+        rows,
+        vec![IndexedCaseRow {
+            id: 100,
+            desc: Some("try row 100".to_string()),
+        }],
+        "a remote client maps the same query onto the same column"
+    );
+
+    // A `FromRow` mapping is the panicking family: a field whose column is missing in the result
+    // set panics with that column name, on the first row that reads it.  This suite cannot show a
+    // panic, because the workspace builds with `panic = "abort"`, so it takes the test binary with
+    // it; the panic and its message are asserted in the unit tests of the query module.
+    // What it can show is the other half of the same rule: a result set with no rows has no row
+    // that reads the missing column, so it answers empty like any other empty result set does.
+    log("query_map: a missing column is not reported by a result set that has no rows");
+    let rows: Vec<IndexedRow> = client_1
+        .query_map("SELECT id FROM test WHERE id = $1", params!(999i64))
+        .await?;
+    assert!(
+        rows.is_empty(),
+        "no rows, so nothing reads the missing column"
+    );
+
+    // `query_try_map` is the non-panicking family, and it reports the same missing column per row,
+    // naming the field it cannot read.
+    log("query_try_map: the same missing column is an Error naming it, per row");
+    let res: Result<Vec<Result<TestTryRow, Error>>, Error> = client_1
+        .query_try_map("SELECT id FROM test WHERE id = $1", params!(100i64))
+        .await;
+    let rows = res.expect("a query with rows answers its rows");
+    assert_eq!(rows.len(), 1);
+    match &rows[0] {
+        Err(Error::QueryParams(msg)) => assert!(msg.contains("ts"), "unexpected message: {msg}"),
+        other => panic!("expected QueryParams about the missing column, got {other:?}"),
+    }
+
+    let res: Vec<Result<TestTryRow, Error>> = client_1
+        .query_try_map("SELECT id FROM test WHERE id = $1", params!(999i64))
+        .await
+        .expect("an empty result set answers empty, whatever its fields are named");
+    assert!(res.is_empty());
+
+    // A hand-written `impl From<&mut Row>` has no field maps to resolve, so `query_map` reads it
+    // through the names of its rows, exactly like before.
+    log("query_map: a hand-written From<&mut Row> impl keeps its name-based mapping");
+    let row: TestData = client_1
+        .query_map_one(
+            "SELECT ts, description, id FROM test WHERE id = $1",
+            params!(100i64),
+        )
+        .await?;
+    assert_eq!(row.id, 100);
+    assert_eq!(row.ts, 111);
+    assert_eq!(row.description.as_deref(), Some("try row 100"));
+
+    log("query_map_one and query_map_optional map a single row through the same index");
+    let row: IndexedRow = client_1
+        .query_map_one(
+            "SELECT id, ts, description FROM test WHERE id = $1",
+            params!(101i64),
+        )
+        .await?;
+    assert_eq!(
+        row,
+        IndexedRow {
+            id: 101,
+            ts: 222,
+            desc: None,
+            extra: 0,
+        }
+    );
+    // `IndexedOuter` needs exactly `id` and `ts`, so this result set covers all of its fields.
+    let row: Option<IndexedOuter> = client_1
+        .query_map_optional("SELECT id, ts FROM test WHERE id = $1", params!(999i64))
+        .await?;
+    assert!(row.is_none());
+
+    log("query_try_map: a row that cannot convert is the Err of its own slot");
+    let rows: Vec<Result<NarrowTsRow, Error>> = client_1
+        .query_try_map(
+            "SELECT id, ts FROM test WHERE id IN ($1, $2) ORDER BY id",
+            params!(100i64, 102i64),
+        )
+        .await?;
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].is_ok());
+    match &rows[1] {
+        Err(Error::Sqlite(msg)) => assert!(msg.contains("does not fit into i32"), "{msg}"),
+        other => panic!("expected Sqlite about the overflow, got {other:?}"),
+    }
+
+    log(
+        "query_consistent_map: the hoisted index path over rows that travelled through the network",
+    );
+    let rows: Vec<IndexedRow> = client_1
+        .query_consistent_map(
+            "SELECT ts, description, id FROM test WHERE id = $1",
+            params!(100i64),
+            ReadPolicy::ReadIndex,
+        )
+        .await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, 100);
+    assert_eq!(rows[0].ts, 111);
+    assert_eq!(rows[0].desc.as_deref(), Some("try row 100"));
+
+    // The same mappings on a client that is not the leader: the rows arrive as owned values and
+    // are mapped on the client side, which is a second implementation of the same two paths.
+    log("query_map from a non-leader client: the hoisted index path over network rows");
+    let rows: Vec<IndexedRow> = client_2
+        .query_map(
+            "SELECT ts, description, id FROM test WHERE id = $1",
+            params!(100i64),
+        )
+        .await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, 100);
+    assert_eq!(rows[0].desc.as_deref(), Some("try row 100"));
+
+    log("query_try_map from a non-leader client: the hoisted index path over network rows");
+    let rows: Vec<Result<NarrowTsRow, Error>> = client_2
+        .query_try_map("SELECT ts, id FROM test WHERE id = $1", params!(100i64))
+        .await?;
+    assert_eq!(rows.len(), 1);
+    match &rows[0] {
+        Ok(row) => assert_eq!((row.id, row.ts), (100, 111)),
+        Err(e) => panic!("expected an Ok row for id=100, got {e:?}"),
+    }
+
+    log("query_map_one from a non-leader client: a hand-written From<&mut Row> impl by name");
+    let row: TestData = client_2
+        .query_map_one(
+            "SELECT ts, description, id FROM test WHERE id = $1",
+            params!(101i64),
+        )
+        .await?;
+    assert_eq!(row.id, 101);
+    assert_eq!(row.ts, 222);
+    assert!(row.description.is_none());
+
+    // A hand-written `TryFrom<&mut Row>` impl is the non-panicking family without the derive: the
+    // errors are the ones its own body produces, and a missing column stays the `Error::Sqlite` of
+    // its `row.try_get`, because nothing about this impl is resolved ahead of the rows.
+    log("query_try_map: a hand-written TryFrom<&mut Row> impl keeps its own mapping");
+    let rows: Vec<Result<ManualTryRow, Error>> = client_1
+        .query_try_map(
+            "SELECT id, ts FROM test WHERE id IN ($1, $2) ORDER BY id",
+            params!(100i64, 102i64),
+        )
+        .await?;
+    assert_eq!(rows.len(), 2);
+    match &rows[0] {
+        Ok(row) => assert_eq!((row.id, row.ts), (100, 111)),
+        Err(e) => panic!("expected an Ok row for id=100, got {e:?}"),
+    }
+    match &rows[1] {
+        Err(Error::Sqlite(msg)) => assert!(msg.contains("does not fit into i32"), "{msg}"),
+        other => panic!("expected Sqlite about the overflow, got {other:?}"),
+    }
+
+    log("query_try_map_one: a hand-written TryFrom<&mut Row> impl maps one row");
+    let row: Result<ManualTryRow, Error> = client_1
+        .query_try_map_one("SELECT ts, id FROM test WHERE id = $1", params!(101i64))
+        .await?;
+    match row {
+        Ok(row) => assert_eq!((row.id, row.ts), (101, 222)),
+        Err(e) => panic!("expected an Ok row for id=101, got {e:?}"),
+    }
+
+    log("query_try_map: a hand-written impl reports a missing column as its own Sqlite error");
+    let rows: Vec<Result<ManualTryRow, Error>> = client_2
+        .query_try_map("SELECT ts FROM test WHERE id = $1", params!(100i64))
+        .await?;
+    assert_eq!(rows.len(), 1);
+    match &rows[0] {
+        Err(Error::Sqlite(msg)) => assert!(msg.contains("id"), "unexpected message: {msg}"),
+        other => panic!("expected Sqlite naming the missing column, got {other:?}"),
+    }
 
     log("Cleaning up the non-panicking query_try_map* test rows");
     let rows_affected = client_1

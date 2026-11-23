@@ -826,19 +826,25 @@ mod tests {
     #[test]
     #[should_panic(expected = "unknown node flag 'nope'")]
     fn node_line_rejects_an_unknown_flag() {
-        Node::parse_line("1 10.0.0.1:8100 10.0.0.1:8200 nope");
+        // The panic is the whole point, so the assert below never runs; it is here to keep the
+        // refused line's value used and named.
+        let (node, disable) = Node::parse_line("1 10.0.0.1:8100 10.0.0.1:8200 nope");
+        assert!(!disable, "the line must be refused, it parsed to {node:?}");
     }
 
     #[test]
     #[should_panic(expected = "too many values")]
     fn node_line_rejects_extra_values() {
-        Node::parse_line("1 10.0.0.1:8100 10.0.0.1:8200 election_disable extra");
+        let (node, disable) =
+            Node::parse_line("1 10.0.0.1:8100 10.0.0.1:8200 election_disable extra");
+        assert!(!disable, "the line must be refused, it parsed to {node:?}");
     }
 
     #[test]
     #[should_panic(expected = "expected 'id addr_raft addr_api'")]
     fn node_line_rejects_missing_values() {
-        Node::parse_line("1 10.0.0.1:8100");
+        let (node, disable) = Node::parse_line("1 10.0.0.1:8100");
+        assert!(!disable, "the line must be refused, it parsed to {node:?}");
     }
 
     #[test]

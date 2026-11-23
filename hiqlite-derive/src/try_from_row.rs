@@ -104,12 +104,24 @@ pub fn impl_try_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
         body.push(ts);
     }
 
+    let indexed_try = crate::indexed::impl_indexed(&plan, crate::indexed::IndexedKind::Try);
+
+    // Same registration rule as `FromRow`, for the non-panicking family, and the same reason to
+    // keep the bounds of the hoisted impl off this impl.
+    let register = crate::from_row::register_marker(
+        &plan,
+        &quote! { ::hiqlite::register_hoisted_try::<#name #ty_generics>() },
+    );
+
     Ok(quote! {
+        #indexed_try
+
         impl #impl_generics ::std::convert::TryFrom<&mut ::hiqlite::Row<'_>> for #name #ty_generics #where_clause {
             type Error = ::hiqlite::Error;
 
             #[inline]
             fn try_from(row: &mut ::hiqlite::Row<'_>) -> Result<Self, Self::Error> {
+                #register
                 Ok(Self { #(#body)* })
             }
         }
@@ -144,6 +156,17 @@ mod tests {
         assert!(
             compact.contains("Ok(Self{"),
             "body must be wrapped in Ok(...) to satisfy the Result return type: {out}"
+        );
+    }
+
+    #[test]
+    fn the_try_side_publishes_no_shape() {
+        // `query_try_map()` reports a column mismatch as an error at runtime, so its side needs no
+        // compile-time shape; publishing one from both sides of a type would collide.
+        let out = generate(r"struct Test { a: i64, b: String }").replace(' ', "");
+        assert!(
+            !out.contains("::hiqlite::SqlShape"),
+            "only the `FromRow` side publishes a shape: {out}"
         );
     }
 
@@ -229,6 +252,16 @@ mod tests {
         assert!(
             compact.contains("TryFrom::try_from(&mut*row)?"),
             "flatten not converted via TryFrom<&mut Row>: {out}"
+        );
+    }
+
+    #[test]
+    fn the_try_from_impl_registers_the_non_panicking_mapping() {
+        let out = generate("struct Row { id: i64 }");
+        let compact = out.replace(' ', "");
+        assert!(
+            compact.contains("::hiqlite::register_hoisted_try::<Row>()"),
+            "the TryFrom body must register the type: {out}"
         );
     }
 

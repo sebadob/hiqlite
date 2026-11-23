@@ -43,6 +43,19 @@ must not link to `#L123`. Line references drift and nobody maintains them. Docs 
 something that is not public API - operators want to use the thing, not read it. When a doc points at
 code at all, it points at a module path, never at a line. "Where things live" belongs in this file.
 
+**MUST FOLLOW - helpers live in the `impl` of the type they serve:** a free function that purely
+exists to solve something about one `struct` - it builds that type, returns it, mutates it, or is
+only ever called from that type's methods - is an associated function of that `impl` block.
+`Setup::hoisted::<T>(stmt)`, never `fn hoisted_setup::<T>(stmt)`. Lone functions orbiting a type
+hide behavior from everyone who reads the type. A helper with no owner type, one that serves a
+module, stays a free function.
+
+**MUST FOLLOW - never `#[allow(...)]` a lint because you can:** change the code so the lint does not
+fire. Take `&str` where a closure can hand a `String` over, split a function whose "unnecessary"
+`Result` only exists to match a shared function-pointer type, return what the caller wants. An allow
+needs a reason you would defend out loud, on the narrowest item; when in doubt, ask before adding
+one. A pile of allows is a pile of lint-blind spots.
+
 ## Repository layout
 
 - `hiqlite/` main crate
@@ -62,6 +75,12 @@ code at all, it points at a module path, never at a line. "Where things live" be
       order used by a graceful shutdown
     - `hiqlite/src/start.rs` the router nest with all `/cluster` routes
 - `hiqlite-derive/` derive macros
+    - `hiqlite-derive/src/check.rs` + `hiqlite-derive/src/sql_macro.rs` the `sql!()`, `sql_map!()`
+      and `sql_batch!()` compile-time query check: it builds the crate's `migrations` directory,
+      or the `HQL_MIGRATIONS` one, into an in-memory SQLite, and it checks the result columns of a
+      `sql_map!()` against the `SqlShape::SHAPE` the derive publishes, and it keeps its verdicts in
+      `.hiqlite-sql/` at the workspace root (gitignored). Debug builds only, plus the opt-in
+      `sql-check-release` feature.
 - `hiqlite-wal/` WAL file implementation for `openraft`
 - `docs/` operator-facing guides (setup, playbooks, things to watch out for); no code, links to it
 - `dashboard/` dashboard to query the DB (`sqlite` feature only); Svelte file during development, but compiled into

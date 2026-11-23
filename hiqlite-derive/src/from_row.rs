@@ -4,8 +4,8 @@ use proc_macro2::{TokenStream, TokenTree};
 use quote::{ToTokens, quote};
 use syn::spanned::Spanned;
 use syn::{
-    Attribute, Data, DeriveInput, GenericArgument, Generics, Ident, LitStr, Meta, MetaList,
-    PathArguments, Type,
+    Attribute, Data, DeriveInput, GenericArgument, GenericParam, Generics, Ident, LitStr, Meta,
+    MetaList, PathArguments, Type,
 };
 
 /// The validated derive input shared by the `FromRow` and `TryFromRow` derives.
@@ -203,13 +203,63 @@ pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
         None
     };
 
+    let indexed_from = crate::indexed::impl_indexed(&plan, crate::indexed::IndexedKind::From);
+    let indexed_try = crate::indexed::impl_indexed(&plan, crate::indexed::IndexedKind::Try);
+
+    // The name-based `From` body is the first code of a type that any query runs, so it is the
+    // place where the type hands its hoisted mapping to the query engine, once per type.  The
+    // bounds a hoisted impl needs over its `flatten` fields belong to that impl alone: the `From`
+    // impl keeps exactly the bounds it always had, so a type that flattens a hand-written
+    // `From<&mut Row>` keeps compiling and stays on the name-based path.
+    let register = register_marker(
+        &plan,
+        &quote! { ::hiqlite::register_hoisted::<#name #ty_generics>() },
+    );
+
     Ok(quote! {
         impl #impl_generics ::std::convert::From<&mut ::hiqlite::Row<'_>> for #name #ty_generics #where_clause {
             #[inline]
             fn from(row: &mut ::hiqlite::Row<'_>) -> Self {
                 #from_str_import
+                #register
                 Self { #(#body)* }
             }
+        }
+
+        #indexed_from
+        #indexed_try
+    })
+}
+
+/// The registration of a type in the query engine's registry of hoisted mappings, fired on the
+/// first row the type maps.
+///
+/// A type with a lifetime parameter is never `'static`, so it cannot enter the registry: such a
+/// type is mapped by the names its body reads, which is the path it has always taken.
+///
+/// A type with a `flatten` field is not registered either.  Its hoisted impl exists only under the
+/// bounds of its parts, which a `From` body cannot assume - a flattened type only has to provide a
+/// `From<&mut Row>` - and registration must be something the body can always run.  Such a type is
+/// mapped by its names, and a flat type with no `flatten` field gets the hoisted path.
+pub(crate) fn register_marker(plan: &RowPlan, call: &TokenStream) -> Option<TokenStream> {
+    let blocked = plan
+        .generics
+        .params
+        .iter()
+        .any(|p| matches!(p, GenericParam::Lifetime(_)))
+        || plan
+            .fields
+            .iter()
+            .any(|f| matches!(f.attr, ColumnAttr::Flatten));
+    if blocked {
+        return None;
+    }
+    Some(quote! {
+        static REGISTERED: ::std::sync::atomic::AtomicBool =
+            ::std::sync::atomic::AtomicBool::new(false);
+        if !REGISTERED.load(::std::sync::atomic::Ordering::Relaxed) {
+            REGISTERED.store(true, ::std::sync::atomic::Ordering::Relaxed);
+            #call;
         }
     })
 }
@@ -475,145 +525,363 @@ fn is_field_ty_opt(ty: &Type) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use syn::parse_str;
 
-    fn generate(input: &str) -> String {
-        let input = parse_str::<DeriveInput>(input).unwrap();
+    fn derive(code: &str) -> String {
+        let input: DeriveInput = syn::parse_str(code).unwrap();
         impl_from_row(input).unwrap().to_string()
     }
 
-    fn generate_err(input: &str) -> String {
-        let input = parse_str::<DeriveInput>(input).unwrap();
+    fn parse_error(code: &str) -> String {
+        let input: DeriveInput = syn::parse_str(code).unwrap();
         match impl_from_row(input) {
-            Ok(ts) => panic!("expected error, got: {ts}"),
-            Err(err) => err.to_compile_error().to_string(),
+            Ok(_) => panic!("the derive must not accept this input"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    /// Compact form of the generated tokens: `quote!` renders with spaces around `::`, `&` and `<`.
+    fn compact(code: &str) -> String {
+        code.replace(' ', "")
+    }
+
+    #[test]
+    fn generates_the_from_impl() {
+        let out = derive("struct Row { id: i64 }");
+        assert!(
+            compact(&out).contains("impl::std::convert::From<&mut::hiqlite::Row<'_>>forRow"),
+            "missing From impl: {out}"
+        );
+        assert!(
+            compact(&out).contains("fnfrom(row:&mut::hiqlite::Row<'_>)->Self"),
+            "missing the `from` signature: {out}"
+        );
+    }
+
+    #[test]
+    fn reads_every_field_from_the_row() {
+        let out = derive("struct Row { id: i64, name: String, opt: Option<i64> }");
+        assert!(
+            compact(&out).contains("Self{"),
+            "missing struct literal: {out}"
+        );
+        for (field, ty) in [("id", "i64"), ("name", "String"), ("opt", "Option<i64>")] {
+            assert!(
+                compact(&out).contains(&format!("row.get::<{ty}>(\"{field}\")")),
+                "field `{field}` is not read by its name with its type: {out}"
+            );
         }
     }
 
     #[test]
-    fn basic_mapping_uses_row_get_by_column_name() {
-        let out = generate(
-            r#"struct Test { #[column(rename = "name_db")] name: String, skip_me: bool }"#,
-        );
-        // `quote!` renders with spaces around `::`, so shape checks run on the compact form.
-        let compact = out.replace(' ', "");
+    fn rename_uses_the_given_column_name() {
+        let out = derive("struct Row { #[column(rename = \"the_id\")] id: i64 }");
         assert!(
-            compact.contains("From<&mut::hiqlite::Row"),
-            "missing From impl: {out}"
-        );
-        assert!(out.contains("name_db"), "rename not honored: {out}");
-    }
-
-    #[test]
-    fn from_i32_uses_try_from_and_never_clamps() {
-        let out = generate(
-            r"struct Test { #[column(from_i32)] a: i32, #[column(from_i32)] b: Option<i32> }",
-        );
-        let compact = out.replace(' ', "");
-        assert!(
-            compact.contains("TryFrom<i64>>::try_from"),
-            "missing try_from conversion: {out}"
-        );
-        assert!(
-            !compact.contains("cmp::min"),
-            "silent clamp still present: {out}"
-        );
-        assert!(
-            !compact.contains("cmp::max"),
-            "silent clamp still present: {out}"
-        );
-        assert!(
-            out.contains("does not fit into i32"),
-            "no panic message: {out}"
+            compact(&out).contains("row.get::<i64>(\"the_id\")"),
+            "rename is not used as the column name: {out}"
         );
     }
 
     #[test]
-    fn trailing_comma_is_accepted() {
+    fn conversion_keywords_read_the_documented_types() {
+        let out = derive("struct Row { #[column(from_i64)] big: i128 }");
+        assert!(
+            compact(&out).contains("row.get::<i64>(\"big\")") && out.contains(". into ()"),
+            "from_i64 must read an i64 and convert it: {out}"
+        );
+
+        let out = derive("struct Row { #[column(from_i32)] num: i32 }");
+        assert!(
+            out.contains("TryFrom < i64 >") && out.contains(". expect ("),
+            "from_i32 must narrow through TryFrom with a message: {out}"
+        );
+
+        let out = derive("struct Row { #[column(from_string)] name: String }");
+        assert!(
+            compact(&out).contains("row.get::<String>(\"name\")") && out.contains(". into ()"),
+            "from_string must read a String and convert: {out}"
+        );
+
+        let out = derive("struct Row { #[column(parse)] date: chrono::NaiveDate }");
+        assert!(
+            compact(&out).contains("row.get::<String>(\"date\")")
+                && out.contains(". parse ()")
+                && compact(&out).contains("use::std::str::FromStr"),
+            "parse must read text, import FromStr and parse: {out}"
+        );
+    }
+
+    #[test]
+    fn skip_leaves_the_field_to_default() {
+        let out = derive("struct Row { id: i64, #[column(skip)] skipped: u32 }");
+        assert!(
+            compact(&out).contains("Default::default()"),
+            "skip must default the field: {out}"
+        );
+        assert!(
+            !compact(&out).contains("row.get(\"skipped\")"),
+            "skip must not read a column: {out}"
+        );
+    }
+
+    #[test]
+    fn flatten_delegates_to_the_nested_conversion() {
+        let out = derive("struct Row { #[column(flatten)] inner: Inner }");
+        assert!(
+            out.contains("TryFrom :: try_from (& mut * row)")
+                && out.contains("failed to flatten column"),
+            "flatten must delegate to the nested TryFrom: {out}"
+        );
+    }
+
+    #[test]
+    fn a_second_column_attribute_on_one_field_is_rejected() {
+        let msg = parse_error("struct Row { #[column(rename = \"a\")] #[column(skip)] id: i64 }");
+        assert!(
+            msg.contains("only one `#[column]` attribute per field is allowed"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_bare_column_attribute_is_rejected() {
+        let msg = parse_error("struct Row { #[column] id: i64 }");
+        assert!(
+            msg.contains("expected `#[column(...)]`"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn skip_and_rename_cannot_be_combined() {
+        let msg = parse_error("struct Row { #[column(skip, rename = \"a\")] id: i64 }");
+        assert!(
+            msg.contains("cannot be combined with `rename`"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_column_keyword_is_rejected() {
+        let msg = parse_error("struct Row { #[column(nope)] id: i64 }");
+        assert!(!msg.is_empty(), "the derive must reject unknown keywords");
+    }
+
+    /// The check behind this test is the invariant the hoisted slot table and the `sql_map!()`
+    /// shape are built on: a type never reads the same column twice.
+    #[test]
+    fn two_fields_mapping_to_one_column_are_rejected() {
+        let msg = parse_error(
+            "struct Row { #[column(rename = \"x\")] a: i64, b: i64, #[column(rename = \"x\")] \
+             c: String }",
+        );
+        assert!(
+            msg.contains("duplicate column 'x'"),
+            "fields `a` and `c` both map to `x`: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_tuple_struct_is_rejected() {
+        let msg = parse_error("struct Row(i64);");
+        assert!(
+            msg.contains("named fields"),
+            "a tuple field has no name to map: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_enum_is_rejected() {
+        let msg = parse_error("enum Row { A }");
+        assert!(
+            msg.contains("derived for a `struct`"),
+            "the derive maps the fields of a struct: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_unsigned_target_of_a_conversion_is_rejected() {
+        let msg = parse_error("struct Row { #[column(from_i32)] a: u8 }");
+        assert!(
+            msg.contains("cast_ints"),
+            "the lossy cast must name the feature that allows it: {msg}"
+        );
+    }
+
+    #[test]
+    fn generates_the_hoisted_impls() {
+        let out = derive("struct Row { id: i64, name: String }");
+        let c = compact(&out);
+        assert!(
+            c.contains("impl::hiqlite::FromRowIndexedforRow"),
+            "missing FromRowIndexed impl: {out}"
+        );
+        assert!(
+            c.contains("impl::hiqlite::TryFromRowIndexedforRow"),
+            "missing TryFromRowIndexed impl: {out}"
+        );
+        assert!(
+            c.contains("constFIELD_COUNT:usize=2usize"),
+            "field count wrong: {out}"
+        );
+        assert!(
+            c.contains(r#"=&::hiqlite::FieldNames::new(&[("id",0u16),("name",1u16),])"#),
+            "the sorted field table is missing: {out}"
+        );
+        assert!(
+            c.contains("row.get_idx::<i64>(idx[0usize])")
+                && c.contains("row.get_idx::<String>(idx[1usize])"),
+            "fields not read by slot index: {out}"
+        );
+        assert!(
+            c.contains("row.try_get_idx::<i64>(idx[0usize])?"),
+            "the Try impl must not read by name: {out}"
+        );
+    }
+
+    #[test]
+    fn a_flattened_field_gets_its_own_segment() {
+        let out = derive("struct Row { id: i64, #[column(flatten)] inner: Inner }");
+        let c = compact(&out);
+        assert!(
+            c.contains(
+                "constFIELD_COUNT:usize=1usize+<Inneras::hiqlite::FromRowIndexed>::FIELD_COUNT"
+            ),
+            "nested fields not counted: {out}"
+        );
+        assert!(
+            c.contains("maps.extend(<Inneras::hiqlite::FromRowIndexed>::field_maps()"),
+            "nested segment not merged: {out}"
+        );
+        assert!(
+            c.contains("o+(1usize)asu16"),
+            "nested segment not offset behind the own fields: {out}"
+        );
+        assert!(
+            c.contains("&idx[1usize..1usize+<Inneras::hiqlite::FromRowIndexed>::FIELD_COUNT]"),
+            "nested slice starts at the wrong slot: {out}"
+        );
+        assert!(
+            c.contains("whereInner:::hiqlite::FromRowIndexed"),
+            "missing the bound of the nested type: {out}"
+        );
+    }
+
+    #[test]
+    fn two_flattened_fields_are_offset_behind_each_other() {
         let out =
-            generate(r"struct Test { #[column(from_i32,)] a: i16, #[column(skip,)] b: bool }");
-        let compact = out.replace(' ', "");
-        assert!(compact.contains("TryFrom<i64>>::try_from"), "got: {out}");
-    }
-
-    #[test]
-    fn trailing_junk_is_rejected() {
-        let err = generate_err(r"struct Test { #[column(from_i32 junk)] a: i16 }");
-        assert!(err.contains("expected `,`"), "got: {err}");
-    }
-
-    #[test]
-    fn rename_requires_string_literal() {
-        let err = generate_err(r"struct Test { #[column(rename = 123)] a: i64 }");
-        assert!(err.contains("string literal"), "got: {err}");
-    }
-
-    #[test]
-    fn unknown_keyword_is_rejected() {
-        let err = generate_err(r"struct Test { #[column(from_i16)] a: i16 }");
+            derive("struct Row { #[column(flatten)] a: A, id: i64, #[column(flatten)] b: B }");
+        let c = compact(&out);
         assert!(
-            err.contains("unknown column attribute 'from_i16'"),
-            "got: {err}"
+            c.contains("o+(1usize)asu16")
+                && c.contains("o+(1usize+<Aas::hiqlite::FromRowIndexed>::FIELD_COUNT)asu16"),
+            "segments not chained: {out}"
         );
     }
 
     #[test]
-    fn empty_attribute_is_rejected() {
-        let err = generate_err(r"struct Test { #[column()] a: i64 }");
+    fn the_from_impl_registers_the_hoisted_mapping() {
+        let out = derive("struct Row { id: i64 }");
+        let c = compact(&out);
         assert!(
-            err.contains("expected at least one column attribute"),
-            "got: {err}"
+            c.contains("::hiqlite::register_hoisted::<Row>()"),
+            "the From body must register the type: {out}"
+        );
+        assert!(
+            c.contains(
+                "staticREGISTERED:::std::sync::atomic::AtomicBool=::std::sync::atomic::AtomicBool::new(false)"
+            ),
+            "registration must run once per type: {out}"
         );
     }
 
     #[test]
-    fn multiple_column_attrs_are_rejected() {
-        let err =
-            generate_err(r#"struct Test { #[column(from_i32)] #[column(rename = "a")] a: i16 }"#);
-        assert!(err.contains("only one `#[column]`"), "got: {err}");
-    }
-
-    #[test]
-    fn skip_cannot_be_combined_with_rename() {
-        let err = generate_err(r#"struct Test { #[column(skip, rename = "x")] a: i64 }"#);
-        assert!(err.contains("cannot be combined"), "got: {err}");
-    }
-
-    #[test]
-    fn duplicate_columns_are_rejected() {
-        let err = generate_err(
-            r#"struct Test { #[column(rename = "x")] a: i64, b: i64, #[column(rename = "x")] c: String }"#,
-        );
-        assert!(err.contains("duplicate column 'x'"), "got: {err}");
-    }
-
-    #[test]
-    fn tuple_struct_is_rejected() {
-        let err = generate_err(r"struct Test(i64);");
-        assert!(err.contains("named fields"), "got: {err}");
-    }
-
-    #[test]
-    fn enum_input_is_rejected() {
-        let err = generate_err(r"enum Test { A }");
-        assert!(err.contains("only be derived for a `struct`"), "got: {err}");
-    }
-
-    #[test]
-    fn unsigned_target_is_rejected() {
-        let err = generate_err(r"struct Test { #[column(from_i32)] a: u8 }");
-        assert!(err.contains("cast_ints"), "got: {err}");
-        let err = generate_err(r"struct Test { #[column(from_i64)] b: Option<u64> }");
-        assert!(err.contains("cast_ints"), "got: {err}");
-    }
-
-    #[test]
-    fn flatten_uses_try_from_on_row() {
-        let out = generate(r"struct Test { #[column(flatten)] inner: Inner, plain: i64 }");
-        let compact = out.replace(' ', "");
+    fn a_struct_with_a_lifetime_is_never_registered() {
+        let out = derive("struct Row<'a> { id: &'a i64 }");
+        let c = compact(&out);
         assert!(
-            compact.contains("TryFrom::try_from(&mut*row)"),
-            "got: {out}"
+            !c.contains("register_hoisted"),
+            "a type that is not 'static cannot enter the registry: {out}"
+        );
+    }
+
+    /// Registration is blocked for the same reason the `From` body is kept free of hoisted bounds:
+    /// a flattened type only has to provide a `From<&mut Row>`, so the parent cannot register a
+    /// mapping that needs its nested type to be hoisted as well.
+    #[test]
+    fn a_struct_with_a_flattened_field_is_never_registered() {
+        let out = derive("struct Row { id: i64, #[column(flatten)] inner: Inner }");
+        let c = compact(&out);
+        assert!(
+            !c.contains("register_hoisted"),
+            "a flattened field keeps the type on the name-based path: {out}"
+        );
+    }
+
+    #[test]
+    fn the_shape_of_a_mapped_type_is_published_once() {
+        let out = compact(&derive("struct Row { id: i64, name: String }"));
+        assert!(
+            out.contains("impl::hiqlite::SqlShapeforRow{constSHAPE:u64=::hiqlite::sql_shape(")
+                && out.contains(r#"&["id","name"]);"#),
+            "the shape `sql_map!()` compares a query's columns against is missing: {out}"
+        );
+        assert_eq!(
+            out.matches("impl::hiqlite::SqlShapeforRow").count(),
+            1,
+            "the derive emits both mapping sides and the shape exactly once: {out}"
+        );
+
+        let flat = compact(&derive(
+            "struct Row { id: i64, #[column(flatten)] inner: Inner }",
+        ));
+        assert!(
+            flat.contains("+<Inneras::hiqlite::SqlShape>::SHAPE"),
+            "a flattened part must contribute its own shape: {flat}"
+        );
+    }
+
+    #[test]
+    fn only_a_flattened_type_needs_the_mutable_segment_list() {
+        let plain = compact(&derive("struct Row { id: i64 }"));
+        assert!(
+            plain.contains("letmaps:::hiqlite::FieldMaps<\'static>=::std::vec![(NAMES,0u16)]"),
+            "own fields only must build the segments in one literal: {plain}"
+        );
+        assert!(
+            !plain.contains("letmutmaps"),
+            "no `mut` without segments to extend: {plain}"
+        );
+
+        let flat = compact(&derive("struct Row { #[column(flatten)] inner: Inner }"));
+        assert!(
+            flat.contains("letmutmaps:::hiqlite::FieldMaps<\'static>=::std::vec::Vec::new()")
+                && flat.contains("maps.push((NAMES,0u16))")
+                && flat.contains("maps.extend("),
+            "segments of a nested type are pushed and extended: {flat}"
+        );
+    }
+
+    #[test]
+    fn a_skipped_field_takes_no_slot() {
+        let out = derive("struct Row { id: i64, #[column(skip)] extra: u32 }");
+        let c = compact(&out);
+        assert!(
+            c.contains("constFIELD_COUNT:usize=1usize"),
+            "skip counted as a column: {out}"
+        );
+        assert!(
+            !c.contains(r#"("extra","#),
+            "skip must not appear in the field map: {out}"
+        );
+    }
+
+    #[test]
+    fn a_derived_generic_struct_keeps_its_generics() {
+        let out = derive("struct Wrapper<T> { inner: T, id: i64 }");
+        assert!(
+            compact(&out)
+                .contains("impl<T>::std::convert::From<&mut::hiqlite::Row<'_>>forWrapper<T>"),
+            "generic impl header: {out}"
         );
     }
 }

@@ -72,7 +72,10 @@ pub use network::management::{ElectionState, MembersState, NodeElection, NodeMem
 pub use query::cust_types::VecText;
 
 #[cfg(feature = "sqlite")]
-pub use crate::query::rows::Row;
+pub use crate::query::rows::{
+    ColIndex, FieldMaps, FieldNames, FromRowIndexed, Row, SqlShape, TryFromRowIndexed,
+    register_hoisted, register_hoisted_try, sql_shape,
+};
 #[cfg(feature = "sqlite")]
 pub use crate::store::state_machine::sqlite::{
     param::Param,

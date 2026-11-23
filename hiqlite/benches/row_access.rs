@@ -7,6 +7,11 @@
 //!     `sqlite3_column_name`, one C call per candidate column, per field, per row.
 //!   * `by_index` — `row.get(idx)`, rusqlite's bounds-checked direct column read.
 //!   * `col_idx` — the map `query::rows::ColIdx` builds once per query, then indexed reads.
+//!   * `hoisted` — the same map, but the field names are resolved into indices once per query, so
+//!     a row is walked by index: the ceiling of any cheaper per-row name lookup.
+//!   * `memo_raw` — a per-query memo keyed by the pointer of the lookup key: the ceiling of an
+//!     automatic lookup cache, and not sound for heap-built keys.
+//!   * `memo` — the same memo with a key byte check on every pointer hit: the safe version of it.
 //!   * `serde` — `serde_rusqlite::from_rows`, what `query_as` uses: the names of a query are
 //!     collected once and each row is walked positionally.
 //!
@@ -68,6 +73,15 @@ const C24: [(&str, &str); 24] = [
 ];
 
 const NULLABLE: [usize; 3] = [6, 12, 18];
+
+/// Field names of `R8` in declaration order, the order a `FromRow` derive knows upfront.
+const N8: [&str; 8] = ["id", "name", "email", "tag", "num", "rate", "opt", "blob"];
+
+/// Field names of `R24` in declaration order.
+const N24: [&str; 24] = [
+    "id", "name", "email", "tag", "num", "rate", "opt", "blob", "c9", "c10", "c11", "c12", "c13",
+    "c14", "c15", "c16", "c17", "c18", "c19", "c20", "c21", "c22", "c23", "c24",
+];
 
 /// Only a few fields are summed by the mapping functions; the rest must exist to be mapped.
 #[allow(dead_code)]
@@ -205,6 +219,31 @@ where
         b.iter(|| {
             let cols = col_idx(conn, query);
             black_box(map_all(conn, query, &mut |row| map(row, &cols)));
+        });
+    });
+    g.finish();
+}
+
+/// Maps rows through field indices that were resolved from the map once per query.  This is what a
+/// `FromRow`-style path could do, because it knows all its field names before it touches a row: N
+/// probes per query instead of N probes per row, and the ceiling for any cheaper name lookup.
+fn group_hoisted<F>(
+    c: &mut Criterion,
+    name: &str,
+    conn: &Connection,
+    query: &str,
+    fields: &[&str],
+    map: F,
+) where
+    F: Fn(&rusqlite::Row, &[u16]) -> usize,
+{
+    let mut g = c.benchmark_group(name);
+    g.sample_size(30);
+    g.bench_function("rows", |b| {
+        b.iter(|| {
+            let cols = col_idx(conn, query);
+            let idx: Vec<u16> = fields.iter().map(|name| cols[*name]).collect();
+            black_box(map_all(conn, query, &mut |row| map(row, &idx)));
         });
     });
     g.finish();
@@ -377,12 +416,237 @@ fn map24_via_idx(row: &rusqlite::Row, cols: &FxHashMap<String, u16>) -> usize {
     r.name.len() + r.email.len() + r.blob.len()
 }
 
+/// The ceiling of an automatic "cache the last lookups" memo inside a per-query index: the key of
+/// every derived lookup is a `&'static str` literal, so its pointer repeats on every row and a
+/// pointer -> index slot answers the lookup without hashing.  This is not sound as a design: a
+/// heap `String` buffer address can be freed and reused by a different string, so a real memo has
+/// to verify the key bytes, which is what `memo` measures.
+struct MemoRaw {
+    map: FxHashMap<String, u16>,
+    slots: Box<[(usize, u16)]>,
+}
+
+/// A memo that verifies the key bytes of a pointer hit, the price of doing the same trick safely.
+struct MemoChecked {
+    map: FxHashMap<String, u16>,
+    slots: Box<[(usize, u16, Box<str>)]>,
+}
+
+impl MemoRaw {
+    fn new(map: FxHashMap<String, u16>) -> Self {
+        Self {
+            map,
+            slots: vec![(0, u16::MAX); 64].into_boxed_slice(),
+        }
+    }
+
+    fn get(&mut self, name: &str) -> usize {
+        let ptr = name.as_ptr() as usize;
+        let slot = (ptr >> 5) & 63;
+        let (p, idx) = self.slots[slot];
+        if p == ptr {
+            return idx as usize;
+        }
+        let idx = self.map[name];
+        self.slots[slot] = (ptr, idx);
+        idx as usize
+    }
+}
+
+impl MemoChecked {
+    fn new(map: FxHashMap<String, u16>) -> Self {
+        Self {
+            map,
+            slots: vec![(0, u16::MAX, Box::from("")); 64].into_boxed_slice(),
+        }
+    }
+
+    fn get(&mut self, name: &str) -> usize {
+        let ptr = name.as_ptr() as usize;
+        let slot = (ptr >> 5) & 63;
+        {
+            let (p, idx, key) = &self.slots[slot];
+            if *p == ptr && &**key == name {
+                return *idx as usize;
+            }
+        }
+        let idx = self.map[name];
+        self.slots[slot] = (ptr, idx, Box::from(name));
+        idx as usize
+    }
+}
+
+fn group_memo<F>(c: &mut Criterion, name: &str, conn: &Connection, query: &str, mut map: F)
+where
+    F: FnMut(&rusqlite::Row, &mut MemoRaw) -> usize,
+{
+    let mut g = c.benchmark_group(name);
+    g.sample_size(30);
+    g.bench_function("rows", |b| {
+        b.iter(|| {
+            let mut memo = MemoRaw::new(col_idx(conn, query));
+            black_box(map_all(conn, query, &mut |row| map(row, &mut memo)));
+        });
+    });
+    g.finish();
+}
+
+fn group_memo_checked<F>(c: &mut Criterion, name: &str, conn: &Connection, query: &str, mut map: F)
+where
+    F: FnMut(&rusqlite::Row, &mut MemoChecked) -> usize,
+{
+    let mut g = c.benchmark_group(name);
+    g.sample_size(30);
+    g.bench_function("rows", |b| {
+        b.iter(|| {
+            let mut memo = MemoChecked::new(col_idx(conn, query));
+            black_box(map_all(conn, query, &mut |row| map(row, &mut memo)));
+        });
+    });
+    g.finish();
+}
+
+fn map8_memo(row: &rusqlite::Row, m: &mut MemoRaw) -> usize {
+    let r = R8 {
+        id: row.get(m.get("id")).unwrap(),
+        name: row.get(m.get("name")).unwrap(),
+        email: row.get(m.get("email")).unwrap(),
+        tag: row.get(m.get("tag")).unwrap(),
+        num: row.get(m.get("num")).unwrap(),
+        rate: row.get(m.get("rate")).unwrap(),
+        opt: row.get(m.get("opt")).unwrap(),
+        blob: row.get(m.get("blob")).unwrap(),
+    };
+    r.name.len() + r.email.len() + r.blob.len()
+}
+
+fn map24_memo(row: &rusqlite::Row, m: &mut MemoRaw) -> usize {
+    let r = R24 {
+        id: row.get(m.get("id")).unwrap(),
+        name: row.get(m.get("name")).unwrap(),
+        email: row.get(m.get("email")).unwrap(),
+        tag: row.get(m.get("tag")).unwrap(),
+        num: row.get(m.get("num")).unwrap(),
+        rate: row.get(m.get("rate")).unwrap(),
+        opt: row.get(m.get("opt")).unwrap(),
+        blob: row.get(m.get("blob")).unwrap(),
+        c9: row.get(m.get("c9")).unwrap(),
+        c10: row.get(m.get("c10")).unwrap(),
+        c11: row.get(m.get("c11")).unwrap(),
+        c12: row.get(m.get("c12")).unwrap(),
+        c13: row.get(m.get("c13")).unwrap(),
+        c14: row.get(m.get("c14")).unwrap(),
+        c15: row.get(m.get("c15")).unwrap(),
+        c16: row.get(m.get("c16")).unwrap(),
+        c17: row.get(m.get("c17")).unwrap(),
+        c18: row.get(m.get("c18")).unwrap(),
+        c19: row.get(m.get("c19")).unwrap(),
+        c20: row.get(m.get("c20")).unwrap(),
+        c21: row.get(m.get("c21")).unwrap(),
+        c22: row.get(m.get("c22")).unwrap(),
+        c23: row.get(m.get("c23")).unwrap(),
+        c24: row.get(m.get("c24")).unwrap(),
+    };
+    r.name.len() + r.email.len() + r.blob.len()
+}
+
+fn map8_memo_checked(row: &rusqlite::Row, m: &mut MemoChecked) -> usize {
+    let r = R8 {
+        id: row.get(m.get("id")).unwrap(),
+        name: row.get(m.get("name")).unwrap(),
+        email: row.get(m.get("email")).unwrap(),
+        tag: row.get(m.get("tag")).unwrap(),
+        num: row.get(m.get("num")).unwrap(),
+        rate: row.get(m.get("rate")).unwrap(),
+        opt: row.get(m.get("opt")).unwrap(),
+        blob: row.get(m.get("blob")).unwrap(),
+    };
+    r.name.len() + r.email.len() + r.blob.len()
+}
+
+fn map24_memo_checked(row: &rusqlite::Row, m: &mut MemoChecked) -> usize {
+    let r = R24 {
+        id: row.get(m.get("id")).unwrap(),
+        name: row.get(m.get("name")).unwrap(),
+        email: row.get(m.get("email")).unwrap(),
+        tag: row.get(m.get("tag")).unwrap(),
+        num: row.get(m.get("num")).unwrap(),
+        rate: row.get(m.get("rate")).unwrap(),
+        opt: row.get(m.get("opt")).unwrap(),
+        blob: row.get(m.get("blob")).unwrap(),
+        c9: row.get(m.get("c9")).unwrap(),
+        c10: row.get(m.get("c10")).unwrap(),
+        c11: row.get(m.get("c11")).unwrap(),
+        c12: row.get(m.get("c12")).unwrap(),
+        c13: row.get(m.get("c13")).unwrap(),
+        c14: row.get(m.get("c14")).unwrap(),
+        c15: row.get(m.get("c15")).unwrap(),
+        c16: row.get(m.get("c16")).unwrap(),
+        c17: row.get(m.get("c17")).unwrap(),
+        c18: row.get(m.get("c18")).unwrap(),
+        c19: row.get(m.get("c19")).unwrap(),
+        c20: row.get(m.get("c20")).unwrap(),
+        c21: row.get(m.get("c21")).unwrap(),
+        c22: row.get(m.get("c22")).unwrap(),
+        c23: row.get(m.get("c23")).unwrap(),
+        c24: row.get(m.get("c24")).unwrap(),
+    };
+    r.name.len() + r.email.len() + r.blob.len()
+}
+
+fn map8_hoisted(row: &rusqlite::Row, idx: &[u16]) -> usize {
+    let r = R8 {
+        id: row.get(idx[0] as usize).unwrap(),
+        name: row.get(idx[1] as usize).unwrap(),
+        email: row.get(idx[2] as usize).unwrap(),
+        tag: row.get(idx[3] as usize).unwrap(),
+        num: row.get(idx[4] as usize).unwrap(),
+        rate: row.get(idx[5] as usize).unwrap(),
+        opt: row.get(idx[6] as usize).unwrap(),
+        blob: row.get(idx[7] as usize).unwrap(),
+    };
+    r.name.len() + r.email.len() + r.blob.len()
+}
+
+fn map24_hoisted(row: &rusqlite::Row, idx: &[u16]) -> usize {
+    let r = R24 {
+        id: row.get(idx[0] as usize).unwrap(),
+        name: row.get(idx[1] as usize).unwrap(),
+        email: row.get(idx[2] as usize).unwrap(),
+        tag: row.get(idx[3] as usize).unwrap(),
+        num: row.get(idx[4] as usize).unwrap(),
+        rate: row.get(idx[5] as usize).unwrap(),
+        opt: row.get(idx[6] as usize).unwrap(),
+        blob: row.get(idx[7] as usize).unwrap(),
+        c9: row.get(idx[8] as usize).unwrap(),
+        c10: row.get(idx[9] as usize).unwrap(),
+        c11: row.get(idx[10] as usize).unwrap(),
+        c12: row.get(idx[11] as usize).unwrap(),
+        c13: row.get(idx[12] as usize).unwrap(),
+        c14: row.get(idx[13] as usize).unwrap(),
+        c15: row.get(idx[14] as usize).unwrap(),
+        c16: row.get(idx[15] as usize).unwrap(),
+        c17: row.get(idx[16] as usize).unwrap(),
+        c18: row.get(idx[17] as usize).unwrap(),
+        c19: row.get(idx[18] as usize).unwrap(),
+        c20: row.get(idx[19] as usize).unwrap(),
+        c21: row.get(idx[20] as usize).unwrap(),
+        c22: row.get(idx[21] as usize).unwrap(),
+        c23: row.get(idx[22] as usize).unwrap(),
+        c24: row.get(idx[23] as usize).unwrap(),
+    };
+    r.name.len() + r.email.len() + r.blob.len()
+}
+
 fn bench(c: &mut Criterion) {
     let conn8 = setup("t8", &C8);
     let q8 = sql("t8", &C8);
     group(c, "w8/by_name", &conn8, &q8, map8_by_name);
     group(c, "w8/by_index", &conn8, &q8, map8_by_index);
     group_idx(c, "w8/col_idx", &conn8, &q8, map8_via_idx);
+    group_hoisted(c, "w8/hoisted", &conn8, &q8, &N8, map8_hoisted);
+    group_memo(c, "w8/memo_raw", &conn8, &q8, map8_memo);
+    group_memo_checked(c, "w8/memo", &conn8, &q8, map8_memo_checked);
     group_serde_8(c, &conn8, &q8);
 
     let conn24 = setup("t24", &C24);
@@ -390,6 +654,9 @@ fn bench(c: &mut Criterion) {
     group(c, "w24/by_name", &conn24, &q24, map24_by_name);
     group(c, "w24/by_index", &conn24, &q24, map24_by_index);
     group_idx(c, "w24/col_idx", &conn24, &q24, map24_via_idx);
+    group_hoisted(c, "w24/hoisted", &conn24, &q24, &N24, map24_hoisted);
+    group_memo(c, "w24/memo_raw", &conn24, &q24, map24_memo);
+    group_memo_checked(c, "w24/memo", &conn24, &q24, map24_memo_checked);
     group_serde_24(c, &conn24, &q24);
 
     // The fixed per-query cost of building the map, which is all a statement cache would save.

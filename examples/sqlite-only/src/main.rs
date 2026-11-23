@@ -1,10 +1,16 @@
-use hiqlite::macros::{embed::*, params, FromRow};
+use hiqlite::macros::{embed::*, params, sql, sql_batch, sql_map, FromRow};
 use hiqlite::{Error, NodeConfig, StmtIndex};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use tokio::fs;
 use tracing_subscriber::EnvFilter;
 
+/// The migrations of this example, applied with `client.migrate()` below.
+///
+/// The `sql!()`, `sql_map!()` and `sql_batch!()` macros in this example check every query against
+/// exactly this directory while the crate compiles, so a query that names a table or column that is
+/// not in these files, and a query whose columns are not the fields of the type it maps, never
+/// reaches the runtime.
 #[derive(Embed)]
 #[folder = "migrations"]
 struct Migrations;
@@ -46,12 +52,12 @@ async fn main() -> Result<(), Error> {
     client.migrate::<Migrations>().await?;
 
     log("Make sure table is empty from older example runs");
-    client.execute("DELETE FROM test", params!()).await?;
+    client.execute(sql!("DELETE FROM test"), params!()).await?;
 
     log("Insert a row");
     client
         .execute(
-            "INSERT INTO test (id, num, description) VALUES ($1, $2, $3)",
+            sql!("INSERT INTO test (id, num, description) VALUES ($1, $2, $3)"),
             params!("id1", 123, "my description for 1. row"),
         )
         .await?;
@@ -63,7 +69,7 @@ async fn main() -> Result<(), Error> {
     // `impl From<&mut Row<'_>>`
 
     let res: Entity = client
-        .query_as_one("SELECT * FROM test WHERE id = $1", params!("id1"))
+        .query_as_one(sql!("SELECT * FROM test WHERE id = $1"), params!("id1"))
         .await?;
     debug(&res);
     assert_eq!(res.id, "id1");
@@ -76,7 +82,10 @@ async fn main() -> Result<(), Error> {
     log("Let's get the data back from the DB in a more efficient and faster way with more manual work");
 
     let res: Entity = client
-        .query_map_one("SELECT * FROM test WHERE id = $1", params!("id1"))
+        .query_map_one(
+            sql_map!(Entity, "SELECT * FROM test WHERE id = $1"),
+            params!("id1"),
+        )
         .await?;
     debug(&res);
     assert_eq!(res.id, "id1");
@@ -88,7 +97,10 @@ async fn main() -> Result<(), Error> {
 
     // Instead of the *_one queries, you can leave it out to retrieve multiple rows
     let res: Vec<Entity> = client
-        .query_map("SELECT * FROM test WHERE id = $1", params!("id1"))
+        .query_map(
+            sql_map!(Entity, "SELECT * FROM test WHERE id = $1"),
+            params!("id1"),
+        )
         .await?;
     debug(&res);
     assert_eq!(res.len(), 1);
@@ -108,7 +120,7 @@ async fn main() -> Result<(), Error> {
 
     log("Testing multiple executes in a transaction");
 
-    let sql = "INSERT INTO test (id, num, description) VALUES ($1, $2, $3)";
+    let sql = sql!("INSERT INTO test (id, num, description) VALUES ($1, $2, $3)");
     let res = client
         .txn([
             (sql, params!("id2", 345, "my description for 2. row")),
@@ -136,8 +148,8 @@ async fn main() -> Result<(), Error> {
 
     log("Testing transaction with variable parameters");
 
-    let insert_parent = "INSERT INTO parent (description) VALUES ($1) RETURNING id";
-    let insert_child = "INSERT INTO child (parent_id, description) VALUES ($1, $2)";
+    let insert_parent = sql!("INSERT INTO parent (description) VALUES ($1) RETURNING id");
+    let insert_child = sql!("INSERT INTO child (parent_id, description) VALUES ($1, $2)");
     let res = client
         .txn([
             (insert_parent, params!("parent A")), // StmtIndex(0)
@@ -162,7 +174,7 @@ async fn main() -> Result<(), Error> {
     log("Testing simple query batching");
 
     let mut results = client
-        .batch(
+        .batch(sql_batch!(
             r#"
             INSERT INTO test (id, num, description) VALUES
                 ('batch1', 1, "Batch desc 1"),
@@ -171,7 +183,7 @@ async fn main() -> Result<(), Error> {
 
             DELETE FROM test WHERE id = 'id4';
             "#,
-        )
+        ))
         .await?;
 
     // we will receive a Vec with all the results again, just like for the transaction above
