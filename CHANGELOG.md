@@ -157,10 +157,10 @@ emits, and a query of a registered type takes the hoisted path. A type with only
 like it always was. One call handles both, and no existing `From<&mut Row>` impl needs any change.
 
 Registration is emitted for the types whose hoisted mapping needs no bounds beyond their own: a flat
-type with no lifetime parameter.  A type that flattens a field, and a generic type, have their
+type with no lifetime parameter. A type that flattens a field, and a generic type, have their
 hoisted mapping only under the bounds of their parts, which is more than the body of their `From`
 impl can assume - a flattened type only has to provide a `From<&mut Row>` at all - so those types
-stay on the name-based path.  Nothing about them changed, and nothing about them has to change:
+stay on the name-based path. Nothing about them changed, and nothing about them has to change:
 their mapping reads its columns by name like it always did, and the field mapping they get is the
 same values in the same order.
 
@@ -181,7 +181,7 @@ merged into the index of the parent, each behind the segment before it.
 The row loop is the `hoisted` group of the bench file, run with `cargo bench --features
 sqlite,macros`. The resolve step and the single-row numbers are not in the bench file, because they
 are crate-internal; they are measured in the same style of harness on the same machine, and the
-`build` group of the bench file shows the map cost the resolve step replaces.  A real
+`build` group of the bench file shows the map cost the resolve step replaces. A real
 `query_map()` call reaches the registered mapping through one function pointer per row, which
 measures within the noise of the direct call in the same harness, so a query of a derived type
 lands a hair above the `hoisted` group rather than exactly on it.
@@ -214,7 +214,7 @@ next to the `Cargo.toml` of the crate using the macro - the same directory `Clie
 applies - so a typo in a table name, a column that does not exist, or a broken keyword fails the
 build with SQLite's own message, pointing at the string:
 
-```text
+```rust,notest
 error: no such column: descrption in SELECT descrption FROM test at offset 7
   --> src/db.rs:41:25
    |
