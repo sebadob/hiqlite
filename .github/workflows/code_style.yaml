@@ -9,6 +9,7 @@ on:
             - ready_for_review
 
 env:
+    CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE: allow
     CARGO_TERM_COLOR: always
     # `clear` in the just recipes fails without TERM on CI runners
     TERM: xterm
