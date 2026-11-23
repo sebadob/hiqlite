@@ -25,7 +25,11 @@ sql-check-release = ["sql-check"]
 
 [dependencies]
 proc-macro2 = { version = "1.0.90", features = [] }
-syn = { version = "3", features = [] }
+# `full` + `parsing` so the shape derive can parse its own generated `impl` and attach the `cfg`
+# gate to it. `derive` is in `default`, which the `sql-check` features of the library turn on; a
+# consumer that builds `hiqlite-derive` bare (a `macros` dependency with `default-features = false`)
+# must opt into `derive` itself, or the derives do not compile.
+syn = { version = "3", features = ["full", "parsing"] }
 quote = "1.0.30"
 hex = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }

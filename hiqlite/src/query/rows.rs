@@ -156,12 +156,13 @@ pub type FieldMaps<'a> = Vec<(&'a FieldNames, u16)>;
 
 /// The compile-time fingerprint of a set of column names.
 ///
-/// Order and case do not change the value, and the parts of a flattened type merge by plain
-/// addition, which is what lets a nested type contribute its own names.  The `FromRow` derive
-/// computes it for the field names of a type and `sql_map!()` for the columns a query returns; the
-/// check is a `const` comparison of the two.  It is a fingerprint for the compiler, not data for
-/// storage: a collision is a missed check, never a wrong row.  The derive publishes a shape by
-/// calling this very function, so there is a single algorithm, and its value is pinned to a
+/// Order and case do not change the value, and the parts of a flattened type merge by wrapping
+/// addition - a plain `+` of two of these values overflows in most real structs, and a debug build
+/// would stop the compile over it - which is what lets a nested type contribute its own names.  The
+/// `FromRow` derive computes it for the field names of a type and `sql_map!()` for the columns a
+/// query returns; the check is a `const` comparison of the two.  It is a fingerprint for the compiler,
+/// not data for storage: a collision is a missed check, never a wrong row.  The derive publishes a
+/// shape by calling this very function, so there is a single algorithm, and its value is pinned to a
 /// literal in the tests of this module.
 #[must_use]
 pub const fn sql_shape(names: &[&str]) -> u64 {
@@ -190,10 +191,13 @@ const fn shape_of_name(name: &str) -> u64 {
 
 /// The column names a mapped type reads, published as a fingerprint for the `sql_map!()` check.
 ///
-/// The `FromRow` derive implements it for every type it maps; the `TryFromRow` derive does not,
-/// because `query_try_map()` reports a column mismatch as an error at runtime.  A hand-written
-/// [`FromRowIndexed`] impl, and any type mapped only through `TryFromRow`, adds it by listing the
-/// column names the mapping reads:
+/// The `FromRow` derive implements it for every type it maps, and a `flatten` field contributes the
+/// shape of its own type; the `TryFromRow` derive does not, because `query_try_map()` reports a
+/// column mismatch as an error at runtime.  A hand-written [`FromRowIndexed`] impl, any type mapped
+/// only through `TryFromRow`, and any type whose row mapping you write yourself, add it with the
+/// `SqlShape` derive of `hiqlite-derive`, or by listing the column names the mapping reads.  The
+/// derives emit it in debug builds, and in a release build only when `sql-check-release` is on: a
+/// plain release build compares nothing.
 ///
 /// ```
 /// # use hiqlite::{sql_shape, SqlShape};
@@ -2121,6 +2125,25 @@ mod shape_tests {
             own.wrapping_add(inner),
             sql_shape(&["id", "x", "y"]),
             "a flattened type is checked against all the columns its parts read"
+        );
+    }
+
+    const PARENT: u64 = sql_shape(&["id", "name_db", "desc", "vec_wrap"]);
+    const PART: u64 = sql_shape(&["sub_id", "sub_name", "url", "uuid"]);
+    /// The merge the derive performs, evaluated at compile time: a debug build must not stop here.
+    const MERGED: u64 = PARENT.wrapping_add(PART);
+    /// The reason it is a `wrapping_add`: these column names overflow a plain `+`, and a debug build
+    /// that evaluated one would stop the compile of a `sql_map!()` that has nothing wrong with it.
+    const _: () = assert!(PARENT > u64::MAX - PART);
+
+    #[test]
+    fn a_merged_shape_is_summed_with_wrapping_addition() {
+        assert_eq!(
+            MERGED,
+            sql_shape(&[
+                "id", "name_db", "desc", "vec_wrap", "sub_id", "sub_name", "url", "uuid"
+            ]),
+            "the merge of the two parts is the shape of all their columns"
         );
     }
 

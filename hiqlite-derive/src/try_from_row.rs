@@ -11,7 +11,7 @@ use syn::DeriveInput;
 /// of panicking: plain reads use `row.try_get`, and conversions that can fail (narrowing
 /// integers, parsing) map their error to `Error::Sqlite`.
 pub fn impl_try_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
-    let plan = plan_fields(input)?;
+    let plan = plan_fields(input, "TryFromRow")?;
     let name = &plan.name;
     let (impl_generics, ty_generics, where_clause) = plan.generics.split_for_impl();
 

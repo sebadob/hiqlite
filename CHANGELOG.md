@@ -101,6 +101,48 @@ Migration:
 possible: stop the cluster, update every node, start it again.** Stored data (WAL logs, the SQLite
 state machine, snapshots) is unaffected, and the dashboard's JSON shape for a query is unchanged.
 
+#### Shapes of Flattened Types
+
+`sql_map!()` checks the columns a query returns against the shape of the type it maps. A type that
+flattens a field can only publish its shape when every part publishes its own column names, and a
+part that publishes nothing is now a compile error **naming that part**. Before this, the columns a
+hand-written `From<&mut Row>` reads were silently left out of the check, so a `sql_map!()` of a
+nested type checked fewer columns than the mapping reads.
+
+The fix for a part whose `From<&mut Row>` you write yourself is the new `#[derive(SqlShape)]`: the
+shape-only counterpart of `FromRow`, with the same fields and the same `#[column(...)]` attributes,
+emitting only the shape and no mapping. A type that is not a struct - an `enum`, for instance -
+writes the `SqlShape` impl the docs of `SqlShape` show.
+
+```rust, notest
+#[derive(SqlShape)]
+struct Geo {
+    lat: i32,
+    lon: i32,
+}
+
+// the mapping of `Geo` stays the hand-written one you already have
+impl From<&mut hiqlite::Row<'_>> for Geo { /* reads `lat` and `lon` */ }
+
+#[derive(FromRow)]
+struct Entity {
+    id: i64,
+    #[column(flatten)]
+    geo: Geo,
+}
+
+let row = client
+    .query_map_one(sql_map!(Entity, "SELECT id, lat, lon FROM complex"), params!())
+    .await?;
+```
+
+Only `sql_map!()` needs a shape. A type that publishes none, whose queries go through `sql!()` or a
+plain string, compiles and runs exactly as it did, and a type that derives `FromRow` needs no change
+at all: its shape is published by the derive, including the parts it flattens.
+
+A hand-written `FromRowIndexed` / `TryFromRowIndexed` impl for a type with a `flatten` field is an
+error now; delete it. Such a type is mapped by the names its body reads, like it always was.
+
 ### Changes
 
 #### Row Name Lookup
@@ -168,8 +210,9 @@ Two details of a registry that lives in the process: the very first query of a t
 registers it, so it maps its rows by name, and a type with a lifetime parameter is never `'static`,
 so it stays on the name-based path for good.
 
-The derive implements the hoisted side for `flatten` fields too: the names of a nested type are
-merged into the index of the parent, each behind the segment before it.
+The derive does not emit the hoisted side for a `flatten` field: a flattened part only promises a
+`From<&mut Row>`, and the names it reads are the parent's business, not its indices (see
+`Shapes of Flattened Types`). Such a type is mapped by names, like the body you write for it.
 
 - 8 columns: 407 µs to 388 µs for 2000 rows, **4.8%** faster and within 2% of rusqlite's
   positional floor of 380 µs
@@ -229,8 +272,9 @@ error: no such column: descrption in SELECT descrption FROM test at offset 7
 - `sql_map!(Type, "…")` checks the columns the query returns against the fields of the type it
   maps to: the same names, in any order and any case, which is the matching a mapped row does. A
   query that reads a column the type has no field for, or a field the query does not return, fails
-  the build. The `FromRow` derive publishes the shape of every type it maps; a `TryFromRow` type
-  and a hand-written mapping publish it by listing its column names with `SqlShape::SHAPE`.
+  the build. The `FromRow` derive publishes the shape of every type it maps, including the parts it
+  flattens; a `TryFromRow` type and a hand-written mapping publish it with the `SqlShape` derive,
+  or by listing their column names in a `SqlShape` impl.
 - One in-memory database per schema and compiler process, and every verdict is cached in
   `.hiqlite-sql/` in the workspace root, keyed by a fingerprint of your migrations and a hash of the
   query string. A query the compiler has seen before costs a hash lookup, so hundreds of `sql!()`
@@ -244,6 +288,9 @@ error: no such column: descrption in SELECT descrption FROM test at offset 7
   the fresh verdicts.
 - A crate without a `migrations` directory, and any failure inside the checker itself, produces one
   `warning:` line and leaves queries unchecked. The check can never break a build.
+- The checks run in debug builds, and a shape exists exactly where a check can run: the `FromRow`
+  and `SqlShape` derives emit their shape impl in debug builds, and in a release build only when
+  `sql-check-release` is on.
 - The checks run in debug builds. A release build compiles your literals untouched - no database
   is built, no cache is read, nothing extra is emitted - unless you opt into the
   `sql-check-release` feature, which checks release builds the same way.

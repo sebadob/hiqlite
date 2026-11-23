@@ -2,8 +2,13 @@
 
 use crate::from_row::{ColumnAttr, FieldSpec, RowPlan};
 use proc_macro2::{Span, TokenStream};
-use quote::{ToTokens, quote};
-use syn::{LitInt, LitStr, Type, WhereClause};
+use quote::quote;
+use syn::Attribute;
+use syn::LitInt;
+use syn::LitStr;
+use syn::Type;
+use syn::WhereClause;
+use syn::parse::Parser;
 
 /// Which side of the hoisted index path to generate.
 #[derive(Clone, Copy)]
@@ -47,22 +52,25 @@ impl IndexedKind {
 /// once before the first row, and the mapping below only ever indexes into that result, so a row
 /// does no name lookup at all.  Field order and column order stay independent, because the
 /// resolution reads the column names of the result set and never assumes an order.
+///
+/// A plan that flattens a field gets nothing from this function.  Such a type is never registered
+/// (`from_row::register_marker`), so a query never runs a hoisted impl of it, and such an impl would
+/// need the column list of every part it flattens: a `where` bound naming a type that is not a
+/// generic parameter is checked where it is written, so it would fail to compile for exactly the
+/// hand-written parts that make `flatten` useful.  The shape of a flattening type comes from
+/// `shape_impl` below, which asks each part for its own shape.
 pub(crate) fn impl_indexed(plan: &RowPlan, kind: IndexedKind) -> TokenStream {
+    if plan.flattens() {
+        return TokenStream::new();
+    }
     let name = &plan.name;
     let (impl_generics, ty_generics, where_clause) = plan.generics.split_for_impl();
     let trait_path = kind.trait_path();
     let map_fn = kind.map_fn();
 
-    let own_count = plan
-        .fields
-        .iter()
-        .filter(|f| !matches!(f.attr, ColumnAttr::Skip | ColumnAttr::Flatten))
-        .count();
-
-    // The slot space of the type: the own fields first, then one segment per `flatten` field, in
-    // declaration order.  `skip` reads no column and takes no slot.
-    let mut base: TokenStream = usize_lit(own_count).to_token_stream();
-    let mut bounds = Vec::new();
+    // Every slot of a type without `flatten` is one of its own fields: `skip` reads no column and
+    // takes no slot.
+    let own_count = own_names(plan).len();
 
     let mut map_entries: Vec<(String, LitInt)> = Vec::new();
     let mut body = Vec::new();
@@ -74,18 +82,7 @@ pub(crate) fn impl_indexed(plan: &RowPlan, kind: IndexedKind) -> TokenStream {
             ColumnAttr::Skip => quote! {
                 #id: ::std::default::Default::default(),
             },
-            ColumnAttr::Flatten => {
-                let ty = &field.ty;
-                bounds.push(field.ty.clone());
-                let seg = quote! { &idx[#base..#base + <#ty as #trait_path>::FIELD_COUNT] };
-                let call = quote! { <#ty as #trait_path>::#map_fn(row, #seg) };
-                base = quote! { #base + <#ty as #trait_path>::FIELD_COUNT };
-                if kind.is_try() {
-                    quote! { #id: #call?, }
-                } else {
-                    quote! { #id: #call, }
-                }
-            }
+            ColumnAttr::Flatten => unreachable!("a plan that flattens a field has no hoisted impl"),
             _ => {
                 let local = usize_lit(slot);
                 // The map stores the slot as a `u16`, the slice index as a `usize`.
@@ -101,10 +98,6 @@ pub(crate) fn impl_indexed(plan: &RowPlan, kind: IndexedKind) -> TokenStream {
     // Sorted by name, which is what `FieldNames::get` binary searches against.  The order is
     // derived, so a field renamed in the middle of a struct moves within the table only.
     map_entries.sort_by(|a, b| a.0.cmp(&b.0));
-    let shape_names = map_entries
-        .iter()
-        .map(|(name, _)| LitStr::new(name, Span::call_site()))
-        .collect::<Vec<_>>();
     let map_entries = map_entries
         .iter()
         .map(|(name, slot)| {
@@ -113,30 +106,6 @@ pub(crate) fn impl_indexed(plan: &RowPlan, kind: IndexedKind) -> TokenStream {
         })
         .collect::<Vec<_>>();
 
-    let field_count = base;
-
-    let extend = extend_segments(&bounds, &trait_path, own_count);
-    // The segments are built with `Vec::extend`, which needs `mut`; a type with only its own
-    // fields is one `vec!` literal and needs none, so the generated code never carries a mut it
-    // does not use.
-    let maps_init = if bounds.is_empty() {
-        quote! {
-            let maps: ::hiqlite::FieldMaps<'static> = ::std::vec![(NAMES, 0u16)];
-        }
-    } else {
-        quote! {
-            let mut maps: ::hiqlite::FieldMaps<'static> = ::std::vec::Vec::new();
-            maps.push((NAMES, 0u16));
-            #(#extend)*
-        }
-    };
-    let where_base = where_clause.cloned();
-    let where_clause = with_bounds(where_base.clone(), &bounds, &trait_path);
-    let shape_parts = bounds
-        .iter()
-        .map(|ty| quote! { + <#ty as ::hiqlite::SqlShape>::SHAPE })
-        .collect::<Vec<_>>();
-    let shape_where = with_bounds(where_base, &bounds, &quote! { ::hiqlite::SqlShape });
     let from_str_import = plan
         .with_from_str
         .then(|| quote! { use ::std::str::FromStr; });
@@ -160,29 +129,17 @@ pub(crate) fn impl_indexed(plan: &RowPlan, kind: IndexedKind) -> TokenStream {
         )
     };
 
-    // The shape `sql_map!()` compares a query's columns against: the own names, plus every
-    // flattened part through its own `SqlShape`.  Only the `FromRow` side publishes it - a type
-    // deriving both derives would otherwise get the same impl twice - and `query_try_map` reports a
-    // column mismatch as an error at runtime, which is why its side needs none.
-    let shape = (!kind.is_try()).then(|| {
-        quote! {
-            impl #impl_generics ::hiqlite::SqlShape for #name #ty_generics #shape_where {
-                const SHAPE: u64 = ::hiqlite::sql_shape(&[ #(#shape_names),* ]) #(#shape_parts)*;
-            }
-        }
-    });
-
+    // The shape `sql_map!()` compares a query's columns against is published by `shape_impl`, from
+    // the `FromRow` side only, so this function emits the index impls of one family and nothing else.
     quote! {
-        #shape
-
         impl #impl_generics #trait_path for #name #ty_generics #where_clause {
-            const FIELD_COUNT: usize = #field_count;
+            const FIELD_COUNT: usize = #own_count;
 
             fn field_maps() -> ::hiqlite::FieldMaps<'static> {
                 const NAMES: &::hiqlite::FieldNames = &::hiqlite::FieldNames::new(&[
                     #(#map_entries)*
                 ]);
-                #maps_init
+                let maps: ::hiqlite::FieldMaps<'static> = ::std::vec![(NAMES, 0u16)];
                 maps
             }
 
@@ -193,6 +150,90 @@ pub(crate) fn impl_indexed(plan: &RowPlan, kind: IndexedKind) -> TokenStream {
             }
         }
     }
+}
+
+/// The shape `sql_map!()` compares a query's columns against: the own column names of the plan, plus
+/// every flattened part through its own `SqlShape`.
+///
+/// Each part is a `where` bound, and a bound naming a type that is not a generic parameter is
+/// checked where it is written, so a part that publishes no shape is an error at the parent.  That is
+/// the point: a `sql_map!()` of this type can only be checked against names the derive can see, and
+/// the columns a hand-written `From<&mut Row>` reads are not among them.  A part gets its shape from
+/// its own `FromRow` derive, from the `SqlShape` derive, or from a hand-written `SqlShape` impl.
+///
+/// Only the `FromRow` side publishes it: a type deriving both would get the same impl twice, and
+/// `query_try_map` reports a column mismatch as an error at runtime, so the non-panicking side needs
+/// none; a type mapped only through `TryFromRow` publishes its shape with the `SqlShape` derive.
+///
+/// It is emitted where a check can run, and nowhere else: a debug build always, a release build only
+/// when it opts into `sql-check-release`.  A plain release build emits no `sql_map!()` comparison, so
+/// a shape in it would be code that nothing can call.
+pub(crate) fn shape_impl(plan: &RowPlan) -> TokenStream {
+    let name = &plan.name;
+    let (impl_generics, ty_generics, where_clause) = plan.generics.split_for_impl();
+    let shape_names = own_names(plan)
+        .into_iter()
+        .map(|name| LitStr::new(&name, Span::call_site()));
+    let parts = flatten_types(plan);
+    // `wrapping_add`, exactly like `sql_shape` does inside: two FNV values of six columns each are
+    // well past half of `u64`, so a nested type would overflow a plain `+` and a debug build would
+    // stop the compile of a `sql_map!()` that has nothing wrong with it.
+    let shape_parts = parts
+        .iter()
+        .map(|ty| {
+            quote! { .wrapping_add(<#ty as ::hiqlite::SqlShape>::SHAPE) }
+        })
+        .collect::<Vec<_>>();
+    let where_clause = with_bounds(
+        where_clause.cloned(),
+        &parts,
+        &quote! { ::hiqlite::SqlShape },
+    );
+    // The one gate the shape needs: a debug build always compares, a release build only when it
+    // opted into the check - so the gate is off exactly when the impl is needed in a release build.
+    // The gate is applied by parsing the impl and attaching the attribute to it: a `cfg` attribute
+    // takes the item it gates as its input, so it cannot be written in front of the `impl`.
+    let gate = (!crate::shape::checks_run_in_release()).then(parse_cfg);
+    let mut imp: syn::ItemImpl = syn::parse_quote! {
+        impl #impl_generics ::hiqlite::SqlShape for #name #ty_generics #where_clause {
+            const SHAPE: u64 = ::hiqlite::sql_shape(&[ #(#shape_names),* ]) #(#shape_parts)*;
+        }
+    };
+    if let Some(cfg) = gate {
+        imp.attrs.push(cfg);
+    }
+    quote! { #imp }
+}
+
+/// The one attribute the shape gate needs, parsed from its own tokens so it is written exactly as
+/// the macro emits it. The macro itself gates the shape comparison of `sql_map!` the same way.
+fn parse_cfg() -> Attribute {
+    Attribute::parse_outer
+        .parse2(quote! { #[cfg(debug_assertions)] })
+        .expect("a cfg attribute is valid Rust")
+        .remove(0)
+}
+
+/// The column names this plan reads itself: every field that is neither `skip` nor `flatten`, with
+/// its `rename` applied, sorted by name.
+fn own_names(plan: &RowPlan) -> Vec<String> {
+    let mut names = plan
+        .fields
+        .iter()
+        .filter(|f| !matches!(f.attr, ColumnAttr::Skip | ColumnAttr::Flatten))
+        .map(|f| f.col_name.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+/// The types of the `flatten` fields of a plan, in declaration order.
+fn flatten_types(plan: &RowPlan) -> Vec<Type> {
+    plan.fields
+        .iter()
+        .filter(|f| matches!(f.attr, ColumnAttr::Flatten))
+        .map(|f| f.ty.clone())
+        .collect()
 }
 
 /// The read expression of one field, mirroring the name-based derive with index reads.
@@ -303,28 +344,6 @@ fn read_expr(field: &FieldSpec, kind: IndexedKind, local: &LitInt) -> TokenStrea
             }
         }
     }
-}
-
-/// One `maps.extend(...)` per flattened field, shifting the segment offsets of the nested type by
-/// the slots that come before it.
-fn extend_segments(
-    nested: &[Type],
-    trait_path: &TokenStream,
-    own_count: usize,
-) -> Vec<TokenStream> {
-    let mut base: TokenStream = usize_lit(own_count).to_token_stream();
-    let mut out = Vec::new();
-    for ty in nested {
-        out.push(quote! {
-            maps.extend(
-                <#ty as #trait_path>::field_maps()
-                    .into_iter()
-                    .map(|(m, o)| (m, o + (#base) as u16)),
-            );
-        });
-        base = quote! { #base + <#ty as #trait_path>::FIELD_COUNT };
-    }
-    out
 }
 
 /// Adds a `#ty: Trait` bound for every flattened field to the where clause of the impl.

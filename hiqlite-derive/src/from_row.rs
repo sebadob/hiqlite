@@ -18,6 +18,17 @@ pub(crate) struct RowPlan {
     pub fields: Vec<FieldSpec>,
 }
 
+impl RowPlan {
+    /// Whether the type flattens a field, which is the one thing that takes it off the hoisted
+    /// index path: a flattened part only has to provide a `From<&mut Row>`, and the derive cannot
+    /// see the columns its body reads.
+    pub(crate) fn flattens(&self) -> bool {
+        self.fields
+            .iter()
+            .any(|f| matches!(f.attr, ColumnAttr::Flatten))
+    }
+}
+
 /// A single resolved struct field.
 pub(crate) struct FieldSpec {
     pub ident: Ident,
@@ -32,16 +43,17 @@ pub(crate) struct FieldSpec {
 
 /// Validates the derive input and resolves every field to its column attribute.
 ///
-/// Shared by `FromRow` (panicking) and `TryFromRow` (non-panicking), so both enforce the same
-/// rules with the same error messages.
-pub(crate) fn plan_fields(input: DeriveInput) -> syn::Result<RowPlan> {
+/// Shared by `FromRow` (panicking), `TryFromRow` (non-panicking) and `SqlShape` (names only), so all
+/// three enforce the same rules with the same error messages; `deriver` is the name they use for the
+/// macro they are talking about.
+pub(crate) fn plan_fields(input: DeriveInput, deriver: &str) -> syn::Result<RowPlan> {
     let name = input.ident;
     let generics = input.generics.clone();
 
     let Data::Struct(data) = input.data else {
         return Err(syn::Error::new(
             name.span(),
-            "FromRow can only be derived for a `struct`",
+            format!("{deriver} can only be derived for a `struct`"),
         ));
     };
 
@@ -54,7 +66,10 @@ pub(crate) fn plan_fields(input: DeriveInput) -> syn::Result<RowPlan> {
         let Some(id) = &field.ident else {
             return Err(syn::Error::new(
                 field.ty.span(),
-                "FromRow only supports structs with named fields; tuple fields are not supported",
+                format!(
+                    "{deriver} only supports structs with named fields; tuple fields are not \
+                     supported"
+                ),
             ));
         };
 
@@ -108,7 +123,7 @@ pub(crate) fn plan_fields(input: DeriveInput) -> syn::Result<RowPlan> {
 }
 
 pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
-    let plan = plan_fields(input)?;
+    let plan = plan_fields(input, "FromRow")?;
     let name = &plan.name;
     let (impl_generics, ty_generics, where_clause) = plan.generics.split_for_impl();
 
@@ -203,20 +218,26 @@ pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
         None
     };
 
+    // The shape `sql_map!()` checks a query against is published from this side only, and it reaches
+    // into every `flatten` part through that part's own shape.  The hoisted impls are for a type
+    // without a `flatten` field only, so a flattening type publishes its shape and is mapped by the
+    // names its `From` body reads.
+    let shape = crate::indexed::shape_impl(&plan);
     let indexed_from = crate::indexed::impl_indexed(&plan, crate::indexed::IndexedKind::From);
     let indexed_try = crate::indexed::impl_indexed(&plan, crate::indexed::IndexedKind::Try);
 
     // The name-based `From` body is the first code of a type that any query runs, so it is the
-    // place where the type hands its hoisted mapping to the query engine, once per type.  The
-    // bounds a hoisted impl needs over its `flatten` fields belong to that impl alone: the `From`
-    // impl keeps exactly the bounds it always had, so a type that flattens a hand-written
-    // `From<&mut Row>` keeps compiling and stays on the name-based path.
+    // place where the type hands its hoisted mapping to the query engine, once per type.  Only a
+    // registered type ever runs a hoisted impl, so registration is what the `flatten` and lifetime
+    // rules above switch off, and the `From` impl keeps exactly the bounds it always had.
     let register = register_marker(
         &plan,
         &quote! { ::hiqlite::register_hoisted::<#name #ty_generics>() },
     );
 
     Ok(quote! {
+        #shape
+
         impl #impl_generics ::std::convert::From<&mut ::hiqlite::Row<'_>> for #name #ty_generics #where_clause {
             #[inline]
             fn from(row: &mut ::hiqlite::Row<'_>) -> Self {
@@ -237,20 +258,17 @@ pub fn impl_from_row(input: DeriveInput) -> syn::Result<TokenStream> {
 /// A type with a lifetime parameter is never `'static`, so it cannot enter the registry: such a
 /// type is mapped by the names its body reads, which is the path it has always taken.
 ///
-/// A type with a `flatten` field is not registered either.  Its hoisted impl exists only under the
-/// bounds of its parts, which a `From` body cannot assume - a flattened type only has to provide a
-/// `From<&mut Row>` - and registration must be something the body can always run.  Such a type is
-/// mapped by its names, and a flat type with no `flatten` field gets the hoisted path.
+/// A type with a `flatten` field is not registered either, and it gets no hoisted impl at all (see
+/// `indexed::impl_indexed`): a flattened part only has to provide a `From<&mut Row>`, the derive
+/// cannot see the columns such a body reads, and a type that is never registered never runs a
+/// hoisted impl.  A flat type with no `flatten` field gets both.
 pub(crate) fn register_marker(plan: &RowPlan, call: &TokenStream) -> Option<TokenStream> {
     let blocked = plan
         .generics
         .params
         .iter()
         .any(|p| matches!(p, GenericParam::Lifetime(_)))
-        || plan
-            .fields
-            .iter()
-            .any(|f| matches!(f.attr, ColumnAttr::Flatten));
+        || plan.flattens();
     if blocked {
         return None;
     }
@@ -605,7 +623,7 @@ mod tests {
         assert!(
             compact(&out).contains("row.get::<String>(\"date\")")
                 && out.contains(". parse ()")
-                && compact(&out).contains("use::std::str::FromStr"),
+                && out.contains("use :: std :: str :: FromStr ;"),
             "parse must read text, import FromStr and parse: {out}"
         );
     }
@@ -738,43 +756,43 @@ mod tests {
         );
     }
 
+    /// A `flatten` field takes its type off the index path: the columns a hand-written
+    /// `From<&mut Row>` reads are invisible to the derive, and a type that is never registered has no
+    /// hoisted impl to run.  Its shape does reach into the part, and names it as a bound, which is how
+    /// a part that publishes no names is reported at its parent.
     #[test]
-    fn a_flattened_field_gets_its_own_segment() {
+    fn a_flattened_type_publishes_a_shape_and_no_index_impl() {
         let out = derive("struct Row { id: i64, #[column(flatten)] inner: Inner }");
         let c = compact(&out);
+        for item in [
+            "impl::hiqlite::FromRowIndexedforRow",
+            "impl::hiqlite::TryFromRowIndexedforRow",
+            "fnfield_maps()",
+        ] {
+            assert!(
+                !c.contains(item),
+                "a flattening type must not get the hoisted impl of {item}: {out}"
+            );
+        }
         assert!(
-            c.contains(
-                "constFIELD_COUNT:usize=1usize+<Inneras::hiqlite::FromRowIndexed>::FIELD_COUNT"
-            ),
-            "nested fields not counted: {out}"
-        );
-        assert!(
-            c.contains("maps.extend(<Inneras::hiqlite::FromRowIndexed>::field_maps()"),
-            "nested segment not merged: {out}"
-        );
-        assert!(
-            c.contains("o+(1usize)asu16"),
-            "nested segment not offset behind the own fields: {out}"
-        );
-        assert!(
-            c.contains("&idx[1usize..1usize+<Inneras::hiqlite::FromRowIndexed>::FIELD_COUNT]"),
-            "nested slice starts at the wrong slot: {out}"
-        );
-        assert!(
-            c.contains("whereInner:::hiqlite::FromRowIndexed"),
-            "missing the bound of the nested type: {out}"
+            c.contains(".wrapping_add(<Inneras::hiqlite::SqlShape>::SHAPE)")
+                && c.contains("whereInner:::hiqlite::SqlShape"),
+            "the shape must add the part and name it as a bound: {out}"
         );
     }
 
     #[test]
-    fn two_flattened_fields_are_offset_behind_each_other() {
+    fn two_flattened_fields_both_contribute_their_shapes() {
         let out =
             derive("struct Row { #[column(flatten)] a: A, id: i64, #[column(flatten)] b: B }");
         let c = compact(&out);
         assert!(
-            c.contains("o+(1usize)asu16")
-                && c.contains("o+(1usize+<Aas::hiqlite::FromRowIndexed>::FIELD_COUNT)asu16"),
-            "segments not chained: {out}"
+            c.contains(".wrapping_add(<Aas::hiqlite::SqlShape>::SHAPE).wrapping_add(<Bas::hiqlite::SqlShape>::SHAPE)"),
+            "both parts must add their shapes: {out}"
+        );
+        assert!(
+            c.contains("whereA:::hiqlite::SqlShape,B:::hiqlite::SqlShape"),
+            "both parts must be asked for a shape: {out}"
         );
     }
 
@@ -835,29 +853,23 @@ mod tests {
             "struct Row { id: i64, #[column(flatten)] inner: Inner }",
         ));
         assert!(
-            flat.contains("+<Inneras::hiqlite::SqlShape>::SHAPE"),
+            flat.contains(".wrapping_add(<Inneras::hiqlite::SqlShape>::SHAPE)"),
             "a flattened part must contribute its own shape: {flat}"
         );
     }
 
+    /// Only a type with its own fields has segments at all: with `flatten` taken out of the index
+    /// path, a generated `field_maps()` is one table starting at slot zero, built in one literal.
     #[test]
-    fn only_a_flattened_type_needs_the_mutable_segment_list() {
+    fn a_flat_type_builds_its_segments_in_one_literal() {
         let plain = compact(&derive("struct Row { id: i64 }"));
         assert!(
-            plain.contains("letmaps:::hiqlite::FieldMaps<\'static>=::std::vec![(NAMES,0u16)]"),
+            plain.contains("letmaps:::hiqlite::FieldMaps<'static>=::std::vec![(NAMES,0u16)]"),
             "own fields only must build the segments in one literal: {plain}"
         );
         assert!(
             !plain.contains("letmutmaps"),
             "no `mut` without segments to extend: {plain}"
-        );
-
-        let flat = compact(&derive("struct Row { #[column(flatten)] inner: Inner }"));
-        assert!(
-            flat.contains("letmutmaps:::hiqlite::FieldMaps<\'static>=::std::vec::Vec::new()")
-                && flat.contains("maps.push((NAMES,0u16))")
-                && flat.contains("maps.extend("),
-            "segments of a nested type are pushed and extended: {flat}"
         );
     }
 
@@ -870,7 +882,7 @@ mod tests {
             "skip counted as a column: {out}"
         );
         assert!(
-            !c.contains(r#"("extra","#),
+            !c.contains(r#"("extra",""#),
             "skip must not appear in the field map: {out}"
         );
     }

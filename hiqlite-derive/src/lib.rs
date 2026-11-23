@@ -8,6 +8,7 @@ use syn::{DeriveInput, parse_macro_input};
 mod from_row;
 mod indexed;
 mod into_cache_data;
+mod shape;
 mod try_from_row;
 
 #[cfg(feature = "sql-check")]
@@ -44,8 +45,13 @@ mod sql_macro;
 /// `'static` and cannot enter the registry; a struct with a `flatten` field cannot assume that its
 /// nested type implements the hoisted traits, because that type only has to provide a
 /// `From<&mut Row>`; and a struct with a hand-written `impl From<&mut Row>` registers nothing.
-/// The field names of a `flatten` field are part of the parent's shape, so `sql_map!()` checks a
-/// nested type's columns exactly like its own.
+///
+/// The shape a `sql_map!()` checks a query against is published by every type, and a `flatten` field
+/// contributes the shape of its own type, as a bound on it.  Every part of a flattening struct
+/// therefore has to publish names: by deriving `FromRow`, by deriving [`SqlShape`] next to a
+/// hand-written mapping, or by implementing `hiqlite::SqlShape` by hand.  A part that publishes
+/// none is an error at its parent, naming it, because the columns of a hand-written body are the one
+/// thing no derive can find out.
 #[proc_macro_derive(FromRow, attributes(column))]
 pub fn from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -75,6 +81,10 @@ pub fn from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 ///
 /// Unsigned integer targets (u8/u16/u32/u64/usize) are not supported by `from_i32`/`from_i64`;
 /// enable the `cast_ints` feature and drop the attribute, or use `parse`.
+///
+/// A `TryFromRow` type publishes no shape of its own, because `query_try_map()` reports a column
+/// mismatch as an error at runtime.  Where you want the compile-time column check of [`sql_map!`]
+/// for one, derive [`SqlShape`] next to it.
 #[proc_macro_derive(TryFromRow, attributes(column))]
 pub fn try_from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -92,6 +102,59 @@ pub fn try_from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 pub fn cache_variants(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match impl_cache_variants(input) {
+        Ok(ts) => ts.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derives `hiqlite::SqlShape` for a struct: the column names its fields read, published for
+/// [`sql_map!`], and nothing else — no row mapping, no registration. A release build that does not
+/// opt into `sql-check-release` gets no shape impl at all, because nothing in it can compare one.
+///
+/// A type mapped by a hand-written `impl From<&mut Row>` has no derive that could know its columns,
+/// and the parent that flattens it needs exactly those names: a `sql_map!()` of the parent is
+/// checked against the columns of the query, and a column that no part can name cannot be checked.
+/// Publish them here, on the same fields and with the same `#[column(...)]` attributes the
+/// hand-written body reads, where `rename` applies and `skip` and `flatten` mean what they mean in
+/// `FromRow`:
+///
+/// ```text
+/// #[derive(SqlShape)]
+/// struct Sub {
+///     #[column(rename = "sub_id")]
+///     id: i64,
+///     name: String,
+/// }
+///
+/// // the mapping stays hand-written: it reads `sub_id` and `name`
+/// impl From<&mut hiqlite::Row<'_>> for Sub { /* ... */ }
+///
+/// #[derive(FromRow)]
+/// struct Parent {
+///     id: i64,
+///     #[column(flatten)]
+///     sub: Sub,
+/// }
+/// ```
+///
+/// A type that is not a struct — an enum, a wrapper — publishes its shape by hand, exactly like the
+/// `sql_shape` fn in the docs of the trait shows:
+///
+/// ```text
+/// impl hiqlite::SqlShape for MyEnum {
+///     const SHAPE: u64 = hiqlite::sql_shape(&["enum_value"]);
+/// }
+/// ```
+///
+/// Only the compile-time column check needs a shape.  A type that publishes none, and whose queries
+/// go through `sql!()` or a plain string, compiles and runs unchanged.
+///
+/// Derive it next to a mapping this crate does not emit: `FromRow` publishes the shape of the type it
+/// maps already, and deriving both would implement `hiqlite::SqlShape` twice.
+#[proc_macro_derive(SqlShape, attributes(column))]
+pub fn sql_shape(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match shape::impl_shape(input) {
         Ok(ts) => ts.into(),
         Err(err) => err.to_compile_error().into(),
     }

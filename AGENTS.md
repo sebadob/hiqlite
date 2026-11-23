@@ -81,6 +81,9 @@ one. A pile of allows is a pile of lint-blind spots.
       `sql_map!()` against the `SqlShape::SHAPE` the derive publishes, and it keeps its verdicts in
       `.hiqlite-sql/` at the workspace root (gitignored). Debug builds only, plus the opt-in
       `sql-check-release` feature.
+    - `hiqlite-derive/src/shape.rs` the `SqlShape` derive: the column names a type publishes for the
+      `sql_map!()` check, for the types whose row mapping is hand-written. `shape_impl` in
+      `hiqlite-derive/src/indexed.rs` is the one codegen both derives share.
 - `hiqlite-wal/` WAL file implementation for `openraft`
 - `docs/` operator-facing guides (setup, playbooks, things to watch out for); no code, links to it
 - `dashboard/` dashboard to query the DB (`sqlite` feature only); Svelte file during development, but compiled into

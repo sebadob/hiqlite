@@ -665,7 +665,7 @@ impl QueryCheck {
     /// Whether the crate opted into checking release builds, which also decides whether the shape
     /// comparison a `sql_map!` emits is gated behind `cfg!(debug_assertions)`.
     pub(crate) fn is_forced() -> bool {
-        cfg!(feature = "sql-check-release")
+        crate::shape::checks_run_in_release()
     }
 
     /// Check `check` against the schema built from the crate's `migrations` directory.
