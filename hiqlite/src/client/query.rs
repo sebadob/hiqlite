@@ -2,7 +2,7 @@ use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientQueryPayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::{
-    ColIdx, Mapper, MapperTry, Row, RowMapper, RowOwned, RowsOwned, TryRowMapper,
+    ColIdx, Mapper, MapperTry, Row, RowMapper, RowOwned, RowValues, RowsOwned, TryRowMapper,
 };
 use crate::store::state_machine::sqlite::state_machine::Query;
 use crate::{Client, Error, Params, query};
@@ -79,7 +79,6 @@ impl Client {
     /// [`Self::query_consistent`] can return. The mapping of a row is not an error - see the
     /// panics.
     ///
-    ///
     /// # Panics
     ///
     /// If the returned data from the DB does not match the requested output type.
@@ -103,7 +102,7 @@ impl Client {
         Ok(rows
             .into_iter()
             .map(|row| {
-                let mut row = Row::Owned(row, setup.row_cols_owned());
+                let mut row = Row::Owned(RowOwned::new(row, setup.row_cols_owned()));
                 mapper.map(&mut row, &setup)
             })
             .collect())
@@ -112,7 +111,7 @@ impl Client {
     ///
     /// The `struct` must implement `impl From<&mut hiqlite::Row<'_>>` for this to work:
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// #[derive(Debug)]
     /// struct MyStruct {
     ///     pub id: String,
@@ -141,7 +140,7 @@ impl Client {
     /// registers it, so that one maps by name.  A hand-written `impl From<&mut Row>` is mapped by
     /// the names it reads in its own body.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// let res: Vec<MyStruct> = client
     ///     .query_map("SELECT * FROM test", params!())
     ///     .await?;
@@ -154,7 +153,6 @@ impl Client {
     /// cannot run, and on a remote client [`Error::Error`] when the answer channel of the
     /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
     /// after [`Error::LeaderChange`].
-    ///
     ///
     /// # Panics
     ///
@@ -173,10 +171,73 @@ impl Client {
             Ok(rows
                 .into_iter()
                 .map(|row| {
-                    let mut row = Row::Owned(row, setup.row_cols_owned());
+                    let mut row = Row::Owned(RowOwned::new(row, setup.row_cols_owned()));
                     mapper.map(&mut row, &setup)
                 })
                 .collect())
+        }
+    }
+
+    /// The non-collecting version of `query_map`: the rows arrive as you consume them, mapped on
+    /// the thread that runs the query.
+    ///
+    /// ```rust, ignore
+    /// let mut stream = client
+    ///     .query_map_stream::<MyStruct, _>("SELECT * FROM test", params!())
+    ///     .await?;
+    ///
+    /// while let Some(row) = stream.next().await? {
+    ///     let id: i64 = row.id;
+    /// }
+    /// ```
+    ///
+    /// The rows come as a [`crate::QueryStream`], which implements
+    /// `futures_util::stream::Stream`, so the whole set of combinators works on it once
+    /// [`crate::StreamExt`] is in scope, and any conversion you apply in flight stays lazy - a
+    /// `take(n)` never reads the rows behind it, and a stream you drop early ends the query at its
+    /// next row.
+    ///
+    /// This is the streaming shape of a very big result: a query over a million rows costs the
+    /// memory of the single row it is handing over, and it goes straight out of your API with
+    /// [`crate::QueryStream::into_json_response`], which answers with one JSON document per line.
+    /// A combinator chain out of [`crate::StreamExt`] answers with the same method from
+    /// [`crate::JsonLinesExt`].
+    ///
+    /// **Note:**
+    /// This works for local clients only, not for `hiqlite::Client::remote()`, and there is no
+    /// streaming version of a consistent query on purpose: a consistent query pauses Raft
+    /// replication, and that pause must be over as fast as the query that needs it is.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for a remote client - a stream has no leader to read it from - plus the
+    /// statement, param and mapping-setup failures of `query_map`, because the statement of a
+    /// stream is built before the stream is handed back, and [`Error::Sqlite`] when a connection
+    /// cannot be taken from the read pool.  A cursor that fails mid-scan, and a row mapping that
+    /// panicked on the thread running the query, are the `Err` of [`crate::QueryStream::next`]: a
+    /// verdict about a query that is already running.
+    ///
+    /// # Panics
+    ///
+    /// On the thread running the query, if the returned data from the DB does not match the
+    /// requested output type.
+    pub async fn query_map_stream<T, S>(
+        &self,
+        stmt: S,
+        params: Params,
+    ) -> Result<query::stream::QueryStream<T>, Error>
+    where
+        T: for<'a, 'r> From<&'a mut crate::Row<'r>> + Send + 'static,
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.inner.state {
+            query::query_stream::<query::Map<T>, _>(state, stmt, params).await
+        } else {
+            Err(Error::Config(
+                "`query_map_stream()` only works for local clients, you need to use \
+                `query_map()` for remote"
+                    .into(),
+            ))
         }
     }
 
@@ -208,10 +269,58 @@ impl Client {
             Ok(rows
                 .into_iter()
                 .map(|row| {
-                    let mut row = Row::Owned(row, setup.row_cols_owned());
+                    let mut row = Row::Owned(RowOwned::new(row, setup.row_cols_owned()));
                     mapper.map(&mut row, &setup)
                 })
                 .collect())
+        }
+    }
+
+    /// The non-collecting version of `query_try_map`: the rows arrive as you consume them, mapped
+    /// on the thread that runs the query.
+    ///
+    /// Each item of the stream is a row: the `Ok` of it is the mapped row, the `Err` of it is the
+    /// row that cannot be mapped into `T`, and the `Err` of [`crate::QueryStream::next`] is a
+    /// failure of the query itself - the same split `query_try_map` makes between a slot of its
+    /// `Vec` and its own `Err`.
+    ///
+    /// ```rust, ignore
+    /// let mut stream = client
+    ///     .query_try_map_stream::<MyStruct, _>("SELECT * FROM test", params!())
+    ///     .await?;
+    ///
+    /// while let Some(res) = stream.next().await? {
+    ///     // the outer `?` is the query's, this one is the row's
+    ///     let row = res?;
+    /// }
+    /// ```
+    ///
+    /// **Note:**
+    /// This works for local clients only, not for `hiqlite::Client::remote()`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for a remote client, the statement and param failures of
+    /// `query_try_map`, and [`Error::Sqlite`] when a connection cannot be taken from the read pool.
+    /// A query that fails mid-scan is the `Err` of [`crate::QueryStream::next`], as in
+    /// `query_map_stream`.
+    pub async fn query_try_map_stream<T, S>(
+        &self,
+        stmt: S,
+        params: Params,
+    ) -> Result<query::stream::QueryStream<Result<T, Error>>, Error>
+    where
+        T: for<'a, 'r> TryFrom<&'a mut crate::Row<'r>, Error = crate::Error> + Send + 'static,
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.inner.state {
+            query::query_stream::<query::TryMap<T>, _>(state, stmt, params).await
+        } else {
+            Err(Error::Config(
+                "`query_try_map_stream()` only works for local clients, you need to use \
+                `query_try_map()` for remote"
+                    .into(),
+            ))
         }
     }
 
@@ -219,7 +328,7 @@ impl Client {
     ///
     /// Errors if not exactly a single row has been returned.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// let res: MyStruct = client
     ///     .query_map_one("SELECT * FROM test WHERE id = $1", params!("id1"))
     ///     .await?;
@@ -233,7 +342,6 @@ impl Client {
     /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
     /// after [`Error::LeaderChange`], [`Error::QueryReturnedNoRows`] when the query returns no
     /// row at all and [`Error::Sqlite`] when it returns more than one.
-    ///
     ///
     /// # Panics
     ///
@@ -256,7 +364,8 @@ impl Client {
                     format!("cannot map {} rows into one", rows.len()).into(),
                 ))
             } else {
-                let mut row = Row::Owned(rows.swap_remove(0), setup.row_cols_owned());
+                let mut row =
+                    Row::Owned(RowOwned::new(rows.swap_remove(0), setup.row_cols_owned()));
                 Ok(mapper.map(&mut row, &setup))
             }
         }
@@ -295,7 +404,8 @@ impl Client {
                     format!("cannot map {} rows into one", rows.len()).into(),
                 ))
             } else {
-                let mut row = Row::Owned(rows.swap_remove(0), setup.row_cols_owned());
+                let mut row =
+                    Row::Owned(RowOwned::new(rows.swap_remove(0), setup.row_cols_owned()));
                 Ok(mapper.map(&mut row, &setup))
             }
         }
@@ -312,7 +422,6 @@ impl Client {
     /// leader is closed and [`Error::Connect`] when it times out, with exactly one re-send
     /// after [`Error::LeaderChange`], and [`Error::Sqlite`] when the query returns more than
     /// one row. No rows at all is `Ok(None)`.
-    ///
     ///
     /// # Panics
     ///
@@ -335,7 +444,8 @@ impl Client {
             if rows.is_empty() {
                 Ok(None)
             } else {
-                let mut row = Row::Owned(rows.swap_remove(0), setup.row_cols_owned());
+                let mut row =
+                    Row::Owned(RowOwned::new(rows.swap_remove(0), setup.row_cols_owned()));
                 Ok(Some(mapper.map(&mut row, &setup)))
             }
         }
@@ -370,7 +480,8 @@ impl Client {
             if rows.is_empty() {
                 Ok(None)
             } else {
-                let mut row = Row::Owned(rows.swap_remove(0), setup.row_cols_owned());
+                let mut row =
+                    Row::Owned(RowOwned::new(rows.swap_remove(0), setup.row_cols_owned()));
                 Ok(Some(mapper.map(&mut row, &setup)))
             }
         }
@@ -380,14 +491,15 @@ impl Client {
     /// This is the easiest and most straight forward way of getting data. This is most often the
     /// fasted way of mapping values while needing a little bit more memory.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// let res: Vec<Entity> = client
     ///     .query_as("SELECT * FROM test", params!())
     ///     .await?;
     /// ```
     ///
     /// **Note:**
-    /// This works for local clients only, not for `hiqlite::Client::remote()` or `query_consistent`.
+    /// This works for local clients only, not for `hiqlite::Client::remote()` and not for
+    /// `query_consistent`.
     ///
     /// # Errors
     ///
@@ -497,10 +609,68 @@ impl Client {
             .into_parts();
             Ok(rows
                 .into_iter()
-                .map(|row| crate::Row::Owned(row, cols.clone()))
+                .map(|row| crate::Row::Owned(RowOwned::new(row, cols.clone())))
                 .collect())
         } else {
             self.query_remote(stmt, params, None).await
+        }
+    }
+
+    /// The non-collecting version of `query_raw`: bare rows, owned and streaming, as you consume
+    /// them.
+    ///
+    /// ```rust, ignore
+    /// let mut stream = client
+    ///     .query_raw_stream("SELECT id, description FROM test", params!())
+    ///     .await?;
+    ///
+    /// while let Some(mut row) = stream.next().await? {
+    ///     // every row carries the header of its result set
+    ///     println!("columns: {:?}", row.columns());
+    ///     let id: i64 = row.get("id");
+    ///     let description: Option<String> = row.try_get("description").unwrap();
+    ///     println!("{id}: {description:?}");
+    /// }
+    /// ```
+    ///
+    /// Each row is an [`crate::RowOwned`]: the values of a row that has been read out of the
+    /// statement, with the column index of its result set shared through an `Arc`, so you read it
+    /// by name exactly like a row of `query_raw`.  The header of the result set is the
+    /// [`crate::RowOwned::columns`] of any of its rows, shared through that same `Arc`, and an
+    /// `RowOwned` serializes itself as a JSON object keyed by exactly those names, so a raw stream
+    /// is a streaming JSON response with a single
+    /// [`crate::QueryStream::into_json_response`] call.
+    ///
+    /// **Note:**
+    /// This works for local clients only, not for `hiqlite::Client::remote()`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for a remote client, [`Error::PrepareStatement`] and
+    /// [`Error::QueryParams`] for a statement that cannot be built from the given SQL and params,
+    /// [`Error::Sqlite`] when a connection cannot be taken from the read pool, and the `Err` of
+    /// [`crate::QueryStream::next`] for a cursor that fails mid-scan.
+    ///
+    /// # Panics
+    ///
+    /// On the thread reading the stream, if a column's value cannot be converted into the type an
+    /// `RowOwned::get()` declares, like every other owned row does.
+    pub async fn query_raw_stream<S>(
+        &self,
+        stmt: S,
+        params: Params,
+    ) -> Result<query::stream::QueryStream<crate::RowOwned>, Error>
+    where
+        S: Into<Cow<'static, str>>,
+    {
+        if let Some(state) = &self.inner.state {
+            query::query_stream::<query::Raw, _>(state, stmt, params).await
+        } else {
+            Err(Error::Config(
+                "`query_raw_stream()` only works for local clients, you need to use \
+                `query_raw()` for remote"
+                    .into(),
+            ))
         }
     }
 
@@ -546,7 +716,7 @@ impl Client {
         let (cols, rows) = self.query_remote_parts(stmt, params, read_policy).await?;
         Ok(rows
             .into_iter()
-            .map(|row| crate::Row::Owned(row, cols.clone()))
+            .map(|row| crate::Row::Owned(RowOwned::new(row, cols.clone())))
             .collect())
     }
 
@@ -557,7 +727,7 @@ impl Client {
         stmt: S,
         params: Params,
         read_policy: Option<ReadPolicy>,
-    ) -> Result<(Arc<ColIdx>, Vec<RowOwned>), Error>
+    ) -> Result<(Arc<ColIdx>, Vec<RowValues>), Error>
     where
         S: Into<Cow<'static, str>>,
     {

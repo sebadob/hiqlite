@@ -23,6 +23,7 @@ mod learner_only;
 mod listen_notify;
 mod master_slave_switch;
 mod migration;
+mod query_stream;
 mod remote_only;
 mod self_heal;
 mod start;
@@ -98,6 +99,10 @@ async fn exec_tests() -> Result<(), Error> {
     log("Starting data insertion and query tests");
     execute_query::test_execute_query(&client_1, &client_2, &client_3).await?;
     log("Basic query tests finished");
+
+    log("Starting query stream tests");
+    query_stream::test_query_streams(&client_1).await?;
+    log("Query stream tests finished");
 
     log("Starting Transaction tests");
     transaction::test_transactions(&client_1, &client_2, &client_3).await?;

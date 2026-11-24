@@ -1,6 +1,6 @@
 use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::migration::Migration;
-use crate::query::rows::{ColumnInfo, RowOwned, RowsOwnedChecked, ValueOwned};
+use crate::query::rows::{ColumnInfo, RowValues, RowsOwnedChecked, ValueOwned};
 use crate::store::logs;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine;
@@ -282,7 +282,7 @@ CREATE TABLE IF NOT EXISTS _metadata
                                 match rows.next() {
                                     Ok(Some(row)) => {
                                         rows_owned
-                                            .push(Ok(RowOwned::from_row_column(row, &columns)));
+                                            .push(Ok(RowValues::from_row_column(row, &columns)));
                                     }
                                     Ok(None) => {
                                         break;

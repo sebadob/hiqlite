@@ -4,6 +4,7 @@ use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, 
 use rusqlite::types::FromSql;
 use rusqlite::{Error as SqliteError, Row as SqliteRow, Statement};
 use rustc_hash::FxHashMap;
+use serde::ser::{SerializeMap as _, Serializer};
 use serde::{Deserialize, Serialize};
 use std::any::{Any, TypeId};
 use std::cmp::Ordering;
@@ -21,33 +22,66 @@ use tracing::error;
 /// lookup into a hash probe over names we already fetched.
 #[derive(Debug)]
 pub struct ColIdx {
-    map: FxHashMap<String, u16>,
+    map: FxHashMap<Arc<str>, u16>,
+    /// The column names in result-set order, the header that keys an owned row when it is
+    /// serialized, and the only way back from the map to the order of the result set.  Empty on a
+    /// `lookup_only` index, whose rows are never handed over.
+    names: Vec<Arc<str>>,
 }
 
 impl ColIdx {
+    /// The index of a statement whose rows are handed over: the map, and the header of the result
+    /// set next to it.
     pub(crate) fn from_stmt(stmt: &Statement) -> Self {
-        let names = stmt.column_names();
+        let count = stmt.column_count();
         let mut map = FxHashMap::default();
         // The result set tells us its column count upfront, so the map is reserved once and never
         // has to grow while we fill it.
-        map.reserve(names.len());
+        map.reserve(count);
+        let mut names = Vec::with_capacity(count);
         // `entry().or_insert()` keeps the lowest index, so a query with duplicate column names,
         // like a join over two tables sharing one, maps to the first column exactly like
-        // rusqlite's own scan does.
-        for (idx, name) in names.enumerate() {
-            map.entry(name.to_string()).or_insert(idx as u16);
+        // rusqlite's own scan does.  A name is one `Arc<str>` shared by its map key and its slot
+        // in the order, so a query pays for its header exactly once per column.
+        for (idx, name) in stmt.column_names().enumerate() {
+            let name: Arc<str> = Arc::from(name);
+            map.entry(name.clone()).or_insert(idx as u16);
+            names.push(name);
         }
-        Self { map }
+        Self { map, names }
+    }
+
+    /// The index of a statement whose rows are only ever read by name: the map, and no header.
+    ///
+    /// A `Setup::Named` mapping builds a row, maps it, and drops it - no caller of that path ever
+    /// holds a row, so nothing reads its result-set order, and the query pays for its column names
+    /// exactly once: in the map.  A row built on this index has an empty [`RowOwned::columns`],
+    /// which is why only the mapping path may use it.
+    pub(crate) fn lookup_only(stmt: &Statement) -> Self {
+        let count = stmt.column_count();
+        let mut map = FxHashMap::default();
+        map.reserve(count);
+        for (idx, name) in stmt.column_names().enumerate() {
+            map.entry(Arc::from(name)).or_insert(idx as u16);
+        }
+        Self {
+            map,
+            names: Vec::new(),
+        }
     }
 
     /// The same index over the column names of a result set that was read into owned rows.
     pub(crate) fn from_names(columns: &[String]) -> Self {
         let mut map = FxHashMap::default();
         map.reserve(columns.len());
-        for (idx, name) in columns.iter().enumerate() {
+        let names = columns
+            .iter()
+            .map(|name| Arc::from(name.as_str()))
+            .collect::<Vec<Arc<str>>>();
+        for (idx, name) in names.iter().enumerate() {
             map.entry(name.clone()).or_insert(idx as u16);
         }
-        Self { map }
+        Self { map, names }
     }
 
     /// An index with no columns, for rows whose field names were resolved to positions upfront.
@@ -57,7 +91,13 @@ impl ColIdx {
     pub(crate) fn empty() -> Self {
         Self {
             map: FxHashMap::default(),
+            names: Vec::new(),
         }
+    }
+
+    /// The column names in result-set order.
+    pub(crate) fn names(&self) -> &[Arc<str>] {
+        &self.names
     }
 
     /// The index a column name resolves to, an exact match like the owned rows always did.
@@ -703,7 +743,7 @@ impl<T: for<'r> From<&'r mut Row<'r>> + 'static> Mapper<T> {
 impl<T: for<'r> From<&'r mut Row<'r>> + 'static> RowMapper<T> for Mapper<T> {
     fn setup(&self, stmt: &Statement) -> Result<Setup, Error> {
         match self {
-            Self::Named => Ok(Setup::Named(Arc::new(ColIdx::from_stmt(stmt)))),
+            Self::Named => Ok(Setup::Named(Arc::new(ColIdx::lookup_only(stmt)))),
             Self::Hoisted(fn_) => Ok((fn_.setup)(stmt)),
         }
     }
@@ -744,7 +784,7 @@ impl<T: for<'r> TryFrom<&'r mut Row<'r>, Error = crate::Error> + 'static> TryRow
 {
     fn setup(&self, stmt: &Statement) -> Result<Setup, Error> {
         match self {
-            Self::Named => Ok(Setup::Named(Arc::new(ColIdx::from_stmt(stmt)))),
+            Self::Named => Ok(Setup::Named(Arc::new(ColIdx::lookup_only(stmt)))),
             Self::Hoisted(fn_) => Ok((fn_.setup)(stmt)),
         }
     }
@@ -769,9 +809,9 @@ impl<T: for<'r> TryFrom<&'r mut Row<'r>, Error = crate::Error> + 'static> TryRow
 pub enum Row<'a> {
     /// A row borrowed from a local statement, with the column index of that statement.
     Borrowed(&'a SqliteRow<'a>, &'a ColIdx),
-    /// A row that was mapped into owned values to travel through the network layer, together with
-    /// the column index of the result set it is part of.
-    Owned(RowOwned, Arc<ColIdx>),
+    /// A row whose values were read out into owned data, to travel through the network layer or to
+    /// be handed over by a streaming query.
+    Owned(RowOwned),
 }
 
 impl Row<'_> {
@@ -791,9 +831,7 @@ impl Row<'_> {
                 }
                 res.unwrap()
             }
-            Row::Owned(o, cols) => o.try_get(cols.as_ref(), idx).unwrap_or_else(|err| {
-                panic!("Cannot convert column index '{idx}' to requested type: {err:?}")
-            }),
+            Row::Owned(o) => o.get(idx),
         }
     }
 
@@ -808,7 +846,7 @@ impl Row<'_> {
     {
         match self {
             Self::Borrowed(r, cols) => ColIdx::borrowed_get(r, cols, idx).map_err(Error::from),
-            Self::Owned(o, cols) => o.try_get(cols.as_ref(), idx),
+            Self::Owned(o) => o.try_get(idx),
         }
     }
 
@@ -829,9 +867,7 @@ impl Row<'_> {
                 }
                 res.unwrap()
             }
-            Row::Owned(o, _) => o
-                .try_get_index(idx.pos())
-                .unwrap_or_else(|err| panic!("Cannot convert a column: {err}")),
+            Row::Owned(o) => o.get_idx(idx),
         }
     }
 
@@ -847,8 +883,181 @@ impl Row<'_> {
     {
         match self {
             Self::Borrowed(r, _) => r.get(idx.pos()).map_err(Error::from),
-            Self::Owned(o, _) => o.try_get_index(idx.pos()),
+            Self::Owned(o) => o.try_get_idx(idx),
         }
+    }
+}
+
+/// A row whose values were read out into owned data, together with the column index of the result
+/// set they belong to, shared through an `Arc`.
+///
+/// This is the [`Row::Owned`] of a result set that travels through the network layer, and the row a
+/// streaming query hands over: owned data that leaves the thread it was read on.  Reading a column
+/// takes it out of its slot, so every column of a row can be read exactly once, like the name scan
+/// of a borrowed row does.
+#[derive(Debug)]
+pub struct RowOwned {
+    row: RowValues,
+    cols: Arc<ColIdx>,
+}
+
+impl RowOwned {
+    pub(crate) fn new(row: RowValues, cols: Arc<ColIdx>) -> Self {
+        Self { row, cols }
+    }
+
+    /// The column names of the result set this row belongs to, in result-set order: the header its
+    /// values are keyed by when it is serialized, and the names [`RowOwned::get`] resolves.
+    ///
+    /// The header is shared through the `Arc` of the row, so reading it allocates nothing, on any
+    /// row of any result set.  A query that returns no rows has no row to read it from, which is
+    /// the one thing an owned row cannot give you.
+    #[must_use]
+    pub fn columns(&self) -> &[Arc<str>] {
+        self.cols.names()
+    }
+
+    /// The value of the column `idx`, with the panicking behaviour of [`Row::get`].
+    ///
+    /// # Panics
+    ///
+    /// If the column `idx` is not on the row, or its value cannot be converted into `T`.
+    pub fn get<T>(&mut self, idx: &str) -> T
+    where
+        T: TryFrom<ValueOwned, Error = crate::Error> + rusqlite::types::FromSql,
+    {
+        self.row
+            .try_get(self.cols.as_ref(), idx)
+            .unwrap_or_else(|err| {
+                panic!("Cannot convert column index '{idx}' to requested type: {err:?}")
+            })
+    }
+
+    /// The non-panicking counterpart of [`RowOwned::get`].
+    ///
+    /// # Errors
+    ///
+    /// The [`Error`] of a column that is not on the row, or whose value cannot be converted into
+    /// `T`.
+    pub fn try_get<T>(&mut self, idx: &str) -> Result<T, Error>
+    where
+        T: TryFrom<ValueOwned, Error = crate::Error> + rusqlite::types::FromSql,
+    {
+        self.row.try_get(self.cols.as_ref(), idx)
+    }
+
+    /// Reads the column behind a resolved index; the indexed counterpart of [`RowOwned::get`].
+    ///
+    /// # Panics
+    ///
+    /// If the column was already read, or its value cannot be converted into `T`.
+    fn get_idx<T>(&mut self, idx: ColIndex) -> T
+    where
+        T: TryFrom<ValueOwned, Error = crate::Error>,
+    {
+        self.try_get_idx(idx)
+            .unwrap_or_else(|err| panic!("Cannot convert a column: {err}"))
+    }
+
+    /// The indexed counterpart of [`RowOwned::try_get`].
+    ///
+    /// # Errors
+    ///
+    /// The [`Error`] of a column that was already read, or whose value cannot be converted into `T`.
+    fn try_get_idx<T>(&mut self, idx: ColIndex) -> Result<T, Error>
+    where
+        T: TryFrom<ValueOwned, Error = crate::Error>,
+    {
+        self.row.try_get_index(idx.pos())
+    }
+}
+
+/// A [`ValueOwned`] as a plain JSON value: a number, a string, an array of bytes, or `null`.
+///
+/// The serialized form of `ValueOwned` itself tags its variant (`{"Integer": 1}`), which is what
+/// the dashboard reads, so an owned row writes its values through this adapter to keep the JSON of
+/// a query plain.
+struct ValueJson<'a>(&'a ValueOwned);
+
+impl Serialize for ValueJson<'_> {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            ValueOwned::Null => ser.serialize_none(),
+            ValueOwned::Integer(v) => ser.serialize_i64(*v),
+            ValueOwned::Real(v) => ser.serialize_f64(*v),
+            ValueOwned::Text(v) => ser.serialize_str(v),
+            ValueOwned::Blob(v) => ser.serialize_bytes(v),
+        }
+    }
+}
+
+/// The row as a JSON object, keyed by the column names of its result set, in result-set order.
+///
+/// Values are plain JSON: a number, a string, an array of bytes, and `null` for a SQL NULL.  A
+/// column you have already read is `null` as well, because [`RowOwned::get`] takes a value out of
+/// its slot and serialization only ever gets `&self`.  A query whose columns repeat a name, like a
+/// join over two tables that share one, emits that key once per column, exactly like the row itself
+/// repeats it.
+impl Serialize for RowOwned {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        let names = self.cols.names();
+        let mut obj = ser.serialize_map(Some(names.len()))?;
+        for (name, value) in names.iter().zip(self.row.values.iter()) {
+            let value = match value {
+                Some(value) => ValueJson(value),
+                None => ValueJson(&ValueOwned::Null),
+            };
+            obj.serialize_entry(&**name, &value)?;
+        }
+        obj.end()
+    }
+}
+
+/// A result set that travels through the network, or into the dashboard: the column names of the
+/// query once, and the values of every row in that same order.
+#[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
+pub struct RowsOwned {
+    pub(crate) columns: Vec<String>,
+    pub(crate) rows: Vec<RowValues>,
+}
+
+impl RowsOwned {
+    pub(crate) fn new(columns: Vec<String>, rows: Vec<RowValues>) -> Self {
+        Self { columns, rows }
+    }
+
+    /// Split into the shared column index and the rows, the shape [`Row::Owned`] is built from.
+    pub(crate) fn into_parts(self) -> (Arc<ColIdx>, Vec<RowValues>) {
+        let cols = self.col_idx();
+        (cols, self.rows)
+    }
+
+    fn col_idx(&self) -> Arc<ColIdx> {
+        Arc::new(ColIdx::from_names(&self.columns))
+    }
+}
+
+/// [`RowsOwned`] for statements that report every row as its own `Result`, like
+/// `execute_returning`, where one failing row sits next to the rows that succeeded.
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+pub struct RowsOwnedChecked {
+    pub(crate) columns: Vec<String>,
+    pub(crate) rows: Vec<Result<RowValues, Error>>,
+}
+
+impl RowsOwnedChecked {
+    pub(crate) fn new(columns: Vec<String>, rows: Vec<Result<RowValues, Error>>) -> Self {
+        Self { columns, rows }
+    }
+
+    /// Split into the shared column index and the rows, keeping each row's `Result`.
+    pub(crate) fn into_parts(self) -> (Arc<ColIdx>, Vec<Result<RowValues, Error>>) {
+        let cols = self.col_idx();
+        (cols, self.rows)
+    }
+
+    fn col_idx(&self) -> Arc<ColIdx> {
+        Arc::new(ColIdx::from_names(&self.columns))
     }
 }
 
@@ -860,59 +1069,11 @@ impl Row<'_> {
 /// per-row name scan did before.  Slots stay in place, which is what keeps the shared column
 /// index of the result set valid for every lookup of the row.
 #[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
-pub struct RowOwned {
+pub struct RowValues {
     pub(crate) values: Vec<Option<ValueOwned>>,
 }
 
-/// A result set that travels through the network, or into the dashboard: the column names of the
-/// query once, and the values of every row in that same order.
-#[derive(Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
-pub struct RowsOwned {
-    pub(crate) columns: Vec<String>,
-    pub(crate) rows: Vec<RowOwned>,
-}
-
-/// [`RowsOwned`] for statements that report every row as its own `Result`, like
-/// `execute_returning`, where one failing row sits next to the rows that succeeded.
-#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
-pub struct RowsOwnedChecked {
-    pub(crate) columns: Vec<String>,
-    pub(crate) rows: Vec<Result<RowOwned, Error>>,
-}
-
-impl RowsOwned {
-    pub(crate) fn new(columns: Vec<String>, rows: Vec<RowOwned>) -> Self {
-        Self { columns, rows }
-    }
-
-    /// Split into the shared column index and the rows, the shape [`Row::Owned`] is built from.
-    pub(crate) fn into_parts(self) -> (Arc<ColIdx>, Vec<RowOwned>) {
-        let cols = self.col_idx();
-        (cols, self.rows)
-    }
-
-    fn col_idx(&self) -> Arc<ColIdx> {
-        Arc::new(ColIdx::from_names(&self.columns))
-    }
-}
-
-impl RowsOwnedChecked {
-    pub(crate) fn new(columns: Vec<String>, rows: Vec<Result<RowOwned, Error>>) -> Self {
-        Self { columns, rows }
-    }
-
-    /// Split into the shared column index and the rows, keeping each row's `Result`.
-    pub(crate) fn into_parts(self) -> (Arc<ColIdx>, Vec<Result<RowOwned, Error>>) {
-        let cols = self.col_idx();
-        (cols, self.rows)
-    }
-
-    fn col_idx(&self) -> Arc<ColIdx> {
-        Arc::new(ColIdx::from_names(&self.columns))
-    }
-}
-
-impl RowOwned {
+impl RowValues {
     #[inline]
     pub(crate) fn from_row_column(row: &rusqlite::Row, columns: &[ColumnInfo]) -> Self {
         let mut cols = Vec::with_capacity(columns.len());
@@ -982,9 +1143,7 @@ impl RowOwned {
 
         Self { values: cols }
     }
-}
 
-impl RowOwned {
     pub(crate) fn try_get<T: TryFrom<ValueOwned, Error = crate::Error>>(
         &mut self,
         cols: &ColIdx,
@@ -1000,7 +1159,7 @@ impl RowOwned {
         }
     }
 
-    /// Reads a column by its position; the indexed counterpart of [`RowOwned::try_get`].
+    /// Reads a column by its position; the indexed counterpart of [`RowValues::try_get`].
     pub(crate) fn try_get_index<T: TryFrom<ValueOwned, Error = crate::Error>>(
         &mut self,
         pos: usize,
@@ -1610,7 +1769,7 @@ mod try_from_row_tests {
         let values: Vec<Option<ValueOwned>> =
             cols.iter().map(|(_, value)| Some(value.clone())).collect();
         let cols = Arc::new(ColIdx::from_names(&names));
-        Row::Owned(RowOwned { values }, cols)
+        Row::Owned(RowOwned::new(RowValues { values }, cols))
     }
 
     // Pin the target type so `TryFrom` resolves unambiguously (both `Inner` and `Outer`
@@ -1681,7 +1840,10 @@ mod owned_row_tests {
                 .map(|n| (*n).to_string())
                 .collect::<Vec<String>>(),
         ));
-        (Row::Owned(RowOwned { values }, cols.clone()), cols)
+        (
+            Row::Owned(RowOwned::new(RowValues { values }, cols.clone())),
+            cols,
+        )
     }
 
     #[test]
@@ -1850,7 +2012,8 @@ mod registry_tests {
     #[test]
     fn an_unregistered_type_is_mapped_by_its_names() {
         // Nothing registers `NameOnly`, so a query of it runs the body of its `From` impl, reading
-        // the names that body passes to `row.get`.
+        // the names that body passes to `row.get` - on a borrowed row and on the owned row a
+        // mapped query builds.
         assert!(Registry::lookup::<NameOnly>().is_none());
 
         let conn = conn();
@@ -1862,10 +2025,32 @@ mod registry_tests {
         let setup = mapper.setup(&stmt).unwrap();
         assert!(matches!(setup, Setup::Named(_)));
 
+        {
+            let mut rows = stmt.raw_query();
+            let row = rows.next().unwrap().unwrap();
+            let mut row = Row::Borrowed(row, setup.row_cols());
+            assert_eq!(mapper.map(&mut row, &setup).id, 7);
+        }
+
+        // The very row a `query_map` of this type maps: an owned row on the same index, built,
+        // mapped, and dropped by the mapper.  No caller of this path ever holds a row, so the
+        // index carries no header, and the read by name is the whole job it has to do.
+        let cols = setup.row_cols_owned();
+        assert!(
+            cols.names().is_empty(),
+            "the mapping path builds no header for its rows"
+        );
+        let columns = ColumnInfo::mapping_cols_from_stmt(stmt.columns());
         let mut rows = stmt.raw_query();
         let row = rows.next().unwrap().unwrap();
-        let mut row = Row::Borrowed(row, setup.row_cols());
-        assert_eq!(mapper.map(&mut row, &setup).id, 7);
+        let values = RowValues::from_row_column(row, &columns);
+        drop(rows);
+        let mut owned = Row::Owned(RowOwned::new(values, cols));
+        assert_eq!(
+            NameOnly::from(&mut owned).id,
+            7,
+            "an owned row on a header-less index reads its columns by name"
+        );
     }
 
     /// Registration is what moves a type onto the hoisted path, and the type of this test is
@@ -1973,8 +2158,8 @@ mod registry_tests {
         let mut row = Row::Borrowed(row, &empty);
         assert_eq!(row.get_idx::<String>(borrowed[0]), "seven");
 
-        let mut row = Row::Owned(
-            RowOwned {
+        let mut row = Row::Owned(RowOwned::new(
+            RowValues {
                 values: names
                     .iter()
                     .map(|n| match *n {
@@ -1984,7 +2169,7 @@ mod registry_tests {
                     .collect::<Vec<Option<ValueOwned>>>(),
             },
             Arc::new(cols),
-        );
+        ));
         assert_eq!(row.get_idx::<String>(owned[0]), "seven");
     }
 

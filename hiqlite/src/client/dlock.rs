@@ -141,7 +141,7 @@ impl Client {
     /// heartbeats every 3 seconds (500ms in debug builds). A heartbeat extends the expiry. The hard
     /// timeout makes sure that a stale or crashed client can never hold a lock forever.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// // In some cases, you need to make sure you get some lock for either longer running actions
     /// // or ones that need retrieving data, manipulating it and then sending it back to the DB.
     /// // In these cases you might not be able to do all at once in a SQL query.

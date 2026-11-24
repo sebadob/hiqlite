@@ -1,6 +1,6 @@
 use crate::network::AppStateExt;
 use crate::network::api::ApiStreamResponsePayload;
-use crate::query::rows::{ColumnInfo, RowOwned, RowsOwned, ValueOwned};
+use crate::query::rows::{ColumnInfo, RowValues, RowsOwned, ValueOwned};
 use crate::store::state_machine::sqlite::state_machine::{
     FORBIDDEN_NON_DET_FNS, Query, QueryWrite,
 };
@@ -15,7 +15,7 @@ use tracing::debug;
 /// objects, one per row, keyed by the column names of the query.
 pub(crate) struct DashboardRows<'a> {
     columns: &'a [String],
-    rows: &'a [RowOwned],
+    rows: &'a [RowValues],
 }
 
 impl<'a> DashboardRows<'a> {
@@ -30,7 +30,7 @@ impl<'a> DashboardRows<'a> {
 /// One row paired with the column names it is keyed by.
 struct RowJson<'a> {
     columns: &'a [String],
-    row: &'a RowOwned,
+    row: &'a RowValues,
 }
 
 impl Serialize for RowJson<'_> {
@@ -93,7 +93,7 @@ pub(crate) async fn dashboard_query_dynamic(
             let mut rows_owned = Vec::new();
             loop {
                 match rows.next() {
-                    Ok(Some(row)) => rows_owned.push(RowOwned::from_row_column(row, &columns)),
+                    Ok(Some(row)) => rows_owned.push(RowValues::from_row_column(row, &columns)),
                     Ok(None) => break,
                     Err(err) => {
                         // never silently show a truncated result in the dashboard
@@ -148,7 +148,7 @@ pub(crate) async fn dashboard_query_dynamic(
         let affected = i64::try_from(rows_affected).unwrap_or(i64::MAX);
         Ok(RowsOwned::new(
             vec!["rows_affected".to_string()],
-            vec![RowOwned {
+            vec![RowValues {
                 values: vec![Some(ValueOwned::Integer(affected))],
             }],
         ))

@@ -183,6 +183,62 @@ Every read has the same three shapes: many, one, optional.
 
 A local read is as fast as your local SQLite is. A consistent read is a network call.
 
+## Streaming big results
+
+```rust, notest
+// mapped rows, one at a time
+let mut stream = client
+    .query_map_stream::<Test, _>("SELECT * FROM users", params!())
+    .await?;
+while let Some(row) = stream.next().await? {
+    let id: i64 = row.id;
+}
+
+// raw rows plus their column names, for an API response or a CSV export
+let mut stream = client
+    .query_raw_stream("SELECT id, name FROM users", params!())
+    .await?;
+while let Some(mut row) = stream.next().await? {
+    let header = row.columns();
+    let id: i64 = row.get("id");
+}
+
+// the whole result as a streaming API response, one JSON object per line
+let stream = client
+    .query_map_stream::<Test, _>("SELECT * FROM users", params!())
+    .await?;
+let response = stream.into_json_response();
+```
+
+- `Client::query_map_stream`, `Client::query_try_map_stream`, `Client::query_raw_stream` - the
+  non-collecting shapes of the mapped, the try-mapped and the raw read.
+- Rows arrive as you consume them: a result of a million rows costs the memory of the single row
+  being handed over, and a response can start writing before the query has finished.
+- `query_raw_stream` hands over `RowOwned` handles, `get` and `try_get` by column name, and
+  `row.columns()` on any of them is the header of its result set: the names are shared through the
+  `Arc` of the row, so reading them allocates nothing.
+- `stream.into_json_response()` is an API response that answers with one JSON object per line
+  (`application/x-ndjson`) while its query is still running: a mapped type needs `Serialize`, a raw
+  row writes itself as an object keyed by exactly the names of its own `row.columns()`, and a
+  combinator chain answers with the same method from `hiqlite::JsonLinesExt`.  Rows go out as they
+  are produced, and a client that stops reading parks the query on the row after the one it got.
+- `stream.into_json_body()` is that body on its own: the same rows, with a status code and headers of
+  your own around them.
+- A stream is a futures `Stream`, so the combinators work on it once `hiqlite::StreamExt` is in
+  scope - Hiqlite re-exports it, so no extra dependency is needed - and a conversion you apply in
+  flight stays lazy: a `take(n)` never reads the rows behind it.
+- Dropping a stream stops its query and hands its connection back to the read pool.  The flip side
+  matters just as much: a stream you hold on to without consuming it parks the thread that runs its
+  query, and the read pool connection it owns, on the very next row - so a few streams nobody reads
+  starves the node's other local reads (`read_pool_size`, 4 by default).
+- A statement that cannot be built, and a param that cannot be bound, fail the call itself, like
+  they fail the collecting read. A query that fails while you consume it is the `Err` of `next()`,
+  so a truncated result never looks complete: a `while let Some(row) = stream.next().await?` loop
+  carries it out, a `while let Some(Ok(row))` loop would end it like the last row did.
+- Local clients only: a remote client answers `Error::Config`. There is no streaming consistent
+  read, on purpose - a consistent read pauses Raft replication, and that pause has to end as fast
+  as the read that needs it.
+
 ## Mapping rows
 
 ```rust, notest
