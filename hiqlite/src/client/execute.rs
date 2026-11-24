@@ -1,7 +1,7 @@
 use crate::client::helpers::await_channel_response;
 use crate::client::stream::{ClientExecutePayload, ClientStreamReq};
 use crate::network::api::ApiStreamResponsePayload;
-use crate::query::rows::RowsOwnedChecked;
+use crate::query::rows::{RowOwned, RowsOwnedChecked};
 use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
 use crate::{Client, Error, Params, Response};
 use std::borrow::Cow;
@@ -11,7 +11,7 @@ impl Client {
     /// Execute any modifying / non-read-only query on the database.
     /// Returns the affected rows on success.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// client
     ///     .execute(
     ///         "INSERT INTO test (id, num, description) VALUES ($1, $2, $3)",
@@ -187,7 +187,7 @@ impl Client {
 
         let mut res: Vec<Result<crate::Row, Error>> = Vec::with_capacity(rows.len());
         for row in rows {
-            res.push(row.map(|row| crate::Row::Owned(row, cols.clone())));
+            res.push(row.map(|row| crate::Row::Owned(RowOwned::new(row, cols.clone()))));
         }
         Ok(res)
     }

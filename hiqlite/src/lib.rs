@@ -73,9 +73,11 @@ pub use query::cust_types::VecText;
 
 #[cfg(feature = "sqlite")]
 pub use crate::query::rows::{
-    ColIndex, FieldMaps, FieldNames, FromRowIndexed, Row, SqlShape, TryFromRowIndexed,
+    ColIndex, FieldMaps, FieldNames, FromRowIndexed, Row, RowOwned, SqlShape, TryFromRowIndexed,
     register_hoisted, register_hoisted_try, sql_shape,
 };
+#[cfg(feature = "sqlite")]
+pub use crate::query::stream::{JsonLinesExt, QueryStream};
 #[cfg(feature = "sqlite")]
 pub use crate::store::state_machine::sqlite::{
     param::Param,
@@ -94,6 +96,16 @@ pub use migration::AppliedMigration;
 /// against the `rusqlite::Transaction` type.
 #[cfg(any(feature = "sqlite", feature = "external-state-machine"))]
 pub use rusqlite;
+
+/// Re-export of the `StreamExt` combinators of the exact `futures-util` version Hiqlite is built
+/// with.
+///
+/// A [`QueryStream`] is a `futures_util::stream::Stream`, so `.map()`, `.take()`, `.filter_map()`
+/// and the rest of the combinators work on it, and importing this trait is all it takes to reach
+/// them - no `futures-util` dependency of your own.  A plain row loop needs neither: the inherent
+/// [`QueryStream::next`] is shadowing `StreamExt::next`, and it answers with a `Result`.
+#[cfg(feature = "sqlite")]
+pub use futures_util::StreamExt;
 
 // No doc comment here on purpose: an outer doc merges with the `//!` block of the module, and
 // rustdoc then resolves the intra-doc links of that block at crate root, where the module's items

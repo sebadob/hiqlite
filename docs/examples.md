@@ -8,6 +8,10 @@ that cannot rot beats a copy.
   command line. The first thing to run.
 - `sqlite-only` - the database path with a single node: writes, reads, migrations. No cache, no
   locks, no notifications.
+- `query-streaming` - big results streamed out of a real axum API on `localhost`: one JSON object
+  per line, rows that arrive one by one in front of `curl`, the same rows filling a table row by row
+  in a plain HTML page, a conversion applied in flight, and a status code and headers of your own
+  around the rows. See `queries.md`.
 - `cache-only` - a single node with caches only: no SQLite state machine, no volume needed.
 - `derive-complex-types` - row mapping with the derives, including the `column` attributes for
   names, conversions, and the trickier column types.

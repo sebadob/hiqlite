@@ -12,6 +12,9 @@ readme = "../README.md"
 repository = "https://github.com/sebadob/hiqlite"
 
 [lib]
+# Doc examples are illustrations of calls against a running node, not tests: they need migrations, a
+# live client and a `params!()` of the right types to compile.  Doctests are off globally, so
+# nothing builds them and they can never fail a build.
 doctest = false
 
 [lints]

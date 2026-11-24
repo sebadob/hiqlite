@@ -15,6 +15,17 @@ const TEST_DATA_DIR: &str = "tests/data_test_election_disable";
 /// - `PUT` flips the state at runtime and `GET` reports it, the config marker stays untouched
 /// - a probe against a live leader does not touch the term, and a `force` election inflates it
 /// - a node that is disabled for elections stays a follower, even as the node with the highest term
+///
+/// FLAKY - make it robust before anything is added to it.  Its step 7 waits for node 2 to take the
+/// leadership after the forced election on node 1 through `wait_for_leader(.., 120)`: 120 polls of
+/// 500 ms, a wall-clock deadline of 60 s.  On a loaded machine node 2 does not always get there
+/// inside that window, and the whole cluster suite then dies with
+/// `node 2 did not become the leader, current: Some(1)`.  That step asserts a race it only half
+/// controls: node 1's inflated term, its own election timeout and node 2's self-nomination are all
+/// driven by timers, so raising the poll count only moves the deadline.  The robust shape is a
+/// verdict that does not depend on who won inside a window - prove the forced election inflated the
+/// term and that node 1 stays a follower, and take the leadership change itself from a transfer,
+/// whose outcome the test can await.  Seen failing on 2026-11-24; it passes on an idle machine.
 #[tokio::test(flavor = "multi_thread")]
 async fn election_disable_node_never_leads_without_a_transfer() {
     let _ = fs::remove_dir_all(TEST_DATA_DIR).await;
@@ -104,6 +115,8 @@ async fn election_disable_node_never_leads_without_a_transfer() {
 
     // node 1 cannot win and never nominates itself again, node 3 is switched off as well, so node 2
     // is the only one left that can take the leadership, and it does
+    //
+    // FLAKY: this 60 s wall-clock poll is the flake of the test - see its doc comment.
     let leader = wait_for_leader(&client_1, 2, 120).await.unwrap();
     assert_eq!(
         leader, 2,

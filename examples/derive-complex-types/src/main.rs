@@ -17,7 +17,7 @@ struct Migrations;
 ///
 /// The `FromRow` derive macro will create (in this example) the following impl:
 ///
-/// ```rust, notest
+/// ```rust, ignore
 /// impl ::std::convert::From<&mut ::hiqlite::Row<'_>> for Entity {
 ///     #[inline]
 ///     fn from(row: &mut ::hiqlite::Row) -> Self {

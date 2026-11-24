@@ -12,6 +12,9 @@ repository = "https://github.com/sebadob/hiqlite"
 
 [lib]
 proc-macro = true
+# Doc examples are illustrations of generated code, not tests: they need a schema and a live client
+# to compile at all.  The same switch the `hiqlite` and `hiqlite-wal` crates use.
+doctest = false
 
 [lints]
 workspace = true

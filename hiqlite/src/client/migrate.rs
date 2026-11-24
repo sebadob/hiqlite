@@ -14,7 +14,7 @@ impl Client {
     /// To make this work, you currently need to `Embed` a `struct` in your app to be able to
     /// execute them in a type-safe way:
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// use hiqlite::macros::embed::*;
     ///
     /// #[derive(Embed)]
@@ -48,7 +48,7 @@ impl Client {
     /// To make this work, you currently need to `Embed` a `struct` in your app to be able to
     /// execute them in a type-safe way:
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// use hiqlite::macros::embed::*;
     ///
     /// #[derive(Embed)]

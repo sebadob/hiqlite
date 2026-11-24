@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hiqlite streaming rows</title>
+<style>
+    body { font: 14px/1.5 ui-monospace, Menlo, monospace; margin: 2rem; }
+    table { border-collapse: collapse; }
+    th, td { border: 1px solid #999; padding: 2px 8px; text-align: left; }
+    pre { border: 1px solid #999; padding: 8px; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>Streaming query rows in JS</h1>
+
+<p>
+    Every endpoint below answers with one JSON document per line, written while the query is still
+    running. The table fills line by line.
+</p>
+
+<p>
+    <button data-path="/users/slow">40 rows, 250 ms apart</button>
+    <button data-path="/users">all 2.000 rows</button>
+    <button data-path="/users/raw">20 raw rows, keyed by name</button>
+    <button data-path="/users/custom">own status and headers</button>
+    <button data-path="/users/mails">mapped into another type</button>
+    <button id="stop" disabled>stop reading</button>
+</p>
+
+<p id="status">Pick an endpoint.</p>
+
+<table>
+    <thead></thead>
+    <tbody></tbody>
+</table>
+
+<p>bytes as they arrive:</p>
+<pre id="tail"></pre>
+
+<script>
+    const status = document.getElementById('status');
+    const head = document.querySelector('thead');
+    const body = document.querySelector('tbody');
+    const tail = document.getElementById('tail');
+    const stop = document.getElementById('stop');
+
+    let controller = null;
+
+    async function stream(path) {
+        // One AbortController per run: aborting it closes the connection, which stops the query
+        // on the server, because its rows only travel through a small buffer.
+        controller = new AbortController();
+        stop.disabled = false;
+
+        head.replaceChildren();
+        body.replaceChildren();
+        tail.textContent = '';
+        status.textContent = 'reading ...';
+
+        let rows = 0;
+        let bytes = 0;
+        // The chunks of a stream have nothing to do with the lines of the body: a chunk can hold
+        // half a line, and a line can be spread over several chunks. Keep the tail of what you have
+        // read, and cut a line only at its newline.
+        let buffer = '';
+        const started = performance.now();
+
+        try {
+            const response = await fetch(path, { signal: controller.signal });
+            // The body is a ReadableStream: read it piece by piece instead of `response.json()`,
+            // which would wait for the whole query.
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            for (;;) {
+                const read = await reader.read();
+                if (read.done) {
+                    break;
+                }
+
+                bytes += read.value.length;
+                const chunk = decoder.decode(read.value, { stream: true });
+                tail.textContent = chunk;
+                buffer += chunk;
+
+                let cut = buffer.indexOf('\n');
+                while (cut >= 0) {
+                    const line = buffer.slice(0, cut);
+                    buffer = buffer.slice(cut + 1);
+                    if (line) {
+                        addRow(JSON.parse(line));
+                        rows += 1;
+                    }
+                    cut = buffer.indexOf('\n');
+                }
+
+                status.textContent = `${rows} rows, ${bytes} bytes, ${Math.round(performance.now() - started)} ms`;
+            }
+
+            // A body that ends inside a line is a query that failed mid-scan: the status line and
+            // the headers were sent before the first row, so nothing can turn into a 500 here.
+            status.textContent = buffer
+                ? `${rows} rows, then the response ended inside a line - the query stopped mid-scan`
+                : `done: ${rows} rows in ${Math.round(performance.now() - started)} ms`;
+        } catch (err) {
+            status.textContent = err.name === 'AbortError'
+                ? `stopped by you after ${rows} rows`
+                : `failed: ${err}`;
+        }
+
+        stop.disabled = true;
+        controller = null;
+    }
+
+    function addRow(row) {
+        // The header of the table is the set of keys of the first row: the column names of the
+        // query, because an OwnedRow serializes itself keyed by exactly those.
+        if (!head.childElementCount) {
+            const tr = head.insertRow();
+            for (const key of Object.keys(row)) {
+                const th = document.createElement('th');
+                th.textContent = key;
+                tr.append(th);
+            }
+        }
+
+        const tr = body.insertRow();
+        for (const value of Object.values(row)) {
+            const td = tr.insertCell();
+            td.textContent = value === null || typeof value === 'object'
+                ? JSON.stringify(value)
+                : String(value);
+        }
+    }
+
+    for (const button of document.querySelectorAll('button[data-path]')) {
+        button.addEventListener('click', () => stream(button.dataset.path));
+    }
+
+    stop.addEventListener('click', () => controller?.abort());
+</script>
+</body>
+</html>

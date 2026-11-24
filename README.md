@@ -59,7 +59,7 @@ or problems.
     - on a non-leader node, it will automatically switch over to a network connection so the request
       is forwarded and initiated on the current Raft leader
 - strongly consistent, replicated `EXECUTE` queries with returning statement through the Raft
-    - you can either get a raw handle to the custom `RowOwned` struct
+    - you can either get a raw handle to the row as `Row::Owned`
     - or you can map the `RETURNING` statement to an existing struct
 - transaction executes
 - simple `String` batch executes

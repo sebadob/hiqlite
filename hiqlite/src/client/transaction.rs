@@ -11,7 +11,7 @@ impl Client {
     ///
     /// The transaction will be rolled back if any query returns an error.
     ///
-    /// ```rust, notest
+    /// ```rust, ignore
     /// let sql = "INSERT INTO test (id, num, description) VALUES ($1, $2, $3)";
     /// let res = client
     ///     .txn([

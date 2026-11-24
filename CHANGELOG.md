@@ -83,10 +83,12 @@ second read of the same column is the same `Error::QueryParams` it always was.
 
 Public API changes:
 
-1. `Row::Owned(row)` is `Row::Owned(row, cols)` — the variant carries the column index of its
-   result set as second field.
-2. `RowOwned::get()` and `RowOwned::try_get()` are not public API anymore; a row is read through
-   `Row::get()` / `Row::try_get()`, which did not change.
+1. `Row::Owned(row)` stays a single-field variant, and its field is the new `RowOwned`: the values
+   of the row together with the column index of its result set, shared through an `Arc`.
+2. The old `RowOwned` struct is `RowValues` now: the values of one row in column order, with no
+   accessors of its own. Its `get()` and `try_get()` are not public API anymore; a row is read
+   through `Row::get()` / `Row::try_get()`, which did not change, or through the new `RowOwned`'s
+   own `get()` / `try_get()` / `columns()`.
 3. `ColumnOwned` is removed. The column info of a prepared statement is `ColumnInfo`.
 
 Migration:
@@ -94,56 +96,43 @@ Migration:
 - Apps that use `query_map()`, `query_try_map()` and the `*_as()` calls with derived `FromRow` /
   `TryFromRow` structs need **no change at all**. `Row::get("name")` and `Row::try_get("name")`
   take the column name exactly like before, on borrowed rows and on owned rows.
-- A `match` on `Row::Owned(row)` becomes `match Row::Owned(row, _cols)`.
-- Code that kept a `RowOwned` around and read it directly reads it as `Row::Owned` instead.
-
-**CAUTION: The query payloads between nodes changed with this, so a rolling upgrade is not
-possible: stop the cluster, update every node, start it again.** Stored data (WAL logs, the SQLite
-state machine, snapshots) is unaffected, and the dashboard's JSON shape for a query is unchanged.
-
-#### Shapes of Flattened Types
-
-`sql_map!()` checks the columns a query returns against the shape of the type it maps. A type that
-flattens a field can only publish its shape when every part publishes its own column names, and a
-part that publishes nothing is now a compile error **naming that part**. Before this, the columns a
-hand-written `From<&mut Row>` reads were silently left out of the check, so a `sql_map!()` of a
-nested type checked fewer columns than the mapping reads.
-
-The fix for a part whose `From<&mut Row>` you write yourself is the new `#[derive(SqlShape)]`: the
-shape-only counterpart of `FromRow`, with the same fields and the same `#[column(...)]` attributes,
-emitting only the shape and no mapping. A type that is not a struct - an `enum`, for instance -
-writes the `SqlShape` impl the docs of `SqlShape` show.
-
-```rust, notest
-#[derive(SqlShape)]
-struct Geo {
-    lat: i32,
-    lon: i32,
-}
-
-// the mapping of `Geo` stays the hand-written one you already have
-impl From<&mut hiqlite::Row<'_>> for Geo { /* reads `lat` and `lon` */ }
-
-#[derive(FromRow)]
-struct Entity {
-    id: i64,
-    #[column(flatten)]
-    geo: Geo,
-}
-
-let row = client
-    .query_map_one(sql_map!(Entity, "SELECT id, lat, lon FROM complex"), params!())
-    .await?;
-```
-
-Only `sql_map!()` needs a shape. A type that publishes none, whose queries go through `sql!()` or a
-plain string, compiles and runs exactly as it did, and a type that derives `FromRow` needs no change
-at all: its shape is published by the derive, including the parts it flattens.
-
-A hand-written `FromRowIndexed` / `TryFromRowIndexed` impl for a type with a `flatten` field is an
-error now; delete it. Such a type is mapped by the names its body reads, like it always was.
+- A `match` on `Row::Owned(row)` is unchanged; the `row` it binds is a `RowOwned` now, which is the
+  readable row, not the bare values it used to bind.
+- Code that kept the old `RowOwned` struct around and read it directly reads `Row::Owned` instead.
+  The name `RowOwned` belongs to the readable row from now on, never to its bare values.
 
 ### Changes
+
+#### Streaming Queries
+
+`Client::query_map_stream()`, `Client::query_try_map_stream()` and `Client::query_raw_stream()` are
+the non-collecting shapes of `query_map()`, `query_try_map()` and `query_raw()`: they hand back a
+`hiqlite::QueryStream` whose rows arrive as you consume them, so a very big result costs the memory
+of a single row at a time, and an API response can start writing while the query is still running.
+
+- `stream.next().await?` is the next row, `None` after the last one
+- `stream.into_json_response()` is an API response that answers with one JSON object per line while
+  its query is still running: a mapped type needs `serde::Serialize`, a raw row writes itself as an
+  object keyed by the column names of the query, and `hiqlite::JsonLinesExt` is the same method for
+  a combinator chain over a stream
+- `stream.into_json_body()` is that body on its own, for a status code and headers of your own
+  around the rows
+- a `QueryStream` is a futures `Stream`: `hiqlite::StreamExt` is re-exported, so `.map()`,
+  `.take()` and the rest work on it without a `futures-util` dependency of your own, and a
+  conversion you apply in flight stays lazy - a `take(n)` never reads the rows behind it
+- `query_raw_stream()` hands over `hiqlite::RowOwned` rows, read by column name, and `row.columns()`
+  on any of them is the header of its result set, shared through the `Arc` of the row
+- dropping a stream stops its query and returns its connection to the read pool, while a stream you
+  hold on to without consuming it parks that connection out of the pool for as long as you hold it
+- a statement that cannot be built, and a param that cannot be bound, fail the call itself, exactly
+  like they fail `query_map()`, and a query that fails while you consume it is the `Err` of
+  `next()`, so a truncated result can never read as a complete one
+- all three are local-client calls, a remote client answers `Error::Config`, and there is no
+  streaming consistent query on purpose: one pauses Raft replication, and that pause has to end as
+  fast as the query that needs it
+- `examples/query-streaming` is the whole thing on a real axum API: a single node with 2.000 seeded
+  rows, endpoints whose JSON lines you can watch arrive with `curl -N`, and a page on `/` that reads
+  the very same body in JavaScript and fills a table row by row
 
 #### Row Name Lookup
 
@@ -173,6 +162,63 @@ top of this: with the names on the result set instead of on every row (see `Owne
 2000 rows over 24 columns got about 38% cheaper, and reading them by name dropped from 1.26 ms to
 0.24 ms, a **5.3x** speedup. Those numbers are from the same kind of harness as above, but owned
 rows are built by hand there, so they are not the numbers of the bench file.
+
+#### Compile-time SQL Checking with `sql!()`
+
+`sql!()` checks a query string at compile time and hands it back as the string itself, so it takes
+the place of a plain string literal at any call site that takes a query:
+
+```rust
+let rows = client.query_map(sql!("SELECT id, ts FROM test"), params!()).await?;
+```
+
+The string is prepared against an in-memory SQLite built from the `migrations` directory that sits
+next to the `Cargo.toml` of the crate using the macro - the same directory `Client::migrate()`
+applies - so a typo in a table name, a column that does not exist, or a broken keyword fails the
+build with SQLite's own message, pointing at the string:
+
+```rust,notest
+error: no such column: descrption in SELECT descrption FROM test at offset 7
+  --> src/db.rs:41:25
+   |
+41 |     let rows = client.query_map(sql!("SELECT id, descrption FROM test"), params!()).await?;
+   |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+- The macro is a validator only: it emits the literal it was given, byte for byte. Nothing to
+  adapt, no runtime cost, and no new dependencies.
+- `sql!()` takes exactly one statement, the shape of `execute()`, `query()` and all their variants.
+  `sql_batch!()` is the multi-statement shape for `batch()` and `txn()`.
+- `sql_map!(Type, "…")` checks the columns the query returns against the fields of the type it
+  maps to: the same names, in any order and any case, which is the matching a mapped row does. A
+  query that reads a column the type has no field for, or a field the query does not return, fails
+  the build. The `FromRow` derive publishes the shape of every type it maps, including the parts it
+  flattens; a `TryFromRow` type and a hand-written mapping publish it with the `SqlShape` derive,
+  or by listing their column names in a `SqlShape` impl.
+- One in-memory database per schema and compiler process, and every verdict is cached in
+  `.hiqlite-sql/` in the workspace root, keyed by a fingerprint of your migrations and a hash of the
+  query string. A query the compiler has seen before costs a hash lookup, so hundreds of `sql!()`
+  calls in one repo do not build hundreds of databases. The directory is gitignored and you can
+  delete it whenever you want.
+- Editing a migration file recompiles the crates that use `sql!()` and changes the fingerprint, so
+  the cache invalidates itself; the version of SQLite Hiqlite checks against is part of it too.
+  Adding a migration file is not something a compiler can see from the outside, so a new file does
+  not recompile anything by itself: after you add one, rebuild the crates that check against it
+  (`cargo build` after a `touch`, or a clean build of them) to fold it into their schema and get
+  the fresh verdicts.
+- A crate without a `migrations` directory, and any failure inside the checker itself, produces one
+  `warning:` line and leaves queries unchecked. The check can never break a build.
+- The checks run in debug builds, and a shape exists exactly where a check can run: the `FromRow`
+  and `SqlShape` derives emit their shape impl in debug builds, and in a release build only when
+  `sql-check-release` is on.
+- Not checked: the number of bound parameters (that is `params!()`, a separate call the macro
+  cannot see), the types of the columns you map (`query_try_map()` reports those as an error at
+  runtime), and queries built at runtime with `format!`.
+
+The `sqlite` and `macros` features enable it, which is what a `FromRow` derive needs anyway. The
+proc-macro crate builds the bundled SQLite once per target (a C compile at build-script time, not
+in your runtime), and each `rustc` process pays one in-memory database plus one migration replay,
+a few milliseconds, before every check after that is a hash lookup.
 
 #### Hoisted Field Mapping
 
@@ -243,65 +289,44 @@ traits, `Row::get_idx()` / `Row::try_get_idx()`, `ColIndex`, `FieldMaps`, `Field
 needs none of them; implement `FromRowIndexed` by hand, call `register_hoisted()` once for the type,
 and it maps through the hoisted path as well.
 
-#### Compile-time SQL Checking with `sql!()`
+#### Shapes of Flattened Types
 
-`sql!()` checks a query string at compile time and hands it back as the string itself, so it takes
-the place of a plain string literal at any call site that takes a query:
+`sql_map!()` checks the columns a query returns against the shape of the type it maps. A type that
+flattens a field can only publish its shape when every part publishes its own column names, and a
+part that publishes nothing is now a compile error **naming that part**. Before this, the columns a
+hand-written `From<&mut Row>` reads were silently left out of the check, so a `sql_map!()` of a
+nested type checked fewer columns than the mapping reads.
 
-```rust
-let rows = client.query_map(sql!("SELECT id, ts FROM test"), params!()).await?;
+The fix for a part whose `From<&mut Row>` you write yourself is the new `#[derive(SqlShape)]`: the
+shape-only counterpart of `FromRow`, with the same fields and the same `#[column(...)]` attributes,
+emitting only the shape and no mapping. A type that is not a struct - an `enum`, for instance -
+writes the `SqlShape` impl the docs of `SqlShape` show.
+
+```rust, notest
+#[derive(SqlShape)]
+struct Geo {
+    lat: i32,
+    lon: i32,
+}
+
+// the mapping of `Geo` stays the hand-written one you already have
+impl From<&mut hiqlite::Row<'_>> for Geo { /* reads `lat` and `lon` */ }
+
+#[derive(FromRow)]
+struct Entity {
+    id: i64,
+    #[column(flatten)]
+    geo: Geo,
+}
+
+let row = client
+    .query_map_one(sql_map!(Entity, "SELECT id, lat, lon FROM complex"), params!())
+    .await?;
 ```
 
-The string is prepared against an in-memory SQLite built from the `migrations` directory that sits
-next to the `Cargo.toml` of the crate using the macro - the same directory `Client::migrate()`
-applies - so a typo in a table name, a column that does not exist, or a broken keyword fails the
-build with SQLite's own message, pointing at the string:
-
-```rust,notest
-error: no such column: descrption in SELECT descrption FROM test at offset 7
-  --> src/db.rs:41:25
-   |
-41 |     let rows = client.query_map(sql!("SELECT id, descrption FROM test"), params!()).await?;
-   |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-```
-
-- The macro is a validator only: it emits the literal it was given, byte for byte. Nothing to
-  adapt, no runtime cost, and no new dependencies.
-- `sql!()` takes exactly one statement, the shape of `execute()`, `query()` and all their variants.
-  `sql_batch!()` is the multi-statement shape for `batch()` and `txn()`.
-- `sql_map!(Type, "…")` checks the columns the query returns against the fields of the type it
-  maps to: the same names, in any order and any case, which is the matching a mapped row does. A
-  query that reads a column the type has no field for, or a field the query does not return, fails
-  the build. The `FromRow` derive publishes the shape of every type it maps, including the parts it
-  flattens; a `TryFromRow` type and a hand-written mapping publish it with the `SqlShape` derive,
-  or by listing their column names in a `SqlShape` impl.
-- One in-memory database per schema and compiler process, and every verdict is cached in
-  `.hiqlite-sql/` in the workspace root, keyed by a fingerprint of your migrations and a hash of the
-  query string. A query the compiler has seen before costs a hash lookup, so hundreds of `sql!()`
-  calls in one repo do not build hundreds of databases. The directory is gitignored and you can
-  delete it whenever you want.
-- Editing a migration file recompiles the crates that use `sql!()` and changes the fingerprint, so
-  the cache invalidates itself; the version of SQLite Hiqlite checks against is part of it too.
-  Adding a migration file is not something a compiler can see from the outside, so a new file does
-  not recompile anything by itself: after you add one, rebuild the crates that check against it
-  (`cargo build` after a `touch`, or a clean build of them) to fold it into their schema and get
-  the fresh verdicts.
-- A crate without a `migrations` directory, and any failure inside the checker itself, produces one
-  `warning:` line and leaves queries unchecked. The check can never break a build.
-- The checks run in debug builds, and a shape exists exactly where a check can run: the `FromRow`
-  and `SqlShape` derives emit their shape impl in debug builds, and in a release build only when
-  `sql-check-release` is on.
-- The checks run in debug builds. A release build compiles your literals untouched - no database
-  is built, no cache is read, nothing extra is emitted - unless you opt into the
-  `sql-check-release` feature, which checks release builds the same way.
-- Not checked: the number of bound parameters (that is `params!()`, a separate call the macro
-  cannot see), the types of the columns you map (`query_try_map()` reports those as an error at
-  runtime), and queries built at runtime with `format!`.
-
-The `sqlite` and `macros` features enable it, which is what a `FromRow` derive needs anyway. The
-proc-macro crate builds the bundled SQLite once per target (a C compile at build-script time, not
-in your runtime), and each `rustc` process pays one in-memory database plus one migration replay,
-a few milliseconds, before every check after that is a hash lookup.
+Only `sql_map!()` needs a shape. A type that publishes none, whose queries go through `sql!()` or a
+plain string, compiles and runs exactly as it did, and a type that derives `FromRow` needs no change
+at all: its shape is published by the derive, including the parts it flattens.
 
 #### `backup_file_prefix` config var
 

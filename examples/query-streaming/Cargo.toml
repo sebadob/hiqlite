@@ -1,0 +1,13 @@
+[package]
+name = "query-streaming"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hiqlite = { path = "../../hiqlite", features = ["macros", "shutdown-handle"] }
+
+axum = "0.8"
+serde = { version = "1.0.203", features = ["derive"] }
+tokio = { version = "1.43.1", features = ["fs", "net", "rt-multi-thread", "time"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
