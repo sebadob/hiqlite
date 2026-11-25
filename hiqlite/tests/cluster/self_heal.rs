@@ -296,9 +296,17 @@ async fn shutdown_corrupt_wal_restart(
         .expect("the node has at least one WAL file");
 
     let mut buf = fs::read(&wal_path).await?;
-    // magic no (7), version (1), id_from (8), id_until (8), data_start (4), data_end (4) - and
-    // the first record starts right at the end of that header
+    // magic no (7), version (1), id_from (8), id_until (8), data_start (4), data_end (4), and on
+    // version 2 the fixed committed slot (1 + 39) - the first record starts right at the end of
+    // that header, so the offset follows the version byte the file carries
+    let version = buf[7];
+    let committed_slot = 1 + 39;
     let mut offset = 7 + 1 + 8 + 8 + 4 + 4;
+    match version {
+        1 => {}
+        2 => offset += committed_slot,
+        other => panic!("unexpected WAL version {other} in {}", wal_path.display()),
+    }
 
     // step over the first record, so the healing rolls back to it and not to an empty log
     assert!(

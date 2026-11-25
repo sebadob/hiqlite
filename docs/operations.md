@@ -19,6 +19,41 @@ that keep a node boring.
 
 Probe settings, including why the readiness period must stay short: `standalone-server.md`.
 
+## Startup replay
+
+A node re-applies the log it found on its own disk before it serves anything. This happens inside
+the Raft setup, before the API server is built, so the port is not even open while it runs: there
+is no window where `/ready` answers 200 on a state machine that is behind its own committed log.
+
+What this means for probes:
+
+- `/ready` answers 503 while the node is re-applying. The first 200 means the replay finished, and a
+  read taken at that point can observe everything the node acknowledged before it stopped.
+- The replay is bounded by **this node's own committed log tail**, never by the cluster tip. A node
+  that was offline for a week replays its own log first and catches up from the leader afterwards,
+  so `startupProbe` headroom is sized by how much log this node can have pending, not by how far
+  the cluster has moved.
+- `/health` is liveness only: it answers as soon as the group has a leader. It never waits for the
+  replay, which is why a long replay must never make a pod get killed.
+- `Client::wait_for_cluster_sync()` waits for the replay first and for the cluster tip second. The
+  replay phase needs no peer, so a node whose cluster is unreachable completes it and blocks only on
+  the tip.
+
+The replay is read from the log store's persisted `committed` pointer.
+
+## Damaged log files
+
+An unclean start runs a deep integrity check over **every** WAL file, oldest first. A corrupt record
+rolls the log back to the last good one and drops the files behind it, so the log stays a valid
+prefix: the replay clamps to the new tail and the missing entries are re-synced from the leader. The
+rollback never goes below the purge frontier; if it would, the node refuses to start and says so.
+
+A WAL file with no readable header is healed only when it is the newest one - that is the shape a
+crash leaves behind when it kills the process between creating a new WAL file and writing its header,
+and such a file holds no entries. A headerless file behind the newest one is a real hole in the log,
+and the node refuses to start and names the file. Restore it from a backup, or start the node with an
+empty log directory.
+
 ## See the cluster
 
 ```bash

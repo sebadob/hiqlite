@@ -247,12 +247,15 @@ mod tests {
             wal.append_log(id, b"payload", &mut buf)?;
         }
         let path = wal.path.clone();
+        // a record is 8 id + 4 crc + 4 len + payload, plus one byte of gap to the next one
+        let stride = 8 + 4 + 4 + b"payload".len() + 1;
+        let corrupt_at = wal.offset_logs() + 2 * stride + 8 + 4 + 4;
         drop(wal);
 
-        // corrupt the first data byte of log 3 (record starts at offset 80, header is 16 bytes)
+        // corrupt the first data byte of log 3
         {
             let mut file = fs::OpenOptions::new().write(true).open(&path)?;
-            file.seek(SeekFrom::Start(96))?;
+            file.seek(SeekFrom::Start(corrupt_at as u64))?;
             file.write_all(b"X")?;
         }
 

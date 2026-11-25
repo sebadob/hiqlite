@@ -20,6 +20,16 @@ Each WAL will have its own tiny header with some metadata information:
 - 8 bytes Log ID until
 - 4 bytes Data offset start
 - 4 bytes Data offset end
+- version 2 only: 1 byte length + up to 39 bytes of the serialized Raft `committed` log id
+
+The version byte decides where the log entries start, so a log directory can mix versions: files
+written by an older version keep their header and are read and written exactly as before, and only
+files created from now on carry the version 2 header. A roll-over carries the header values of the
+file it seals into the new file, the `committed` pointer included.
+
+The `committed` slot is what lets a node replay its own committed log at startup without talking to
+any peer. The writer publishes it into the header of the file it flushes anyway, so saving it never
+costs an extra fsync.
 
 After the header, each log entry has a dynamic length with it's own tiny header, followed by the raw
 data block:

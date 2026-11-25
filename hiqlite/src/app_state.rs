@@ -110,12 +110,13 @@ pub struct StateRaftDB {
     /// Mirrors openraft's runtime `enable_elect` for this group. openraft only has a setter
     /// (`Raft::runtime_config().elect()`), so Hiqlite tracks the value it applies here.
     pub enable_elect: Arc<AtomicBool>,
-    /// Only set on single-node deployments: the last log index the WAL held when the node
-    /// started. Until the state machine has applied it, the node is still replaying its own log
-    /// and is not ready. Always `None` in a multi-node cluster.
-    pub single_node_replay_target: Option<u64>,
+    /// The last log index this node has to re-apply before it is ready, taken from its own log
+    /// store at startup. A single node targets its whole log tail, a cluster node the persisted
+    /// `committed` pointer. `None` when the log store has no pointer to give, which is the case
+    /// for a pristine node and for the in-memory cache store.
+    pub startup_replay_target: Option<u64>,
     /// Set once the startup replay has finished, so it is never checked again afterward.
-    pub single_node_replay_done: AtomicBool,
+    pub startup_replay_done: AtomicBool,
 }
 
 #[cfg(feature = "cache")]
@@ -136,24 +137,25 @@ pub struct StateRaftCache {
     pub shutdown_handle: Option<hiqlite_wal::ShutdownHandle>,
     /// Where the network layer assembles an incoming snapshot, for the state machine to read.
     pub path_snapshots: String,
-    /// Only set on single-node deployments: the last log index the WAL held when the node
-    /// started. Until the state machine has applied it, the node is still replaying its own log
-    /// and is not ready. Always `None` in a multi-node cluster.
-    pub single_node_replay_target: Option<u64>,
+    /// The last log index this node has to re-apply before it is ready, taken from its own log
+    /// store at startup. A single node targets its whole log tail, a cluster node the persisted
+    /// `committed` pointer. `None` when the log store has no pointer to give, which is the case
+    /// for a pristine node and for the in-memory cache store.
+    pub startup_replay_target: Option<u64>,
     /// Set once the startup replay has finished, so it is never checked again afterward.
-    pub single_node_replay_done: AtomicBool,
+    pub startup_replay_done: AtomicBool,
     #[cfg(feature = "cache")]
     pub cache_storage_disk: bool,
 }
 
 #[cfg(feature = "sqlite")]
 impl StateRaftDB {
-    /// See [`check_single_node_replay`].
+    /// See [`check_startup_replay`].
     pub(crate) fn check_replay(&self) -> Result<(), crate::Error> {
         use openraft::type_config::async_runtime::watch::WatchReceiver;
 
         if self
-            .single_node_replay_done
+            .startup_replay_done
             .load(std::sync::atomic::Ordering::Relaxed)
         {
             return Ok(());
@@ -164,8 +166,8 @@ impl StateRaftDB {
             .borrow_watched()
             .last_applied
             .map(|id| id.index);
-        check_single_node_replay(self.single_node_replay_target, last_applied, "sqlite")?;
-        self.single_node_replay_done
+        check_startup_replay(self.startup_replay_target, last_applied, "sqlite")?;
+        self.startup_replay_done
             .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
@@ -173,12 +175,12 @@ impl StateRaftDB {
 
 #[cfg(feature = "cache")]
 impl StateRaftCache {
-    /// See [`check_single_node_replay`].
+    /// See [`check_startup_replay`].
     pub(crate) fn check_replay(&self) -> Result<(), crate::Error> {
         use openraft::type_config::async_runtime::watch::WatchReceiver;
 
         if self
-            .single_node_replay_done
+            .startup_replay_done
             .load(std::sync::atomic::Ordering::Relaxed)
         {
             return Ok(());
@@ -189,25 +191,25 @@ impl StateRaftCache {
             .borrow_watched()
             .last_applied
             .map(|id| id.index);
-        check_single_node_replay(self.single_node_replay_target, last_applied, "cache")?;
-        self.single_node_replay_done
+        check_startup_replay(self.startup_replay_target, last_applied, "cache")?;
+        self.startup_replay_done
             .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 }
 
-/// Returns an error while a single-node deployment is still re-applying the log it found at
-/// startup.
+/// Returns an error while the node is still re-applying the log it found at startup.
 ///
-/// A single node commits on its own, so after a restart it re-applies everything its WAL holds
-/// shortly after it became leader again. Until then, its state machine may lag behind its own log,
-/// and after an unclean stop it may even be empty. Reporting ready in that window lets an
-/// application read stale or missing data. The target is fixed at startup, so writes accepted
-/// afterward never move it, and once it is reached the check is latched and never runs again. In a
-/// multi-node cluster the target is always `None`, so this never blocks a node that needs its
-/// peers to make progress.
+/// After a restart the state machine is behind the node's own log, and after an unclean stop it
+/// may even be empty. Reporting ready in that window lets an application read stale or missing
+/// data. The target comes from the local log store only, so the check never needs a peer: a
+/// single node takes its log tail, because it commits on its own, and a cluster node takes the
+/// persisted `committed` pointer, which is the part of its log that is guaranteed to replay.
+/// Entries committed after that pointer are not this gate's job - the leader sends them once the
+/// node joins, and `wait_for_cluster_sync` waits for them. The target is fixed at startup, so
+/// writes accepted afterward never move it, and once it is reached the check is latched.
 #[cfg(any(feature = "sqlite", feature = "cache"))]
-fn check_single_node_replay(
+fn check_startup_replay(
     target: Option<u64>,
     last_applied: Option<u64>,
     raft_name: &str,
@@ -224,4 +226,38 @@ fn check_single_node_replay(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ready(target: Option<u64>, last_applied: Option<u64>) -> bool {
+        check_startup_replay(target, last_applied, "test").is_ok()
+    }
+
+    /// The gate must stay open when the log store has no pointer to give - a pristine node and
+    /// the in-memory cache store - and it must close on every shape of "not replayed yet",
+    /// including a state machine that was wiped and has applied nothing at all.
+    #[test]
+    fn startup_replay_gate() {
+        // no target: nothing to wait for, the node is ready
+        assert!(ready(None, None));
+        assert!(ready(None, Some(7)));
+
+        // a cluster node whose state machine was wiped has applied nothing, and its target is the
+        // persisted `committed` pointer - this is the case a cluster never gated on before
+        assert!(!ready(Some(100), None));
+
+        // mid-replay
+        assert!(!ready(Some(100), Some(0)));
+        assert!(!ready(Some(100), Some(99)));
+
+        // the target is reached
+        assert!(ready(Some(100), Some(100)));
+
+        // the leader already sent more than the startup target: the gate is behind the state
+        // machine, not in front of it
+        assert!(ready(Some(100), Some(140)));
+    }
 }

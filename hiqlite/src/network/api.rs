@@ -113,7 +113,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
 
     let secs_since_start = Utc::now().sub(state.app_start).num_seconds();
 
-    // A single node is not ready while it is still re-applying the log it found at startup.
+    // Not ready while the node is still re-applying the log it found at startup.
     #[cfg(any(feature = "sqlite", feature = "cache"))]
     check_replay(&state)?;
 

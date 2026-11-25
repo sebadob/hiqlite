@@ -59,6 +59,51 @@ that talks to the API by hand needs `-H "Authorization: Bearer <secret_api>"`, a
 cannot authenticate each other, which is the same stop-the-world upgrade the openraft 0.10 wire
 change forces anyway.
 
+#### WAL Header v2 and the Startup Replay Gate
+
+The WAL header grows a fixed slot that carries the Raft `committed` log id, and the header version
+goes to 2. Existing files keep their version 1 header and are read and written exactly as before;
+only files created from now on are version 2, so a log directory mixes versions freely.
+
+The pointer is what lets a node replay its own committed log at startup without talking to anybody.
+openraft reads it out of the log store and re-applies `(last_applied, committed]` synchronously
+inside `Raft::new`, before the node binds its router: no leader, no peers, no engine. A node whose
+state machine was wiped by a crash - or by `auto-heal` - is back on its acknowledged state before
+it accepts a single request, in a cluster as well as on a single node. `wait_for_cluster_sync()`
+waits for that replay first, on every topology, and only then for the cluster tip.
+
+Publishing the pointer costs no extra write: the WAL writer copies it into the header of the file it
+is flushing anyway, so `save_committed` is an in-memory assignment and never an fsync. Reading it
+back clamps it to the durable log tail, because the WAL acknowledges appends before flushing them
+and a crash can leave the tail behind the committed position; an unclamped pointer would make openraft
+re-apply a range that is not in the log and the node could not start at all.
+
+**CAUTION: A node now refuses to start when a WAL file it cannot read sits behind the newest one.**
+It used to log a warning and start without that file. With `max_in_snapshot_log_to_keep` at 1, the
+newest file often holds the whole log tail after the last snapshot, so starting without a log file
+means serving reads from a state machine that is behind its own committed log. The newest file is the
+one exception `auto-heal` handles: a roll-over creates it and writes its header before anything is
+appended to it, so a process dying inside that window leaves a headerless file that holds no entries
+at all, and `auto-heal` re-creates it empty and keeps the rest of the log. Every older file was
+sealed and fsynced before a newer one ever existed, so an unreadable file behind them is a real hole
+in the log - restore it from a backup, or start the node with an empty log directory. The error names
+the file.
+
+The deep integrity check on an unclean start now scans every WAL file, not just the newest one, and
+rolls the log back behind the first corrupt record, dropping the files after it. A startup replay
+re-applies `(last_applied, committed]`, and that read fails hard on a bad record, so the range a
+replay can ask for has to be checked and repaired: the log ends up a valid prefix, the pointer
+clamps to the new tail, and the dropped entries are re-synced from the leader.
+
+`wal_size` goes to 4 MiB. A single log entry has to fit into one WAL file on its own, so the size
+caps the largest statement a node can accept, and the cap is now exact: an entry that does not fit
+fails with `WalSizeExceeded` when the `oversized-entry-error` feature is on, and panics the writer
+when it is off. Files written before the increase keep their size; the new one applies from the next
+roll-over.
+
+The upgrade itself is safe: the `data_09` fixture, a real data dir written by the last release on
+openraft 0.9, starts and serves all its data, snapshots included.
+
 #### Errors
 
 Source breaking: the `Error` enum's openraft variants are split per group (`RaftErrorDb` /

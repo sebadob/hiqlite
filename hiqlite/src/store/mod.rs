@@ -5,6 +5,7 @@ use crate::network::NetworkStreaming;
 use crate::{CacheVariants, Error, NodeConfig, NodeId, RaftConfig, init};
 use hiqlite_wal::LogSync;
 use openraft::Raft;
+use openraft::RaftTypeConfig;
 use openraft::storage::RaftLogStorage;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -42,6 +43,36 @@ mod tests_openraft_suite;
 /// Error type of the storage traits: openraft 0.10 defines them in terms of `io::Error`.
 pub type StorageResult<T> = Result<T, io::Error>;
 
+/// The log index this node's state machine must apply before the node is allowed to serve
+/// requests, read straight off the log store while no peer is involved.
+///
+/// A single node is its own quorum: every entry its log holds is committed, so the log tail is
+/// the target.
+///
+/// A cluster node must not gate on the log tail. It acknowledges appends before they are
+/// flushed, and openraft commits on a quorum of those acks, so the tail can hold entries that
+/// were never committed. Waiting for the tail is `Raft::wait_for_recovery()`, a call that needs
+/// the very peers a startup gate has to survive without. The persisted `committed` pointer is
+/// the peer-free target here, and the store clamps it to the log tail, so it is never ahead of
+/// what this node can replay.
+async fn startup_replay_target<T, C>(
+    log_store: &mut T,
+    single_node: bool,
+) -> StorageResult<Option<u64>>
+where
+    T: RaftLogStorage<C>,
+    C: RaftTypeConfig,
+{
+    if single_node {
+        return Ok(log_store
+            .get_log_state()
+            .await?
+            .last_log_id
+            .map(|id| id.index));
+    }
+    Ok(log_store.read_committed().await?.map(|id| id.index))
+}
+
 #[cfg(feature = "sqlite")]
 pub(crate) async fn start_raft_db(
     node_config: &NodeConfig,
@@ -60,15 +91,8 @@ pub(crate) async fn start_raft_db(
         node_config.wal_size,
     )
     .await?;
-    let single_node_replay_target = if node_config.nodes.len() == 1 {
-        log_store
-            .get_log_state()
-            .await?
-            .last_log_id
-            .map(|id| id.index)
-    } else {
-        None
-    };
+    let startup_replay_target =
+        startup_replay_target(&mut log_store, node_config.nodes.len() == 1).await?;
     let state_machine_store = StateMachineSqlite::new(
         &node_config.data_dir,
         &node_config.filename_db,
@@ -135,8 +159,8 @@ pub(crate) async fn start_raft_db(
         is_raft_stopped,
         is_startup_finished,
         enable_elect,
-        single_node_replay_target,
-        single_node_replay_done: AtomicBool::new(false),
+        startup_replay_target,
+        startup_replay_done: AtomicBool::new(false),
     })
 }
 
@@ -187,22 +211,15 @@ where
     // The log-revert allowance from `NodeConfig::default_raft_config` applies to both groups, so
     // the shared `Arc` Raft config is used here as-is.
 
-    let (raft, shutdown_handle, single_node_replay_target) = if node_config.cache_storage_disk {
+    let (raft, shutdown_handle, startup_replay_target) = if node_config.cache_storage_disk {
         let mut log_store = hiqlite_wal::LogStore::<TypeConfigCache>::start(
             logs::logs_dir_cache(&node_config.data_dir),
             node_config.wal_sync,
             node_config.wal_size,
         )
         .await?;
-        let single_node_replay_target = if node_config.nodes.len() == 1 {
-            log_store
-                .get_log_state()
-                .await?
-                .last_log_id
-                .map(|id| id.index)
-        } else {
-            None
-        };
+        let startup_replay_target =
+            startup_replay_target(&mut log_store, node_config.nodes.len() == 1).await?;
         let shutdown_handle = log_store.shutdown_handle();
 
         let raft = openraft::Raft::new(
@@ -214,7 +231,7 @@ where
         )
         .await?;
 
-        (raft, Some(shutdown_handle), single_node_replay_target)
+        (raft, Some(shutdown_handle), startup_replay_target)
     } else {
         let raft = openraft::Raft::new(
             node_config.node_id,
@@ -257,8 +274,8 @@ where
         enable_elect,
         shutdown_handle,
         path_snapshots,
-        single_node_replay_target,
-        single_node_replay_done: AtomicBool::new(false),
+        startup_replay_target,
+        startup_replay_done: AtomicBool::new(false),
         cache_storage_disk: node_config.cache_storage_disk,
     })
 }
