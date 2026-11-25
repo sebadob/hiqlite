@@ -665,6 +665,8 @@ impl Client {
         }
 
         if single_instance {
+            // ... once it has re-applied the log it found at startup.
+            self.wait_for_single_node_replay().await;
             return;
         }
 
@@ -691,6 +693,36 @@ impl Client {
             }
 
             time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    async fn wait_for_single_node_replay(&self) {
+        let Some(state) = &self.inner.state else {
+            return;
+        };
+
+        loop {
+            #[allow(unused_mut)]
+            let mut pending = false;
+
+            #[cfg(feature = "sqlite")]
+            if let Err(err) = state.raft_db.check_replay() {
+                pending = true;
+                debug!("{err}");
+            }
+
+            #[cfg(feature = "cache")]
+            if let Err(err) = state.raft_cache.check_replay() {
+                pending = true;
+                debug!("{err}");
+            }
+
+            if !pending {
+                return;
+            }
+
+            info!("Waiting for this node to re-apply its log after startup");
+            time::sleep(Duration::from_millis(100)).await;
         }
     }
 

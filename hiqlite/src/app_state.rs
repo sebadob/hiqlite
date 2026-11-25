@@ -110,6 +110,12 @@ pub struct StateRaftDB {
     /// Mirrors openraft's runtime `enable_elect` for this group. openraft only has a setter
     /// (`Raft::runtime_config().elect()`), so Hiqlite tracks the value it applies here.
     pub enable_elect: Arc<AtomicBool>,
+    /// Only set on single-node deployments: the last log index the WAL held when the node
+    /// started. Until the state machine has applied it, the node is still replaying its own log
+    /// and is not ready. Always `None` in a multi-node cluster.
+    pub single_node_replay_target: Option<u64>,
+    /// Set once the startup replay has finished, so it is never checked again afterward.
+    pub single_node_replay_done: AtomicBool,
 }
 
 #[cfg(feature = "cache")]
@@ -130,6 +136,92 @@ pub struct StateRaftCache {
     pub shutdown_handle: Option<hiqlite_wal::ShutdownHandle>,
     /// Where the network layer assembles an incoming snapshot, for the state machine to read.
     pub path_snapshots: String,
+    /// Only set on single-node deployments: the last log index the WAL held when the node
+    /// started. Until the state machine has applied it, the node is still replaying its own log
+    /// and is not ready. Always `None` in a multi-node cluster.
+    pub single_node_replay_target: Option<u64>,
+    /// Set once the startup replay has finished, so it is never checked again afterward.
+    pub single_node_replay_done: AtomicBool,
     #[cfg(feature = "cache")]
     pub cache_storage_disk: bool,
+}
+
+#[cfg(feature = "sqlite")]
+impl StateRaftDB {
+    /// See [`check_single_node_replay`].
+    pub(crate) fn check_replay(&self) -> Result<(), crate::Error> {
+        use openraft::type_config::async_runtime::watch::WatchReceiver;
+
+        if self
+            .single_node_replay_done
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Ok(());
+        }
+        let last_applied = self
+            .raft
+            .metrics()
+            .borrow_watched()
+            .last_applied
+            .map(|id| id.index);
+        check_single_node_replay(self.single_node_replay_target, last_applied, "sqlite")?;
+        self.single_node_replay_done
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[cfg(feature = "cache")]
+impl StateRaftCache {
+    /// See [`check_single_node_replay`].
+    pub(crate) fn check_replay(&self) -> Result<(), crate::Error> {
+        use openraft::type_config::async_runtime::watch::WatchReceiver;
+
+        if self
+            .single_node_replay_done
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Ok(());
+        }
+        let last_applied = self
+            .raft
+            .metrics()
+            .borrow_watched()
+            .last_applied
+            .map(|id| id.index);
+        check_single_node_replay(self.single_node_replay_target, last_applied, "cache")?;
+        self.single_node_replay_done
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+/// Returns an error while a single-node deployment is still re-applying the log it found at
+/// startup.
+///
+/// A single node commits on its own, so after a restart it re-applies everything its WAL holds
+/// shortly after it became leader again. Until then, its state machine may lag behind its own log,
+/// and after an unclean stop it may even be empty. Reporting ready in that window lets an
+/// application read stale or missing data. The target is fixed at startup, so writes accepted
+/// afterward never move it, and once it is reached the check is latched and never runs again. In a
+/// multi-node cluster the target is always `None`, so this never blocks a node that needs its
+/// peers to make progress.
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+fn check_single_node_replay(
+    target: Option<u64>,
+    last_applied: Option<u64>,
+    raft_name: &str,
+) -> Result<(), crate::Error> {
+    if let Some(target) = target
+        && last_applied.is_none_or(|applied| applied < target)
+    {
+        return Err(crate::Error::Error(
+            format!(
+                "{raft_name}: still re-applying its log after startup (applied {last_applied:?} \
+                 of {target})"
+            )
+            .into(),
+        ));
+    }
+    Ok(())
 }
