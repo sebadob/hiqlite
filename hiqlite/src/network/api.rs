@@ -104,6 +104,15 @@ where
         .map_err(|err| Error::Unavailable(format!("The {raft_label} is not running: {err}").into()))
 }
 
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+fn check_replay(state: &AppStateExt) -> Result<(), Error> {
+    #[cfg(feature = "sqlite")]
+    state.raft_db.check_replay()?;
+    #[cfg(feature = "cache")]
+    state.raft_cache.check_replay()?;
+    Ok(())
+}
+
 #[tracing::instrument(skip_all)]
 pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     #[cfg(all(not(feature = "sqlite"), not(feature = "cache")))]
@@ -114,6 +123,10 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     }
 
     let secs_since_start = Utc::now().sub(state.app_start).num_seconds();
+
+    // A single node is not ready while it is still re-applying the log it found at startup.
+    #[cfg(any(feature = "sqlite", feature = "cache"))]
+    check_replay(&state)?;
 
     #[cfg(feature = "sqlite")]
     {

@@ -54,12 +54,21 @@ pub(crate) async fn start_raft_db(
     // The runtime mirror of openraft's `enable_elect`, seeded from our config value.
     let enable_elect = Arc::new(AtomicBool::new(raft_config.enable_elect));
 
-    let log_store = hiqlite_wal::LogStore::<TypeConfigSqlite>::start(
+    let mut log_store = hiqlite_wal::LogStore::<TypeConfigSqlite>::start(
         logs::logs_dir_db(&node_config.data_dir),
         node_config.wal_sync,
         node_config.wal_size,
     )
     .await?;
+    let single_node_replay_target = if node_config.nodes.len() == 1 {
+        log_store
+            .get_log_state()
+            .await?
+            .last_log_id
+            .map(|id| id.index)
+    } else {
+        None
+    };
     let state_machine_store = StateMachineSqlite::new(
         &node_config.data_dir,
         &node_config.filename_db,
@@ -129,6 +138,8 @@ pub(crate) async fn start_raft_db(
         is_raft_stopped,
         is_startup_finished,
         enable_elect,
+        single_node_replay_target,
+        single_node_replay_done: AtomicBool::new(false),
     })
 }
 
@@ -179,13 +190,22 @@ where
     // The log-revert allowance from `NodeConfig::default_raft_config` applies to both groups, so
     // the shared `Arc` Raft config is used here as-is.
 
-    let (raft, shutdown_handle) = if node_config.cache_storage_disk {
-        let log_store = hiqlite_wal::LogStore::<TypeConfigCache>::start(
+    let (raft, shutdown_handle, single_node_replay_target) = if node_config.cache_storage_disk {
+        let mut log_store = hiqlite_wal::LogStore::<TypeConfigCache>::start(
             logs::logs_dir_cache(&node_config.data_dir),
             node_config.wal_sync,
             node_config.wal_size,
         )
         .await?;
+        let single_node_replay_target = if node_config.nodes.len() == 1 {
+            log_store
+                .get_log_state()
+                .await?
+                .last_log_id
+                .map(|id| id.index)
+        } else {
+            None
+        };
         let shutdown_handle = log_store.shutdown_handle();
 
         let raft = openraft::Raft::new(
@@ -197,7 +217,7 @@ where
         )
         .await?;
 
-        (raft, Some(shutdown_handle))
+        (raft, Some(shutdown_handle), single_node_replay_target)
     } else {
         let raft = openraft::Raft::new(
             node_config.node_id,
@@ -208,7 +228,8 @@ where
         )
         .await?;
 
-        (raft, None)
+        // An in-memory log store starts empty, so there is nothing to replay.
+        (raft, None, None)
     };
 
     init::init_pristine_node_1_cache(
@@ -239,6 +260,8 @@ where
         enable_elect,
         shutdown_handle,
         path_snapshots,
+        single_node_replay_target,
+        single_node_replay_done: AtomicBool::new(false),
         cache_storage_disk: node_config.cache_storage_disk,
     })
 }

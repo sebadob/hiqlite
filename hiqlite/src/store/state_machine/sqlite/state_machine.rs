@@ -16,7 +16,6 @@ use crate::store::state_machine::sqlite::writer::{
 use crate::store::{StorageResult, logs};
 use crate::{Error, Node, NodeId};
 use bincode_next::{Decode, Encode};
-use fs4::FileExt;
 use futures_util::{Stream, StreamExt};
 use openraft::storage::{EntryResponder, RaftStateMachine, Snapshot};
 use openraft::type_config::alias::{
@@ -308,18 +307,18 @@ impl StateMachineSqlite {
         )
     }
 
-    /// Checks the state-machine lock file and returns it already holding the `fs4` advisory
+    /// Checks the state-machine lock file and returns it already holding the advisory
     /// lock, so the caller can hand it to the writer thread (which releases it on shutdown).
     ///
     /// The lock file doubles as a crash marker: we remove it on graceful shutdown, so its mere
-    /// presence means the previous run did not shut down cleanly. On top of that we take an `fs4`
+    /// presence means the previous run did not shut down cleanly. On top of that we take an
     /// advisory (flock) lock, which the OS releases automatically as soon as the last fd closes
     /// or the process dies. A *held* lock therefore can only come from a live process - unlike
     /// file existence, which also survives a crash. If the file is both present and held, another
     /// process is still using this state machine, so we refuse to start on top of it instead of
     /// silently deleting and rebuilding the DB.
     // openraft declares this trait method `async`, so the impl has to keep `async`; the lock file
-    // check is pure `fs4` file work and has nothing to await.
+    // check is pure std file work and has nothing to await.
     #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn check_set_lock_file(
         path_lock_file: &str,
@@ -340,13 +339,13 @@ impl StateMachineSqlite {
             .open(path_lock_file)
             .unwrap_or_else(|err| panic!("Cannot open lock file {path_lock_file}: {err}"));
 
-        match FileExt::try_lock(&file) {
+        match file.try_lock() {
             Ok(()) => {}
-            Err(fs4::TryLockError::WouldBlock) => panic!(
+            Err(std::fs::TryLockError::WouldBlock) => panic!(
                 "State machine lock file {path_lock_file} is held by another live process - \
                  refusing to start on top of it"
             ),
-            Err(fs4::TryLockError::Error(err)) => {
+            Err(std::fs::TryLockError::Error(err)) => {
                 panic!("Error locking state machine lock file {path_lock_file}: {err}")
             }
         }
@@ -934,9 +933,12 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
 
         validate_db_backup_snapshot(src.clone()).await?;
 
-        atomic_file_switch(src, &dest).await?;
+        // Restore from the received file before publishing it. If the restore fails, no new
+        // snapshot exists under a valid ID, so a restart cannot select a snapshot this node's
+        // database was never restored from. Publishing first would leave exactly that behind.
+        self.update_state_machine_(src.clone()).await?;
 
-        self.update_state_machine_(dest).await?;
+        atomic_file_switch(src, &dest).await?;
 
         Ok(())
     }

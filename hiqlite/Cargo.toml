@@ -51,6 +51,9 @@ required-features = ["sqlite"]
 default = ["auto-heal", "backup", "sqlite", "toml"]
 
 auto-heal = ["hiqlite-wal/auto-heal"]
+# Opt-in: a single Raft entry larger than `wal_size` fails its write with an error instead of
+# panicking the WAL writer.
+oversized-entry-error = ["hiqlite-wal/oversized-entry-error"]
 # Local backups: the cron job, the local backup dir + its cleanup, and restore from a local
 # file. S3 storage for backups is opt-in via the `s3` feature on top of this.
 backup = ["dep:cron", "sqlite"]
@@ -74,7 +77,6 @@ config-embed = []
 # This reuses the SQLite connection, read-pool, restore, and single-writer
 # machinery without starting a Hiqlite Raft group.
 external-state-machine = [
-  "dep:fs4",
   "dep:rusqlite",
   "rusqlite/backup",
   "rusqlite/functions",
@@ -125,7 +127,6 @@ sql-check-release = [
 ]
 sqlite = [
   "__cluster",
-  "dep:fs4",
   "dep:hex",
   "dep:rusqlite",
   "dep:rust-embed",
@@ -205,7 +206,6 @@ ctrlc = { workspace = true, optional = true }
 dotenvy = { workspace = true, optional = true }
 fastwebsockets = { workspace = true, optional = true }
 flume.workspace = true
-fs4 = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
