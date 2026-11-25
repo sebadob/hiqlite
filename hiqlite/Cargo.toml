@@ -40,6 +40,13 @@ path = "benches/row_access.rs"
 harness = false
 required-features = ["sqlite"]
 
+# `conn_pool` compares today's `deadpool` read pool against the read actors that replace it.
+[[bench]]
+name = "conn_pool"
+path = "benches/conn_pool.rs"
+harness = false
+required-features = ["sqlite"]
+
 [features]
 default = ["auto-heal", "backup", "sqlite", "toml"]
 
@@ -67,12 +74,12 @@ config-embed = []
 # This reuses the SQLite connection, read-pool, restore, and single-writer
 # machinery without starting a Hiqlite Raft group.
 external-state-machine = [
-  "dep:deadpool",
   "dep:fs4",
   "dep:rusqlite",
   "rusqlite/backup",
   "rusqlite/functions",
   "rusqlite/hooks",
+  "tokio/time",
 ]
 full = [
   "auto-heal",
@@ -118,7 +125,6 @@ sql-check-release = [
 ]
 sqlite = [
   "__cluster",
-  "dep:deadpool",
   "dep:fs4",
   "dep:hex",
   "dep:rusqlite",
@@ -196,7 +202,6 @@ cron = { workspace = true, optional = true }
 crossbeam = { workspace = true, optional = true }
 cryptr = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
-deadpool = { workspace = true, optional = true }
 dotenvy = { workspace = true, optional = true }
 fastwebsockets = { workspace = true, optional = true }
 flume.workspace = true
@@ -247,7 +252,13 @@ tikv-jemallocator = { workspace = true, optional = true }
 
 [dev-dependencies]
 bincode.workspace = true
+# the `conn_pool` bench keeps today's `deadpool` read pool as its baseline
+deadpool = { workspace = true, features = ["rt_tokio_1"] }
+# the `conn_pool` bench compares against a `crossbeam` channel, which is not a regular dependency
+crossbeam.workspace = true
 criterion.workspace = true
+# the `conn_pool` bench reads this process's resident size and raises its open-file limit
+libc.workspace = true
 tokio = { workspace = true, features = ["full", "test-util", "tracing"] }
 tokio-test = "0.4.4"
 tracing-subscriber.workspace = true

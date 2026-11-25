@@ -1,5 +1,5 @@
 use crate::tls::ServerTlsConfig;
-use crate::{Error, Node, NodeId};
+use crate::{Error, MAX_READ_POOL_SIZE, Node, NodeId, default_read_pool_size};
 use openraft::SnapshotPolicy;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -92,20 +92,42 @@ pub struct NodeConfig {
     /// The internal cache size for prepared statements. The default is `1024` which could be
     /// reduced in very heavily memory-constrained environments.
     pub prepared_statement_cache_capacity: usize,
-    /// The size of the pooled connections for local database reads.
+    /// The count of the node's local read connections, one per read actor thread.
     ///
-    /// Do not confuse this with a pool size for network databases, as it
-    /// is much more efficient. You can't really translate between them,
-    /// because it depends on many things, but assuming a factor of 10 is
-    /// a good start. This means, if you needed a (read) pool size of 40
-    /// connections for something like a postgres before, you should start
-    /// at a `read_pool_size` of 4.
+    /// A read actor is one OS thread that owns its connection: a query is prepared, run and
+    /// mapped on that thread, and its prepared statement cache, its page cache and its
+    /// read-only handle stay warm for the whole life of the node.  A count above the core
+    /// count buys nothing, because that many queries are the most the node can run at once.
     ///
-    /// Keep in mind that this pool is only used for reads and writes will
+    /// Streaming queries share this capacity: a node runs at most `read_pool_size` of them, and
+    /// a stream you do not consume parks its actor until you drop it.
+    ///
+    /// Keep in mind that this is only used for reads and writes will
     /// travel through the Raft and have their own dedicated connection.
     ///
-    /// default: 4
+    /// default: one per core, at least 2 and at most 1024
     pub read_pool_size: usize,
+    /// The queue wait at which a local read counts as waiting for a connection, and the node logs
+    /// that its read pool is saturated.
+    ///
+    /// A local read goes onto the queue of the `read_pool_size` read actors and waits there for one
+    /// to be free.  Nothing outside that queue can see the wait - the send itself resolves as soon
+    /// as the queue has a slot - so the actor is the only place it is measurable, and the warning
+    /// carries it: the wait, how many reads are queued behind it, and how long this connection's
+    /// previous query ran.  That last number is what separates the two cases: one query holding a
+    /// connection, or more reads than connections.
+    ///
+    /// default: 100ms
+    pub saturated_pool_threshold: Duration,
+    /// The time a local read may run on its connection before the node logs it as a slow query.
+    ///
+    /// Independent of `saturated_pool_threshold`, and normally higher than it: one measures how
+    /// long a read waited for a connection, the other how long a read that got one took.  A query
+    /// between the two thresholds is still named, because the saturation warning carries the
+    /// runtime of the query that made the other reads wait.
+    ///
+    /// default: 1s
+    pub slow_query_threshold: Duration,
     /// When Raft logs should be synced to disk.
     ///
     /// - `Immediate` fsyncs the WAL before the Raft is told the append finished, so an
@@ -241,7 +263,9 @@ impl Default for NodeConfig {
             filename_db: "hiqlite.db".into(),
             log_statements: false,
             prepared_statement_cache_capacity: 1024,
-            read_pool_size: 4,
+            read_pool_size: default_read_pool_size(),
+            saturated_pool_threshold: Duration::from_millis(100),
+            slow_query_threshold: Duration::from_secs(1),
             wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
             wal_size: 2 * 1024 * 1024,
             #[cfg(feature = "cache")]
@@ -418,11 +442,21 @@ impl NodeConfig {
                 .parse()
                 .expect("Cannot parse HQL_LOG_STATEMENTS as bool"),
             prepared_statement_cache_capacity: 1024,
-            read_pool_size: env::var("HQL_READ_POOL_SIZE")
-                .as_deref()
-                .unwrap_or("4")
-                .parse()
-                .expect("Cannot parse HQL_READ_POOL_SIZE as usize"),
+            read_pool_size: env::var("HQL_READ_POOL_SIZE").map_or_else(
+                |_| default_read_pool_size(),
+                |v| v.parse().expect("Cannot parse HQL_READ_POOL_SIZE as usize"),
+            ),
+            saturated_pool_threshold: env::var("HQL_SATURATED_POOL_THRESHOLD").map_or(
+                Duration::from_millis(100),
+                |v| {
+                    parse_duration(v)
+                        .expect("Cannot parse HQL_SATURATED_POOL_THRESHOLD as Duration")
+                },
+            ),
+            slow_query_threshold: env::var("HQL_SLOW_QUERY_THRESHOLD")
+                .map_or(Duration::from_secs(1), |v| {
+                    parse_duration(v).expect("Cannot parse HQL_SLOW_QUERY_THRESHOLD as Duration")
+                }),
             wal_sync: if let Ok(v) = env::var("HQL_LOG_SYNC") {
                 hiqlite_wal::LogSync::try_from(v.as_str())
                     .expect("Cannot parse HQL_LOG_SYNC as LogSync")
@@ -548,7 +582,8 @@ impl NodeConfig {
     /// # Errors
     ///
     /// [`Error::Config`] for an empty node list, a `node_id` below 1 or carried by no node
-    /// line, duplicate node ids, an `election_disable` id that no node has, a
+    /// line, duplicate node ids, a `read_pool_size` outside `1..=MAX_READ_POOL_SIZE`, an
+    /// `election_disable` id that no node has, a
     /// `backup_file_prefix` that is not a plain file name prefix, secrets shorter than 16
     /// characters, an empty encryption key set, an `enc_key_active` that points to no key, and
     /// a dashboard password shorter than 16 characters.
@@ -578,6 +613,24 @@ impl NodeConfig {
                     self.nodes
                 )
                 .into(),
+            ));
+        }
+
+        if self.saturated_pool_threshold.is_zero() {
+            return Err(Error::Config(
+                "'saturated_pool_threshold' must be larger than zero".into(),
+            ));
+        }
+
+        if self.slow_query_threshold.is_zero() {
+            return Err(Error::Config(
+                "'slow_query_threshold' must be larger than zero".into(),
+            ));
+        }
+
+        if !(1..=MAX_READ_POOL_SIZE).contains(&self.read_pool_size) {
+            return Err(Error::Config(
+                format!("'read_pool_size' must be in 1..={MAX_READ_POOL_SIZE}").into(),
             ));
         }
 
@@ -769,7 +822,7 @@ impl Node {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Node, NodeConfig};
+    use crate::{MAX_READ_POOL_SIZE, Node, NodeConfig};
 
     #[test]
     fn test_config_from_env() {
@@ -887,6 +940,37 @@ mod tests {
 
         let err = config.is_valid().unwrap_err().to_string();
         assert!(err.contains("election_disable"), "{err}");
+    }
+
+    #[test]
+    fn config_rejects_a_read_pool_size_outside_its_range() {
+        for size in [0, MAX_READ_POOL_SIZE + 1] {
+            let config = NodeConfig {
+                node_id: 1,
+                nodes: vec![node(1)],
+                secret_raft: "0123456789abcdef".into(),
+                secret_api: "0123456789abcdef".into(),
+                read_pool_size: size,
+                ..Default::default()
+            };
+
+            let err = config.is_valid().unwrap_err().to_string();
+            assert!(err.contains("read_pool_size"), "{size}: {err}");
+        }
+    }
+
+    #[test]
+    fn config_rejects_nodes_that_share_a_node_id() {
+        let config = NodeConfig {
+            node_id: 1,
+            nodes: vec![node(1), node(1), node(2)],
+            secret_raft: "0123456789abcdef".into(),
+            secret_api: "0123456789abcdef".into(),
+            ..Default::default()
+        };
+
+        let err = config.is_valid().unwrap_err().to_string();
+        assert!(err.contains("duplicate IDs"), "{err}");
     }
 
     fn node(id: u64) -> Node {

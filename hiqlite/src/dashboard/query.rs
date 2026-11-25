@@ -1,14 +1,15 @@
 use crate::network::AppStateExt;
 use crate::network::api::ApiStreamResponsePayload;
 use crate::query::rows::{ColumnInfo, RowValues, RowsOwned, ValueOwned};
+use crate::reader::{ActorFailure, query_on_actor};
 use crate::store::state_machine::sqlite::state_machine::{
     FORBIDDEN_NON_DET_FNS, Query, QueryWrite,
 };
 use crate::{Error, Params};
 use serde::ser::{SerializeMap as _, SerializeSeq as _};
 use serde::{Serialize, Serializer};
+use std::borrow::Cow;
 use tokio::sync::oneshot;
-use tokio::task;
 use tracing::debug;
 
 /// The result of a dashboard query, serialized in the JSON shape the dashboard reads: a list of
@@ -82,30 +83,14 @@ pub(crate) async fn dashboard_query_dynamic(
         || start_lower.starts_with("pragma");
 
     if is_select {
-        let conn = state.raft_db.read_pool.get().await?;
-
-        task::spawn_blocking(move || {
-            let mut stmt = conn.prepare(&sql)?;
-
-            let columns = ColumnInfo::mapping_cols_from_stmt(stmt.columns());
-
-            let mut rows = stmt.raw_query();
-            let mut rows_owned = Vec::new();
-            loop {
-                match rows.next() {
-                    Ok(Some(row)) => rows_owned.push(RowValues::from_row_column(row, &columns)),
-                    Ok(None) => break,
-                    Err(err) => {
-                        // never silently show a truncated result in the dashboard
-                        return Err(Error::Sqlite(err.to_string().into()));
-                    }
-                }
-            }
-
-            let names = columns.into_iter().map(|c| c.name).collect();
-            Ok::<RowsOwned, Error>(RowsOwned::new(names, rows_owned))
-        })
-        .await?
+        query_on_actor(
+            &state.raft_db.read_actors,
+            Cow::from(sql),
+            0,
+            move |conn, _size_hint, sql| dashboard_query_on_conn(conn, sql),
+            ActorFailure::into_error,
+        )
+        .await
     } else {
         // The write path panics on non-deterministic functions. Dashboard queries are
         // manual, so catch them up front and return a readable error instead.
@@ -153,6 +138,32 @@ pub(crate) async fn dashboard_query_dynamic(
             }],
         ))
     }
+}
+
+/// A manual dashboard query on a read actor's own connection.
+///
+/// `prepare` and not `prepare_cached`: a dashboard query is typed by a human, so it is not a
+/// statement the node runs again, and its SQL must not occupy a slot of the actor's cache.
+fn dashboard_query_on_conn(conn: &rusqlite::Connection, sql: &str) -> Result<RowsOwned, Error> {
+    let mut stmt = conn.prepare(sql)?;
+
+    let columns = ColumnInfo::mapping_cols_from_stmt(stmt.columns());
+
+    let mut rows = stmt.raw_query();
+    let mut rows_owned = Vec::new();
+    loop {
+        match rows.next() {
+            Ok(Some(row)) => rows_owned.push(RowValues::from_row_column(row, &columns)),
+            Ok(None) => break,
+            Err(err) => {
+                // never silently show a truncated result in the dashboard
+                return Err(Error::Sqlite(err.to_string().into()));
+            }
+        }
+    }
+
+    let names = columns.into_iter().map(|c| c.name).collect();
+    Ok(RowsOwned::new(names, rows_owned))
 }
 
 #[inline]

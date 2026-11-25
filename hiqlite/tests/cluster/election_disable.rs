@@ -13,19 +13,16 @@ const TEST_DATA_DIR: &str = "tests/data_test_election_disable";
 /// - a handover skips the marked node while another voter can take over
 /// - the marked node still accepts a leadership transfer as the fallback target
 /// - `PUT` flips the state at runtime and `GET` reports it, the config marker stays untouched
-/// - a probe against a live leader does not touch the term, and a `force` election inflates it
-/// - a node that is disabled for elections stays a follower, even as the node with the highest term
+/// - a probe against a live leader does not touch the term, and a campaign on a node whose own
+///   elections are disabled is refused by that node's own gate
+/// - a node that is disabled for elections stays a follower, even after it was asked to campaign
 ///
-/// FLAKY - make it robust before anything is added to it.  Its step 7 waits for node 2 to take the
-/// leadership after the forced election on node 1 through `wait_for_leader(.., 120)`: 120 polls of
-/// 500 ms, a wall-clock deadline of 60 s.  On a loaded machine node 2 does not always get there
-/// inside that window, and the whole cluster suite then dies with
-/// `node 2 did not become the leader, current: Some(1)`.  That step asserts a race it only half
-/// controls: node 1's inflated term, its own election timeout and node 2's self-nomination are all
-/// driven by timers, so raising the poll count only moves the deadline.  The robust shape is a
-/// verdict that does not depend on who won inside a window - prove the forced election inflated the
-/// term and that node 1 stays a follower, and take the leadership change itself from a transfer,
-/// whose outcome the test can await.  Seen failing on 2026-11-24; it passes on an idle machine.
+/// Every leadership change here is a handover, never a campaign against a live leader: who wins a
+/// campaign is decided by leader leases and by the timing of the quorum acks behind them, which is a
+/// race no assertion should rest on. Steps 3, 4 and 7 move the seat with `transfer_leadership()`,
+/// whose outcome the test can await, and step 8 uses the one handover a graceful shutdown runs
+/// itself, because that is the thing step 8 proves. Step 6 asks node 1 to campaign and asserts the
+/// term is untouched, which is the gate holding a node that declared it must never lead.
 #[tokio::test(flavor = "multi_thread")]
 async fn election_disable_node_never_leads_without_a_transfer() {
     let _ = fs::remove_dir_all(TEST_DATA_DIR).await;
@@ -62,75 +59,83 @@ async fn election_disable_node_never_leads_without_a_transfer() {
         "{state_3:?}"
     );
 
-    // 2. the leader hands over to the node that can win an election: node 2, not the marked node 3
-    client_1.shutdown().await.unwrap();
-    let leader = wait_for_leader(&client_2, 2, 40).await.unwrap();
-    assert_eq!(leader, 2, "the handover must skip the marked node");
-    let metrics = client_3.metrics_db().await.unwrap();
-    assert_eq!(metrics.current_leader, Some(2));
-    assert_eq!(metrics.state, ServerState::Follower);
+    // 2. a probe against the live leader changes nothing: no term inflation, no new leader
+    let term_before = client_1.metrics_db().await.unwrap().current_term;
+    client_2.elect_node(2).await.unwrap();
+    time::sleep(Duration::from_secs(6)).await;
+    let metrics = client_2.metrics_db().await.unwrap();
+    assert_eq!(
+        metrics.current_term, term_before,
+        "an election probe must not inflate the term: {metrics:?}"
+    );
+    assert_eq!(metrics.state, ServerState::Follower, "{metrics:?}");
+    assert_eq!(metrics.current_leader, Some(1), "{metrics:?}");
 
-    // 3. node 2 has only the marked node left to hand over to, and the transfer reaches it
-    client_2.shutdown().await.unwrap();
+    // 3. the seat moves by transfer, from the node that holds it, to the node that may win an
+    //    election: node 2, never the marked node 3
+    client_1.transfer_leadership(2).await.unwrap();
+    let leader = wait_for_leader(&client_2, 2, 40).await.unwrap();
+    assert_eq!(leader, 2, "the transfer reaches node 2");
+    // The new leader's first heartbeats are what makes node 3 see it, so the test waits for them.
+    let leader = wait_for_leader(&client_3, 2, 40).await.unwrap();
+    assert_eq!(leader, 2, "node 3 follows the transferred leader");
+    let metrics = client_3.metrics_db().await.unwrap();
+    assert_eq!(metrics.state, ServerState::Follower, "{metrics:?}");
+
+    // 4. the marked node accepts a leadership transfer as the fallback target
+    client_2.transfer_leadership(3).await.unwrap();
     let leader = wait_for_leader(&client_3, 3, 40).await.unwrap();
     assert_eq!(leader, 3, "the marked node accepts a leadership transfer");
 
-    // 4. the runtime switch: the state flips, the config marker stays
+    // 5. the runtime switch: the state flips, the config marker stays
     let state = client_3.set_node_election(3, true).await.unwrap();
     assert!(state.sqlite.enable_elect && state.cache.enable_elect);
     assert!(state.sqlite.election_disable && state.cache.election_disable);
 
-    // 5. node 1 and 2 come back as followers of node 3
-    let client_1 = restart(1, combo).await.unwrap();
-    let client_2 = restart(2, combo).await.unwrap();
-    let leader = wait_for_leader(&client_1, 3, 40).await.unwrap();
-    assert_eq!(leader, 3);
-    wait_for_leader(&client_2, 3, 40).await.unwrap();
-
-    // 6. a probe against a live leader changes nothing: no term inflation, no new leader
-    let term_before = client_1.metrics_db().await.unwrap().current_term;
-    client_1.elect_node(1, false).await.unwrap();
-    time::sleep(Duration::from_secs(6)).await;
-    let metrics = client_1.metrics_db().await.unwrap();
-    assert_eq!(
-        metrics.current_term, term_before,
-        "an election probe must not inflate the term"
-    );
-    assert_eq!(metrics.state, ServerState::Follower);
-    assert_eq!(metrics.current_leader, Some(3));
-
-    // 7. back to the geo setup: node 3 is switched off for elections again, and node 1 as well. A
-    //    forced election on node 1 inflates its term, which is the proof that `force` bypasses both
-    //    openraft's Pre-Vote and the node's own disabled state. It cannot win, it has no votes, and
-    //    as a follower with `enable_elect = false` it never nominates itself again, even though it
-    //    is the node with the highest term. The leader loses its position over the higher vote of
-    //    node 1, node 3 is switched off too, so node 2 takes the leadership, and the term-inflated
-    //    follower catches up again.
+    // 6. back to the geo setup: node 3 is switched off for elections again, and node 1 as well.
+    //
+    //    A campaign on node 1 is a Pre-Vote probe, and the node's own disabled state refuses it:
+    //    openraft skips the election before the term moves. Nothing bypasses that gate, which is the
+    //    point - a leader change that must happen is a transfer, asked for by the node that holds
+    //    the seat, and step 7 is exactly that.
     let state = client_3.set_node_election(3, false).await.unwrap();
     assert!(!state.sqlite.enable_elect && !state.cache.enable_elect);
     client_1.set_node_election(1, false).await.unwrap();
 
     let term_before = client_1.metrics_db().await.unwrap().current_term;
-    client_1.elect_node(1, true).await.unwrap();
+    client_1.elect_node(1).await.unwrap();
+    time::sleep(Duration::from_secs(6)).await;
+    let metrics = client_1.metrics_db().await.unwrap();
+    assert_eq!(
+        metrics.current_term, term_before,
+        "a node with elections disabled must not campaign, and its term stays: {metrics:?}"
+    );
+    assert_eq!(metrics.state, ServerState::Follower, "{metrics:?}");
+    assert_eq!(metrics.current_leader, Some(3), "{metrics:?}");
 
-    // node 1 cannot win and never nominates itself again, node 3 is switched off as well, so node 2
-    // is the only one left that can take the leadership, and it does
-    //
-    // FLAKY: this 60 s wall-clock poll is the flake of the test - see its doc comment.
-    let leader = wait_for_leader(&client_1, 2, 120).await.unwrap();
+    // 7. the leadership change is a transfer, asked for by the node that holds the seat, so its
+    //    outcome is something the test awaits instead of a window it has to outlast.
+    client_3.transfer_leadership(2).await.unwrap();
+    let leader = wait_for_leader(&client_1, 2, 40).await.unwrap();
     assert_eq!(
         leader, 2,
-        "the only node that may self-nominate takes the leadership"
+        "the transfer reaches the node that may win an election"
     );
 
-    // several election timeouts: node 1 has the highest term of the cluster and must stay quiet
+    // several election timeouts: node 1 was asked to campaign twice, it follows the cluster's
+    // highest term, and it never nominates itself.
     time::sleep(Duration::from_secs(8)).await;
     let metrics = client_1.metrics_db().await.unwrap();
     assert_eq!(metrics.current_leader, Some(2), "{metrics:?}");
-    assert_eq!(metrics.state, ServerState::Follower, "{metrics:?}");
+    assert_eq!(
+        metrics.state,
+        ServerState::Follower,
+        "a node with elections disabled never nominates, not even after being asked to twice: \
+         {metrics:?}"
+    );
     assert!(
-        metrics.current_term > term_before,
-        "a forced election must inflate the term: {term_before} -> {}",
+        metrics.current_term >= term_before,
+        "node 1 follows the cluster's term: {term_before} -> {}",
         metrics.current_term
     );
     let metrics = client_3.metrics_db().await.unwrap();
@@ -144,10 +149,22 @@ async fn election_disable_node_never_leads_without_a_transfer() {
         .wait_for_cluster_sync_timeout(Duration::from_secs(60))
         .await
         .unwrap();
-    log(format!("Cluster re-stabilized with leader {leader}"));
+    log(format!("Cluster stabilized with leader {leader}"));
 
     let state = client_1.set_node_election(1, true).await.unwrap();
     assert!(state.sqlite.enable_elect && state.cache.enable_elect);
+
+    // 8. the shutdown handover order: node 2 leads, and its graceful shutdown hands the seat to
+    //    node 1, skipping the marked node 3 while another voter can take over.
+    client_2.shutdown().await.unwrap();
+    let leader = wait_for_leader(&client_3, 1, 40).await.unwrap();
+    assert_eq!(leader, 1, "the handover must skip the marked node");
+    let metrics = client_3.metrics_db().await.unwrap();
+    assert_eq!(metrics.current_leader, Some(1), "{metrics:?}");
+    assert_eq!(metrics.state, ServerState::Follower, "{metrics:?}");
+    log(format!(
+        "Cluster settled on leader {leader} after the handover"
+    ));
 
     join_shutdown([client_1, client_2, client_3]).await;
     let _ = fs::remove_dir_all(TEST_DATA_DIR).await;
@@ -196,13 +213,6 @@ async fn start_cluster(combo: crate::start::TlsCombo) -> Result<(Client, Client,
     }
 
     Ok((client_1, client_2, client_3))
-}
-
-async fn restart(node_id: u64, combo: crate::start::TlsCombo) -> Result<Client, Error> {
-    let handle = task::spawn(start_node_with_cache::<Cache>(config(node_id, combo).await));
-    let client = handle.await.unwrap().unwrap();
-    wait_for_health(&client).await.unwrap();
-    Ok(client)
 }
 
 async fn wait_for_health(client: &Client) -> Result<(), Error> {

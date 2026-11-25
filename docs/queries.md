@@ -227,10 +227,10 @@ let response = stream.into_json_response();
 - A stream is a futures `Stream`, so the combinators work on it once `hiqlite::StreamExt` is in
   scope - Hiqlite re-exports it, so no extra dependency is needed - and a conversion you apply in
   flight stays lazy: a `take(n)` never reads the rows behind it.
-- Dropping a stream stops its query and hands its connection back to the read pool.  The flip side
-  matters just as much: a stream you hold on to without consuming it parks the thread that runs its
-  query, and the read pool connection it owns, on the very next row - so a few streams nobody reads
-  starves the node's other local reads (`read_pool_size`, 4 by default).
+- Dropping a stream stops its query and returns its connection to the node's read pool.  The flip
+  side matters just as much: a stream you hold on to without consuming it parks the read-pool
+  connection that runs its query, on the very next row - so a few streams nobody reads
+  starves the node's other local reads (`read_pool_size`, one per core by default).
 - A statement that cannot be built, and a param that cannot be bound, fail the call itself, like
   they fail the collecting read. A query that fails while you consume it is the `Err` of `next()`,
   so a truncated result never looks complete: a `while let Some(row) = stream.next().await?` loop

@@ -10,10 +10,9 @@ use futures_util::TryStream;
 use futures_util::TryStreamExt as _;
 use futures_util::stream::StreamExt as _;
 use serde::Serialize;
-use std::future::{Future, poll_fn};
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::task::JoinHandle;
 
 /// Rows a streaming query keeps buffered between the thread running the query and its consumer:
 /// none.  A capacity of `0` is a rendezvous channel, so the thread running the query hands a row
@@ -23,6 +22,17 @@ pub(crate) const PREFETCH: usize = 0;
 
 /// The media type of [`JsonLinesExt::into_json_response`]: one JSON document per line.
 const NDJSON: HeaderValue = HeaderValue::from_static("application/x-ndjson");
+
+/// How the actor running a streaming query left its scan, answered on the verdict channel of
+/// [`QueryStream`] when the scan ends.
+#[derive(Debug)]
+pub(crate) enum StreamVerdict {
+    /// The cursor reached its last row.
+    Done,
+    /// The scan left the loop on a failed cursor, on a row mapping that returned an `Err`, or on
+    /// the panic the actor caught around the mapping.
+    Err(Error),
+}
 
 /// The rows of a query, produced while you consume them, as returned by
 /// [`crate::Client::query_map_stream`], [`crate::Client::query_try_map_stream`] and
@@ -38,10 +48,10 @@ const NDJSON: HeaderValue = HeaderValue::from_static("application/x-ndjson");
 /// scanning the table.
 ///
 /// The other side of that is worth knowing: a stream you hold on to without consuming parks the
-/// thread that runs its query, and with it the read-pool connection that thread owns, on the very
-/// next row - and it stays parked for as long as you hold the stream. A node answers local reads
-/// from `read_pool_size` connections (4 by default), so a few streams nobody consumes starves every
-/// other read on that node. Consume the rows you need, and drop the stream.
+/// read-pool connection that runs its query, on the very next row - and it stays parked for as long
+/// as you hold the stream. A node answers local reads from `read_pool_size` connections (one per
+/// core by default), so a few streams nobody consumes starves every other read on that node.
+/// Consume the rows you need, and drop the stream.
 ///
 /// # Panics
 ///
@@ -51,18 +61,18 @@ const NDJSON: HeaderValue = HeaderValue::from_static("application/x-ndjson");
 #[must_use]
 pub struct QueryStream<T: 'static> {
     rx: RecvStream<'static, Result<T, Error>>,
-    producer: JoinHandle<Result<(), Error>>,
+    verdict: RecvStream<'static, StreamVerdict>,
     finished: bool,
 }
 
 impl<T> QueryStream<T> {
     pub(crate) fn new(
         rx: flume::Receiver<Result<T, Error>>,
-        producer: JoinHandle<Result<(), Error>>,
+        verdict: flume::Receiver<StreamVerdict>,
     ) -> Self {
         Self {
             rx: rx.into_stream(),
-            producer,
+            verdict: verdict.into_stream(),
             finished: false,
         }
     }
@@ -74,14 +84,14 @@ impl<T> QueryStream<T> {
     ///
     /// # Errors
     ///
-    /// The [`Error::Sqlite`] of a cursor that cannot step on, and the [`Error`] built from the
-    /// `JoinError` of the task that ran the query, which is what a row mapping that panicked
-    /// leaves behind.
+    /// The [`Error::Sqlite`] of a cursor that cannot step on, and of a row mapping that returns an
+    /// `Err`, and the [`Error::Error`] of the row mapping that panicked on the thread running the
+    /// query.
     ///
     /// # Panics
     ///
     /// On the thread running the query, if a row's data does not match the mapped type; the panic
-    /// ends the stream, and this call answers with its `JoinError`.
+    /// ends the stream, and this call answers with its `Error`.
     pub async fn next(&mut self) -> Result<Option<T>, Error> {
         match poll_fn(|cx| futures_util::Stream::poll_next(Pin::new(&mut *self), cx)).await {
             Some(res) => res.map(Some),
@@ -146,22 +156,24 @@ impl<T> futures_util::Stream for QueryStream<T> {
             Poll::Ready(None) => {}
         }
 
-        // Every sender is gone, which only tells us the producer stopped. Ask it whether the query
+        // Every sender is gone, which only tells us the read pool stopped. Ask it whether the query
         // ran to its end, ended on an error, or died on a panic, so a truncated result is never
         // reportable as a complete one.
-        match Pin::new(&mut self.producer).poll(cx) {
+        match Pin::new(&mut self.verdict).poll_next(cx) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(Ok(()))) => {
+            Poll::Ready(Some(StreamVerdict::Done)) => {
                 self.finished = true;
                 Poll::Ready(None)
             }
-            Poll::Ready(Ok(Err(err))) => {
+            Poll::Ready(Some(StreamVerdict::Err(err))) => {
                 self.finished = true;
                 Poll::Ready(Some(Err(err)))
             }
-            Poll::Ready(Err(err)) => {
+            Poll::Ready(None) => {
                 self.finished = true;
-                Poll::Ready(Some(Err(Error::from(err))))
+                Poll::Ready(Some(Err(Error::Sqlite(
+                    "the read pool of the query stream was closed before its query finished".into(),
+                ))))
             }
         }
     }
@@ -316,6 +328,7 @@ mod tests {
     #[tokio::test]
     async fn a_stream_reads_only_the_rows_its_consumer_asks_for() {
         let (tx, rx) = flume::bounded::<Result<u64, Error>>(PREFETCH);
+        let (verdict_tx, verdict_rx) = flume::bounded(1);
         // The producer publishes its end here, so the count below is read after its last row.
         let (done_tx, done_rx) = flume::bounded(1);
         let read = Arc::new(AtomicUsize::new(0));
@@ -330,11 +343,11 @@ mod tests {
                 }
                 counter.fetch_add(1, Ordering::SeqCst);
             }
+            let _ = verdict_tx.send(StreamVerdict::Done);
             let _ = done_tx.send(());
-            Ok(())
         });
 
-        let mut stream = QueryStream::new(rx, producer);
+        let mut stream = QueryStream::new(rx, verdict_rx);
         let rows: Vec<u64> = (&mut stream)
             .take(3)
             .map(|res| res.expect("a row"))
@@ -350,5 +363,80 @@ mod tests {
             3,
             "the query read exactly the rows its consumer asked for"
         );
+        drop(producer);
+    }
+
+    /// A scan that leaves its cursor on an error answers that error as the row after its last one:
+    /// a truncated result is never reportable as a complete one.
+    #[tokio::test]
+    async fn a_scan_that_fails_midway_ends_the_stream_with_its_error() {
+        let (tx, rx) = flume::bounded::<Result<u64, Error>>(PREFETCH);
+        let (verdict_tx, verdict_rx) = flume::bounded(1);
+
+        let producer = task::spawn_blocking(move || {
+            for i in 0..3u64 {
+                if tx.send(Ok(i)).is_err() {
+                    return;
+                }
+            }
+            let _ = verdict_tx.send(StreamVerdict::Err(Error::Sqlite(
+                "the cursor cannot step".into(),
+            )));
+        });
+
+        let mut stream = QueryStream::new(rx, verdict_rx);
+        let mut rows = Vec::new();
+        let mut tail = None;
+        loop {
+            match stream.next().await {
+                Ok(Some(row)) => rows.push(row),
+                Ok(None) => break,
+                Err(err) => {
+                    tail = Some(err);
+                    break;
+                }
+            }
+        }
+
+        assert_eq!(rows, [0, 1, 2]);
+        assert!(
+            matches!(tail, Some(Error::Sqlite(_))),
+            "the scan's own error is the row after the last one: {tail:?}"
+        );
+        drop(producer);
+    }
+
+    /// A row mapping that panics reaches its consumer the same way, on the verdict the actor
+    /// answers after it caught the panic.
+    #[tokio::test]
+    async fn a_panicking_row_mapping_ends_the_stream_with_its_error() {
+        let (tx, rx) = flume::bounded::<Result<u64, Error>>(PREFETCH);
+        let (verdict_tx, verdict_rx) = flume::bounded(1);
+
+        let producer = task::spawn_blocking(move || {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if tx.send(Ok(0)).is_ok() {
+                    panic!("the row data does not match the mapped type");
+                }
+            }));
+            let text = match res {
+                Ok(()) => "no panic".to_string(),
+                Err(payload) => payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .unwrap_or_else(|| "a read actor panicked without a panic message".to_string()),
+            };
+            let _ = verdict_tx.send(StreamVerdict::Err(Error::Error(text.into())));
+        });
+
+        let mut stream = QueryStream::new(rx, verdict_rx);
+        assert_eq!(stream.next().await.expect("a row"), Some(0));
+        let err = stream
+            .next()
+            .await
+            .expect_err("the panic reaches its consumer");
+        assert!(matches!(err, Error::Error(_)), "{err:?}");
+
+        drop(producer);
     }
 }

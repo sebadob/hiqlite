@@ -170,10 +170,14 @@ impl Client {
 
     /// Make a node campaign for the leadership of all its Raft groups.
     ///
-    /// Without `force`, openraft runs a Pre-Vote round first, so the term is untouched when the
-    /// node cannot win. With `force`, that round is bypassed and the term climbs unconditionally -
-    /// use it only when you know the node's log is at the cluster tip. A learner is refused, and an
-    /// embedded client can elect its own node only.
+    /// openraft runs a Pre-Vote round first, so the term is untouched when the node cannot win: a
+    /// live leader holding its lease is refused, and so is a node whose own elections are disabled.
+    /// The campaign is therefore a request a healthy cluster may refuse, and it is safe as a probe.
+    /// A learner is refused, and an embedded client can elect its own node only.
+    ///
+    /// There is no way to bypass the Pre-Vote. When a leader change must happen, use
+    /// [`Self::transfer_leadership`], which asks the node that currently holds the seat to hand it
+    /// over; that is the graceful path, and it is the only one.
     ///
     /// # Errors
     ///
@@ -182,18 +186,17 @@ impl Client {
     /// [`Error::Token`] when the client has no API secret, [`Error::Connect`] when the node
     /// does not answer, [`Error::Bincode`] for an answer that cannot be deserialized, and the
     /// [`Error`] the node reports back.
-    pub async fn elect_node(&self, node_id: NodeId, force: bool) -> Result<ElectionState, Error> {
+    pub async fn elect_node(&self, node_id: NodeId) -> Result<ElectionState, Error> {
         if let Some(state) = &self.inner.state {
             if node_id != state.id {
                 return Err(Error::Error(
                     "An embedded client can elect its own node only".into(),
                 ));
             }
-            return management::local_elect(state, force).await;
+            return management::local_elect(state).await;
         }
 
-        let query = if force { "?force=true" } else { "" };
-        self.node_request(node_id, Method::POST, query, None).await
+        self.node_request(node_id, Method::POST, "", None).await
     }
 
     /// The membership of every cluster node, keyed by node id.

@@ -1,7 +1,7 @@
 use crate::config::RateLimitConfig;
 use crate::helpers::parse_duration;
 use crate::tls::{ServerTlsConfig, ServerTlsConfigCerts};
-use crate::{Error, Node, NodeConfig};
+use crate::{Error, Node, NodeConfig, default_read_pool_size};
 use hiqlite_wal::LogSync;
 use std::borrow::Cow;
 use std::env;
@@ -161,8 +161,22 @@ impl NodeConfig {
         let prepared_statement_cache_capacity =
             t_u16(&mut map, t_name, "prepared_statement_cache_capacity", "")?.unwrap_or(1024)
                 as usize;
-        let read_pool_size =
-            t_u16(&mut map, t_name, "read_pool_size", "HQL_READ_POOL_SIZE")?.unwrap_or(4) as usize;
+        let read_pool_size = t_u16(&mut map, t_name, "read_pool_size", "HQL_READ_POOL_SIZE")?
+            .unwrap_or(default_read_pool_size() as u16) as usize;
+        let saturated_pool_threshold = t_duration(
+            &mut map,
+            t_name,
+            "saturated_pool_threshold",
+            "HQL_SATURATED_POOL_THRESHOLD",
+        )?
+        .unwrap_or(Duration::from_millis(100));
+        let slow_query_threshold = t_duration(
+            &mut map,
+            t_name,
+            "slow_query_threshold",
+            "HQL_SLOW_QUERY_THRESHOLD",
+        )?
+        .unwrap_or(Duration::from_secs(1));
 
         let wal_sync = if let Some(v) = t_str(&mut map, t_name, "log_sync", "HQL_LOG_SYNC")? {
             let Ok(sync) = LogSync::try_from(v.as_str()) else {
@@ -440,6 +454,8 @@ impl NodeConfig {
             log_statements,
             prepared_statement_cache_capacity,
             read_pool_size,
+            saturated_pool_threshold,
+            slow_query_threshold,
             wal_sync,
             wal_size,
             #[cfg(feature = "cache")]

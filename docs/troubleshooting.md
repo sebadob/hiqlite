@@ -45,8 +45,7 @@ Symptom first, then what to check in order. The fix is usually the first thing i
   voters and keep it as a learner.
 - A node that is behind the cluster: it cannot become leader, so elections resolve late. Catch it up
   or replace it.
-- A forced election you triggered with `Client::elect_node(node_id, true)`, and nobody turned
-  self-nomination back off.
+- A node whose self-nomination was switched on for a failover and never switched back off.
 - Kubernetes killing a leader because the probes are too strict. Readiness and liveness with
   `failureThreshold: 2`: `standalone-server.md`.
 

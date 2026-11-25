@@ -436,14 +436,6 @@ impl From<rusqlite::Error> for Error {
 //     }
 // }
 
-#[cfg(feature = "sqlite")]
-impl From<deadpool::unmanaged::PoolError> for Error {
-    fn from(value: deadpool::unmanaged::PoolError) -> Self {
-        trace!("Sqlite: {value}");
-        Self::Sqlite(value.to_string().into())
-    }
-}
-
 impl From<serde_json::Error> for Error {
     fn from(value: serde_json::Error) -> Self {
         trace!("BadRequest: {value}");

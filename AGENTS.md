@@ -67,6 +67,9 @@ one. A pile of allows is a pile of lint-blind spots.
         - `hiqlite/src/network/mod.rs` the API secret header (`Authorization` bearer token) and its
           validation, shared by the node router and the proxy router
     - `hiqlite/src/query/` Query engine and helpers when using the sqlite state machine
+    - `hiqlite/src/reader.rs` the read actors: one OS thread per read connection, the query
+      travelling to the thread that owns it as a closure; serves the sqlite and the external state
+      machine
     - `hiqlite/src/server/` dedicated server binary; low priority, crate is usually embedded directly
     - `hiqlite/src/store/state_machine/` Raft state machine for DB + Cache
     - `hiqlite/src/config.rs` + `hiqlite/src/config_toml.rs` node lines, the `election_disable`

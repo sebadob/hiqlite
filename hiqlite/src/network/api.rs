@@ -836,7 +836,7 @@ async fn handle_socket_concurrent(
                     let res = query_consistent_local(
                         &state.raft_db.raft,
                         state.raft_db.log_statements,
-                        state.raft_db.read_pool.clone(),
+                        &state.raft_db.read_actors,
                         sql,
                         params,
                         read_policy.into(),
@@ -928,7 +928,7 @@ async fn handle_socket_concurrent(
                 ApiStreamRequestPayload::Query(Query { sql, params }) => {
                     let res = query_owned_local(
                         state.raft_db.log_statements,
-                        state.raft_db.read_pool.clone(),
+                        &state.raft_db.read_actors,
                         sql,
                         params,
                     )

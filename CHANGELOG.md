@@ -103,6 +103,86 @@ Migration:
 
 ### Changes
 
+#### Local Read Threads
+
+A local read does not wait for a pooled connection anymore. The node keeps one thread per read
+connection for the whole life of the process, and a query goes to the thread that owns its
+connection: the statement it prepares, the pages it reads and the cache it fills stay there, and
+nothing is taken and handed back on every query.
+
+- Every local read answers faster, the small ones most. The table is the whole chain in one
+  `just bench-conn-pool -- --summary` run on an Apple M4 Pro (8 p cores), 4 read connections, 8
+  concurrent readers, an on-disk database, 100 rows per query: queries per second, and the median
+  latency of one read. Column two is the pool as it ships today, column three the new read threads
+  on the old connection shape, column four the new read threads as they ship now.
+
+    | the read                                         | old pool    | new setup   |
+    | ------------------------------------------------ | ----------- | ----------- |
+    | `query_map()` to a typed row, one integer column | 172k / 46µs | 350k / 22µs |
+    | the same type carrying text and a 200-byte blob  | 104k / 76µs | 198k / 38µs |
+    | the owned raw rows of `query_raw()`              | 83k / 97µs  | 114k / 65µs |
+    | the wide row built through the owned form first  | 59k / 140µs | 152k / 50µs |
+    | a cached `SELECT 1`                              | 265k / 26µs | 528k / 13µs |
+
+    Against the fastest shared connections can answer at all - the same queries through the old pool
+    with its async handoff taken out - the shipped path now runs at +101% to +160% of that ceiling on
+    the four real queries, and at +60% of it on the cached `SELECT 1`, where the handoff is the cost
+    and SQLite is not. The old numbers in this section were measured on a 4-core box; these are
+    measured here, and the old pool column is that same box, so the columns compare.
+
+- `read_pool_size` defaults to one thread per core now, at least 2 and at most 1024, instead of 4.
+  More threads than cores buys nothing; fewer is what makes reads queue. Set it explicitly to keep
+  your old value. A value outside that range is a config error at startup now.
+- A streaming read runs on one of these threads for as long as you consume it, so a node serves at
+  most `read_pool_size` streams at once. Streams you never read starve the other local reads.
+- The external state machine's restore closes the read pool and recreates it, and it waits for the
+  reads that are already running. A read is a closure on a connection and nothing can interrupt one
+  mid-query, so the wait has one 30s limit for the whole pool: past it the restore proceeds, the
+  node logs which connections are still inside their read, and those reads keep answering the rows
+  their read started on.
+- A `panic` in a row mapping answers its caller with an error and leaves the node running, exactly
+  as before.
+- A local read that waited longer than 100 ms for its connection is visible in the log now, and the
+  line names which of the two problems it is: one query holding a connection for a long time, with
+  the time it ran, or a pool with more reads than connections, with how many are queued. A pool
+  that stays saturated warns once every 10 seconds, not once per query.
+- The two thresholds behind those lines are config now: `saturated_pool_threshold` (default `100ms`)
+  is the queue wait that warns, `slow_query_threshold` (default `1s`) is the time a single read may
+  run on its connection before the node logs it, naming the statement and never its parameters.
+  They are independent, so a `slow_query_threshold` above `saturated_pool_threshold` still gives
+  you two distinct warnings.
+- A read connection is opened with `SQLITE_OPEN_READ_ONLY` now, on the SQLite state machine as on
+  the external one: SQLite itself is what keeps a read handle from writing, not only the
+  `query_only` pragma. The pragmas that change the database file - the journal mode, the page
+  size, the vacuum mode and `PRAGMA optimize` - are applied to the writer connection only. A read
+  handle is opened read-only, so a read connection that set them would fail with `SQLITE_READONLY`
+  on any file not already in that shape, which is exactly what a database restored from a backup
+  file is. The writer opens first and owns the file; a read connection sets only what is scoped to
+  its own connection.
+- Read connections and the writer connection are opened with `SQLITE_OPEN_NO_MUTEX`, which drops
+  the mutex SQLite puts around every call on a connection. It is a promise about the handle, not a
+  setting - one thread has to touch a connection at a time - and the design already keeps it: a
+  read handle is moved into the read thread that owns it, and the writer's handle is moved into the
+  writer thread. Its share is the middle column of the table above to the last: +10% to +78% on the
+  four real queries, and nothing on the cached `SELECT 1`, because the mutex is paid per call into
+  SQLite and that query barely makes one.
+- The `deadpool` dependency is gone from both the `sqlite` and the `external-state-machine`
+  feature.
+
+#### Elections Are Requests, Not Commands
+
+A campaign is openraft's Pre-Vote round and nothing else: the term is untouched when the node cannot
+win, a live leader holding its lease is refused, and a node whose own elections are disabled is
+refused by its own gate. There is no `force` and no `?force=true`. A trigger that bypassed the
+Pre-Vote also bypassed `enable_elect`, and a node with elections disabled still grants votes to
+others, so one peer's grant plus its own vote was a quorum of a three-node cluster: it installed as
+leader a node the operator had declared must never lead, and nothing in that cluster moved it off
+the seat afterwards.
+
+A leader change that must happen is a graceful one. `Client::transfer_leadership(node_id)` asks the
+node holding the seat to hand it over, `Client::elect_node(node_id)` is the probe a healthy cluster
+may refuse, and a graceful shutdown hands the seat over on its own.
+
 #### Streaming Queries
 
 `Client::query_map_stream()`, `Client::query_try_map_stream()` and `Client::query_raw_stream()` are
@@ -364,14 +444,14 @@ one, together with the memory state machine.
 - `GET`: answers the server state, leader, voter flag, and the effective `enable_elect` of every
   group
 - `PUT`: with `{ "enable_elect": true|false }` changes it for all groups of that node in one call
-- `POST`: makes the node campaign for the leadership of all its groups. Optional query param
-  `?force=true` -> bypasses openraft's Pre-Vote round, which inflates the term even when the node
-  cannot win - use it only when you know the node's log is at the cluster tip. A learner is refused
-  on `POST`, it can never win an election. A runtime change is in-memory only: a restart applies the
-  marker of the node line again, and every change is logged.
+- `POST`: makes the node campaign for the leadership of all its groups. openraft runs its Pre-Vote
+  round first, so the term is untouched when the node cannot win, and a node whose own elections are
+  disabled is refused by its own gate. A learner is refused on `POST`, it can never win an election.
+  A runtime change is in-memory only: a restart applies the marker of the node line again, and every
+  change is logged.
 
 The matching `Client` helpers are `cluster_election_state()`, `set_node_election(node_id, enable)`
-and `elect_node(node_id, force)`. They work on a remote client for the whole cluster. An embedded
+and `elect_node(node_id)`. They work on a remote client for the whole cluster. An embedded
 client can only reach its own node.
 
 #### Membership Control

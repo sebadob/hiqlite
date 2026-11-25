@@ -21,8 +21,8 @@ the worst case for a replicated write, and the most useful baseline.
   voter, on every write. Voters in one region, far node marked: `topology.md`.
 - There is one writer. Writes are applied in order by a single connection, so writes serialize
   against each other. Batching and transactions exist for this reason.
-- Reads are local SQLite reads, with a pooled connection and cached prepared statements. That is
-  where the speed of this design lives. Keep reads local.
+- Reads are local SQLite reads, on a connection its own thread owns, with cached prepared
+  statements. That is where the speed of this design lives. Keep reads local.
 - Your disk decides write throughput. Memory and CPU matter after it.
 - Single-core speed matters more than core count, because of the single writer.
 
@@ -48,8 +48,10 @@ WAL to a few files at a time.
   default and the fastest; on a single node, use `immediate`. See `configuration.md`.
 - `logs_until_snapshot` - a longer window between snapshots buys write throughput and costs disk
   and snapshot time. Tune it with `wal_size`.
-- `read_pool_size` - the connection pool for local reads. Reads are cheap, so a small pool is
-  usually enough; grow it when reads queue.
+- `read_pool_size` - the node's local read connections, one per read actor thread, one per core by
+  default. A read is prepared, run and mapped on that thread, so its caches stay warm there. More
+  threads than cores buys nothing; fewer is what makes reads queue, and a stream you do not consume
+  holds one of them.
 - `prepared_statement_cache_capacity` - statements you use repeatedly stay prepared. A statement
   used for the first time is more expensive than the ones after it, which is why a warm process is
   faster than a fresh one.

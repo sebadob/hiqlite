@@ -77,6 +77,6 @@ stops, so a truncated result never reads as a complete one.
 
 Holding a stream is the one way to make this leak: a stream you keep without consuming it parks the
 thread that runs its query, and the read pool connection that thread owns, on the very next row.  A
-node reads on `read_pool_size` connections (4 by default), so a handful of streams nobody consumes
+node reads on `read_pool_size` actors (one per core by default), so a handful of streams nobody consumes
 starves every other local read.  The header print in `main` drops its stream right after its first
 row for exactly that reason.

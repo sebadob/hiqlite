@@ -72,7 +72,8 @@
 //! engine and leaves a rebuild-required marker. Backup/S3 orchestration from
 //! Hiqlite's Raft API is intentionally outside this feature.
 
-use deadpool::unmanaged::PoolError;
+use crate::reader::{ActorFailure, ReaderRequest, query_on_actor, spawn_read_actors};
+use crate::{MAX_READ_POOL_SIZE, default_read_pool_size};
 use fs4::FileExt;
 use rusqlite::backup::Progress;
 use rusqlite::functions::FunctionFlags;
@@ -82,6 +83,7 @@ use rusqlite::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::fmt::{Debug, Display};
 use std::fs::File;
@@ -89,15 +91,13 @@ use std::io::{BufReader, Read};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use thread_priority::ThreadPriority;
 use tokio::sync::{RwLock, oneshot};
-use tokio::{fs, task};
+use tokio::{fs, task, time};
 use tracing::warn;
 use uuid::Uuid;
-
-type SqlitePool = deadpool::unmanaged::Pool<Connection>;
 
 mod codec;
 
@@ -131,15 +131,15 @@ async fn connect_external(
     .map_err(ExternalError::from)
 }
 
-async fn connect_read_pool_once(
+async fn connect_read_conns_once(
     path: &str,
     filename: &str,
     prepared_statement_cache_capacity: usize,
-    pool_size: usize,
-) -> Result<SqlitePool, ExternalError> {
+    size: usize,
+) -> Result<Vec<Connection>, ExternalError> {
     let path = PathBuf::from(path).join(filename);
-    let mut connections = Vec::with_capacity(pool_size);
-    for _ in 0..pool_size {
+    let mut connections = Vec::with_capacity(size);
+    for _ in 0..size {
         let path = path.clone();
         connections.push(
             task::spawn_blocking(move || {
@@ -150,16 +150,73 @@ async fn connect_read_pool_once(
                 conn.pragma_update(None, "query_only", true)?;
                 conn.busy_timeout(Duration::from_secs(30))?;
                 conn.set_prepared_statement_cache_capacity(prepared_statement_cache_capacity);
+                // The warm-up belongs to the open: a connection only joins the pool once it has
+                // answered a query, so the first read of a caller does not pay for the first page
+                // reads of a cold file.
+                conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
                 Ok::<_, rusqlite::Error>(conn)
             })
             .await??,
         );
     }
-    let pool = SqlitePool::from(connections);
-    let conn = pool.get().await?;
-    task::spawn_blocking(move || conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0)))
-        .await??;
-    Ok(pool)
+
+    Ok(connections)
+}
+
+/// Ends every connection of the read pool and waits for each ack, so every read connection of the
+/// node is dropped before the caller opens the database again.
+///
+/// The wait is best effort, and the grace is its whole length: a read is a caller closure on a
+/// connection, nothing can interrupt one mid-query, and a connection whose read never returns
+/// therefore survives the restore with the snapshot its read started on.  The restore proceeds in
+/// that case and says so out loud.
+async fn close_read_actors(actors: Option<flume::Sender<ReaderRequest>>, size: usize) {
+    let Some(actors) = actors else {
+        return;
+    };
+
+    // A queue that is full of queued reads has no slot left for a shutdown, and the actors that
+    // took their reads are not coming back to take one: the reads they hold are exactly what keeps
+    // them away.  A blocking send would then never return, so the shutdown is never queued and
+    // those actors are ended by the disconnect at the end of this function instead.
+    let mut acks = Vec::with_capacity(size);
+    for _ in 0..size {
+        let (ack, rx) = oneshot::channel();
+        if actors.try_send(ReaderRequest::Shutdown(ack)).is_err() {
+            break;
+        }
+        acks.push(rx);
+    }
+
+    // A queue that was full left connections with no shutdown to take, so they are ended by the
+    // disconnect below and never get to answer one.
+    let unsent = size - acks.len();
+
+    // One grace for the whole set, not one per actor: reads that never return must not multiply the
+    // wait by the size of the pool.
+    let deadline = Instant::now() + READ_SHUTDOWN_GRACE;
+    let mut parked = 0usize;
+    for rx in acks {
+        // An actor that was already gone never answers; its connection is dropped either way.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() || time::timeout(remaining, rx).await.is_err() {
+            parked += 1;
+        }
+    }
+    if unsent > 0 {
+        warn!(
+            "{unsent} of {size} read pool connections never got their shutdown: the queue behind \
+             them was full, and the disconnect closes them as soon as their current read returns"
+        );
+    }
+    if parked > 0 {
+        warn!(
+            "{parked} of {size} read pool connections are still inside their read: they stay open \
+             until those reads return, the restore does not wait past its {READ_SHUTDOWN_GRACE:?} \
+             grace, and a read that is inside its query keeps the rows it started on"
+        );
+    }
+    drop(actors);
 }
 
 fn apply_external_write_pragmas(
@@ -234,10 +291,17 @@ pub const EXTERNAL_SQLITE_SNAPSHOT_FORMAT: &str = "sqlite3-online-backup/page-im
 const METADATA_TABLE: &str = "_hiqlite_external_state";
 const RECEIPTS_TABLE: &str = "_hiqlite_external_receipts";
 const ADVANCE_RECEIPT_CODEC: &str = "hiqlite/advance-v1";
-const MAX_READ_POOL_SIZE: usize = 128;
 const MAX_RECEIPT_RETENTION: usize = 1_000_000;
 const MAX_RECEIPT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PREPARED_STATEMENTS: usize = 1_000_000;
+/// How long a read actor may take to leave its read before closing the read set says out loud that
+/// it is still waiting.  A read that never returns parks its actor, and that actor's connection is
+/// the one thing a restore must not let survive, so the wait stays and only the stall gets a voice.
+/// An external read is a caller closure on a connection, not a statement: the actor can time it,
+/// and the most it can name is the kind of work it was.
+const EXTERNAL_READ_STATEMENT: &str = "the external state machine's read closure";
+
+const READ_SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 const DIRTY_FULL: &[u8] = b"active-full\n";
 const DIRTY_NORMAL: &[u8] = b"active-normal\n";
 const DIRTY_OFF: &[u8] = b"active-replayable-off\n";
@@ -491,6 +555,15 @@ pub struct ExternalSqliteOptions {
     pub initial_state_schema: u64,
     pub prepared_statement_cache_capacity: usize,
     pub read_pool_size: usize,
+    /// The queue wait at which the node logs that its read pool is saturated.
+    ///
+    /// Defaults to 100ms.
+    pub saturated_pool_threshold: Duration,
+    /// The time a read may run on its connection before the node logs it as a slow query.
+    ///
+    /// An external state machine's reads are caller closures, not statements, so a slow one is
+    /// named by its kind, not by SQL.  Defaults to 1s.
+    pub slow_query_threshold: Duration,
     /// Number of contiguous response receipts retained for exact retries.
     pub receipt_retention: usize,
     /// Maximum encoded size of any one response receipt.
@@ -508,7 +581,9 @@ impl ExternalSqliteOptions {
             initial_sequence: CommitSequence(1),
             initial_state_schema: 1,
             prepared_statement_cache_capacity: 128,
-            read_pool_size: 4,
+            read_pool_size: default_read_pool_size(),
+            saturated_pool_threshold: Duration::from_millis(100),
+            slow_query_threshold: Duration::from_secs(1),
             receipt_retention: 1024,
             max_receipt_bytes: 64 * 1024,
             durability: ExternalDurability::Full,
@@ -533,6 +608,16 @@ impl ExternalSqliteOptions {
         {
             return Err(ExternalError::InvalidOptions(
                 "filename must be one non-empty path component".to_string(),
+            ));
+        }
+        if self.saturated_pool_threshold.is_zero() {
+            return Err(ExternalError::InvalidOptions(
+                "saturated_pool_threshold must be larger than zero".to_string(),
+            ));
+        }
+        if self.slow_query_threshold.is_zero() {
+            return Err(ExternalError::InvalidOptions(
+                "slow_query_threshold must be larger than zero".to_string(),
             ));
         }
         if !(1..=MAX_READ_POOL_SIZE).contains(&self.read_pool_size) {
@@ -695,6 +780,8 @@ pub enum ExternalError {
     Setup(String),
     #[error("read pool error: {0}")]
     Pool(String),
+    #[error("read pool: a read panicked: {0}")]
+    ReadPanic(String),
     #[error("blocking task failed: {0}")]
     Join(#[from] tokio::task::JoinError),
     #[error("external writer is no longer available")]
@@ -709,12 +796,6 @@ pub enum ExternalError {
     SnapshotDestinationExists(PathBuf),
     #[error("snapshot checkpoint is older than the live checkpoint")]
     StaleSnapshot,
-}
-
-impl From<PoolError> for ExternalError {
-    fn from(value: PoolError) -> Self {
-        Self::Pool(value.to_string())
-    }
 }
 
 /// A typed operation failure or an engine failure.
@@ -805,18 +886,20 @@ impl Drop for InitLock {
 
 /// Single-writer SQLite state machine driven by an existing consensus layer.
 pub struct ExternalSqlite<C, O> {
-    read_pool: RwLock<Option<SqlitePool>>,
-    read_pool_config: ExternalReadPoolConfig,
+    read_actors: RwLock<Option<flume::Sender<ReaderRequest>>>,
+    read_config: ExternalReadConfig,
     write_tx: flume::Sender<WriterRequest<C>>,
     snapshots_dir: PathBuf,
     _operation: PhantomData<fn(O)>,
 }
 
-struct ExternalReadPoolConfig {
+struct ExternalReadConfig {
     db_dir: String,
     filename: String,
     prepared_statement_cache_capacity: usize,
     size: usize,
+    saturated_pool_threshold: Duration,
+    slow_query_threshold: Duration,
 }
 
 impl<C, O> ExternalSqlite<C, O>
@@ -1012,7 +1095,7 @@ where
         validate_configuration(&state, &options, O::RECEIPT_CODEC)?;
         validate_receipts::<C, O>(&conn, &state)?;
 
-        let read_pool = connect_read_pool_once(
+        let conns = connect_read_conns_once(
             &db_dir_text,
             &options.filename,
             options.prepared_statement_cache_capacity,
@@ -1020,6 +1103,11 @@ where
         )
         .await
         .map_err(|err| ExternalError::Pool(err.to_string()))?;
+        let read_actors = spawn_read_actors(
+            conns,
+            options.saturated_pool_threshold,
+            options.slow_query_threshold,
+        );
 
         let db_path = db_dir.join(&options.filename);
         let write_tx = spawn_external_writer::<C, O>(
@@ -1033,12 +1121,14 @@ where
         init_lock.disarm();
 
         Ok(Self {
-            read_pool: RwLock::new(Some(read_pool)),
-            read_pool_config: ExternalReadPoolConfig {
+            read_actors: RwLock::new(Some(read_actors)),
+            read_config: ExternalReadConfig {
                 db_dir: db_dir_text,
                 filename: options.filename,
                 prepared_statement_cache_capacity: options.prepared_statement_cache_capacity,
                 size: options.read_pool_size,
+                saturated_pool_threshold: options.saturated_pool_threshold,
+                slow_query_threshold: options.slow_query_threshold,
             },
             write_tx,
             snapshots_dir,
@@ -1135,30 +1225,46 @@ where
         Ok(self.state().await?.last_applied)
     }
 
-    /// Runs a typed read on one pooled connection.
+    /// Runs a typed read on one of the read pool's connections.
     ///
-    /// Pool connections use `SQLITE_OPEN_READ_ONLY`; toggling `query_only`
+    /// Read connections use `SQLITE_OPEN_READ_ONLY`; toggling `query_only`
     /// cannot turn them into a write bypass.
+    ///
+    /// The read runs on that connection for as long as it runs: a closure that blocks parks it, and
+    /// a parked connection is not available for the next read, nor for the shutdown and the restore
+    /// that wait for every read connection of the node to be closed.
     ///
     /// # Errors
     ///
     /// [`ExternalError::Pool`] while no read pool is available - after a snapshot restore it is
-    /// the restore that serves reads -, [`ExternalError::Io`] and [`ExternalError::Join`] for
-    /// the pooled connection and its blocking task, and the [`ExternalError::Sqlite`] of the
-    /// read itself.
+    /// the restore that serves reads -, [`ExternalError::ReadPanic`] for a read that panicked on its
+    /// connection, and the [`ExternalError::Sqlite`] of the read itself.
     pub async fn read<T, F>(&self, read: F) -> Result<T, ExternalError>
     where
         T: Send + 'static,
         F: FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
     {
-        let read_pool = self.read_pool.read().await;
-        let pool = read_pool.as_ref().ok_or_else(|| {
+        let read_actors = self.read_actors.read().await;
+        let tx = read_actors.as_ref().ok_or_else(|| {
             ExternalError::Pool("read pool is unavailable after snapshot restore".to_string())
         })?;
-        let conn = pool.get().await?;
-        task::spawn_blocking(move || read(&conn))
-            .await?
-            .map_err(ExternalError::from)
+        let tx = tx.clone();
+        drop(read_actors);
+
+        query_on_actor(
+            &tx,
+            Cow::from(EXTERNAL_READ_STATEMENT),
+            0,
+            move |conn, _size_hint, _sql| read(conn).map_err(ExternalError::from),
+            |fail| match fail {
+                ActorFailure::Closed => ExternalError::Pool("the read pool is closed".into()),
+                ActorFailure::Died => {
+                    ExternalError::Pool("the read pool died during the read".into())
+                }
+                ActorFailure::Panicked(text) => ExternalError::ReadPanic(text),
+            },
+        )
+        .await
     }
 
     /// Builds a complete SQLite snapshot behind the writer queue.
@@ -1290,11 +1396,10 @@ where
         }
 
         // Prevent an old read transaction or prepared handle from spanning the
-        // restore. Dropping the complete pool also makes every post-restore
+        // restore. Closing the complete actor set also makes every post-restore
         // read open against the restored SQLite generation.
-        let mut read_pool = self.read_pool.write().await;
-        let old_read_pool = read_pool.take();
-        drop(old_read_pool);
+        let mut read_actors = self.read_actors.write().await;
+        close_read_actors(read_actors.take(), self.read_config.size).await;
 
         let (ack, rx) = oneshot::channel();
         let restore = match self
@@ -1317,16 +1422,18 @@ where
                 | ExternalError::WriterPoisoned(_))
         );
         if writer_can_serve_reads {
-            *read_pool = Some(
-                connect_read_pool_once(
-                    &self.read_pool_config.db_dir,
-                    &self.read_pool_config.filename,
-                    self.read_pool_config.prepared_statement_cache_capacity,
-                    self.read_pool_config.size,
+            *read_actors = Some(spawn_read_actors(
+                connect_read_conns_once(
+                    &self.read_config.db_dir,
+                    &self.read_config.filename,
+                    self.read_config.prepared_statement_cache_capacity,
+                    self.read_config.size,
                 )
                 .await
                 .map_err(|err| ExternalError::Pool(err.to_string()))?,
-            );
+                self.read_config.saturated_pool_threshold,
+                self.read_config.slow_query_threshold,
+            ));
         }
         restore
     }
@@ -1341,12 +1448,12 @@ where
     pub async fn shutdown(self) -> Result<(), ExternalError> {
         let Self {
             write_tx,
-            read_pool,
-            read_pool_config: _,
+            read_actors,
+            read_config,
             snapshots_dir: _,
             _operation: _,
         } = self;
-        drop(read_pool.into_inner());
+        close_read_actors(read_actors.into_inner(), read_config.size).await;
         let (ack, rx) = oneshot::channel();
         write_tx
             .send_async(WriterRequest::Shutdown(ack))
@@ -3223,6 +3330,111 @@ mod tests {
         assert_eq!(read.await.unwrap().unwrap(), 1);
         install.await.unwrap().unwrap();
         assert_eq!(count_items(&target).await, 1);
+
+        std::sync::Arc::try_unwrap(target)
+            .ok()
+            .expect("all test handles should be dropped")
+            .shutdown()
+            .await
+            .unwrap();
+    }
+
+    /// The saturation guard: a read pool whose queue is full of queued reads has no slot left for a
+    /// shutdown, and the connections that took the parked reads are not coming back to take one.
+    /// Closing the pool must then fall back to the disconnect and the restore must still complete,
+    /// instead of sitting behind reads that only a free connection can answer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_restore_completes_over_a_saturated_read_pool() {
+        let source_dir = TestDir::new("saturated-source");
+        let source = TestEngine::open(options(&source_dir)).await.unwrap();
+        source
+            .apply_committed(commit(1, "create-v1"), TestOperation::Create)
+            .await
+            .unwrap();
+        source
+            .apply_committed(
+                commit(2, "insert-v1"),
+                TestOperation::Insert {
+                    id: 1,
+                    value: "restored",
+                },
+            )
+            .await
+            .unwrap();
+        let snapshot = source.build_snapshot().await.unwrap();
+        source.shutdown().await.unwrap();
+
+        let target_dir = TestDir::new("saturated-target");
+        let target = std::sync::Arc::new(TestEngine::open(options(&target_dir)).await.unwrap());
+
+        // The pool of this fixture is 2 connections with a queue of 8: 2 parked reads take both
+        // connections and 8 queued reads fill the queue, so no shutdown can be queued at all.
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = flume::bounded::<()>(2);
+        let mut parked = Vec::new();
+        for _ in 0..2 {
+            let engine = std::sync::Arc::clone(&target);
+            let started_tx = started_tx.clone();
+            let release_rx = release_rx.clone();
+            parked.push(tokio::spawn(async move {
+                engine
+                    .read(move |conn| {
+                        started_tx.send(()).unwrap();
+                        let _ = release_rx.recv();
+                        conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                    })
+                    .await
+            }));
+        }
+        drop(release_rx);
+        for _ in 0..2 {
+            started_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("both parked reads should start");
+        }
+        drop(started_tx);
+
+        let mut queued = Vec::new();
+        for _ in 0..8 {
+            let engine = std::sync::Arc::clone(&target);
+            queued.push(tokio::spawn(async move {
+                engine
+                    .read(|conn| conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0)))
+                    .await
+            }));
+        }
+        time::sleep(Duration::from_millis(250)).await;
+
+        let installer = std::sync::Arc::clone(&target);
+        let restore = tokio::time::timeout(
+            Duration::from_secs(20),
+            installer.install_snapshot(snapshot),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("the restore never completed over a saturated read pool"));
+        restore.expect("the restore must succeed");
+
+        // Every read of the closed set has to hand back its own answer before the engine can be
+        // dropped.  The parked reads are released first: a queued sender keeps the closed set
+        // connected, so its own reads only drain once a connection is free again.
+        drop(installer);
+        let release = release_tx.clone();
+        drop(release_tx);
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        drop(release);
+        for read in parked {
+            let _ = read.await;
+        }
+        for read in queued {
+            let _ = read.await;
+        }
+
+        assert_eq!(
+            count_items(&target).await,
+            1,
+            "the restored rows are what reads see"
+        );
 
         std::sync::Arc::try_unwrap(target)
             .ok()

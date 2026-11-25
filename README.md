@@ -341,9 +341,9 @@ that a stale or crashed client can never hold a lock forever.
 ### `external-state-machine`
 
 This opt-in feature is for applications that already own a trusted consensus log. It exposes a
-single-writer SQLite engine with true read-only pooled connections, bounded retry receipts, and
-validated page-image snapshots. It does not start a Hiqlite Raft group, network service, membership
-store, or raw-SQL replication protocol.
+single-writer SQLite engine with true read-only connections on threads of their own, bounded
+retry receipts, and validated page-image snapshots. It does not start a Hiqlite Raft group,
+network service, membership store, or raw-SQL replication protocol.
 
 The caller submits a dense monotonic sequence, an opaque exact native coordinate, a canonical
 command digest, and a typed `DeterministicSqliteOperation`. Every global entry must be represented
@@ -355,11 +355,13 @@ mode never invokes `auto-heal` or implicitly deletes its database. It also makes
 between SQLite, the caller's consensus log, or another storage engine. See the
 `external_state_machine` module documentation for the recovery, snapshot, and format contracts.
 
-`build_snapshot_into` publishes without replacing an existing caller-owned path, and restore closes
-and recreates the read pool so no pre-restore handle survives. Migrating a quiescent legacy database
-requires the explicit `adopt_existing_projection` constructor; the caller must prove that database
-is the agreed initial state. An outer manifest codec should map `ExternalSnapshotEvidence` into a
-frozen versioned format it owns, reconstruct the typed value with the public evidence constructors,
+`build_snapshot_into` publishes without replacing an existing caller-owned path, and restore
+closes and recreates the read connections. A read that is already inside its query is waited for up
+to a 30s grace; past it the restore proceeds and that one read keeps answering the rows it started
+on. Migrating a quiescent legacy database requires the explicit `adopt_existing_projection`
+constructor; the caller must prove that database is the agreed initial state. An outer manifest
+codec should map `ExternalSnapshotEvidence` into a frozen versioned format it owns, reconstruct the
+typed value with the public evidence constructors,
 and call `ExternalSqlite::validate_snapshot` to verify a decoded staged image before opening or
 mutating a live projection. The engine's Serde shape is descriptive, not a stable wire
 format promise; `EXTERNAL_SQLITE_SNAPSHOT_FORMAT` exposes the page-image identity without

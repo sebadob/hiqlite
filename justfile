@@ -226,6 +226,31 @@ test-migrate:
     cp -r data/logs_bkp/* data/server_1/logs/
     HQL_DATA_DIR=data/server_1 cargo run --features server -- serve -c hiqlite.env --node-id 1
 
+# runs the connection pool bench in a fixed core envelope so runs are comparable
+bench-conn-pool *args:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    # macOS has no thread affinity (`thread_policy_set` answers `KERN_NOT_SUPPORTED` on Apple
+    # Silicon), so the envelope is the `utility` QoS clamp, which the scheduler uses to keep
+    # threads on performance cores.  Linux pins properly with `taskset`.
+    case "$(uname -s)" in
+        Darwin)
+            WRAP=( /usr/sbin/taskpolicy -c utility )
+            ENVELOPE="taskpolicy -c utility - $(sysctl -n hw.perflevel0.logicalcpu) P + $(sysctl -n hw.perflevel1.logicalcpu) E cores"
+            ;;
+        Linux)
+            LAST=$(( $(nproc) - 1 ))
+            WRAP=( taskset -c "0-${LAST}" )
+            ENVELOPE="taskset -c 0-${LAST} - $(nproc) cpus"
+            ;;
+        *)
+            WRAP=()
+            ENVELOPE="none"
+            ;;
+    esac
+    echo "core envelope: ${ENVELOPE}"
+    ${WRAP[@]+"${WRAP[@]}"} cargo bench --features sqlite --bench conn_pool -- {{args}}
+
 # verifies the MSRV
 msrv-verify:
     #!/usr/bin/env bash

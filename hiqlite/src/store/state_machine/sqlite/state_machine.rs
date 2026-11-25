@@ -5,6 +5,7 @@ use crate::helpers::{
 };
 use crate::migration::Migration;
 use crate::query::rows::RowsOwnedChecked;
+use crate::reader::{self, ReaderRequest};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::param::Param;
 use crate::store::state_machine::sqlite::snapshot_builder::SQLiteSnapshotBuilder;
@@ -40,17 +41,13 @@ use uuid::Uuid;
 type Entry = EntryOf<TypeConfigSqlite>;
 type SnapshotData = tokio::fs::File;
 
-// TODO uses a `Mutex<_>` inside. We could make this pool a lot
-//  faster by building our own lock-free one.
-pub type SqlitePool = deadpool::unmanaged::Pool<rusqlite::Connection>;
-
 pub type Params = Vec<Param>;
 
-/// Total wall-clock budget for retrying read-pool connections at startup. Each attempt already
+/// Total wall-clock budget for retrying the read connections at startup. Each attempt already
 /// waits up to 30 s (`busy_timeout`) for exclusive lock holders, so this covers a full contention
 /// cycle plus margin; beyond that the failure is unrecoverable and we panic instead of hanging
 /// forever.
-const READ_POOL_CONNECT_BUDGET: Duration = Duration::from_secs(60);
+const READ_CONNS_CONNECT_BUDGET: Duration = Duration::from_secs(60);
 
 /// Non-deterministic SQLite functions that are forbidden on raft write connections,
 /// where every node must apply the identical statement. The dashboard pre-scans
@@ -152,7 +149,7 @@ pub struct StateMachineSqlite {
     #[cfg(feature = "s3")]
     s3_config: Option<Arc<crate::s3::S3Config>>,
 
-    pub(crate) read_pool: SqlitePool,
+    pub(crate) read_actors: flume::Sender<ReaderRequest>,
     pub(crate) write_tx: flume::Sender<WriterRequest>,
 }
 
@@ -165,6 +162,8 @@ impl StateMachineSqlite {
         log_statements: bool,
         prepared_statement_cache_capacity: usize,
         read_pool_size: usize,
+        saturated_pool_threshold: Duration,
+        slow_query_threshold: Duration,
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::s3::S3Config>>,
         do_reset_metadata: bool,
         #[cfg(feature = "backup")] local_backup_keep_for: Duration,
@@ -188,7 +187,6 @@ impl StateMachineSqlite {
         let conn = Self::connect(
             path_db.clone(),
             filename_db.to_string(),
-            false,
             prepared_statement_cache_capacity,
         )
         .await?;
@@ -205,13 +203,15 @@ impl StateMachineSqlite {
             lock_file,
         );
 
-        let read_pool = Self::connect_read_pool(
+        let conns = Self::connect_read_conns(
             path_db.as_ref(),
             filename_db,
             prepared_statement_cache_capacity,
             read_pool_size,
         )
         .await?;
+        let read_actors =
+            reader::spawn_read_actors(conns, saturated_pool_threshold, slow_query_threshold);
 
         let mut slf = Self {
             // data: state_machine_data,
@@ -222,7 +222,7 @@ impl StateMachineSqlite {
             path_lock_file,
             #[cfg(feature = "s3")]
             s3_config,
-            read_pool,
+            read_actors,
             write_tx,
         };
 
@@ -381,100 +381,136 @@ impl StateMachineSqlite {
         let _ = std::fs::remove_file(path);
     }
 
+    /// The read-write opener: the writer's own connection, and the snapshot metadata read.
+    ///
+    /// It keeps `CREATE`, because the writer is the one that creates the file.  The read actors'
+    /// handles come from [`Self::connect_read_conn`], which opens them read-only.
+    ///
+    /// `NO_MUTEX` drops the mutex SQLite puts around every call on a connection.  It is a promise
+    /// about how the handle is used, not a setting: the caller must keep one thread touching a
+    /// connection at a time.  The writer's handle is moved into the writer thread and never leaves
+    /// it, and the snapshot metadata read is a handle of its own, used by the one task that opens
+    /// it.
     pub async fn connect(
         path: String,
         filename_db: String,
-        read_only: bool,
         prepared_statement_cache_capacity: usize,
     ) -> Result<rusqlite::Connection, Error> {
         task::spawn_blocking(move || {
             let path_full = format!("{path}/{filename_db}");
-            let conn = rusqlite::Connection::open(path_full)?;
+            let conn = rusqlite::Connection::open_with_flags(
+                path_full,
+                OpenFlags::SQLITE_OPEN_READ_WRITE
+                    | OpenFlags::SQLITE_OPEN_CREATE
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
 
-            Self::apply_pragmas(&conn, read_only, prepared_statement_cache_capacity)?;
-            if !read_only {
-                Self::overwrite_non_det_fns(&conn);
-            }
+            Self::apply_pragmas(&conn, false, prepared_statement_cache_capacity)?;
+            Self::overwrite_non_det_fns(&conn);
 
             Ok(conn)
         })
         .await?
     }
 
-    async fn connect_read_pool(
+    /// One read connection, opened read-only and warmed up, ready to hand to an actor.
+    ///
+    /// The warm-up is part of the open, not a step after it: a connection only joins the pool once
+    /// it has answered a query, so the first query of a caller does not pay for the first page
+    /// reads of a cold file, and a connection that cannot answer one never reaches an actor.
+    ///
+    /// `NO_MUTEX` is the same promise as on the writer's handle: this connection is moved into the
+    /// actor thread that owns it, and it is the only one that ever touches it.
+    async fn connect_read_conn(
         path: &str,
         filename_db: &str,
         prepared_statement_cache_capacity: usize,
-        pool_size: usize,
-    ) -> Result<SqlitePool, Error> {
-        let path_full = format!("{path}/{filename_db}");
-
-        let mut conns = Vec::with_capacity(pool_size);
-        for _ in 0..pool_size {
-            // Bounded retry: each attempt already waits up to 30 s (busy_timeout) for exclusive
-            // lock holders. After the total budget the failure is unrecoverable at startup, so
-            // we panic instead of retrying forever.
-            let deadline = Instant::now() + READ_POOL_CONNECT_BUDGET;
-            let mut last_warn = None;
-            let mut conn = Self::connect(
-                path.to_string(),
-                filename_db.to_string(),
-                true,
-                prepared_statement_cache_capacity,
-            )
-            .await;
-            while conn.is_err() {
-                let now = Instant::now();
-                if now >= deadline {
-                    panic!(
-                        "Read-pool connection to '{path_full}' still failing after {:?} of retries \
-                         (last error: {:?}). Unrecoverable at startup - panicking instead of \
-                         retrying forever.",
-                        READ_POOL_CONNECT_BUDGET,
-                        conn.as_ref().err()
-                    );
-                }
-                if last_warn.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(5)) {
-                    warn!(
-                        "Read-pool connection to '{path_full}' failing: {:?}; retrying for up to \
-                         {:?} in total",
-                        conn.as_ref().err(),
-                        READ_POOL_CONNECT_BUDGET
-                    );
-                    last_warn = Some(now);
-                }
-                time::sleep(Duration::from_millis(10)).await;
-                conn = Self::connect(
-                    path.to_string(),
-                    filename_db.to_string(),
-                    true,
-                    prepared_statement_cache_capacity,
-                )
-                .await;
-            }
-            conns.push(conn?);
-        }
-
-        let pool = deadpool::unmanaged::Pool::from(conns);
-        let conn = pool.get().await?;
+    ) -> Result<rusqlite::Connection, Error> {
+        let path = path.to_string();
+        let filename_db = filename_db.to_string();
         task::spawn_blocking(move || {
-            let _ = conn.query_row("SELECT 1", (), |row| {
-                let res: i64 = row.get(0)?;
-                Ok(res)
-            })?;
-            Ok::<(), Error>(())
+            let conn = rusqlite::Connection::open_with_flags(
+                format!("{path}/{filename_db}"),
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
+            Self::apply_pragmas(&conn, true, prepared_statement_cache_capacity)?;
+            // The warm-up belongs to the open: a connection only joins the pool once it has
+            // answered a query.
+            conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+            Ok(conn)
         })
-        .await?;
-
-        Ok(pool)
+        .await?
     }
 
+    async fn connect_read_conns(
+        path: &str,
+        filename_db: &str,
+        prepared_statement_cache_capacity: usize,
+        size: usize,
+    ) -> Result<Vec<rusqlite::Connection>, Error> {
+        let path_full = format!("{path}/{filename_db}");
+
+        // Bounded retry over the whole set: each attempt already waits up to 30 s (busy_timeout)
+        // for exclusive lock holders.  After the total budget the failure is unrecoverable at
+        // startup, so we panic instead of retrying forever.
+        let deadline = Instant::now() + READ_CONNS_CONNECT_BUDGET;
+        let mut last_warn = None;
+
+        let mut conns = Vec::with_capacity(size);
+        for _ in 0..size {
+            let conn = loop {
+                match Self::connect_read_conn(path, filename_db, prepared_statement_cache_capacity)
+                    .await
+                {
+                    Ok(conn) => break conn,
+                    Err(err) => {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            panic!(
+                                "Read connection to '{path_full}' still failing after \
+                                 {READ_CONNS_CONNECT_BUDGET:?} of retries (last error: {err:?}). \
+                                 Unrecoverable at startup - panicking instead of retrying forever."
+                            );
+                        }
+                        if last_warn.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(5))
+                        {
+                            warn!(
+                                "Read connection to '{path_full}' failing: {err:?}; retrying for \
+                                 up to {READ_CONNS_CONNECT_BUDGET:?} in total"
+                            );
+                            last_warn = Some(now);
+                        }
+                        time::sleep(Duration::from_millis(10)).await;
+                    }
+                }
+            };
+            conns.push(conn);
+        }
+
+        Ok(conns)
+    }
+
+    /// Applies the pragmas of one connection, in the shape its role is allowed to write.
+    ///
+    /// The pragmas that change the database file itself - the journal mode, the page size, the
+    /// vacuum mode and `PRAGMA optimize` - belong to the writer alone.  It opens first, it owns the
+    /// file, and a read handle is opened read-only, so a read connection that tried to set them
+    /// would fail with `SQLITE_READONLY` on any file that is not already in that shape, which is
+    /// exactly what a database restored from a backup file is.  Everything a read connection does
+    /// set is scoped to its own connection.
     fn apply_pragmas(
         conn: &rusqlite::Connection,
         read_only: bool,
         prepared_statement_cache_capacity: usize,
     ) -> Result<(), rusqlite::Error> {
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        if !read_only {
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+            conn.pragma_update(None, "page_size", 4096)?;
+            conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+            // `PRAGMA optimize` writes ANALYZE stats into the database file.
+            conn.pragma_update(None, "optimize", "0x10002")?;
+        }
+
         // synchronous set to OFF is not an issue in our case.
         // If the OS crashes before it could flush any buffers to disk, we will rebuild the DB
         // anyway from the logs store just to be 100% sure that all cluster members are in a
@@ -482,7 +518,6 @@ impl StateMachineSqlite {
         // not having any disadvantage with the Raft setup.
         conn.pragma_update(None, "synchronous", "OFF")?;
 
-        conn.pragma_update(None, "page_size", 4096)?;
         conn.pragma_update(None, "journal_size_limit", 16384)?;
         conn.pragma_update(None, "wal_autocheckpoint", 4_000)?;
 
@@ -490,8 +525,6 @@ impl StateMachineSqlite {
         // conn.pragma_update(None, "temp_store", "memory")?;
 
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
-        conn.pragma_update(None, "optimize", "0x10002")?;
 
         // backups/snapshot restores hold an exclusive lock; 30s busy timeout stops
         // concurrent reads failing with `SQLITE_BUSY` during those windows
@@ -504,7 +537,15 @@ impl StateMachineSqlite {
         if read_only {
             conn.pragma_update(None, "query_only", true)?;
         } else {
-            // conn.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
+            // `locking_mode=EXCLUSIVE` on the writer is off on purpose, and it is not a tuning
+            // knob: while any connection holds the database in exclusive locking mode, every
+            // query against it answers `SQLITE_BUSY`, so the read actors stop answering.  Its
+            // documented gains are a small drop in filesystem syscalls and WAL without the
+            // shared-memory wal-index, which is for a process that is the only one touching the
+            // file.  This node is the opposite: one writer thread and `read_pool_size` readers,
+            // reading while it writes, which is the whole point of WAL here.  Measured: readers
+            // on read-only handles fail their first query with "database is locked" the moment
+            // the writer sets it.
         }
 
         conn.set_prepared_statement_cache_capacity(prepared_statement_cache_capacity);
@@ -594,7 +635,7 @@ impl StateMachineSqlite {
         let filename_db = id.to_string();
 
         // open a DB connection to read out the metadata
-        let conn = Self::connect(db_path, filename_db, false, 2).await?;
+        let conn = Self::connect(db_path, filename_db, 2).await?;
 
         // let path_snapshot_clone = path_snapshot.clone();
         let path_dbg = path_snapshot.clone();
@@ -903,6 +944,75 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The read actors' handles are opened read-only, so SQLite itself is what keeps them from
+    /// writing - not only the `query_only` pragma.  `PRAGMA optimize` is the one pragma of the
+    /// shared set that writes into the database, and a read-only handle refuses it, which is why
+    /// `apply_pragmas` skips it for a read connection.
+    #[test]
+    fn a_read_connection_is_read_only_at_the_file_layer() {
+        let dir =
+            std::env::temp_dir().join(format!("hiqlite_read_only_conn_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("read_only.db");
+
+        let writer = rusqlite::Connection::open(&db).unwrap();
+        StateMachineSqlite::apply_pragmas(&writer, false, 8).unwrap();
+        writer.execute("CREATE TABLE t (a INTEGER)", ()).unwrap();
+        writer.execute("INSERT INTO t VALUES (1)", ()).unwrap();
+
+        let reader =
+            rusqlite::Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        StateMachineSqlite::apply_pragmas(&reader, true, 8).unwrap();
+
+        let n: i64 = reader
+            .query_row("SELECT count(a) FROM t", (), |row| row.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "a read-only handle must read the writer's data");
+
+        let err = reader.execute("INSERT INTO t VALUES (2)", ()).unwrap_err();
+        let text = err.to_string().to_lowercase();
+        assert!(
+            text.contains("readonly") || text.contains("read only"),
+            "a read-only handle must refuse a write: {err}"
+        );
+
+        assert!(
+            reader.pragma_update(None, "optimize", "0x10002").is_err(),
+            "PRAGMA optimize writes ANALYZE stats, so a read-only handle must refuse it"
+        );
+
+        drop(reader);
+        drop(writer);
+
+        // The shape a restore from a backup file leaves behind: a database that is not in WAL.
+        // A read connection opens it and reads it without ever trying to change the file - the
+        // journal mode is the writer's to set, and a read-only handle refuses it.
+        let restored = dir.join("restored.db");
+        let writer = rusqlite::Connection::open(&restored).unwrap();
+        writer
+            .pragma_update(None, "journal_mode", "DELETE")
+            .unwrap();
+        writer.execute("CREATE TABLE t (a INTEGER)", ()).unwrap();
+        writer.execute("INSERT INTO t VALUES (7)", ()).unwrap();
+        drop(writer);
+
+        let reader =
+            rusqlite::Connection::open_with_flags(&restored, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        StateMachineSqlite::apply_pragmas(&reader, true, 8).unwrap();
+        let a: i64 = reader
+            .query_row("SELECT a FROM t", (), |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            a, 7,
+            "a read connection must read a restored database that is not in WAL"
+        );
+
+        drop(reader);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn forbidden_functions_panic_on_purpose_and_fail_the_statement() {

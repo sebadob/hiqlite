@@ -163,7 +163,7 @@ anything else that calls the API by hand.
 | ------------------------ | -------------------------- | ---------------------------------------------------- |
 | `GET /cluster/election`  | -                          | the state of each group on this node                 |
 | `PUT /cluster/election`  | `{"enable_elect": <bool>}` | sets it for all groups of this node                  |
-| `POST /cluster/election` | `?force=true` optional     | this node campaigns for the leadership of all groups |
+| `POST /cluster/election` | -                          | this node campaigns for the leadership of all groups |
 
 ```bash
 # every call carries the node's API secret as a bearer token
@@ -186,10 +186,6 @@ curl -s -X PUT -H "$AUTH" -H "content-type: application/json" \
 # make a node campaign for the leadership of all its groups
 curl -s -X POST -H "$AUTH" -H "Accept: application/json" \
   http://10.1.0.3:8200/cluster/election
-
-# the last resort: skip openraft's Pre-Vote round
-curl -s -X POST -H "$AUTH" -H "Accept: application/json" \
-  'http://10.1.0.3:8200/cluster/election?force=true'
 ```
 
 `Accept: application/json` gives you readable answers from a terminal. Without it the answers are
@@ -224,10 +220,11 @@ They differ after a `PUT`, and they converge again on the next restart. `state` 
 state (`Leader`, `Follower`, `Learner`, `PreCandidate`, `Candidate`), `leader` is that group's
 current leader.
 
-`POST` without `force` runs openraft's Pre-Vote round first: the term is untouched when the node
-cannot win, and a node whose leader lease is still valid is refused. That makes it safe as a probe,
-and it is the normal way to ask a node to take over. `POST?force=true` skips that round, so the term
-climbs unconditionally - see section 8 for why that is the sharp edge of this feature.
+`POST` runs openraft's Pre-Vote round: the term is untouched when the node cannot win, a node whose
+leader lease is still valid is refused, and a node whose own elections are disabled is refused by its
+own gate. That makes it safe as a probe, and it is the only way to ask a node to take over by itself.
+A leader change you actually want is a transfer, asked of the node that holds the seat:
+`POST /cluster/transfer_leader` with `{ "node_id": 2 }` - see section 8 for why there is no bypass.
 
 ## 5. The client helpers
 
@@ -236,7 +233,7 @@ The same three calls, typed, from `hiqlite::Client`:
 ```rust
 let states = client.cluster_election_state().await?; // BTreeMap<NodeId, ElectionState>
 client.set_node_election(3, true).await?;
-client.elect_node(3, false).await?;
+client.elect_node(3).await?;
 ```
 
 A **remote** client (`Client::remote`, built from the node addresses and the API secret) reaches
@@ -383,27 +380,26 @@ Practical consequences:
 3. **A runtime change is not persisted.** `PUT` changes the in-memory value; the restart applies the
    node line. A node that was switched on for a failover and then restarted silently goes back to
    its config value. Alert on `enable_elect != election_disable` if the drift matters to you.
-4. **`force=true` is the sharp edge.** It inflates the term even when the node cannot win, and a
-   forced election of a node whose log is behind, together with `allow_log_reversion = Some(true)`,
-   is the one real data-loss combination in this feature. Force only a node you know is at the
-   cluster tip, and prefer the plain probe.
-5. **Term inflation has a cost even without data loss.** A node that ends up with a higher term than
-   its leader makes the leader step down over openraft's HigherVote path, the cluster re-stabilizes
-   with a term bump, and the term-inflated follower is caught up by the new leader. Expect a short
-   window without a leader.
-6. **Failover time is the election timeout, not the API call.** `election_timeout_min` is 1500 ms
+4. **A campaign is a request, not a command.** `POST /cluster/election` runs openraft's Pre-Vote
+   round, and a healthy cluster refuses it: the term is untouched when the node cannot win, a live
+   leader holding its lease is refused, and a node with `enable_elect` off is refused by its own
+   gate. There is no bypass, and that is deliberate - a trigger that skipped the Pre-Vote also
+   skipped `enable_elect`, and a node with elections disabled still grants votes to others, so one
+   peer's grant plus its own vote is a quorum of three. A leader change that must happen is
+   `POST /cluster/transfer_leader`, asked of the node that holds the seat.
+5. **Failover time is the election timeout, not the API call.** `election_timeout_min` is 1500 ms
    and `election_timeout_max` is 3000 ms by default, the leader lease adds on top. A node that is
    enabled for elections takes over within a few seconds, not instantly.
-7. **Learners are not part of this.** A learner never wins, cannot promote itself, and `POST`
+6. **Learners are not part of this.** A learner never wins, cannot promote itself, and `POST`
    refuses it. Use the `learner_only` config for read replicas and for re-adding a node you wiped.
-8. **Keep the geo node's latency out of the tuning knobs.** Defaults (heartbeat 500 ms, election
+7. **Keep the geo node's latency out of the tuning knobs.** Defaults (heartbeat 500 ms, election
    1500-3000 ms, snapshot install timeout 10 s) work for a geo voter. If you shorten the election
    timeouts, you get unnecessary leader switches over a far link; the geo node also needs the
    snapshot transfer to fit into `install_snapshot_timeout`.
-9. **The marker does not change what the geo node stores.** Its WAL, snapshots and state machine
+8. **The marker does not change what the geo node stores.** Its WAL, snapshots and state machine
    are identical to any other voter's, so disk sizing, backup and restore behave the same
    everywhere.
-10. **A leader cannot demote itself to a learner.** It keeps leading in that shape and openraft
+9. **A leader cannot demote itself to a learner.** It keeps leading in that shape and openraft
    cannot finish the change, so `DELETE` with `stay_as_learner: true` on the current leader is
    refused. Hand the leadership to the node that shall lead, then demote from that node (section 6,
    and the master-slave playbook in section 9).
@@ -424,8 +420,9 @@ and keeps its quorum role.
 3. Graceful shutdown of the current LAN leader. Its only remaining candidates are the other LAN node
    and the geo node, in that order, so this is the step that moves the leadership: shut down both
    LAN nodes one after the other, and the second handover lands on the geo node.
-4. If the LAN nodes are already gone, make the geo node campaign: `POST /cluster/election`, then
-   `POST /cluster/election?force=true` as the last resort.
+4. If the LAN nodes are already gone, make the geo node campaign: `POST /cluster/election`. Step 2
+   is what makes it possible at all: a node whose elections are disabled is refused by its own gate,
+   and there is no bypass.
 5. Decide the new steady state: keep the geo node enabled for elections (it is now the leader you
    want), and switch the LAN nodes back on with their markers, so they follow it.
 
