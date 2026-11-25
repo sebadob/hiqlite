@@ -50,6 +50,36 @@ client.backup().await?;
 `Client::backup` starts the backup in the background and returns; it is not finished when the call
 returns. `POST /backup` on the API port does the same on a node.
 
+## Backup status
+
+`GET /backup` on the API port (with the API secret as `Authorization: Bearer <secret_api>`) reports
+this node's backups:
+
+```json
+{
+  "node_id": 1,
+  "local": { "count": 3, "newest": { "ts": 1700000000, "file": "backup_node_1_1700000000.sqlite" } },
+  "last_backup": { "ts": 1700000002, "file": "backup_node_1_1700000000.sqlite" },
+  "last_backup_error": null,
+  "last_s3_upload": { "ts": 1700000003, "file": "backup_node_1_1700000000.sqlite" },
+  "last_s3_upload_error": null
+}
+```
+
+`local` is read from the backups directory, so it survives a restart. The `last_*` entries are kept
+in memory since the node started; their `ts` is when the backup or upload finished, and an error
+entry also carries the `error` message. Every node creates its own local backup, while only the
+node that requested the backup (the leader) uploads it to S3, so ask the leader for the upload
+state. The `s3` fields only exist with the `s3` feature.
+
+`GET /backup?format=prometheus` returns the same as Prometheus gauges, labeled with `node_id`:
+`hiqlite_backup_local_count`, `hiqlite_backup_local_newest_timestamp_seconds`,
+`hiqlite_backup_last_success_timestamp_seconds`, `hiqlite_backup_last_error_timestamp_seconds` and,
+with `s3`, `hiqlite_backup_s3_last_upload_success_timestamp_seconds` and
+`hiqlite_backup_s3_last_upload_error_timestamp_seconds`. A timestamp of `0` means "never", so an
+alert like `time() - hiqlite_backup_local_newest_timestamp_seconds > 2 * 86400` also fires for a
+node without any backup.
+
 ## List and fetch
 
 ```rust, notest

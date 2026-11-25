@@ -328,6 +328,14 @@ Only `sql_map!()` needs a shape. A type that publishes none, whose queries go th
 plain string, compiles and runs exactly as it did, and a type that derives `FromRow` needs no change
 at all: its shape is published by the derive, including the parts it flattens.
 
+#### `GET /backup`
+
+`GET /backup` on the API port reports a node's backup state: the local backups on disk, and the
+last successful backup, the last failed one, and with `s3` the last S3 upload and failed upload
+since the node started. It answers JSON by default and Prometheus gauges with
+`?format=prometheus`, so backup age can be monitored without listing the bucket. It needs the API
+secret, like `POST /backup`. See `docs/backups.md`.
+
 #### `backup_file_prefix` config var
 
 The new `backup_file_prefix` (TOML key, `HQL_BACKUP_FILE_PREFIX`) is the prefix of every backup

@@ -581,6 +581,192 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
     info!("restore_backup_finish task successful");
 }
 
+/// What this node knows about its own backups since it started, for `GET /backup`.
+///
+/// Each node creates its own local backup when a backup entry is applied, and only the node that
+/// requested the backup (the leader) pushes it to S3, so this is always a per-node view. It lives
+/// in memory: after a restart, the newest local backup is still found on disk, but the S3 and
+/// error records start empty.
+#[derive(Debug, Default)]
+pub(crate) struct BackupStatus {
+    inner: std::sync::Mutex<BackupStatusInner>,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub(crate) struct BackupStatusInner {
+    pub last_backup: Option<BackupEvent>,
+    pub last_backup_error: Option<BackupEvent>,
+    #[cfg(feature = "s3")]
+    pub last_s3_upload: Option<BackupEvent>,
+    #[cfg(feature = "s3")]
+    pub last_s3_upload_error: Option<BackupEvent>,
+}
+
+/// One backup or upload outcome: when it finished (unix seconds) and the backup file name, plus the
+/// error message for a failure.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct BackupEvent {
+    pub ts: i64,
+    pub file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl BackupEvent {
+    fn now(file: &str, error: Option<String>) -> Self {
+        Self {
+            ts: Utc::now().timestamp(),
+            file: file.to_string(),
+            error,
+        }
+    }
+}
+
+impl BackupStatus {
+    fn update(&self, f: impl FnOnce(&mut BackupStatusInner)) {
+        // a poisoned lock only means a panic happened while recording, the data is still usable
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&mut inner);
+    }
+
+    pub(crate) fn backup_ok(&self, file: &str) {
+        self.update(|s| s.last_backup = Some(BackupEvent::now(file, None)));
+    }
+
+    pub(crate) fn backup_failed(&self, file: &str, err: &Error) {
+        self.update(|s| {
+            s.last_backup_error = Some(BackupEvent::now(file, Some(err.to_string())));
+        });
+    }
+
+    #[cfg(feature = "s3")]
+    pub(crate) fn s3_upload_ok(&self, file: &str) {
+        self.update(|s| s.last_s3_upload = Some(BackupEvent::now(file, None)));
+    }
+
+    #[cfg(feature = "s3")]
+    pub(crate) fn s3_upload_failed(&self, file: &str, err: &str) {
+        self.update(|s| {
+            s.last_s3_upload_error = Some(BackupEvent::now(file, Some(err.to_string())));
+        });
+    }
+
+    pub(crate) fn get(&self) -> BackupStatusInner {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// The local backups of this node that are on disk right now, under the configured prefix.
+#[derive(Debug, Default, serde::Serialize)]
+pub(crate) struct LocalBackups {
+    pub count: usize,
+    /// The newest backup's file name and the timestamp in its name (the time it was requested).
+    pub newest: Option<LocalBackup>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct LocalBackup {
+    pub ts: i64,
+    pub file: String,
+}
+
+/// Lists finished local backups. Temporary `~` files of a backup in progress are not counted.
+pub(crate) async fn local_backups(backup_path: &str, prefix: &str) -> Result<LocalBackups, Error> {
+    let mut res = LocalBackups::default();
+    let mut list = match fs::read_dir(backup_path).await {
+        Ok(list) => list,
+        // no backup has ever been created on this node
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(res),
+        Err(err) => return Err(err.into()),
+    };
+    while let Some(entry) = list.next_entry().await? {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(ts) = backup_ts_from_name(name, prefix) else {
+            continue;
+        };
+        res.count += 1;
+        if res.newest.as_ref().is_none_or(|n| ts > n.ts) {
+            res.newest = Some(LocalBackup {
+                ts,
+                file: name.to_string(),
+            });
+        }
+    }
+    Ok(res)
+}
+
+/// The response of `GET /backup`.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BackupInfo {
+    pub node_id: NodeId,
+    pub local: LocalBackups,
+    #[serde(flatten)]
+    pub status: BackupStatusInner,
+}
+
+impl BackupInfo {
+    /// The same information in the Prometheus text format. A timestamp of `0` means "never since
+    /// this node started" (or "no backup on disk" for the local one), so an alert on
+    /// `time() - hiqlite_backup_local_newest_timestamp_seconds` also fires for a node without any.
+    pub(crate) fn to_prometheus(&self) -> String {
+        use std::fmt::Write;
+
+        let node = self.node_id;
+        let ts = |e: &Option<BackupEvent>| e.as_ref().map_or(0, |e| e.ts);
+        let mut out = String::with_capacity(1024);
+        let mut gauge = |name: &str, help: &str, value: i64| {
+            let _ = writeln!(out, "# HELP {name} {help}");
+            let _ = writeln!(out, "# TYPE {name} gauge");
+            let _ = writeln!(out, "{name}{{node_id=\"{node}\"}} {value}");
+        };
+
+        gauge(
+            "hiqlite_backup_local_count",
+            "Finished local backups of this node on disk.",
+            i64::try_from(self.local.count).unwrap_or(i64::MAX),
+        );
+        gauge(
+            "hiqlite_backup_local_newest_timestamp_seconds",
+            "Timestamp in the name of the newest local backup on disk, 0 if there is none.",
+            self.local.newest.as_ref().map_or(0, |n| n.ts),
+        );
+        gauge(
+            "hiqlite_backup_last_success_timestamp_seconds",
+            "When this node last finished a local backup since it started, 0 if never.",
+            ts(&self.status.last_backup),
+        );
+        gauge(
+            "hiqlite_backup_last_error_timestamp_seconds",
+            "When a local backup of this node last failed since it started, 0 if never.",
+            ts(&self.status.last_backup_error),
+        );
+        #[cfg(feature = "s3")]
+        {
+            gauge(
+                "hiqlite_backup_s3_last_upload_success_timestamp_seconds",
+                "When this node last finished an S3 upload since it started, 0 if never.",
+                ts(&self.status.last_s3_upload),
+            );
+            gauge(
+                "hiqlite_backup_s3_last_upload_error_timestamp_seconds",
+                "When an S3 upload of this node last failed for good since it started, 0 if never.",
+                ts(&self.status.last_s3_upload_error),
+            );
+        }
+
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{backup_file_name, backup_ts_from_name, is_valid_file_prefix};

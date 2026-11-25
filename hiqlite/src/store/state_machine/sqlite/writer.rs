@@ -144,6 +144,7 @@ pub fn spawn_writer(
     do_reset_metadata: bool,
     #[cfg(feature = "backup")] local_backup_keep_for: Duration,
     #[cfg(feature = "backup")] backup_file_prefix: String,
+    #[cfg(feature = "backup")] backup_status: std::sync::Arc<crate::backup::BackupStatus>,
     lock_file: std::fs::File,
 ) -> flume::Sender<WriterRequest> {
     let (tx, rx) = flume::bounded::<WriterRequest>(1);
@@ -662,12 +663,29 @@ CREATE TABLE IF NOT EXISTS _metadata
                         #[cfg(feature = "s3")]
                         s3_config,
                         #[cfg(feature = "s3")]
+                        &backup_status,
+                        #[cfg(feature = "s3")]
                         &rt,
                     ) {
                         error!("Error creating backup: {:?}", err);
+                        #[cfg(feature = "backup")]
+                        backup_status.backup_failed(
+                            &crate::backup::backup_file_name(
+                                &backup_file_prefix,
+                                req.node_id,
+                                req.ts,
+                            ),
+                            &err,
+                        );
                         req.ack.send(Err(err));
                         continue;
                     }
+                    #[cfg(feature = "backup")]
+                    backup_status.backup_ok(&crate::backup::backup_file_name(
+                        &backup_file_prefix,
+                        req.node_id,
+                        req.ts,
+                    ));
 
                     #[cfg(feature = "backup")]
                     {
@@ -800,6 +818,7 @@ fn create_snapshot<P: Into<PathBuf>>(conn: &rusqlite::Connection, path: P) -> Re
 #[cfg(feature = "s3")]
 const S3_MAX_RETRIES: u64 = 10;
 
+#[allow(clippy::too_many_arguments)]
 fn create_backup(
     conn: &rusqlite::Connection,
     node_id: NodeId,
@@ -807,6 +826,7 @@ fn create_backup(
     target_folder: &str,
     #[cfg(feature = "backup")] file_prefix: &str,
     #[cfg(feature = "s3")] s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
+    #[cfg(feature = "s3")] backup_status: &std::sync::Arc<crate::backup::BackupStatus>,
     #[cfg(feature = "s3")] rt: &runtime::Handle,
 ) -> Result<(), Error> {
     // - build target db file name with node id and timestamp
@@ -851,6 +871,7 @@ fn create_backup(
 
     #[cfg(feature = "s3")]
     if let Some(s3) = s3_config {
+        let backup_status = backup_status.clone();
         rt.spawn(async move {
             info!("Background task for database encryption and S3 backup task has been started");
 
@@ -861,6 +882,7 @@ fn create_backup(
                 match s3.push(&path_full, &file).await {
                     Ok(()) => {
                         info!("Push backup to S3 has been finished");
+                        backup_status.s3_upload_ok(&file);
                         break;
                     }
                     Err(err) if attempt < S3_MAX_RETRIES => {
@@ -874,6 +896,7 @@ fn create_backup(
                             "Error pushing Backup to S3 after {attempt} attempts: {err} - \
                             the backup exists locally but not offsite"
                         );
+                        backup_status.s3_upload_failed(&file, &err.to_string());
                         break;
                     }
                 }

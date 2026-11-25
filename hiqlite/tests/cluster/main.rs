@@ -164,7 +164,7 @@ async fn exec_tests() -> Result<(), Error> {
     log("All client DB's are healthy after restart");
 
     log("Starting backup tests");
-    backup::test_backup(&client_1).await?;
+    backup::test_backup(&client_1, combo.api).await?;
     log("Backup tests finished");
 
     // BEGIN: test S3 backup restore

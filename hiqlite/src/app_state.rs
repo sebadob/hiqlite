@@ -116,6 +116,9 @@ pub struct StateRaftDB {
     pub single_node_replay_target: Option<u64>,
     /// Set once the startup replay has finished, so it is never checked again afterward.
     pub single_node_replay_done: AtomicBool,
+    /// This node's backup outcomes since it started, for `GET /backup`.
+    #[cfg(feature = "backup")]
+    pub backup_status: Arc<crate::backup::BackupStatus>,
 }
 
 #[cfg(feature = "cache")]

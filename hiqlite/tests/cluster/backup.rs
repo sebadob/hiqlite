@@ -9,7 +9,7 @@ pub static BACKUP_PATH_FILE: &str = "tests/data_test/backup.sqlite";
 /// The `backup_file_prefix` every test node is built with - see `start::build_config_with_nodes`.
 pub const TEST_FILE_PREFIX: &str = "test_bkp";
 
-pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
+pub async fn test_backup(client_1: &Client, tls_api: bool) -> Result<(), Error> {
     log("Creating backup request via client_1");
     client_1.backup().await?;
 
@@ -30,6 +30,9 @@ pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
         name.starts_with(&format!("{TEST_FILE_PREFIX}_")),
         "backup name {name} must start with '{TEST_FILE_PREFIX}_'"
     );
+    log("GET /backup reports the backup on the leader");
+    test_backup_info(leader, name, tls_api).await;
+
     let list = client_1.backup_list_local().await?;
     assert!(
         list.iter().any(|b| b.name == name),
@@ -83,6 +86,67 @@ pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
     conn_bkp.execute("DROP TABLE _metadata", [])?;
 
     Ok(())
+}
+
+/// `GET /backup` on `node_id`: JSON by default and Prometheus text with `?format=prometheus`,
+/// both showing `name` as the newest local and the last successful backup.
+async fn test_backup_info(node_id: u64, name: &str, tls_api: bool) {
+    let client = reqwest::Client::builder()
+        .tls_danger_accept_invalid_certs(tls_api)
+        .build()
+        .unwrap();
+    let scheme = if tls_api { "https" } else { "http" };
+    let url = format!("{scheme}://127.0.0.1:3100{node_id}/backup");
+    let auth = format!("Bearer {}", crate::start::SECRET_API);
+
+    let resp = client.get(&url).send().await.unwrap();
+    assert_eq!(
+        resp.status(),
+        401,
+        "GET /backup must require the API secret"
+    );
+
+    let resp = client
+        .get(&url)
+        .header("authorization", &auth)
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "GET /backup: {}", resp.status());
+    let info: serde_json::Value = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+    assert_eq!(info["node_id"], node_id);
+    assert!(info["local"]["count"].as_u64().unwrap() >= 1, "{info}");
+    assert_eq!(info["local"]["newest"]["file"], name, "{info}");
+    assert_eq!(info["last_backup"]["file"], name, "{info}");
+    assert!(info["last_backup"]["ts"].as_i64().unwrap() > 0, "{info}");
+
+    let resp = client
+        .get(format!("{url}?format=prometheus"))
+        .header("authorization", &auth)
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let text = resp.text().await.unwrap();
+    let ts = name
+        .strip_suffix(".sqlite")
+        .and_then(|s| s.rsplit_once('_'))
+        .map(|(_, ts)| ts)
+        .unwrap();
+    assert!(
+        text.contains(&format!(
+            "hiqlite_backup_local_newest_timestamp_seconds{{node_id=\"{node_id}\"}} {ts}"
+        )),
+        "{text}"
+    );
+
+    let resp = client
+        .get(format!("{url}?format=xml"))
+        .header("authorization", &auth)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
 }
 
 pub async fn test_backup_restore_prerequisites(client: &Client) -> Result<(), Error> {
