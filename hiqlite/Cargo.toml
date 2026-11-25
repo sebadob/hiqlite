@@ -71,7 +71,6 @@ config-embed = []
 # machinery without starting a Hiqlite Raft group.
 external-state-machine = [
   "dep:deadpool",
-  "dep:fs4",
   "dep:rusqlite",
   "rusqlite/backup",
   "rusqlite/functions",
@@ -122,7 +121,6 @@ sql-check-release = [
 sqlite = [
   "__cluster",
   "dep:deadpool",
-  "dep:fs4",
   "dep:hex",
   "dep:rusqlite",
   "dep:rust-embed",
@@ -203,7 +201,6 @@ deadpool = { workspace = true, optional = true }
 dotenvy = { workspace = true, optional = true }
 fastwebsockets = { workspace = true, optional = true }
 flume.workspace = true
-fs4 = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
