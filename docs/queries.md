@@ -230,7 +230,10 @@ let response = stream.into_json_response();
 - Dropping a stream stops its query and returns its connection to the node's read pool.  The flip
   side matters just as much: a stream you hold on to without consuming it parks the read-pool
   connection that runs its query, on the very next row - so a few streams nobody reads
-  starves the node's other local reads (`read_pool_size`, one per core by default).
+  starves the node's other local reads (`read_pool_size`, one per core by default, never fewer
+  than 4).  The node measures a stream from its first row to its drop, your pauses between rows
+  included, so a stream you consume slowly is logged as a slow query (`slow_query_threshold`)
+  exactly like a query that ran that long.
 - A statement that cannot be built, and a param that cannot be bound, fail the call itself, like
   they fail the collecting read. A query that fails while you consume it is the `Err` of `next()`,
   so a truncated result never looks complete: a `while let Some(row) = stream.next().await?` loop

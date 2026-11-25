@@ -69,6 +69,7 @@ pub(crate) async fn start_raft_db(
         node_config.read_pool_size,
         node_config.saturated_pool_threshold,
         node_config.slow_query_threshold,
+        node_config.log_slow_queries,
         #[cfg(feature = "s3")]
         node_config.s3_config.clone(),
         do_reset_metadata,

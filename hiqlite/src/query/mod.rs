@@ -311,8 +311,8 @@ where
             work: Box::new(move |conn, _size_hint, sql| {
                 stream_on_conn::<M>(conn, sql, &params, &ready_tx, &rows_tx, &verdict_tx);
             }),
-            panic: Box::new(move |text| {
-                let _ = verdict_tx_panic.send(StreamVerdict::Err(Error::Error(text.into())));
+            fail: Box::new(move |failure| {
+                let _ = verdict_tx_panic.send(StreamVerdict::Err(failure.into_error()));
             }),
             enqueued: Instant::now(),
         }))

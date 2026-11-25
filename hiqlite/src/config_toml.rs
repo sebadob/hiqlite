@@ -177,6 +177,8 @@ impl NodeConfig {
             "HQL_SLOW_QUERY_THRESHOLD",
         )?
         .unwrap_or(Duration::from_secs(1));
+        let log_slow_queries =
+            t_bool(&mut map, t_name, "log_slow_queries", "HQL_LOG_SLOW_QUERIES")?.unwrap_or(true);
 
         let wal_sync = if let Some(v) = t_str(&mut map, t_name, "log_sync", "HQL_LOG_SYNC")? {
             let Ok(sync) = LogSync::try_from(v.as_str()) else {
@@ -456,6 +458,7 @@ impl NodeConfig {
             read_pool_size,
             saturated_pool_threshold,
             slow_query_threshold,
+            log_slow_queries,
             wal_sync,
             wal_size,
             #[cfg(feature = "cache")]

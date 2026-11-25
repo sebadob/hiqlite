@@ -72,7 +72,7 @@
 //! engine and leaves a rebuild-required marker. Backup/S3 orchestration from
 //! Hiqlite's Raft API is intentionally outside this feature.
 
-use crate::reader::{ActorFailure, ReaderRequest, query_on_actor, spawn_read_actors};
+use crate::reader::{ActorFailure, Queued, ReaderRequest, spawn_read_actors};
 use crate::{MAX_READ_POOL_SIZE, default_read_pool_size};
 use fs4::FileExt;
 use rusqlite::backup::Progress;
@@ -143,17 +143,26 @@ async fn connect_read_conns_once(
         let path = path.clone();
         connections.push(
             task::spawn_blocking(move || {
+                // `NO_MUTEX` is the promise that one thread touches one connection: the
+                // connection moves into the read actor that owns it.  `URI` is what
+                // `Connection::open` passes, and it stays, so a `file:`-style path keeps parsing
+                // as a URI.
                 let conn = Connection::open_with_flags(
                     path,
-                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                        | OpenFlags::SQLITE_OPEN_URI,
                 )?;
                 conn.pragma_update(None, "query_only", true)?;
                 conn.busy_timeout(Duration::from_secs(30))?;
                 conn.set_prepared_statement_cache_capacity(prepared_statement_cache_capacity);
                 // The warm-up belongs to the open: a connection only joins the pool once it has
                 // answered a query, so the first read of a caller does not pay for the first page
-                // reads of a cold file.
-                conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+                // reads of a cold file.  It reads the schema because that is the first real page
+                // read a connection can make - `SELECT 1` touches no file at all.
+                conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
                 Ok::<_, rusqlite::Error>(conn)
             })
             .await??,
@@ -170,6 +179,9 @@ async fn connect_read_conns_once(
 /// connection, nothing can interrupt one mid-query, and a connection whose read never returns
 /// therefore survives the restore with the snapshot its read started on.  The restore proceeds in
 /// that case and says so out loud.
+///
+/// A read that was accepted but never started is not left behind: an actor that ends on its
+/// shutdown drains the queue, so everything the restore queued past answers with the closed pool.
 async fn close_read_actors(actors: Option<flume::Sender<ReaderRequest>>, size: usize) {
     let Some(actors) = actors else {
         return;
@@ -1037,7 +1049,8 @@ where
                 let preflight = Connection::open_with_flags(
                     db_dir.join(&options.filename),
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                        | rusqlite::OpenFlags::SQLITE_OPEN_URI,
                 )?;
                 if adopt_existing {
                     if metadata_table_exists(&preflight)? {
@@ -1107,6 +1120,9 @@ where
             conns,
             options.saturated_pool_threshold,
             options.slow_query_threshold,
+            // A slow external read is named by [`EXTERNAL_READ_STATEMENT`], a constant, so its log
+            // line carries nothing a caller put into it and needs no `log_slow_queries` knob.
+            true,
         );
 
         let db_path = db_dir.join(&options.filename);
@@ -1234,6 +1250,12 @@ where
     /// a parked connection is not available for the next read, nor for the shutdown and the restore
     /// that wait for every read connection of the node to be closed.
     ///
+    /// The request goes into the pool's queue while the pool's lock is held, so a restore that
+    /// starts after this read was accepted cannot slip its shutdowns in front of it.  A full queue
+    /// is the one case where that ordering costs the lock: holding it across the queue wait would
+    /// gate the restore's own write lock behind the reads it is trying to close, so a blocked
+    /// request hands the lock back and takes the answer a closing pool gives.
+    ///
     /// # Errors
     ///
     /// [`ExternalError::Pool`] while no read pool is available - after a snapshot restore it is
@@ -1244,27 +1266,45 @@ where
         T: Send + 'static,
         F: FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
     {
-        let read_actors = self.read_actors.read().await;
-        let tx = read_actors.as_ref().ok_or_else(|| {
-            ExternalError::Pool("read pool is unavailable after snapshot restore".to_string())
-        })?;
-        let tx = tx.clone();
-        drop(read_actors);
-
-        query_on_actor(
-            &tx,
+        let on_fail = |fail| match fail {
+            ActorFailure::Closed => ExternalError::Pool("the read pool is closed".into()),
+            ActorFailure::Died => ExternalError::Pool("the read pool died during the read".into()),
+            ActorFailure::Panicked(text) => ExternalError::ReadPanic(text),
+        };
+        let (req, queued) = Queued::build(
             Cow::from(EXTERNAL_READ_STATEMENT),
             0,
             move |conn, _size_hint, _sql| read(conn).map_err(ExternalError::from),
-            |fail| match fail {
-                ActorFailure::Closed => ExternalError::Pool("the read pool is closed".into()),
-                ActorFailure::Died => {
-                    ExternalError::Pool("the read pool died during the read".into())
+            on_fail,
+        );
+
+        {
+            // The block is the guard's scope: the request is in the pool's queue before it ends.
+            let read_actors = self.read_actors.read().await;
+            let tx = read_actors
+                .as_ref()
+                .ok_or_else(|| {
+                    ExternalError::Pool(
+                        "read pool is unavailable after snapshot restore".to_string(),
+                    )
+                })?
+                .clone();
+
+            match tx.try_send(req) {
+                Ok(()) => {}
+                Err(flume::TrySendError::Full(req)) => {
+                    drop(read_actors);
+                    tx.send_async(req)
+                        .await
+                        .map_err(|_| on_fail(ActorFailure::Closed))?;
                 }
-                ActorFailure::Panicked(text) => ExternalError::ReadPanic(text),
-            },
-        )
-        .await
+                Err(flume::TrySendError::Disconnected(_)) => {
+                    return Err(on_fail(ActorFailure::Closed));
+                }
+            }
+        }
+
+        queued.answer().await
     }
 
     /// Builds a complete SQLite snapshot behind the writer queue.
@@ -1433,6 +1473,7 @@ where
                 .map_err(|err| ExternalError::Pool(err.to_string()))?,
                 self.read_config.saturated_pool_threshold,
                 self.read_config.slow_query_threshold,
+                true,
             ));
         }
         restore
@@ -3428,6 +3469,205 @@ mod tests {
         }
         for read in queued {
             let _ = read.await;
+        }
+
+        assert_eq!(
+            count_items(&target).await,
+            1,
+            "the restored rows are what reads see"
+        );
+
+        std::sync::Arc::try_unwrap(target)
+            .ok()
+            .expect("all test handles should be dropped")
+            .shutdown()
+            .await
+            .unwrap();
+    }
+
+    /// The lock guard: a read that is blocked on a full queue must not sit on the pool's lock,
+    /// because the restore takes that same lock, and a queue wait held on it gates the restore
+    /// behind the very reads it is trying to close.
+    ///
+    /// The fixture's pool is 2 connections with a queue of 8, so 2 parked reads plus 9 more leave
+    /// exactly one sender with no slot - the shape that blocks a send.  The restore has to complete
+    /// while that read is still blocked and the parked reads are still parked: releasing them first
+    /// would let a gated restore finish for the wrong reason.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_read_blocked_on_a_full_queue_does_not_gate_the_restore() {
+        let source_dir = TestDir::new("gated-source");
+        let source = TestEngine::open(options(&source_dir)).await.unwrap();
+        source
+            .apply_committed(commit(1, "create-v1"), TestOperation::Create)
+            .await
+            .unwrap();
+        source
+            .apply_committed(
+                commit(2, "insert-v1"),
+                TestOperation::Insert {
+                    id: 1,
+                    value: "restored",
+                },
+            )
+            .await
+            .unwrap();
+        let snapshot = source.build_snapshot().await.unwrap();
+        source.shutdown().await.unwrap();
+
+        let target_dir = TestDir::new("gated-target");
+        let target = std::sync::Arc::new(TestEngine::open(options(&target_dir)).await.unwrap());
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = flume::bounded::<()>(2);
+        let mut parked = Vec::new();
+        for _ in 0..2 {
+            let engine = std::sync::Arc::clone(&target);
+            let started_tx = started_tx.clone();
+            let release_rx = release_rx.clone();
+            parked.push(tokio::spawn(async move {
+                engine
+                    .read(move |conn| {
+                        started_tx.send(()).unwrap();
+                        let _ = release_rx.recv();
+                        conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                    })
+                    .await
+            }));
+        }
+        drop(release_rx);
+        for _ in 0..2 {
+            started_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("both parked reads should start");
+        }
+        drop(started_tx);
+
+        let mut queued = Vec::new();
+        for _ in 0..9 {
+            let engine = std::sync::Arc::clone(&target);
+            queued.push(tokio::spawn(async move {
+                tokio::time::timeout(
+                    Duration::from_secs(20),
+                    engine.read(|conn| conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))),
+                )
+                .await
+            }));
+        }
+        time::sleep(Duration::from_millis(250)).await;
+
+        let installer = std::sync::Arc::clone(&target);
+        let restore = tokio::time::timeout(
+            Duration::from_secs(10),
+            installer.install_snapshot(snapshot),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("the restore was gated behind a read blocked on the queue"));
+        restore.expect("the restore must succeed");
+        drop(installer);
+
+        // Nothing was released to let the restore finish: the parked reads are still parked, and the
+        // read with no slot is answered by the closing pool, which is the promise a closing pool
+        // makes.  It is never left waiting.
+        let release = release_tx.clone();
+        drop(release_tx);
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        drop(release);
+        for read in parked {
+            let _ = read.await;
+        }
+        for read in queued {
+            let answered = read
+                .await
+                .expect("the queued read task")
+                .expect("a read blocked on the queue is answered, never left waiting");
+            assert!(
+                matches!(answered, Ok(_) | Err(ExternalError::Pool(_))),
+                "the queued read answered with something it cannot: {answered:?}"
+            );
+        }
+
+        assert_eq!(
+            count_items(&target).await,
+            1,
+            "the restored rows are what reads see"
+        );
+
+        std::sync::Arc::try_unwrap(target)
+            .ok()
+            .expect("all test handles should be dropped")
+            .shutdown()
+            .await
+            .unwrap();
+    }
+
+    /// A read that races a snapshot restore answers, and never waits on a connection that is gone.
+    ///
+    /// A queued read carries its reply senders inside its own closure, so a request left in the
+    /// queue of a pool the restore has closed keeps its own reply channel connected, and a caller
+    /// waiting on it waits forever.  The restore's shutdowns and the reads already accepted sit in
+    /// front of each other, so this walks that window with every read on a timeout: the answer is
+    /// the row of one of the two SQLite generations, or a closed pool, and it is never a stall.
+    #[tokio::test]
+    async fn a_read_racing_a_snapshot_restore_answers() {
+        let source_dir = TestDir::new("racing-source");
+        let source = TestEngine::open(options(&source_dir)).await.unwrap();
+        source
+            .apply_committed(commit(1, "create-v1"), TestOperation::Create)
+            .await
+            .unwrap();
+        source
+            .apply_committed(
+                commit(2, "insert-v1"),
+                TestOperation::Insert {
+                    id: 1,
+                    value: "restored",
+                },
+            )
+            .await
+            .unwrap();
+        let snapshot = source.build_snapshot().await.unwrap();
+        source.shutdown().await.unwrap();
+
+        let target_dir = TestDir::new("racing-target");
+        let target = std::sync::Arc::new(TestEngine::open(options(&target_dir)).await.unwrap());
+        target
+            .apply_committed(commit(1, "create-v1"), TestOperation::Create)
+            .await
+            .unwrap();
+
+        let mut reads = Vec::new();
+        for _ in 0..8 {
+            let engine = std::sync::Arc::clone(&target);
+            reads.push(tokio::spawn(async move {
+                tokio::time::timeout(
+                    Duration::from_secs(20),
+                    engine.read(|conn| conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))),
+                )
+                .await
+            }));
+        }
+        let installer = std::sync::Arc::clone(&target);
+        let restore = tokio::time::timeout(
+            Duration::from_secs(20),
+            installer.install_snapshot(snapshot),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("the restore never completed against racing reads"));
+        restore.expect("the restore must succeed");
+        drop(installer);
+
+        for read in reads {
+            let answered = read
+                .await
+                .expect("the read task")
+                .expect("every read racing the restore answered, none was left waiting");
+            // The answer is a row of one of the two SQLite generations, or a closed pool: the
+            // test is about the answer arriving at all, not about which generation it came from.
+            assert!(
+                matches!(answered, Ok(_) | Err(ExternalError::Pool(_))),
+                "the racing read answered with something it cannot: {answered:?}"
+            );
         }
 
         assert_eq!(

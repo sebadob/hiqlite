@@ -86,7 +86,7 @@ prepared_statement_cache_capacity = 1000
 # Keep in mind that this is only used for reads and writes will
 # travel through the Raft and have their own dedicated connection.
 #
-# default: one per core, at least 2 and at most 1024
+# default: one per core, at least 4 and at most 1024
 # overwritten by: HQL_READ_POOL_SIZE
 read_pool_size = 4
 
@@ -108,9 +108,24 @@ read_pool_size = 4
 # Independent of `saturated_pool_threshold` and normally higher than it: one is how long a read
 # waited for a connection, the other how long a read that got one took.
 #
+# A stream is measured from its first row to its drop, the pauses of its consumer included, because
+# its read actor is held for exactly that long. A stream you consume slowly is logged like a query
+# that ran that long, and it blocks its connection just as long.
+#
 # default: 1s
 # overwritten by: HQL_SLOW_QUERY_THRESHOLD
 #slow_query_threshold = '1s'
+
+# Log the statement text of a read that ran longer than `slow_query_threshold`.
+#
+# A statement built by the `sql!()` macros carries no value in it - parameters never reach the log.
+# A query typed into the dashboard is different: its values are inline in its text, so a slow
+# dashboard query writes them into the log. Set this to false to keep statement text out of the log
+# entirely. The saturation warning is unaffected, because it never names a statement.
+#
+# default: true
+# overwritten by: HQL_LOG_SLOW_QUERIES
+#log_slow_queries = true
 
 # Setting for Raft Log syncing / flushing.
 #

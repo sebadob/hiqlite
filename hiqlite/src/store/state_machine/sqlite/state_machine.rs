@@ -164,6 +164,7 @@ impl StateMachineSqlite {
         read_pool_size: usize,
         saturated_pool_threshold: Duration,
         slow_query_threshold: Duration,
+        log_slow_queries: bool,
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::s3::S3Config>>,
         do_reset_metadata: bool,
         #[cfg(feature = "backup")] local_backup_keep_for: Duration,
@@ -210,8 +211,12 @@ impl StateMachineSqlite {
             read_pool_size,
         )
         .await?;
-        let read_actors =
-            reader::spawn_read_actors(conns, saturated_pool_threshold, slow_query_threshold);
+        let read_actors = reader::spawn_read_actors(
+            conns,
+            saturated_pool_threshold,
+            slow_query_threshold,
+            log_slow_queries,
+        );
 
         let mut slf = Self {
             // data: state_machine_data,
@@ -391,6 +396,9 @@ impl StateMachineSqlite {
     /// connection at a time.  The writer's handle is moved into the writer thread and never leaves
     /// it, and the snapshot metadata read is a handle of its own, used by the one task that opens
     /// it.
+    ///
+    /// `URI` is what `Connection::open` passes, and it stays: a `file:`-style path keeps parsing as
+    /// a URI, where dropping the flag would silently turn it into a plain filename.
     pub async fn connect(
         path: String,
         filename_db: String,
@@ -402,7 +410,8 @@ impl StateMachineSqlite {
                 path_full,
                 OpenFlags::SQLITE_OPEN_READ_WRITE
                     | OpenFlags::SQLITE_OPEN_CREATE
-                    | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                    | OpenFlags::SQLITE_OPEN_URI,
             )?;
 
             Self::apply_pragmas(&conn, false, prepared_statement_cache_capacity)?;
@@ -419,8 +428,17 @@ impl StateMachineSqlite {
     /// it has answered a query, so the first query of a caller does not pay for the first page
     /// reads of a cold file, and a connection that cannot answer one never reaches an actor.
     ///
+    /// It reads the schema of the file, which is the first real page read a connection can make:
+    /// `SELECT 1` answers from a constant and touches no file at all, so it warms nothing and
+    /// proves nothing about the file.  The schema is the right thing to read - it is in every valid
+    /// SQLite file, on a fresh one exactly like on an established one, and a file that is not a
+    /// database fails on reading it.  `_metadata` would be the obvious table, and it is not usable
+    /// here: the writer creates it in its own thread, which this open runs next to, so a fresh
+    /// instance would race with the table it warms on.
+    ///
     /// `NO_MUTEX` is the same promise as on the writer's handle: this connection is moved into the
-    /// actor thread that owns it, and it is the only one that ever touches it.
+    /// actor thread that owns it, and it is the only one that ever touches it.  `URI` is kept for
+    /// the same reason it is kept there.
     async fn connect_read_conn(
         path: &str,
         filename_db: &str,
@@ -431,12 +449,16 @@ impl StateMachineSqlite {
         task::spawn_blocking(move || {
             let conn = rusqlite::Connection::open_with_flags(
                 format!("{path}/{filename_db}"),
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                    | OpenFlags::SQLITE_OPEN_URI,
             )?;
             Self::apply_pragmas(&conn, true, prepared_statement_cache_capacity)?;
             // The warm-up belongs to the open: a connection only joins the pool once it has
             // answered a query.
-            conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+            conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
             Ok(conn)
         })
         .await?

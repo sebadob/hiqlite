@@ -49,9 +49,9 @@ WAL to a few files at a time.
 - `logs_until_snapshot` - a longer window between snapshots buys write throughput and costs disk
   and snapshot time. Tune it with `wal_size`.
 - `read_pool_size` - the node's local read connections, one per read actor thread, one per core by
-  default. A read is prepared, run and mapped on that thread, so its caches stay warm there. More
-  threads than cores buys nothing; fewer is what makes reads queue, and a stream you do not consume
-  holds one of them.
+  default and never fewer than 4. A read is prepared, run and mapped on that thread, so its caches
+  stay warm there. More threads than cores buys nothing; fewer is what makes reads queue, and a
+  stream you do not consume holds one of them.
 - `prepared_statement_cache_capacity` - statements you use repeatedly stay prepared. A statement
   used for the first time is more expensive than the ones after it, which is why a warm process is
   faster than a fresh one.

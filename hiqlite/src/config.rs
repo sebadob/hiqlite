@@ -126,8 +126,23 @@ pub struct NodeConfig {
     /// between the two thresholds is still named, because the saturation warning carries the
     /// runtime of the query that made the other reads wait.
     ///
+    /// A stream is measured from its first row to its drop, the pauses of its consumer included,
+    /// because its actor is held for exactly that long.  A stream you consume slowly is therefore
+    /// logged like a query that ran that long, and it blocks its connection just as long.
+    ///
     /// default: 1s
     pub slow_query_threshold: Duration,
+    /// Log the statement text of a read that ran longer than [`Self::slow_query_threshold`].
+    ///
+    /// The statement is all the warning has to be actionable, and a statement built by the
+    /// `sql!()` macros carries no value in it - parameters never reach the log.  A query typed into
+    /// the dashboard is different: its values are inline in its text, so a slow dashboard query
+    /// writes them into the log.  The dashboard is a debugging tool and usually not part of a
+    /// production deployment.  Set this to `false` to keep statement text out of the log entirely;
+    /// the saturation warning is unaffected, because it never names a statement.
+    ///
+    /// default: true
+    pub log_slow_queries: bool,
     /// When Raft logs should be synced to disk.
     ///
     /// - `Immediate` fsyncs the WAL before the Raft is told the append finished, so an
@@ -266,6 +281,7 @@ impl Default for NodeConfig {
             read_pool_size: default_read_pool_size(),
             saturated_pool_threshold: Duration::from_millis(100),
             slow_query_threshold: Duration::from_secs(1),
+            log_slow_queries: true,
             wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
             wal_size: 2 * 1024 * 1024,
             #[cfg(feature = "cache")]
@@ -457,6 +473,11 @@ impl NodeConfig {
                 .map_or(Duration::from_secs(1), |v| {
                     parse_duration(v).expect("Cannot parse HQL_SLOW_QUERY_THRESHOLD as Duration")
                 }),
+            log_slow_queries: env::var("HQL_LOG_SLOW_QUERIES")
+                .as_deref()
+                .unwrap_or("true")
+                .parse()
+                .expect("Cannot parse HQL_LOG_SLOW_QUERIES as bool"),
             wal_sync: if let Ok(v) = env::var("HQL_LOG_SYNC") {
                 hiqlite_wal::LogSync::try_from(v.as_str())
                     .expect("Cannot parse HQL_LOG_SYNC as LogSync")

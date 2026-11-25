@@ -6,6 +6,11 @@
 //!
 //!   * `async/deadpool` - today's production path, exactly as `query::query_owned_local` runs it:
 //!     `pool.get().await`, the query inside `task::spawn_blocking`, the guard dropped on release.
+//!     Its connections are opened the way a node opens them today, `Connection::open` with
+//!     `NO_MUTEX` plus `query_only`.
+//!   * `async/deadpool (mutex handle)` / `async/actor (mutex handle)` - the same two designs on a
+//!     handle with the SQLite mutex on.  The pair of them is the mutex cost, on both designs, and
+//!     the reason `NO_MUTEX` is not a gain of this change: `Connection::open` already passes it.
 //!   * `async/actor` - the shipped design: one OS thread per connection, the query travelling to
 //!     that thread as a closure, the answer coming back over a channel.  No acquire, no release,
 //!     no `spawn_blocking`.  This is `reader::spawn_read_actors` in bench shape, request shape
@@ -1057,6 +1062,15 @@ fn summary(_: &mut Criterion) {
             (
                 "async/deadpool (today)",
                 run_async(
+                    &Arc::new(Deadpool(Pool::from(conns_prod(CONNECTIONS)))),
+                    kind,
+                    SHAPE,
+                    SUMMARY_ROUNDS,
+                ),
+            ),
+            (
+                "async/deadpool (mutex handle)",
+                run_async(
                     &Arc::new(Deadpool(Pool::from(conns_mutex(CONNECTIONS)))),
                     kind,
                     SHAPE,
@@ -1106,7 +1120,7 @@ fn summary(_: &mut Criterion) {
             (
                 "sync/deadpool (ceiling)",
                 run_sync(
-                    &Arc::new(Deadpool(Pool::from(conns_mutex(CONNECTIONS)))),
+                    &Arc::new(Deadpool(Pool::from(conns_prod(CONNECTIONS)))),
                     kind,
                     SHAPE,
                     SUMMARY_ROUNDS,
@@ -1131,7 +1145,7 @@ fn summary(_: &mut Criterion) {
 /// The criterion matrix, so a change to the read path is tracked against its baseline.
 fn bench(c: &mut Criterion) {
     for kind in [Work::DirectMap, Work::OwnedThenMap] {
-        let pool: Arc<Deadpool> = Arc::new(Deadpool(Pool::from(conns_mutex(CONNECTIONS))));
+        let pool: Arc<Deadpool> = Arc::new(Deadpool(Pool::from(conns_prod(CONNECTIONS))));
         let actors = Arc::new(Actors::new(CONNECTIONS));
 
         let mut g = c.benchmark_group(format!("async/deadpool/{}", kind.label()));
@@ -1566,10 +1580,22 @@ fn new_conn() -> Connection {
 }
 
 /// The shape the old pool ran: a read-write handle with the SQLite mutex on, plus `query_only` as
-/// its only write guard.  The baseline of every number here has to be this, because it is what
-/// users run today.
+/// its only write guard.  Not what users run - `Connection::open` passes `NO_MUTEX` - it is the
+/// handle the mutex cost is measured on.
 fn new_conn_mutex() -> Connection {
     new_conn_with(OpenFlags::SQLITE_OPEN_READ_WRITE, true)
+}
+
+/// The shape users run today: `Connection::open` for the read connections, which is a read-write
+/// handle with `NO_MUTEX`, plus `query_only` as its only write guard.  This is the baseline every
+/// number here has to be measured against.
+fn new_conn_prod() -> Connection {
+    new_conn_with(
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        true,
+    )
 }
 
 /// A read connection at one shape of the open flags, with the read pragmas of a node on it.
@@ -1596,6 +1622,10 @@ fn conns_mutex(count: usize) -> Vec<Connection> {
     (0..count).map(|_| new_conn_mutex()).collect()
 }
 
+fn conns_prod(count: usize) -> Vec<Connection> {
+    (0..count).map(|_| new_conn_prod()).collect()
+}
+
 fn conns_with(count: usize, flags: OpenFlags, query_only: bool) -> Vec<Connection> {
     (0..count)
         .map(|_| new_conn_with(flags, query_only))
@@ -1604,7 +1634,7 @@ fn conns_with(count: usize, flags: OpenFlags, query_only: bool) -> Vec<Connectio
 
 fn crossbeam_pool(count: usize) -> Crossbeam {
     let (tx, rx) = crossbeam::channel::unbounded();
-    for conn in conns_mutex(count) {
+    for conn in conns_prod(count) {
         tx.send(Chan(conn)).expect("fresh channel");
     }
     Crossbeam { tx, rx }

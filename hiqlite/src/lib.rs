@@ -181,14 +181,21 @@ pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// thread with its own SQLite handle, about 170 KB of RSS plus the stack of the thread that owns it.
 pub(crate) const MAX_READ_POOL_SIZE: usize = 1024;
 
+/// The smallest default `read_pool_size`: the fixed pool size a node ran with before the count
+/// followed the core count.  It is a floor for the default only - an operator may set
+/// `read_pool_size` as low as 1.
+const READ_POOL_SIZE_FLOOR: usize = 4;
+
 /// The default count of read actors: one read connection per core.
 ///
 /// `available_parallelism` respects a cgroup CPU limit, so a CPU-limited container gets an actor
-/// count that matches the cores it may actually run on.
+/// count that matches the cores it may actually run on.  The floor is the old fixed pool size of
+/// 4: a 1-core or 2-core pod keeps the number of read connections it always had, because two
+/// parked reads on two connections block every other local read on that node.
 pub(crate) fn default_read_pool_size() -> usize {
     thread::available_parallelism()
-        .map_or(2, NonZeroUsize::get)
-        .clamp(2, MAX_READ_POOL_SIZE)
+        .map_or(READ_POOL_SIZE_FLOOR, NonZeroUsize::get)
+        .clamp(READ_POOL_SIZE_FLOOR, MAX_READ_POOL_SIZE)
 }
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]

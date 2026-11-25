@@ -383,9 +383,9 @@ Practical consequences:
 4. **A campaign is a request, not a command.** `POST /cluster/election` runs openraft's Pre-Vote
    round, and a healthy cluster refuses it: the term is untouched when the node cannot win, a live
    leader holding its lease is refused, and a node with `enable_elect` off is refused by its own
-   gate. There is no bypass, and that is deliberate - a trigger that skipped the Pre-Vote also
-   skipped `enable_elect`, and a node with elections disabled still grants votes to others, so one
-   peer's grant plus its own vote is a quorum of three. A leader change that must happen is
+   gate. There is no bypass, and that is deliberate - a campaign past that gate needs only its own
+   vote plus one peer's grant to be a quorum of three, so it can install a leader the operator has
+   declared must never lead. A leader change that must happen is
    `POST /cluster/transfer_leader`, asked of the node that holds the seat.
 5. **Failover time is the election timeout, not the API call.** `election_timeout_min` is 1500 ms
    and `election_timeout_max` is 3000 ms by default, the leader lease adds on top. A node that is
@@ -490,7 +490,8 @@ Worth an alert:
 
 - `leader` of a group points at a marked node while you did not plan a failover
 - `enable_elect != election_disable` on a node, for longer than your change window (section 4)
-- a `current_term` jump on a node that was not involved in a planned switchover (someone forced)
+- a `current_term` jump on a node that was not involved in a planned switchover (a leader lease
+  expired and a campaign ran)
 - a marked node that is `Leader` for longer than expected and your clients sit in the LAN region
 - a node whose `state` is `Learner` in a group where it should be a voter
 - `voters` of a group that is not your planned shape - `GET /cluster/membership` on every node

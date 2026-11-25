@@ -65,6 +65,9 @@ Source breaking: the `Error` enum's openraft variants are split per group (`Raft
 `RaftErrorKv` and friends), and the metrics functions return `RaftMetrics<TypeConfigSqlite>` /
 `RaftMetrics<TypeConfigCache>` instead of `RaftMetrics<u64, Node>`.
 
+Source breaking: the `Error` enum has a new `Unavailable` variant, which answers
+`503 Service Unavailable`. A `match` over `Error` that has no wildcard arm needs one.
+
 #### `query_consistent()`
 
 `query_consistent()` and `query_consistent_map()` take the `ReadPolicy` as an argument, and
@@ -108,75 +111,58 @@ Migration:
 A local read does not wait for a pooled connection anymore. The node keeps one thread per read
 connection for the whole life of the process, and a query goes to the thread that owns its
 connection: the statement it prepares, the pages it reads and the cache it fills stay there, and
-nothing is taken and handed back on every query.
+nothing is taken and handed back on every query. The `deadpool` dependency is gone from both the
+`sqlite` and the `external-state-machine` feature.
 
 - Every local read answers faster, the small ones most. The table is the whole chain in one
-  `just bench-conn-pool -- --summary` run on an Apple M4 Pro (8 p cores), 4 read connections, 8
-  concurrent readers, an on-disk database, 100 rows per query: queries per second, and the median
-  latency of one read. Column two is the pool as it ships today, column three the new read threads
-  on the old connection shape, column four the new read threads as they ship now.
+  `just bench-conn-pool -- --summary` run on an Apple M4 Pro (8 performance + 4 efficiency cores)
+  inside the recipe's `taskpolicy -c utility` core envelope: 4 read connections, 8 concurrent
+  readers, 2000 operations per reader over 4 rounds, an on-disk database of 20000 wide rows
+  (4.6 MB), every query a range scan of 100 of them. Queries per second, and the median latency of
+  one read.
 
-    | the read                                         | old pool    | new setup   |
-    | ------------------------------------------------ | ----------- | ----------- |
-    | `query_map()` to a typed row, one integer column | 172k / 46µs | 350k / 22µs |
-    | the same type carrying text and a 200-byte blob  | 104k / 76µs | 198k / 38µs |
-    | the owned raw rows of `query_raw()`              | 83k / 97µs  | 114k / 65µs |
-    | the wide row built through the owned form first  | 59k / 140µs | 152k / 50µs |
-    | a cached `SELECT 1`                              | 265k / 26µs | 528k / 13µs |
+    | the read                                     | pool today  | new, shipped |
+    | -------------------------------------------- | ----------- | ------------ |
+    | `query_map()`, the typed row from owned rows | 107k / 73µs | 162k / 48µs  |
+    | the same row mapped from the borrowed row    | 127k / 62µs | 215k / 36µs  |
+    | the wide row built through the owned form    | 90k / 87µs  | 124k / 61µs  |
+    | a typed row, one integer column              | 186k / 42µs | 350k / 22µs  |
+    | the same narrow row through the owned form   | 166k / 48µs | 299k / 25µs  |
+    | a cached `SELECT 1`                          | 274k / 24µs | 538k / 13µs  |
 
-    Against the fastest shared connections can answer at all - the same queries through the old pool
-    with its async handoff taken out - the shipped path now runs at +101% to +160% of that ceiling on
-    the four real queries, and at +60% of it on the cached `SELECT 1`, where the handoff is the cost
-    and SQLite is not. The old numbers in this section were measured on a 4-core box; these are
-    measured here, and the old pool column is that same box, so the columns compare.
+    Against the pool as it ships today, the five real queries gain +37% to +88% in throughput and
+    30% to 49% in median latency, and the cached `SELECT 1` doubles. Against the fastest shared
+    connections can answer at all - the same queries through the same pool with its async handoff
+    taken out - the new path runs at 75% to 110% of that ceiling on the five real queries, and at
+    60% of it on the cached `SELECT 1`. That ceiling is a burst ceiling: it parks its waits outside
+    the measured query and its own worst read is 0.4 ms to 2.9 ms, so it is a throughput ratio and
+    not a latency one.
 
-- `read_pool_size` defaults to one thread per core now, at least 2 and at most 1024, instead of 4.
-  More threads than cores buys nothing; fewer is what makes reads queue. Set it explicitly to keep
-  your old value. A value outside that range is a config error at startup now.
 - A streaming read runs on one of these threads for as long as you consume it, so a node serves at
   most `read_pool_size` streams at once. Streams you never read starve the other local reads.
-- The external state machine's restore closes the read pool and recreates it, and it waits for the
-  reads that are already running. A read is a closure on a connection and nothing can interrupt one
-  mid-query, so the wait has one 30s limit for the whole pool: past it the restore proceeds, the
-  node logs which connections are still inside their read, and those reads keep answering the rows
-  their read started on.
-- A `panic` in a row mapping answers its caller with an error and leaves the node running, exactly
-  as before.
+- The external state machine's restore closes the read pool and recreates it, and it waits up to 30s
+  for the reads that are already running.
 - A local read that waited longer than 100 ms for its connection is visible in the log now, and the
   line names which of the two problems it is: one query holding a connection for a long time, with
   the time it ran, or a pool with more reads than connections, with how many are queued. A pool
   that stays saturated warns once every 10 seconds, not once per query.
-- The two thresholds behind those lines are config now: `saturated_pool_threshold` (default `100ms`)
-  is the queue wait that warns, `slow_query_threshold` (default `1s`) is the time a single read may
-  run on its connection before the node logs it, naming the statement and never its parameters.
-  They are independent, so a `slow_query_threshold` above `saturated_pool_threshold` still gives
-  you two distinct warnings.
-- A read connection is opened with `SQLITE_OPEN_READ_ONLY` now, on the SQLite state machine as on
-  the external one: SQLite itself is what keeps a read handle from writing, not only the
-  `query_only` pragma. The pragmas that change the database file - the journal mode, the page
-  size, the vacuum mode and `PRAGMA optimize` - are applied to the writer connection only. A read
-  handle is opened read-only, so a read connection that set them would fail with `SQLITE_READONLY`
-  on any file not already in that shape, which is exactly what a database restored from a backup
-  file is. The writer opens first and owns the file; a read connection sets only what is scoped to
-  its own connection.
-- Read connections and the writer connection are opened with `SQLITE_OPEN_NO_MUTEX`, which drops
-  the mutex SQLite puts around every call on a connection. It is a promise about the handle, not a
-  setting - one thread has to touch a connection at a time - and the design already keeps it: a
-  read handle is moved into the read thread that owns it, and the writer's handle is moved into the
-  writer thread. Its share is the middle column of the table above to the last: +10% to +78% on the
-  four real queries, and nothing on the cached `SELECT 1`, because the mutex is paid per call into
-  SQLite and that query barely makes one.
-- The `deadpool` dependency is gone from both the `sqlite` and the `external-state-machine`
-  feature.
+- `saturated_pool_threshold` (default `100ms`) is the queue wait that warns, `slow_query_threshold`
+  (default `1s`) is the time a single read may run on its connection before the node logs it, naming
+  the statement and never its parameters. They are independent, so a `slow_query_threshold` above
+  `saturated_pool_threshold` still gives you two distinct warnings. A stream is measured from its
+  first row to its drop, the pauses of its consumer included.
+- `log_slow_queries` (default `true`) decides whether the slow-query line names the statement. A
+  query typed into the dashboard has its values inline in its text, so a slow dashboard query writes
+  them into the log. Set this to `false` when you do not want statement text in your log at all. The
+  saturation warning never names a statement, so it is unaffected.
 
 #### Elections Are Requests, Not Commands
 
 A campaign is openraft's Pre-Vote round and nothing else: the term is untouched when the node cannot
 win, a live leader holding its lease is refused, and a node whose own elections are disabled is
-refused by its own gate. There is no `force` and no `?force=true`. A trigger that bypassed the
-Pre-Vote also bypassed `enable_elect`, and a node with elections disabled still grants votes to
-others, so one peer's grant plus its own vote was a quorum of a three-node cluster: it installed as
-leader a node the operator had declared must never lead, and nothing in that cluster moved it off
+refused by its own gate. There is no way to bypass that round, and that is deliberate: a campaign
+past the gate needs only its own vote plus one peer's grant to reach a quorum of three, so it can
+install a leader the operator has declared must never lead, and nothing in that cluster moves it off
 the seat afterwards.
 
 A leader change that must happen is a graceful one. `Client::transfer_leadership(node_id)` asks the
@@ -544,6 +530,12 @@ yet, but a good starting point.
 
 ### Bugfix
 
+- `/ready` answered `400 Bad Request` while a node was replaying its log, while it had no leader
+  yet, while it was not a member of a healthy group, and while it was shutting down. All four are
+  "not usable right now, ask again later", which is `503`, and `docs/operations.md` has always said
+  `503`. A readiness probe that reads `400` has no way to tell a node that is catching up from a
+  node that is broken, so it is the number, not the answer, that was wrong. `/health` uses `503`
+  for the same states now, where it used `409` and `500`.
 - `wait_for_cluster_sync()`'s single-instance fast path only looked at the node list, which a local
   client never has, so it never fired for an embedded single node. A local client now takes the
   member count from its own Raft membership, like `shutdown_execute` does.
