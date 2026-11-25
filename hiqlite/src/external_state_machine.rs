@@ -73,7 +73,6 @@
 //! Hiqlite's Raft API is intentionally outside this feature.
 
 use deadpool::unmanaged::PoolError;
-use fs4::FileExt;
 use rusqlite::backup::Progress;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
@@ -903,12 +902,12 @@ where
             .create(true)
             .truncate(false)
             .open(&owner_path)?;
-        match FileExt::try_lock(&owner_lock) {
+        match owner_lock.try_lock() {
             Ok(()) => {}
-            Err(fs4::TryLockError::WouldBlock) => {
+            Err(std::fs::TryLockError::WouldBlock) => {
                 return Err(ExternalError::Locked(owner_path));
             }
-            Err(fs4::TryLockError::Error(err)) => return Err(err.into()),
+            Err(std::fs::TryLockError::Error(err)) => return Err(err.into()),
         }
         sync_file_and_parent_blocking(&owner_path)?;
 

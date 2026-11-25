@@ -81,7 +81,6 @@ fastwebsockets = { version = "0.10.0", features = [
   "unstable-split",
 ] }
 flume = "0.12"
-fs4 = { version = "1.1.0", features = ["sync"] }
 futures-util = "0.3.30"
 getrandom = { version = "0.4", features = ["std"] }
 hex = "0.4.3"
