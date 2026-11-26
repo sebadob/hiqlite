@@ -181,39 +181,63 @@ async fn connect_read_conns_once(
 ///
 /// A read that was accepted but never started is not left behind: an actor that ends on its
 /// shutdown drains the queue, so everything the restore queued past answers with the closed pool.
+///
+/// Shutdowns go in one at a time, not as a set.  See the loop: an ack is the proof that one
+/// specific connection stopped, and a set queued at once lets a leaving actor answer the acks of
+/// connections that are still busy.
 async fn close_read_actors(actors: Option<flume::Sender<ReaderRequest>>, size: usize) {
     let Some(actors) = actors else {
         return;
     };
 
-    // A queue that is full of queued reads has no slot left for a shutdown, and the actors that
-    // took their reads are not coming back to take one: the reads they hold are exactly what keeps
-    // them away.  A blocking send would then never return, so the shutdown is never queued and
-    // those actors are ended by the disconnect at the end of this function instead.
-    let mut acks = Vec::with_capacity(size);
-    for _ in 0..size {
-        let (ack, rx) = oneshot::channel();
-        if actors.try_send(ReaderRequest::Shutdown(ack)).is_err() {
-            break;
-        }
-        acks.push(rx);
-    }
-
-    // A queue that was full left connections with no shutdown to take, so they are ended by the
-    // disconnect below and never get to answer one.
-    let unsent = size - acks.len();
-
     // One grace for the whole set, not one per actor: reads that never return must not multiply the
     // wait by the size of the pool.
     let deadline = Instant::now() + READ_SHUTDOWN_GRACE;
-    let mut parked = 0usize;
-    for rx in acks {
-        // An actor that was already gone never answers; its connection is dropped either way.
+
+    // One shutdown in the queue at a time, and one ack counted per connection that really stops.
+    //
+    // Queueing the whole set at once is what made the count lie.  A shutdown is answered by
+    // whichever actor takes it, and an actor leaving on its own shutdown drains the queue behind it
+    // and answers everything it finds there.  With all of them queued together, a free connection
+    // answers the shutdown meant for the one stuck inside a read, every ack comes back answered,
+    // and the close opens the database over a read that is still running.
+    //
+    // A single shutdown in flight cannot be answered by the wrong connection: the actor that takes
+    // it is the actor that stops, so its ack is the ack of a connection that is really gone.  An
+    // ack that comes back as a closed channel was answered by an actor on its way out and belongs
+    // to no connection at all, so it is spent on nothing and the close sends the next one.
+    let mut stopped = 0usize;
+    let mut unsent = 0usize;
+    while stopped < size {
+        // Every actor is gone, so every connection is closed already and the disconnect below is
+        // all that is left to do.
+        if actors.is_disconnected() {
+            stopped = size;
+            break;
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() || time::timeout(remaining, rx).await.is_err() {
-            parked += 1;
+        if remaining.is_zero() {
+            break;
+        }
+        // A queue that is full of queued reads has no slot left for a shutdown, and the actors that
+        // took their reads are not coming back to take one: the reads they hold are exactly what
+        // keeps them away.  A blocking send would then never return, so those connections are
+        // ended by the disconnect below instead.
+        let (ack, rx) = oneshot::channel();
+        if actors.try_send(ReaderRequest::Shutdown(ack)).is_err() {
+            unsent = size - stopped;
+            break;
+        }
+        match time::timeout(remaining, rx).await {
+            Ok(Ok(())) => stopped += 1,
+            Ok(Err(_)) => {}
+            // The grace is over.  The connections left are inside reads that must not gate the
+            // restore forever, so the close stops waiting and names how many are left.
+            Err(_) => break,
         }
     }
+
+    let parked = size - stopped - unsent;
     if unsent > 0 {
         warn!(
             "{unsent} of {size} read pool connections never got their shutdown: the queue behind \
