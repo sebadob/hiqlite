@@ -84,8 +84,26 @@ does it: a file at `/run/secrets/hiqlite.toml`, a Kubernetes secret, a systemd c
 - `logs_until_snapshot` - how many log entries accumulate before a snapshot. Higher values give
   write throughput and cost disk space and slower snapshot creation. Tune it together with
   `wal_size`.
-- `read_pool_size` - pooled connections for local reads. Writes use their own single connection, so
-  this only sizes reads.
+- `read_pool_size` - the node's local read connections, one per read actor thread. Writes use their
+  own single connection, so this only sizes reads. A streaming query takes one of these threads for
+  as long as you consume it, so a node runs at most `read_pool_size` streams at once.
+  Default: one per core, at least 4 and at most 1024.
+- `saturated_pool_threshold` - the queue wait at which the node logs that its read pool is
+  saturated. The warning names which problem it is: one query holding a connection for a long time,
+  with the time it ran, or more reads than connections, with how many are queued. A pool that stays
+  saturated warns once every 10 seconds, not once per query. Default: 100ms.
+- `slow_query_threshold` - the time a read may run on its connection before the node logs it as a
+  slow query, naming the statement and never its parameters. Independent of
+  `saturated_pool_threshold` and normally higher than it: one is how long a read waited for a
+  connection, the other how long a read that got one took. A stream counts from its first row to its
+  drop, the pauses of its consumer included, because its read actor is held for exactly that long.
+  Default: 1s.
+- `log_slow_queries` - log the statement text of a read that ran over `slow_query_threshold`. A
+  statement built by the `sql!()` macros carries no value in it, and parameters never reach the log.
+  A query typed into the dashboard is different: its values are inline in its text, so a slow
+  dashboard query writes them into the log - the dashboard is a debugging tool and usually not part
+  of a production deployment. Set it to `false` to keep statement text out of the log entirely. The
+  saturation warning is unaffected, because it never names a statement. Default: true.
 - `prepared_statement_cache_capacity` - how many prepared statements a connection keeps.
 - `cache_storage_disk` - disk-backed caches (default) versus in-memory caches. See `caches.md`.
 - `HQL_CACHE_META_RESET=true` - deletes the stored cache-index fingerprint and writes it from the
@@ -143,6 +161,17 @@ does it: a file at `/run/secrets/hiqlite.toml`, a Kubernetes secret, a systemd c
 they work. Touch these only when you know which number you are chasing: heartbeat and election
 timing, snapshot policy, the maximum append-entries batch, and the cluster name. The snapshot policy
 decides when a snapshot is created; `logs_until_snapshot` caps how big the log grows in between.
+`raft_config` is a Rust field, not a key of `hiqlite.toml`: the TOML path always builds the defaults
+in `NodeConfig::default_raft_config`, so these numbers are set in code, on the `NodeConfig` you hand
+to `start_node`.
+
+`election_timeout_min` and `election_timeout_max` (1500 ms and 3000 ms) are the two numbers behind a
+leader change. A leader's lease runs for `election_timeout_max` from the last quorum ack of its
+heartbeats, and a node grants a vote only once the lease it relies on has lapsed. A machine loaded
+enough to delay those acks past 3 s therefore changes its leader by itself, with nothing wrong
+beyond the timing - and a node handed a vote it would normally refuse can then take the seat. Raise
+min and max together on shared or busy hardware, keeping the max above the min, which is what
+spreads candidates apart; a higher pair also means a slower takeover when a leader really dies.
 
 `api_batch_capacity` and `api_batch_linger_ms` decide how writes are collected on the leader. A
 write that arrives while a batch is being built joins it, and the batch goes to the log store in one

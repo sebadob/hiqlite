@@ -19,6 +19,8 @@ use std::time::Duration;
 use tokio::time;
 use tracing::info;
 
+#[cfg(feature = "sqlite")]
+use crate::reader::ReaderRequest;
 #[cfg(feature = "cache")]
 use crate::{
     app_state::StateRaftCache,
@@ -28,9 +30,7 @@ use crate::{
 use crate::{
     app_state::StateRaftDB,
     store::state_machine::sqlite::{
-        TypeConfigSqlite,
-        state_machine::{SqlitePool, StateMachineSqlite},
-        writer::WriterRequest,
+        TypeConfigSqlite, state_machine::StateMachineSqlite, writer::WriterRequest,
     },
 };
 
@@ -100,6 +100,9 @@ pub(crate) async fn start_raft_db(
         node_config.log_statements,
         node_config.prepared_statement_cache_capacity,
         node_config.read_pool_size,
+        node_config.saturated_pool_threshold,
+        node_config.slow_query_threshold,
+        node_config.log_slow_queries,
         #[cfg(feature = "s3")]
         node_config.s3_config.clone(),
         do_reset_metadata,
@@ -112,7 +115,7 @@ pub(crate) async fn start_raft_db(
 
     let is_startup_finished = Arc::new(AtomicBool::new(false));
     let sql_writer = state_machine_store.write_tx.clone();
-    let read_pool = state_machine_store.read_pool.clone();
+    let read_actors = state_machine_store.read_actors.clone();
     let path_snapshots = StateMachineSqlite::path_snapshots(&node_config.data_dir);
 
     let network = NetworkStreaming {
@@ -153,7 +156,7 @@ pub(crate) async fn start_raft_db(
         raft,
         shutdown_handle,
         sql_writer,
-        read_pool,
+        read_actors,
         path_snapshots,
         log_statements: node_config.log_statements,
         is_raft_stopped,

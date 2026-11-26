@@ -110,6 +110,9 @@ Source breaking: the `Error` enum's openraft variants are split per group (`Raft
 `RaftErrorKv` and friends), and the metrics functions return `RaftMetrics<TypeConfigSqlite>` /
 `RaftMetrics<TypeConfigCache>` instead of `RaftMetrics<u64, Node>`.
 
+Source breaking: the `Error` enum has a new `Unavailable` variant, which answers
+`503 Service Unavailable`. A `match` over `Error` that has no wildcard arm needs one.
+
 #### `query_consistent()`
 
 `query_consistent()` and `query_consistent_map()` take the `ReadPolicy` as an argument, and
@@ -147,6 +150,69 @@ Migration:
   The name `RowOwned` belongs to the readable row from now on, never to its bare values.
 
 ### Changes
+
+#### Local Read Threads
+
+A local read does not wait for a pooled connection anymore. The node keeps one thread per read
+connection for the whole life of the process, and a query goes to the thread that owns its
+connection: the statement it prepares, the pages it reads and the cache it fills stay there, and
+nothing is taken and handed back on every query. The `deadpool` dependency is gone from both the
+`sqlite` and the `external-state-machine` feature.
+
+- Every local read answers faster, the small ones most. The table is the whole chain in one
+  `just bench-conn-pool -- --summary` run on an Apple M4 Pro (8 performance + 4 efficiency cores)
+  inside the recipe's `taskpolicy -c utility` core envelope: 4 read connections, 8 concurrent
+  readers, 2000 operations per reader over 4 rounds, an on-disk database of 20000 wide rows
+  (4.6 MB), every query a range scan of 100 of them. Queries per second, and the median latency of
+  one read.
+
+    | the read                                     | pool today  | new, shipped |
+    | -------------------------------------------- | ----------- | ------------ |
+    | `query_map()`, the typed row from owned rows | 107k / 73µs | 162k / 48µs  |
+    | the same row mapped from the borrowed row    | 127k / 62µs | 215k / 36µs  |
+    | the wide row built through the owned form    | 90k / 87µs  | 124k / 61µs  |
+    | a typed row, one integer column              | 186k / 42µs | 350k / 22µs  |
+    | the same narrow row through the owned form   | 166k / 48µs | 299k / 25µs  |
+    | a cached `SELECT 1`                          | 274k / 24µs | 538k / 13µs  |
+
+    Against the pool as it ships today, the five real queries gain +37% to +88% in throughput and
+    30% to 49% in median latency, and the cached `SELECT 1` doubles. Against the fastest shared
+    connections can answer at all - the same queries through the same pool with its async handoff
+    taken out - the new path runs at 75% to 110% of that ceiling on the five real queries, and at
+    60% of it on the cached `SELECT 1`. That ceiling is a burst ceiling: it parks its waits outside
+    the measured query and its own worst read is 0.4 ms to 2.9 ms, so it is a throughput ratio and
+    not a latency one.
+
+- A streaming read runs on one of these threads for as long as you consume it, so a node serves at
+  most `read_pool_size` streams at once. Streams you never read starve the other local reads.
+- The external state machine's restore closes the read pool and recreates it, and it waits up to 30s
+  for the reads that are already running.
+- A local read that waited longer than 100 ms for its connection is visible in the log now, and the
+  line names which of the two problems it is: one query holding a connection for a long time, with
+  the time it ran, or a pool with more reads than connections, with how many are queued. A pool
+  that stays saturated warns once every 10 seconds, not once per query.
+- `saturated_pool_threshold` (default `100ms`) is the queue wait that warns, `slow_query_threshold`
+  (default `1s`) is the time a single read may run on its connection before the node logs it, naming
+  the statement and never its parameters. They are independent, so a `slow_query_threshold` above
+  `saturated_pool_threshold` still gives you two distinct warnings. A stream is measured from its
+  first row to its drop, the pauses of its consumer included.
+- `log_slow_queries` (default `true`) decides whether the slow-query line names the statement. A
+  query typed into the dashboard has its values inline in its text, so a slow dashboard query writes
+  them into the log. Set this to `false` when you do not want statement text in your log at all. The
+  saturation warning never names a statement, so it is unaffected.
+
+#### Elections Are Requests, Not Commands
+
+A campaign is openraft's Pre-Vote round and nothing else: the term is untouched when the node cannot
+win, a live leader holding its lease is refused, and a node whose own elections are disabled is
+refused by its own gate. There is no way to bypass that round, and that is deliberate: a campaign
+past the gate needs only its own vote plus one peer's grant to reach a quorum of three, so it can
+install a leader the operator has declared must never lead, and nothing in that cluster moves it off
+the seat afterwards.
+
+A leader change that must happen is a graceful one. `Client::transfer_leadership(node_id)` asks the
+node holding the seat to hand it over, `Client::elect_node(node_id)` is the probe a healthy cluster
+may refuse, and a graceful shutdown hands the seat over on its own.
 
 #### Streaming Queries
 
@@ -409,14 +475,14 @@ one, together with the memory state machine.
 - `GET`: answers the server state, leader, voter flag, and the effective `enable_elect` of every
   group
 - `PUT`: with `{ "enable_elect": true|false }` changes it for all groups of that node in one call
-- `POST`: makes the node campaign for the leadership of all its groups. Optional query param
-  `?force=true` -> bypasses openraft's Pre-Vote round, which inflates the term even when the node
-  cannot win - use it only when you know the node's log is at the cluster tip. A learner is refused
-  on `POST`, it can never win an election. A runtime change is in-memory only: a restart applies the
-  marker of the node line again, and every change is logged.
+- `POST`: makes the node campaign for the leadership of all its groups. openraft runs its Pre-Vote
+  round first, so the term is untouched when the node cannot win, and a node whose own elections are
+  disabled is refused by its own gate. A learner is refused on `POST`, it can never win an election.
+  A runtime change is in-memory only: a restart applies the marker of the node line again, and every
+  change is logged.
 
 The matching `Client` helpers are `cluster_election_state()`, `set_node_election(node_id, enable)`
-and `elect_node(node_id, force)`. They work on a remote client for the whole cluster. An embedded
+and `elect_node(node_id)`. They work on a remote client for the whole cluster. An embedded
 client can only reach its own node.
 
 #### Membership Control
@@ -509,6 +575,12 @@ yet, but a good starting point.
 
 ### Bugfix
 
+- `/ready` answered `400 Bad Request` while a node was replaying its log, while it had no leader
+  yet, while it was not a member of a healthy group, and while it was shutting down. All four are
+  "not usable right now, ask again later", which is `503`, and `docs/operations.md` has always said
+  `503`. A readiness probe that reads `400` has no way to tell a node that is catching up from a
+  node that is broken, so it is the number, not the answer, that was wrong. `/health` uses `503`
+  for the same states now, where it used `409` and `500`.
 - `wait_for_cluster_sync()`'s single-instance fast path only looked at the node list, which a local
   client never has, so it never fired for an embedded single node. A local client now takes the
   member count from its own Raft membership, like `shutdown_execute` does.

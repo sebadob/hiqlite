@@ -212,8 +212,8 @@ impl Client {
     ///
     /// [`Error::Config`] for a remote client - a stream has no leader to read it from - plus the
     /// statement, param and mapping-setup failures of `query_map`, because the statement of a
-    /// stream is built before the stream is handed back, and [`Error::Sqlite`] when a connection
-    /// cannot be taken from the read pool.  A cursor that fails mid-scan, and a row mapping that
+    /// stream is built before the stream is handed back, and [`Error::Sqlite`] when the node's read
+    /// pool has shut down.  A cursor that fails mid-scan, and a row mapping that
     /// panicked on the thread running the query, are the `Err` of [`crate::QueryStream::next`]: a
     /// verdict about a query that is already running.
     ///
@@ -301,7 +301,7 @@ impl Client {
     /// # Errors
     ///
     /// [`Error::Config`] for a remote client, the statement and param failures of
-    /// `query_try_map`, and [`Error::Sqlite`] when a connection cannot be taken from the read pool.
+    /// `query_try_map`, and [`Error::Sqlite`] when the node's read pool has shut down.
     /// A query that fails mid-scan is the `Err` of [`crate::QueryStream::next`], as in
     /// `query_map_stream`.
     pub async fn query_try_map_stream<T, S>(
@@ -601,7 +601,7 @@ impl Client {
         if let Some(state) = &self.inner.state {
             let (cols, rows) = query::query_owned_local(
                 state.raft_db.log_statements,
-                state.raft_db.read_pool.clone(),
+                &state.raft_db.read_actors,
                 stmt,
                 params,
             )
@@ -648,7 +648,7 @@ impl Client {
     ///
     /// [`Error::Config`] for a remote client, [`Error::PrepareStatement`] and
     /// [`Error::QueryParams`] for a statement that cannot be built from the given SQL and params,
-    /// [`Error::Sqlite`] when a connection cannot be taken from the read pool, and the `Err` of
+    /// [`Error::Sqlite`] when the node's read pool has shut down, and the `Err` of
     /// [`crate::QueryStream::next`] for a cursor that fails mid-scan.
     ///
     /// # Panics

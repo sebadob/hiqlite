@@ -55,6 +55,8 @@ pub use openraft::raft::ReadPolicy;
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use std::fmt::{Debug, Display, Write as _};
+use std::num::NonZeroUsize;
+use std::thread;
 
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::state_machine::Response;
@@ -145,6 +147,11 @@ mod migration;
 #[cfg(feature = "sqlite")]
 mod query;
 
+/// The threads that own the read connections of both SQLite state machines: one thread per
+/// connection, all of them serving one channel of `reader::ReaderRequest`.
+#[cfg(any(feature = "sqlite", feature = "external-state-machine"))]
+mod reader;
+
 /// Exports and types to set up a connection to an S3 storage bucket.
 /// Needs the feature `s3` enabled.
 #[cfg(feature = "s3")]
@@ -169,6 +176,27 @@ type NodeId = u64;
 
 #[allow(dead_code)]
 pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The highest `read_pool_size` either state machine accepts.  Each read connection is one OS
+/// thread with its own SQLite handle, about 170 KB of RSS plus the stack of the thread that owns it.
+pub(crate) const MAX_READ_POOL_SIZE: usize = 1024;
+
+/// The smallest default `read_pool_size`: the fixed pool size a node ran with before the count
+/// followed the core count.  It is a floor for the default only - an operator may set
+/// `read_pool_size` as low as 1.
+const READ_POOL_SIZE_FLOOR: usize = 4;
+
+/// The default count of read actors: one read connection per core.
+///
+/// `available_parallelism` respects a cgroup CPU limit, so a CPU-limited container gets an actor
+/// count that matches the cores it may actually run on.  The floor is the old fixed pool size of
+/// 4: a 1-core or 2-core pod keeps the number of read connections it always had, because two
+/// parked reads on two connections block every other local read on that node.
+pub(crate) fn default_read_pool_size() -> usize {
+    thread::available_parallelism()
+        .map_or(READ_POOL_SIZE_FLOOR, NonZeroUsize::get)
+        .clamp(READ_POOL_SIZE_FLOOR, MAX_READ_POOL_SIZE)
+}
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub trait CacheVariants {

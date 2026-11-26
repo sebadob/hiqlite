@@ -156,22 +156,19 @@ pub fn set_enable_elect(state: &Arc<AppState>, raft_type: &RaftType, enable: boo
 
 /// Make this node campaign for the leadership of the given group.
 ///
-/// `force` bypasses openraft's Pre-Vote round, so the term climbs even when this node cannot win,
-/// and the trigger bypasses `enable_elect` as well. That is the combination to be careful with:
-/// a forced election of a node whose log is behind is a real data-loss risk, so callers must
-/// refuse it for learners and warn about it.
-pub async fn trigger_elect(
-    state: &Arc<AppState>,
-    raft_type: &RaftType,
-    force: bool,
-) -> Result<(), Error> {
+/// openraft always runs its Pre-Vote round first, so the term is untouched when this node cannot
+/// win, and a node with `enable_elect` off is refused by its own gate. There is no way to bypass
+/// either: a leader change that must happen is a leadership transfer, asked for by the node that
+/// holds the seat, and a campaign is only ever a request a healthy cluster can refuse.
+pub async fn trigger_elect(state: &Arc<AppState>, raft_type: &RaftType) -> Result<(), Error> {
     match raft_type {
         #[cfg(feature = "sqlite")]
         RaftType::Sqlite => state
             .raft_db
             .raft
             .trigger()
-            .elect(!force)
+            // `true` is openraft's Pre-Vote round: probe before the term moves.
+            .elect(true)
             .await
             .map_err(|err| Error::RaftErrorFatalDb(Box::new(err)))?,
         #[cfg(feature = "cache")]
@@ -179,7 +176,7 @@ pub async fn trigger_elect(
             .raft_cache
             .raft
             .trigger()
-            .elect(!force)
+            .elect(true)
             .await
             .map_err(|err| Error::RaftErrorFatalCache(Box::new(err)))?,
         RaftType::Unknown => {}
@@ -573,6 +570,7 @@ pub async fn remove_voter(
 }
 
 /// Parses the given input into a type-safe `Duration`. The input can have the following suffixes:
+/// - ms -> milliseconds
 /// - s -> seconds
 /// - m -> minutes
 /// - h -> hours
@@ -583,6 +581,16 @@ pub fn parse_duration<T: AsRef<str>>(input: T) -> Option<Duration> {
     let input = input.as_ref().trim();
     if input.is_empty() {
         return None;
+    }
+    // `ms` is the only two-letter unit, so it is read before the single-letter split: `100ms`
+    // would otherwise read as the value `100m` on the unit `s`.
+    let bytes = input.as_bytes();
+    if bytes.len() > 2 && bytes[bytes.len() - 2..].eq_ignore_ascii_case(b"ms") {
+        return input[..bytes.len() - 2]
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(Duration::from_millis);
     }
     let (value, unit) = input.split_at(input.len() - 1);
 

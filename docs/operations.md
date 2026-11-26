@@ -8,9 +8,12 @@ that keep a node boring.
 - `/ready` - is this node usable right now. It answers 503 while the node is starting, while it is
   shutting down, and while it is not a member of a healthy group. This is the readiness probe
   target.
-- `/health` - is this node healthy. A first failing check is retried once after a short wait,
-  because a leader switch takes a moment to settle. That is why a liveness probe with
-  `failureThreshold: 2` is the right setting and `failureThreshold: 1` is not.
+- `/health` - is this node healthy. It answers 503 while a group has no leader yet, and while a
+  group is not running. A first failing check is retried once after a short wait, because a leader
+  switch takes a moment to settle. That is why a liveness probe with `failureThreshold: 2` is the
+  right setting and `failureThreshold: 1` is not.
+- Both endpoints answer 503, never 400, for "not usable right now, ask again later". A 400 says the
+  request itself is wrong, and a node that is replaying its log says nothing about your request.
 - `health_check_delay` - a grace window at the very start of a node, during which health checks
   report healthy. It exists so a node that is forming, joining, or catching up is not punished.
 - `/ping` answers, `/version` reports the running version.

@@ -31,7 +31,6 @@ bincode-next.workspace = true
 byteorder.workspace = true
 crc.workspace = true
 flume.workspace = true
-fs4.workspace = true
 memmap2.workspace = true
 openraft.workspace = true
 serde.workspace = true
