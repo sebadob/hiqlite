@@ -62,6 +62,8 @@ pub(crate) async fn add_learner(
     };
     info!("{:?} requests to be added as {:?} Learner", node, raft_type);
     let lock = state.raft_lock.lock().await;
+    // see `leave_cluster_exec`: the check in front of the lock can be stale
+    are_we_leader(&state, &raft_type).await?;
     let nid = node.id;
     let res = helpers::add_new_learner(&state, &raft_type, node).await;
     match res {
@@ -113,6 +115,8 @@ pub(crate) async fn become_member(
     are_we_leader(&state, &raft_type).await?;
 
     let lock = state.raft_lock.lock().await;
+    // see `leave_cluster_exec`: the check in front of the lock can be stale
+    are_we_leader(&state, &raft_type).await?;
     let payload = get_payload::<LearnerReq>(&headers, &body)?;
     info!("{:?} Node membership request: {:?}", raft_type, payload);
 
@@ -283,6 +287,8 @@ pub(crate) async fn post_membership(
     // Take the shared raft_lock like the other membership endpoints so this full-set change
     // cannot race with join/leave flows that poll for their commit.
     let _lock = state.raft_lock.lock().await;
+    // see `leave_cluster_exec`: the check in front of the lock can be stale
+    are_we_leader(&state, &raft_type).await?;
     let membership = helpers::get_raft_view(&state, &raft_type)?.membership;
     let old_voters: BTreeSet<u64> = membership.voter_ids().collect();
 
@@ -801,8 +807,13 @@ pub(crate) async fn local_promote(
 ) -> Result<MembersState, Error> {
     require_we_lead_all_groups(state).await?;
 
+    let lock = state.raft_lock.lock().await;
+    // see `leave_cluster_exec`: the check in front of the lock can be stale
+    require_we_lead_all_groups(state).await?;
+
     // All groups are checked before the first change runs, so one group that does not know the
-    // node cannot leave the other groups already changed.
+    // node cannot leave the other groups already changed. This runs under the lock, so no
+    // concurrent change can move the membership between the check and the change.
     let mut targets = Vec::new();
     for raft_type in raft_types() {
         let view = helpers::get_raft_view(state, &raft_type)?;
@@ -820,7 +831,6 @@ pub(crate) async fn local_promote(
         targets.push((raft_type, is_voter));
     }
 
-    let lock = state.raft_lock.lock().await;
     for (raft_type, is_voter) in targets {
         if is_voter {
             info!("Node {node_id} is a voter in the {raft_type:?} group already");
