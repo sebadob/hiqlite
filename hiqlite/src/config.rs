@@ -215,6 +215,10 @@ pub struct NodeConfig {
     pub secret_raft: String,
     /// Secret for Raft management and DB API - at least 16 characters long
     pub secret_api: String,
+    /// Secret for the read-only `GET /metrics` (Prometheus) and `GET /backup` (JSON) endpoints - at
+    /// least 16 characters long, and different from `secret_api`. It only grants reading them, so
+    /// it can live in a scrape config that never sees `secret_api`. `None` disables both.
+    pub secret_metrics: Option<String>,
     /// The Encryption Keys used for Backups and Dashboard cookies
     #[cfg(any(feature = "s3", feature = "dashboard"))]
     pub enc_keys: cryptr::EncKeys,
@@ -297,6 +301,7 @@ impl Default for NodeConfig {
             tls_api: None,
             secret_raft: String::default(),
             secret_api: String::default(),
+            secret_metrics: None,
             #[cfg(any(feature = "s3", feature = "dashboard"))]
             enc_keys: cryptr::EncKeys::default(),
             #[cfg(feature = "backup")]
@@ -503,6 +508,7 @@ impl NodeConfig {
             tls_api: ServerTlsConfig::from_env("API").expect("Error building API TLS config"),
             secret_raft: env::var("HQL_SECRET_RAFT").expect("HQL_SECRET_RAFT not found"),
             secret_api: env::var("HQL_SECRET_API").expect("HQL_SECRET_API not found"),
+            secret_metrics: env::var("HQL_SECRET_METRICS").ok(),
             #[cfg(any(feature = "s3", feature = "dashboard"))]
             enc_keys: cryptr::EncKeys::from_env().expect("Cannot parse ENC_KEYS from ENV"),
             #[cfg(feature = "backup")]
@@ -682,6 +688,21 @@ impl NodeConfig {
             return Err(Error::Config(
                 "'secret_raft' and 'secret_api' should be at least 16 characters long".into(),
             ));
+        }
+
+        if let Some(secret_metrics) = &self.secret_metrics {
+            if secret_metrics.len() < 16 {
+                return Err(Error::Config(
+                    "'secret_metrics' should be at least 16 characters long".into(),
+                ));
+            }
+            // the whole point of a separate secret is that a scrape config never holds one that
+            // can modify the cluster
+            if secret_metrics == &self.secret_api {
+                return Err(Error::Config(
+                    "'secret_metrics' must be different from 'secret_api'".into(),
+                ));
+            }
         }
 
         #[cfg(any(feature = "dashboard", feature = "s3"))]
@@ -952,6 +973,35 @@ mod tests {
 
         config.apply_election_disable();
         assert!(config.raft_config.enable_elect);
+    }
+
+    #[test]
+    fn config_checks_the_metrics_secret() {
+        let config = |secret_metrics: Option<&str>| NodeConfig {
+            node_id: 1,
+            nodes: vec![node(1)],
+            secret_raft: "0123456789abcdef".into(),
+            secret_api: "0123456789abcdef".into(),
+            secret_metrics: secret_metrics.map(String::from),
+            ..Default::default()
+        };
+
+        // other feature-dependent checks (e.g. `enc_keys`) may still fail, but never this one
+        let about_metrics = |c: NodeConfig| {
+            c.is_valid()
+                .err()
+                .is_some_and(|err| err.to_string().contains("secret_metrics"))
+        };
+        assert!(!about_metrics(config(None)));
+        assert!(!about_metrics(config(Some("fedcba9876543210"))));
+
+        let err = config(Some("short")).is_valid().unwrap_err().to_string();
+        assert!(err.contains("secret_metrics"), "{err}");
+        let err = config(Some("0123456789abcdef"))
+            .is_valid()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("different from 'secret_api'"), "{err}");
     }
 
     #[test]

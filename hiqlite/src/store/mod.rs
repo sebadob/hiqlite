@@ -121,6 +121,8 @@ pub(crate) async fn start_raft_db(
     let is_startup_finished = Arc::new(AtomicBool::new(false));
     let sql_writer = state_machine_store.write_tx.clone();
     let read_actors = state_machine_store.read_actors.clone();
+    #[cfg(feature = "backup")]
+    let backup_status = state_machine_store.backup_status.clone();
     let path_snapshots = StateMachineSqlite::path_snapshots(&node_config.data_dir);
 
     let network = NetworkStreaming {
@@ -169,6 +171,8 @@ pub(crate) async fn start_raft_db(
         enable_elect,
         startup_replay_target,
         startup_replay_done: AtomicBool::new(false),
+        #[cfg(feature = "backup")]
+        backup_status,
     })
 }
 

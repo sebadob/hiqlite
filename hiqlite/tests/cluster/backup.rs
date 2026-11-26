@@ -9,7 +9,7 @@ pub static BACKUP_PATH_FILE: &str = "tests/data_test/backup.sqlite";
 /// The `backup_file_prefix` every test node is built with - see `start::build_config_with_nodes`.
 pub const TEST_FILE_PREFIX: &str = "test_bkp";
 
-pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
+pub async fn test_backup(client_1: &Client, tls_api: bool) -> Result<(), Error> {
     log("Creating backup request via client_1");
     client_1.backup().await?;
 
@@ -30,6 +30,9 @@ pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
         name.starts_with(&format!("{TEST_FILE_PREFIX}_")),
         "backup name {name} must start with '{TEST_FILE_PREFIX}_'"
     );
+    log("GET /backup reports the backup on the leader");
+    test_backup_info(leader, name, tls_api).await;
+
     let list = client_1.backup_list_local().await?;
     assert!(
         list.iter().any(|b| b.name == name),
@@ -83,6 +86,113 @@ pub async fn test_backup(client_1: &Client) -> Result<(), Error> {
     conn_bkp.execute("DROP TABLE _metadata", [])?;
 
     Ok(())
+}
+
+/// `GET /backup` on `node_id` (JSON) and `GET /metrics` (Prometheus text), both behind the metrics
+/// secret only and both showing `name` as the newest local backup.
+async fn test_backup_info(node_id: u64, name: &str, tls_api: bool) {
+    let client = reqwest::Client::builder()
+        .tls_danger_accept_invalid_certs(tls_api)
+        .build()
+        .unwrap();
+    let scheme = if tls_api { "https" } else { "http" };
+    let url = format!("{scheme}://127.0.0.1:3100{node_id}/backup");
+    let auth_api = format!("Bearer {}", crate::start::SECRET_API);
+    let auth_metrics = format!("Bearer {}", crate::start::SECRET_METRICS);
+
+    let resp = client.get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 401, "GET /backup must require a secret");
+    let resp = client
+        .get(&url)
+        .header("authorization", &auth_api)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        401,
+        "the API secret must not open GET /backup"
+    );
+
+    let resp = client
+        .get(&url)
+        .header("authorization", &auth_metrics)
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "GET /backup: {}", resp.status());
+    let info: serde_json::Value = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+    assert_eq!(info["node_id"], node_id);
+    assert!(info["local"]["count"].as_u64().unwrap() >= 1, "{info}");
+    assert_eq!(info["local"]["newest"]["file"], name, "{info}");
+    assert_eq!(info["last_backup"]["file"], name, "{info}");
+    assert!(info["last_backup"]["ts"].as_i64().unwrap() > 0, "{info}");
+
+    // With a bucket configured, a node that did not push the backup still learns about it: it
+    // watches the bucket for the object named in the backup entry. The first check runs 10s after
+    // its local backup.
+    if std::env::var("HQL_S3_URL").is_ok() {
+        let follower = node_id % 3 + 1;
+        let url_follower = format!("{scheme}://127.0.0.1:3100{follower}/backup");
+        let mut seen = serde_json::Value::Null;
+        // the first check is 10s and the next one 30s after the local backup
+        for _ in 0..90 {
+            let resp = client
+                .get(&url_follower)
+                .header("authorization", &auth_metrics)
+                .send()
+                .await
+                .unwrap();
+            seen = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+            if seen["s3_latest"]["object"] == name {
+                break;
+            }
+            time::sleep(Duration::from_millis(500)).await;
+        }
+        assert_eq!(
+            seen["s3_latest"]["object"], name,
+            "node {follower} must see the leader's S3 backup: {seen}"
+        );
+    }
+
+    let url_metrics = format!("{scheme}://127.0.0.1:3100{node_id}/metrics");
+    let resp = client.get(&url_metrics).send().await.unwrap();
+    assert_eq!(resp.status(), 401, "GET /metrics must require a secret");
+    let resp = client
+        .get(&url_metrics)
+        .header("authorization", &auth_api)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        401,
+        "the API secret must not open GET /metrics"
+    );
+
+    let resp = client
+        .get(&url_metrics)
+        .header("authorization", &auth_metrics)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "GET /metrics: {}",
+        resp.status()
+    );
+    let text = resp.text().await.unwrap();
+    let ts = name
+        .strip_suffix(".sqlite")
+        .and_then(|s| s.rsplit_once('_'))
+        .map(|(_, ts)| ts)
+        .unwrap();
+    assert!(
+        text.contains(&format!(
+            "hiqlite_backup_local_newest_timestamp_seconds{{node_id=\"{node_id}\"}} {ts}"
+        )),
+        "{text}"
+    );
 }
 
 pub async fn test_backup_restore_prerequisites(client: &Client) -> Result<(), Error> {

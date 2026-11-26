@@ -581,9 +581,414 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
     info!("restore_backup_finish task successful");
 }
 
+/// What this node knows about its backups, for `GET /backup` and `/metrics`.
+///
+/// Each node creates its own local backup when a backup entry is applied, and the last local
+/// backup and failure live in memory: after a restart the newest local backup is still found on
+/// disk. With `s3`, only the node that requested the backup (the leader) pushes it, but every node
+/// knows the object name from the log entry, so every other node watches the bucket until the
+/// object shows up. The newest backup seen on S3 is persisted next to the local backups, so all
+/// nodes report it, and it survives a restart.
+#[derive(Debug)]
+pub(crate) struct BackupStatus {
+    inner: std::sync::Mutex<BackupStatusInner>,
+    #[cfg(feature = "s3")]
+    s3_latest_path: std::path::PathBuf,
+    /// Serializes writes of `s3_latest_path`.
+    #[cfg(feature = "s3")]
+    persist_lock: tokio::sync::Mutex<()>,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub(crate) struct BackupStatusInner {
+    pub last_backup: Option<BackupEvent>,
+    pub last_backup_error: Option<BackupEvent>,
+    /// The newest backup this node has seen on S3, see [`S3Backup`].
+    #[cfg(feature = "s3")]
+    pub s3_latest: Option<S3Backup>,
+    /// The last backup this node could not confirm on S3: an upload that failed for good on the
+    /// node that pushes it, or a backup that did not show up in the bucket in time on any other.
+    #[cfg(feature = "s3")]
+    pub s3_error: Option<BackupEvent>,
+}
+
+/// One backup outcome: when it finished (unix seconds) and the backup file name, plus the error
+/// message for a failure.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct BackupEvent {
+    pub ts: i64,
+    pub file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl BackupEvent {
+    fn now(file: &str, error: Option<String>) -> Self {
+        Self {
+            ts: Utc::now().timestamp(),
+            file: file.to_string(),
+            error,
+        }
+    }
+}
+
+/// The newest backup a node has seen on S3.
+#[cfg(feature = "s3")]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct S3Backup {
+    /// The object name, `{prefix}_{node_id}_{ts}.sqlite`.
+    pub object: String,
+    /// The timestamp in the object name: when the backup was requested.
+    pub ts: i64,
+    /// When this node confirmed the object (unix seconds).
+    pub confirmed_at: i64,
+}
+
+/// The file in the backups dir that keeps [`S3Backup`] across restarts.
+#[cfg(feature = "s3")]
+const S3_LATEST_FILE: &str = "s3_latest.json";
+
+/// How long a node that did not push a backup keeps watching the bucket for it. The pushing node
+/// retries its upload for a few minutes on its own, and a big database takes a while to encrypt and
+/// upload, so this is generous on purpose.
+#[cfg(feature = "s3")]
+pub(crate) const S3_CONFIRM_TIMEOUT: Duration = Duration::from_hours(1);
+
+impl BackupStatus {
+    /// Builds an empty status for the backups in `backup_path`. With `s3`, follow it up with
+    /// [`Self::load_s3_latest`].
+    pub(crate) fn new(backup_path: &str) -> Self {
+        #[cfg(not(feature = "s3"))]
+        let _ = backup_path;
+
+        Self {
+            inner: std::sync::Mutex::new(BackupStatusInner::default()),
+            #[cfg(feature = "s3")]
+            s3_latest_path: Path::new(backup_path).join(S3_LATEST_FILE),
+            #[cfg(feature = "s3")]
+            persist_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Loads the newest S3 backup this node persisted before it was restarted. A missing or
+    /// unreadable file only means it is not known yet; it never stops the node from starting.
+    #[cfg(feature = "s3")]
+    pub(crate) async fn load_s3_latest(&self) {
+        let path = &self.s3_latest_path;
+        let latest = match fs::read(path).await {
+            Ok(bytes) => match serde_json::from_slice::<S3Backup>(&bytes) {
+                Ok(latest) => latest,
+                Err(err) => {
+                    warn!("Ignoring unreadable {}: {err}", path.display());
+                    return;
+                }
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(err) => {
+                warn!("Cannot read {}: {err}", path.display());
+                return;
+            }
+        };
+        self.update(|s| s.s3_latest = Some(latest));
+    }
+
+    fn update<R>(&self, f: impl FnOnce(&mut BackupStatusInner) -> R) -> R {
+        // a poisoned lock only means a panic happened while recording, the data is still usable
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&mut inner)
+    }
+
+    pub(crate) fn backup_ok(&self, file: &str) {
+        self.update(|s| s.last_backup = Some(BackupEvent::now(file, None)));
+    }
+
+    pub(crate) fn backup_failed(&self, file: &str, err: &Error) {
+        self.update(|s| {
+            s.last_backup_error = Some(BackupEvent::now(file, Some(err.to_string())));
+        });
+    }
+
+    /// Records `object` as being on S3 and persists it, unless a newer backup is known already.
+    #[cfg(feature = "s3")]
+    pub(crate) async fn s3_confirmed(&self, object: &str, ts: i64) {
+        let latest = S3Backup {
+            object: object.to_string(),
+            ts,
+            confirmed_at: Utc::now().timestamp(),
+        };
+        let is_newer = self.update(|s| {
+            if s.s3_latest.as_ref().is_some_and(|l| l.ts >= ts) {
+                return false;
+            }
+            s.s3_latest = Some(latest.clone());
+            true
+        });
+        if !is_newer {
+            return;
+        }
+
+        // Two confirmations may race here. The lock keeps their writes apart, and each one writes
+        // whatever is newest by the time it holds it, so an older backup never ends up on disk.
+        let _guard = self.persist_lock.lock().await;
+        let Some(latest) = self.get().s3_latest else {
+            return;
+        };
+        if let Err(err) = self.persist_s3_latest(&latest).await {
+            warn!(
+                "Cannot persist {}: {err} - the newest S3 backup is reported until the next \
+                 restart only",
+                self.s3_latest_path.display()
+            );
+        }
+    }
+
+    #[cfg(feature = "s3")]
+    pub(crate) fn s3_failed(&self, object: &str, err: &str) {
+        self.update(|s| {
+            s.s3_error = Some(BackupEvent::now(object, Some(err.to_string())));
+        });
+    }
+
+    /// Writes into a temp file and moves it into place, so a crash never leaves half a file.
+    #[cfg(feature = "s3")]
+    async fn persist_s3_latest(&self, latest: &S3Backup) -> std::io::Result<()> {
+        let tmp = self.s3_latest_path.with_extension("json~");
+        fs::write(&tmp, serde_json::to_vec(latest)?).await?;
+        fs::rename(&tmp, &self.s3_latest_path).await
+    }
+
+    pub(crate) fn get(&self) -> BackupStatusInner {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Whether `object` exists in the configured bucket, with a single `HEAD` request. A `404` means
+/// "not there (yet)"; any other failure is an error.
+#[cfg(feature = "s3")]
+async fn s3_has_object(s3: &S3Config, object: &str) -> Result<bool, Error> {
+    match s3.bucket.head(object).await {
+        Ok(_) => Ok(true),
+        Err(crate::s3::S3Error::HttpFailWithBody(404, _)) => Ok(false),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Watches the bucket on a node that did not push the backup itself, until `object` shows up or
+/// [`S3_CONFIRM_TIMEOUT`] has passed since the backup was requested at `ts`.
+#[cfg(feature = "s3")]
+pub(crate) async fn await_s3_backup(
+    s3: Arc<S3Config>,
+    status: Arc<BackupStatus>,
+    object: String,
+    ts: i64,
+) {
+    let timeout = i64::try_from(S3_CONFIRM_TIMEOUT.as_secs()).unwrap_or(i64::MAX);
+    let mut wait = Duration::from_secs(10);
+    loop {
+        time::sleep(wait).await;
+        match s3_has_object(&s3, &object).await {
+            Ok(true) => {
+                debug!("Backup {object} confirmed on S3");
+                status.s3_confirmed(&object, ts).await;
+                return;
+            }
+            Ok(false) => {}
+            Err(err) => debug!("Cannot check S3 for backup {object}: {err}"),
+        }
+        if Utc::now().timestamp() - ts >= timeout {
+            warn!(
+                "Backup {object} did not show up on S3 within {} minutes",
+                timeout / 60
+            );
+            status.s3_failed(
+                &object,
+                &format!("not found on S3 within {} minutes", timeout / 60),
+            );
+            return;
+        }
+        wait = (wait * 2).min(Duration::from_mins(5));
+    }
+}
+
+/// Fills in the newest backup on S3 for a node that has none persisted yet, e.g. a node that was
+/// added after the last backup, or one upgraded from a version without `s3_latest.json`. It only
+/// runs once: after that, every backup entry the node applies keeps it up to date. The listing is
+/// limited to this node's backup prefix, so it never walks the rest of the bucket.
+#[cfg(feature = "s3")]
+pub(crate) async fn seed_s3_latest(s3: Arc<S3Config>, status: Arc<BackupStatus>, prefix: String) {
+    if status.get().s3_latest.is_some() {
+        return;
+    }
+    let list = match s3.bucket.list(&format!("{prefix}_"), None).await {
+        Ok(list) => list,
+        Err(err) => {
+            warn!("Cannot list S3 to find the newest backup: {err}");
+            return;
+        }
+    };
+    let newest = list
+        .iter()
+        .filter(|b| b.name == s3.bucket.name)
+        .flat_map(|b| &b.contents)
+        .filter_map(|o| backup_ts_from_name(&o.key, &prefix).map(|ts| (ts, &o.key)))
+        .max_by_key(|(ts, _)| *ts);
+    if let Some((ts, object)) = newest {
+        status.s3_confirmed(object, ts).await;
+    }
+}
+
+/// The local backups of this node that are on disk right now, under the configured prefix.
+#[derive(Debug, Default, serde::Serialize)]
+pub(crate) struct LocalBackups {
+    pub count: usize,
+    /// The newest backup's file name and the timestamp in its name (the time it was requested).
+    pub newest: Option<LocalBackup>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct LocalBackup {
+    pub ts: i64,
+    pub file: String,
+}
+
+/// Lists finished local backups. Temporary `~` files of a backup in progress are not counted.
+pub(crate) async fn local_backups(backup_path: &str, prefix: &str) -> Result<LocalBackups, Error> {
+    let mut res = LocalBackups::default();
+    let mut list = match fs::read_dir(backup_path).await {
+        Ok(list) => list,
+        // no backup has ever been created on this node
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(res),
+        Err(err) => return Err(err.into()),
+    };
+    while let Some(entry) = list.next_entry().await? {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(ts) = backup_ts_from_name(name, prefix) else {
+            continue;
+        };
+        res.count += 1;
+        if res.newest.as_ref().is_none_or(|n| ts > n.ts) {
+            res.newest = Some(LocalBackup {
+                ts,
+                file: name.to_string(),
+            });
+        }
+    }
+    Ok(res)
+}
+
+/// The response of `GET /backup`.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BackupInfo {
+    pub node_id: NodeId,
+    pub local: LocalBackups,
+    #[serde(flatten)]
+    pub status: BackupStatusInner,
+}
+
+impl BackupInfo {
+    /// The same information in the Prometheus text format, for `/metrics`. A timestamp of `0`
+    /// means "never since this node started" (or "none" for the local and the S3 one), so an alert on
+    /// `time() - hiqlite_backup_local_newest_timestamp_seconds` also fires for a node without any.
+    pub(crate) fn to_prometheus(&self) -> String {
+        use std::fmt::Write;
+
+        let node = self.node_id;
+        let ts = |e: &Option<BackupEvent>| e.as_ref().map_or(0, |e| e.ts);
+        let mut out = String::with_capacity(1024);
+        let mut gauge = |name: &str, help: &str, value: i64| {
+            let _ = writeln!(out, "# HELP {name} {help}");
+            let _ = writeln!(out, "# TYPE {name} gauge");
+            let _ = writeln!(out, "{name}{{node_id=\"{node}\"}} {value}");
+        };
+
+        gauge(
+            "hiqlite_backup_local_count",
+            "Finished local backups of this node on disk.",
+            i64::try_from(self.local.count).unwrap_or(i64::MAX),
+        );
+        gauge(
+            "hiqlite_backup_local_newest_timestamp_seconds",
+            "Timestamp in the name of the newest local backup on disk, 0 if there is none.",
+            self.local.newest.as_ref().map_or(0, |n| n.ts),
+        );
+        gauge(
+            "hiqlite_backup_last_success_timestamp_seconds",
+            "When this node last finished a local backup since it started, 0 if never.",
+            ts(&self.status.last_backup),
+        );
+        gauge(
+            "hiqlite_backup_last_error_timestamp_seconds",
+            "When a local backup of this node last failed since it started, 0 if never.",
+            ts(&self.status.last_backup_error),
+        );
+        #[cfg(feature = "s3")]
+        {
+            gauge(
+                "hiqlite_backup_s3_latest_timestamp_seconds",
+                "Timestamp in the name of the newest backup this node has seen on S3, 0 if none.",
+                self.status.s3_latest.as_ref().map_or(0, |l| l.ts),
+            );
+            gauge(
+                "hiqlite_backup_s3_last_error_timestamp_seconds",
+                "When this node last failed to confirm a backup on S3 since it started, 0 if never.",
+                ts(&self.status.s3_error),
+            );
+        }
+
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{backup_file_name, backup_ts_from_name, is_valid_file_prefix};
+
+    /// The newest S3 backup survives a restart, and an older confirmation, e.g. a slow watcher
+    /// of an earlier backup, never moves it back.
+    #[cfg(feature = "s3")]
+    #[tokio::test]
+    async fn the_newest_s3_backup_is_persisted_and_only_moves_forward() {
+        use super::BackupStatus;
+
+        let dir = "test_data/backup_status_s3_latest";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+
+        let status = BackupStatus::new(dir);
+        status.load_s3_latest().await;
+        assert!(status.get().s3_latest.is_none());
+
+        status.s3_confirmed("bkp_1_200.sqlite", 200).await;
+        status.s3_confirmed("bkp_1_100.sqlite", 100).await;
+        assert_eq!(status.get().s3_latest.unwrap().object, "bkp_1_200.sqlite");
+
+        let restarted = BackupStatus::new(dir);
+        restarted.load_s3_latest().await;
+        let latest = restarted.get().s3_latest.unwrap();
+        assert_eq!(latest.object, "bkp_1_200.sqlite");
+        assert_eq!(latest.ts, 200);
+
+        restarted.s3_failed("bkp_1_300.sqlite", "not found");
+        assert_eq!(restarted.get().s3_latest.unwrap().ts, 200);
+        assert_eq!(restarted.get().s3_error.unwrap().file, "bkp_1_300.sqlite");
+
+        // a broken file is ignored, it never stops the node from starting
+        std::fs::write(format!("{dir}/s3_latest.json"), b"{").unwrap();
+        let broken = BackupStatus::new(dir);
+        broken.load_s3_latest().await;
+        assert!(broken.get().s3_latest.is_none());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn a_backup_file_name_round_trips_to_its_timestamp() {

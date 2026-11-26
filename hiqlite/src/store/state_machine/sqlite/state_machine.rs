@@ -150,6 +150,8 @@ pub struct StateMachineSqlite {
 
     pub(crate) read_actors: flume::Sender<ReaderRequest>,
     pub(crate) write_tx: flume::Sender<WriterRequest>,
+    #[cfg(feature = "backup")]
+    pub(crate) backup_status: Arc<crate::backup::BackupStatus>,
 }
 
 impl StateMachineSqlite {
@@ -190,6 +192,18 @@ impl StateMachineSqlite {
             prepared_statement_cache_capacity,
         )
         .await?;
+        #[cfg(feature = "backup")]
+        let backup_status = Arc::new(crate::backup::BackupStatus::new(&path_backups));
+        #[cfg(feature = "s3")]
+        backup_status.load_s3_latest().await;
+        #[cfg(feature = "s3")]
+        if let Some(s3) = &s3_config {
+            tokio::spawn(crate::backup::seed_s3_latest(
+                s3.clone(),
+                backup_status.clone(),
+                backup_file_prefix.to_string(),
+            ));
+        }
         let write_tx = writer::spawn_writer(
             conn,
             this_node,
@@ -200,6 +214,8 @@ impl StateMachineSqlite {
             local_backup_keep_for,
             #[cfg(feature = "backup")]
             backup_file_prefix.to_string(),
+            #[cfg(feature = "backup")]
+            backup_status.clone(),
             lock_file,
         );
 
@@ -228,6 +244,8 @@ impl StateMachineSqlite {
             s3_config,
             read_actors,
             write_tx,
+            #[cfg(feature = "backup")]
+            backup_status,
         };
 
         if !db_exists && let Some(snapshot) = slf.read_current_snapshot().await? {
