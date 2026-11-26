@@ -144,18 +144,7 @@ pub(crate) async fn start_raft_db(
     )
     .await?;
 
-    init::init_pristine_node_1_db(
-        &raft,
-        node_config.node_id,
-        &node_config.nodes,
-        &node_config.secret_api,
-        node_config.tls_api.is_some(),
-        node_config
-            .tls_api
-            .as_ref()
-            .is_some_and(|c| c.danger_tls_no_verify()),
-    )
-    .await?;
+    init::init_pristine_node_1_db(&raft, node_config).await?;
 
     Ok(StateRaftDB {
         raft,
@@ -256,19 +245,7 @@ where
         (raft, None, None)
     };
 
-    init::init_pristine_node_1_cache(
-        &raft,
-        node_config.cache_storage_disk,
-        node_config.node_id,
-        &node_config.nodes,
-        &node_config.secret_api,
-        node_config.tls_api.is_some(),
-        node_config
-            .tls_api
-            .as_ref()
-            .is_some_and(|c| c.danger_tls_no_verify()),
-    )
-    .await?;
+    init::init_pristine_node_1_cache(&raft, node_config).await?;
 
     Ok(StateRaftCache {
         raft,

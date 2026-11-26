@@ -2,7 +2,7 @@ use crate::app_state::{AppState, RaftType};
 use crate::helpers::{deserialize_serde, serialize};
 use crate::network::WireMetrics;
 use crate::network::management::{ClusterLeaveReq, LearnerReq};
-use crate::{Error, Node, NodeId, helpers};
+use crate::{Error, Node, NodeConfig, NodeId, helpers};
 use openraft::Membership;
 use openraft::type_config::async_runtime::watch::WatchReceiver;
 use std::fmt::Write;
@@ -87,22 +87,18 @@ pub async fn check_execute_reset(base_path: &str) -> Result<bool, Error> {
 #[cfg(feature = "sqlite")]
 pub async fn init_pristine_node_1_db(
     raft: &openraft::Raft<TypeConfigSqlite, StateMachineSqlite>,
-    node_id: u64,
-    nodes: &[Node],
-    secret_api: &str,
-    tls: bool,
-    tls_no_verify: bool,
+    node_config: &NodeConfig,
 ) -> Result<(), Error> {
+    let node_id = node_config.node_id;
     if node_id == 1 {
-        let this_node = get_this_node(node_id, nodes)?;
+        let this_node = get_this_node(node_id, &node_config.nodes)?;
 
         if is_initialized_timeout_sqlite(node_id, raft).await? {
             info!("node 1 raft is already initialized");
             return Ok(());
         }
 
-        if should_node_1_skip_init(&RaftType::Sqlite, nodes, secret_api, tls, tls_no_verify).await?
-        {
+        if should_node_1_skip_init(&RaftType::Sqlite, &InitCheck::new(node_config)).await? {
             info!("node 1 (DB) should skip its own init - found existing cluster on remotes");
             return Ok(());
         }
@@ -121,22 +117,18 @@ pub async fn init_pristine_node_1_db(
 #[cfg(feature = "cache")]
 pub async fn init_pristine_node_1_cache(
     raft: &openraft::Raft<TypeConfigCache, Arc<StateMachineMemory>>,
-    wal_on_disk: bool,
-    node_id: u64,
-    nodes: &[Node],
-    secret_api: &str,
-    tls: bool,
-    tls_no_verify: bool,
+    node_config: &NodeConfig,
 ) -> Result<(), Error> {
+    let node_id = node_config.node_id;
     if node_id == 1 {
-        let this_node = get_this_node(node_id, nodes)?;
+        let this_node = get_this_node(node_id, &node_config.nodes)?;
 
-        if wal_on_disk && is_initialized_timeout_cache(node_id, raft).await? {
+        if node_config.cache_storage_disk && is_initialized_timeout_cache(node_id, raft).await? {
             info!("node 1 raft is already initialized");
             return Ok(());
         }
 
-        if should_node_1_skip_init(&RaftType::Cache, nodes, secret_api, tls, tls_no_verify).await? {
+        if should_node_1_skip_init(&RaftType::Cache, &InitCheck::new(node_config)).await? {
             info!("node 1 (cache) should skip its own init - found existing cluster on remotes");
             return Ok(());
         }
@@ -162,71 +154,223 @@ fn get_this_node(this_node: u64, nodes: &[Node]) -> Result<Node, Error> {
         })
 }
 
-#[tracing::instrument(skip(nodes, secret_api, tls, tls_no_verify))]
+/// How many consecutive rounds every remote must be unreachable before a pristine node 1 forms
+/// the cluster on its own. With a 1 second pause between rounds this is the same 10 seconds after
+/// which `/ready` reports a pristine node 1 as ready.
+const ALL_UNREACHABLE_ROUNDS: u32 = 10;
+
+/// What [`should_node_1_skip_init`] needs from the [`NodeConfig`].
+pub(crate) struct InitCheck<'a> {
+    pub nodes: &'a [Node],
+    pub secret_api: &'a str,
+    pub tls: bool,
+    pub tls_no_verify: bool,
+    /// [`NodeConfig::init_require_peers`]
+    pub require_peers: bool,
+}
+
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+impl<'a> InitCheck<'a> {
+    fn new(node_config: &'a NodeConfig) -> Self {
+        Self {
+            nodes: &node_config.nodes,
+            secret_api: &node_config.secret_api,
+            tls: node_config.tls_api.is_some(),
+            tls_no_verify: node_config
+                .tls_api
+                .as_ref()
+                .is_some_and(|c| c.danger_tls_no_verify()),
+            require_peers: node_config.init_require_peers,
+        }
+    }
+}
+
+/// What one remote answered to the membership check.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PeerAnswer {
+    /// The remote is part of an initialized cluster.
+    Initialized,
+    /// The remote said its Raft group has never been initialized.
+    NotInitialized,
+    /// The remote could not be reached at all.
+    Unreachable,
+    /// The remote answered, but not with one of the above, e.g. a wrong secret or an initialized
+    /// node whose Raft is not running yet. It proves nothing either way.
+    Inconclusive,
+}
+
+/// The outcome of one round of asking every remote.
+#[derive(Debug, PartialEq)]
+enum InitRound {
+    /// A remote belongs to an initialized cluster: node 1 must join it.
+    Skip,
+    /// A quorum of the other nodes is pristine: node 1 forms the cluster.
+    Init,
+    /// No remote answered at all.
+    AllUnreachable,
+    /// Not enough evidence yet: ask again.
+    Wait,
+}
+
+/// Decides one round from the answers of all remotes (node 1 itself excluded).
+///
+/// A connection error never counts towards initializing. An unreachable remote may well be a
+/// member of an existing cluster, and node 1 forming a second one next to it is a split brain
+/// that Raft cannot detect afterwards: a fresh cluster's first leader is always node 1 in term 1,
+/// so both clusters write the same log ids with different payloads and the log matching check
+/// never fires.
+fn decide_init_round(answers: &[PeerAnswer]) -> InitRound {
+    if answers.contains(&PeerAnswer::Initialized) {
+        return InitRound::Skip;
+    }
+    if answers.iter().all(|a| *a == PeerAnswer::Unreachable) {
+        return InitRound::AllUnreachable;
+    }
+
+    // a majority of the other nodes, not of the whole cluster: node 1 has no data, so it can not
+    // vouch for anything itself
+    let quorum = answers.len() / 2 + 1;
+    let not_initialized = answers
+        .iter()
+        .filter(|a| **a == PeerAnswer::NotInitialized)
+        .count();
+    if not_initialized >= quorum {
+        InitRound::Init
+    } else {
+        InitRound::Wait
+    }
+}
+
+/// Asks one remote for its membership.
+async fn ask_peer_membership(client: &reqwest::Client, url: &str, secret_api: &str) -> PeerAnswer {
+    let resp = match client.get(url).bearer_auth(secret_api).send().await {
+        Ok(resp) => resp,
+        Err(err) => {
+            debug!("Error sending membership request to {url}: {err}");
+            return PeerAnswer::Unreachable;
+        }
+    };
+
+    let status = resp.status();
+    let Ok(body) = resp.bytes().await else {
+        return PeerAnswer::Inconclusive;
+    };
+
+    if status.is_success() {
+        return match deserialize_serde::<Membership<NodeId, Node>>(body.as_ref()) {
+            Ok(membership) if membership.nodes().count() > 0 => PeerAnswer::Initialized,
+            Ok(_) => {
+                error!("{url} is initialized but has no configured members");
+                PeerAnswer::Inconclusive
+            }
+            Err(err) => {
+                error!("Cannot deserialize the membership from {url}: {err}");
+                PeerAnswer::Inconclusive
+            }
+        };
+    }
+
+    match serde_json::from_slice::<Error>(&body) {
+        Ok(Error::RaftNotInitialized) => PeerAnswer::NotInitialized,
+        Ok(err) => {
+            warn!("Membership check on {url} answered {status}: {err}");
+            PeerAnswer::Inconclusive
+        }
+        Err(_) => {
+            warn!("Membership check on {url} answered {status} with an unknown body");
+            PeerAnswer::Inconclusive
+        }
+    }
+}
+
+/// Decides whether a node 1 without any Raft state must skip its own `initialize()`, because the
+/// cluster already exists on the other nodes.
+///
+/// Every remote is asked in each round. Node 1 skips as soon as one of them belongs to an
+/// initialized cluster, and initializes once a quorum of the other nodes positively answered
+/// that they were never initialized. While neither is the case, it keeps asking.
+///
+/// The one exception is a node 1 that cannot reach any remote at all for
+/// [`ALL_UNREACHABLE_ROUNDS`] rounds. That is how a brand new cluster looks when its nodes are
+/// started one after the other, e.g. a Kubernetes `StatefulSet` with
+/// `podManagementPolicy: OrderedReady`, and it is also the documented disaster recovery path, so
+/// node 1 still forms the cluster alone in that case, unless `require_peers` is set. Then it keeps
+/// asking until the other nodes answer.
+#[tracing::instrument(skip(check), fields(require_peers = check.require_peers))]
 async fn should_node_1_skip_init(
     raft_type: &RaftType,
-    nodes: &[Node],
-    secret_api: &str,
-    tls: bool,
-    tls_no_verify: bool,
+    check: &InitCheck<'_>,
 ) -> Result<bool, Error> {
+    let InitCheck {
+        nodes,
+        secret_api,
+        tls,
+        tls_no_verify,
+        require_peers,
+    } = *check;
     if nodes.len() < 2 {
         return Ok(false);
     }
 
     let client = build_http_client(tls_no_verify);
-
-    // no need for +1 since this very node is the +1
-    let quorum = nodes.len() / 2;
-
     let scheme = if tls { "https" } else { "http" };
-    let mut skip_nodes = vec![1];
+    let remotes = nodes
+        .iter()
+        .filter(|node| node.id != 1)
+        .map(|node| {
+            (
+                node.id,
+                format!(
+                    "{}://{}/cluster/membership/{}",
+                    scheme,
+                    node.addr_api,
+                    raft_type.as_str()
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut answers = Vec::with_capacity(remotes.len());
+    let mut all_unreachable_rounds = 0;
 
     loop {
-        for node in nodes {
-            if skip_nodes.contains(&node.id) {
-                continue;
-            }
+        answers.clear();
+        for (id, url) in &remotes {
+            debug!("checking membership of node {id} via {url}");
+            answers.push(ask_peer_membership(&client, url, secret_api).await);
+        }
 
-            let url = format!(
-                "{}://{}/cluster/membership/{}",
-                scheme,
-                node.addr_api,
-                raft_type.as_str()
-            );
-            debug!("checking membership via {}", url);
-
-            let res = client.get(url).bearer_auth(secret_api).send().await;
-            match res {
-                Ok(resp) => {
-                    debug!("{} status: {}", node.id, resp.status());
-                    if resp.status().is_success() {
-                        let body = resp.bytes().await?;
-                        let membership: Membership<NodeId, Node> =
-                            deserialize_serde(body.as_ref())?;
-
-                        if membership.nodes().count() > 0 {
-                            return Ok(true);
-                        }
-                        panic!(
-                            "The remote node {} is initialized but has no configured members. \
-                        This should never happen",
-                            node.id
+        match decide_init_round(&answers) {
+            InitRound::Skip => return Ok(true),
+            InitRound::Init => return Ok(false),
+            InitRound::AllUnreachable => {
+                all_unreachable_rounds += 1;
+                if require_peers {
+                    if all_unreachable_rounds % ALL_UNREACHABLE_ROUNDS == 0 {
+                        warn!(
+                            "No other node was reachable for {all_unreachable_rounds} rounds - \
+                             `init_require_peers` is set, so node 1 keeps waiting for them \
+                             instead of forming a new {} cluster alone.",
+                            raft_type.as_str()
                         );
                     }
-
-                    let body = resp.bytes().await?;
-                    let err: Error = serde_json::from_slice(&body)?;
-                    error!("{}", err);
-                    skip_nodes.push(node.id);
-                }
-                Err(err) => {
-                    debug!("Error sending membership request: {}", err);
+                } else if all_unreachable_rounds >= ALL_UNREACHABLE_ROUNDS {
+                    warn!(
+                        "No other node was reachable for {ALL_UNREACHABLE_ROUNDS} rounds - \
+                         forming a new {} cluster from node 1 alone. If node 1 lost its data \
+                         while the other nodes still hold a cluster, they must be wiped before \
+                         they rejoin.",
+                        raft_type.as_str()
+                    );
+                    return Ok(false);
                 }
             }
-
-            if skip_nodes.len() >= quorum {
-                return Ok(false);
+            InitRound::Wait => {
+                all_unreachable_rounds = 0;
+                info!(
+                    "Waiting for a quorum of the other nodes to answer before initializing node \
+                     1 - answers: {answers:?}"
+                );
             }
         }
 
@@ -949,4 +1093,69 @@ fn log_no_membership_error() {
     up in an inconsistent state.
 "
     );
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "init_skip_tests.rs"]
+mod skip_tests;
+
+#[cfg(test)]
+mod decide_tests {
+    use super::{InitRound, PeerAnswer, decide_init_round};
+    use PeerAnswer::{Inconclusive, Initialized, NotInitialized, Unreachable};
+
+    #[test]
+    fn any_initialized_remote_means_join() {
+        assert_eq!(
+            decide_init_round(&[Unreachable, Initialized]),
+            InitRound::Skip
+        );
+        assert_eq!(
+            decide_init_round(&[NotInitialized, Initialized]),
+            InitRound::Skip
+        );
+    }
+
+    #[test]
+    fn connection_errors_never_count_towards_init() {
+        // N=3: the case that formed a second cluster before
+        assert_eq!(
+            decide_init_round(&[Unreachable, NotInitialized]),
+            InitRound::Wait
+        );
+        assert_eq!(
+            decide_init_round(&[Inconclusive, NotInitialized]),
+            InitRound::Wait
+        );
+        // N=5: two pristine answers out of four remotes are not a quorum of them
+        assert_eq!(
+            decide_init_round(&[NotInitialized, NotInitialized, Unreachable, Unreachable]),
+            InitRound::Wait
+        );
+    }
+
+    #[test]
+    fn quorum_of_the_other_nodes_initializes() {
+        assert_eq!(decide_init_round(&[NotInitialized]), InitRound::Init);
+        assert_eq!(
+            decide_init_round(&[NotInitialized, NotInitialized]),
+            InitRound::Init
+        );
+        assert_eq!(
+            decide_init_round(&[NotInitialized, NotInitialized, NotInitialized, Unreachable]),
+            InitRound::Init
+        );
+    }
+
+    #[test]
+    fn nobody_reachable_is_reported_as_such() {
+        assert_eq!(
+            decide_init_round(&[Unreachable, Unreachable]),
+            InitRound::AllUnreachable
+        );
+        assert_eq!(
+            decide_init_round(&[Inconclusive, Unreachable]),
+            InitRound::Wait
+        );
+    }
 }

@@ -306,6 +306,13 @@ impl NodeConfig {
         .map_or(crate::config::DEFAULT_SHUTDOWN_DELAY, Duration::from_millis);
         let learner_only =
             t_bool(&mut map, t_name, "learner_only", "HQL_LEARNER_ONLY")?.unwrap_or(false);
+        let init_require_peers = t_bool(
+            &mut map,
+            t_name,
+            "init_require_peers",
+            "HQL_INIT_REQUIRE_PEERS",
+        )?
+        .unwrap_or(false);
 
         #[cfg(feature = "backup")]
         let (backup_config, backup_keep_for_local, backup_file_prefix) = {
@@ -500,6 +507,7 @@ impl NodeConfig {
             health_check_delay,
             shutdown_delay,
             learner_only,
+            init_require_peers,
             #[cfg(feature = "cache")]
             rate_limit_cache,
             #[cfg(feature = "sqlite")]

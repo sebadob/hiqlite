@@ -108,6 +108,11 @@ pub enum Error {
     RaftErrorFatalDb(#[bincode(with_serde)] Box<Fatal<ConfigDb>>),
     #[error("RaftErrorFatalCache: {0}")]
     RaftErrorFatalCache(#[bincode(with_serde)] Box<Fatal<ConfigCache>>),
+    /// The Raft group of this node has never been initialized. `GET /cluster/membership` answers
+    /// with it, and a pristine node 1 counts only this answer as "not initialized" before it
+    /// forms a new cluster, so an initialized node whose Raft is not running yet never sends it.
+    #[error("RaftNotInitialized: Raft node has not been initialized")]
+    RaftNotInitialized,
     /// Internal Raft error
     #[error("RateLimit: {0}")]
     RateLimit(#[bincode(with_serde)] Cow<'static, str>),
@@ -204,6 +209,7 @@ impl IntoResponse for Error {
             | Error::InitializeErrorDb(_)
             | Error::PrepareStatement(_)
             | Error::QueryParams(_)
+            | Error::RaftNotInitialized
             | Error::Request(_)
             | Error::S3(_)
             | Error::Sqlite(_)
