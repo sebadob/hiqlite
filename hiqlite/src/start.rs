@@ -133,6 +133,7 @@ where
         raft_cache,
         raft_lock: Arc::new(Mutex::new(())),
         secret_api: node_config.secret_api,
+        secret_metrics: node_config.secret_metrics,
         secret_raft: node_config.secret_raft,
         #[cfg(feature = "dashboard")]
         dashboard: dashboard::DashboardState {
@@ -257,6 +258,7 @@ where
             "/backup",
             post(api::post_create_backup).get(api::get_backup_info),
         )
+        .route("/metrics", get(api::get_metrics))
         .route("/health", get(api::health))
         .route("/ready", get(api::ready))
         .route("/ping", get(api::ping))

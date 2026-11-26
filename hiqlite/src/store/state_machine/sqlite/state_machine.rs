@@ -194,7 +194,15 @@ impl StateMachineSqlite {
         )
         .await?;
         #[cfg(feature = "backup")]
-        let backup_status = Arc::new(crate::backup::BackupStatus::default());
+        let backup_status = Arc::new(crate::backup::BackupStatus::new(&path_backups));
+        #[cfg(feature = "s3")]
+        if let Some(s3) = &s3_config {
+            tokio::spawn(crate::backup::seed_s3_latest(
+                s3.clone(),
+                backup_status.clone(),
+                backup_file_prefix.to_string(),
+            ));
+        }
         let write_tx = writer::spawn_writer(
             conn,
             this_node,

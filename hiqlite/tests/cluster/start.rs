@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::{fs, task, time};
 
 pub const SECRET_API: &str = "qweqweqweqweqweqwe";
+pub const SECRET_METRICS: &str = "metricsmetricsmetrics";
 
 /// Which side of a (re)started cluster runs TLS. It is passed explicitly at every cluster start so
 /// a single test run can rotate through all plain/TLS combinations across the restarts in main.rs.
@@ -101,6 +102,7 @@ pub async fn build_config_with_nodes(
 
     config.secret_raft = "asdasdasdasdasdasd".to_string();
     config.secret_api = SECRET_API.to_string();
+    config.secret_metrics = Some(SECRET_METRICS.to_string());
 
     config.backup_config = Default::default();
     // A prefix of our own, so the tests prove that backups are named by the config, and that the

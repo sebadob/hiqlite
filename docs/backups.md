@@ -57,28 +57,43 @@ this node's backups:
 
 ```json
 {
-  "node_id": 1,
+  "node_id": 2,
   "local": { "count": 3, "newest": { "ts": 1700000000, "file": "backup_node_1_1700000000.sqlite" } },
   "last_backup": { "ts": 1700000002, "file": "backup_node_1_1700000000.sqlite" },
   "last_backup_error": null,
-  "last_s3_upload": { "ts": 1700000003, "file": "backup_node_1_1700000000.sqlite" },
-  "last_s3_upload_error": null
+  "s3_latest": { "object": "backup_node_1_1700000000.sqlite", "ts": 1700000000, "confirmed_at": 1700000030 },
+  "s3_error": null
 }
 ```
 
-`local` is read from the backups directory, so it survives a restart. The `last_*` entries are kept
-in memory since the node started; their `ts` is when the backup or upload finished, and an error
-entry also carries the `error` message. Every node creates its own local backup, while only the
-node that requested the backup (the leader) uploads it to S3, so ask the leader for the upload
-state. The `s3` fields only exist with the `s3` feature.
+`local` is read from the backups directory, so it survives a restart. `last_backup` and
+`last_backup_error` are kept in memory since the node started; their `ts` is when the backup
+finished, and an error entry also carries the `error` message.
 
-`GET /backup?format=prometheus` returns the same as Prometheus gauges, labeled with `node_id`:
-`hiqlite_backup_local_count`, `hiqlite_backup_local_newest_timestamp_seconds`,
-`hiqlite_backup_last_success_timestamp_seconds`, `hiqlite_backup_last_error_timestamp_seconds` and,
-with `s3`, `hiqlite_backup_s3_last_upload_success_timestamp_seconds` and
-`hiqlite_backup_s3_last_upload_error_timestamp_seconds`. A timestamp of `0` means "never", so an
-alert like `time() - hiqlite_backup_local_newest_timestamp_seconds > 2 * 86400` also fires for a
-node without any backup.
+With the `s3` feature, every node reports the bucket, not only the leader. Only the node that
+requested a backup (the leader) uploads it, but every node knows the object name from the log
+entry, so every other node watches the bucket for that object after its own local backup is done,
+for up to an hour. `s3_latest` is the newest backup a node has seen in the bucket; it is persisted
+as `s3_latest.json` in the backups directory, so it survives a restart, and a node that has none
+yet looks it up in the bucket once at startup. `s3_error` is the last backup this node could not
+confirm: an upload that failed for good on the leader, or an object that did not show up in time
+on any other node.
+
+## Metrics
+
+`GET /metrics` on the API port returns Prometheus gauges labeled with `node_id`. It is protected by
+its own secret, `secret_metrics` (`HQL_SECRET_METRICS`), as `Authorization: Bearer
+<secret_metrics>`, and it does not exist (`404`) while that secret is not set. Keep it different
+from `secret_api`: a scrape config often lives next to other apps or in git, and `secret_api` can
+modify the whole cluster, while `secret_metrics` only reads metrics.
+
+The backup gauges are `hiqlite_backup_local_count`,
+`hiqlite_backup_local_newest_timestamp_seconds`, `hiqlite_backup_last_success_timestamp_seconds`,
+`hiqlite_backup_last_error_timestamp_seconds` and, with `s3`,
+`hiqlite_backup_s3_latest_timestamp_seconds` and `hiqlite_backup_s3_last_error_timestamp_seconds`.
+A timestamp of `0` means "never", so an alert like
+`time() - hiqlite_backup_s3_latest_timestamp_seconds > 2 * 86400` also fires for a cluster that has
+no backup in the bucket at all, and it fires on every node.
 
 ## List and fetch
 

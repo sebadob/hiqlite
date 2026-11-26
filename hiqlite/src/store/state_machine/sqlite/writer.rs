@@ -645,12 +645,13 @@ CREATE TABLE IF NOT EXISTS _metadata
                         Err(err) => error!("Error during VACUUM: {}", err),
                     }
 
-                    // only the current leader should push the backup
+                    // only the current leader should push the backup, every other node watches
+                    // the bucket for it once its own local backup is done
                     #[cfg(feature = "s3")]
-                    let s3_config = if this_node == req.node_id {
-                        req.s3_config
+                    let (s3_config, s3_watch) = if this_node == req.node_id {
+                        (req.s3_config, None)
                     } else {
-                        None
+                        (None, req.s3_config)
                     };
 
                     if let Err(err) = create_backup(
@@ -686,6 +687,26 @@ CREATE TABLE IF NOT EXISTS _metadata
                         req.node_id,
                         req.ts,
                     ));
+
+                    // A backup entry that is replayed after a restart is older than the watch
+                    // window, and its object may be gone by retention, so it is not watched.
+                    #[cfg(feature = "s3")]
+                    if let Some(s3) = s3_watch
+                        && now.timestamp() - req.ts
+                            < i64::try_from(crate::backup::S3_CONFIRM_TIMEOUT.as_secs())
+                                .unwrap_or(i64::MAX)
+                    {
+                        rt.spawn(crate::backup::await_s3_backup(
+                            s3,
+                            backup_status.clone(),
+                            crate::backup::backup_file_name(
+                                &backup_file_prefix,
+                                req.node_id,
+                                req.ts,
+                            ),
+                            req.ts,
+                        ));
+                    }
 
                     #[cfg(feature = "backup")]
                     {
@@ -882,7 +903,7 @@ fn create_backup(
                 match s3.push(&path_full, &file).await {
                     Ok(()) => {
                         info!("Push backup to S3 has been finished");
-                        backup_status.s3_upload_ok(&file);
+                        backup_status.s3_confirmed(&file, ts);
                         break;
                     }
                     Err(err) if attempt < S3_MAX_RETRIES => {
@@ -896,7 +917,7 @@ fn create_backup(
                             "Error pushing Backup to S3 after {attempt} attempts: {err} - \
                             the backup exists locally but not offsite"
                         );
-                        backup_status.s3_upload_failed(&file, &err.to_string());
+                        backup_status.s3_failed(&file, &err.to_string());
                         break;
                     }
                 }

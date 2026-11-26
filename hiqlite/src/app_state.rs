@@ -75,6 +75,7 @@ pub(crate) struct AppState {
     pub s3_config: Option<Arc<S3Config>>,
     pub secret_raft: String,
     pub secret_api: String,
+    pub secret_metrics: Option<String>,
     #[cfg(feature = "dashboard")]
     pub dashboard: DashboardState,
     #[cfg(any(feature = "backup", feature = "dashboard"))]

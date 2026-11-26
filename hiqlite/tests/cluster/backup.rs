@@ -88,8 +88,8 @@ pub async fn test_backup(client_1: &Client, tls_api: bool) -> Result<(), Error> 
     Ok(())
 }
 
-/// `GET /backup` on `node_id`: JSON by default and Prometheus text with `?format=prometheus`,
-/// both showing `name` as the newest local and the last successful backup.
+/// `GET /backup` on `node_id` (JSON, behind the API secret) and `GET /metrics` (Prometheus text,
+/// behind the metrics secret only), both showing `name` as the newest local backup.
 async fn test_backup_info(node_id: u64, name: &str, tls_api: bool) {
     let client = reqwest::Client::builder()
         .tls_danger_accept_invalid_certs(tls_api)
@@ -97,7 +97,8 @@ async fn test_backup_info(node_id: u64, name: &str, tls_api: bool) {
         .unwrap();
     let scheme = if tls_api { "https" } else { "http" };
     let url = format!("{scheme}://127.0.0.1:3100{node_id}/backup");
-    let auth = format!("Bearer {}", crate::start::SECRET_API);
+    let auth_api = format!("Bearer {}", crate::start::SECRET_API);
+    let auth_metrics = format!("Bearer {}", crate::start::SECRET_METRICS);
 
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(
@@ -105,10 +106,21 @@ async fn test_backup_info(node_id: u64, name: &str, tls_api: bool) {
         401,
         "GET /backup must require the API secret"
     );
+    let resp = client
+        .get(&url)
+        .header("authorization", &auth_metrics)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        401,
+        "the metrics secret must not open GET /backup"
+    );
 
     let resp = client
         .get(&url)
-        .header("authorization", &auth)
+        .header("authorization", &auth_api)
         .send()
         .await
         .unwrap();
@@ -120,13 +132,59 @@ async fn test_backup_info(node_id: u64, name: &str, tls_api: bool) {
     assert_eq!(info["last_backup"]["file"], name, "{info}");
     assert!(info["last_backup"]["ts"].as_i64().unwrap() > 0, "{info}");
 
+    // With a bucket configured, a node that did not push the backup still learns about it: it
+    // watches the bucket for the object named in the backup entry. The first check runs 10s after
+    // its local backup.
+    if std::env::var("HQL_S3_URL").is_ok() {
+        let follower = node_id % 3 + 1;
+        let url_follower = format!("{scheme}://127.0.0.1:3100{follower}/backup");
+        let mut seen = serde_json::Value::Null;
+        // the first check is 10s and the next one 30s after the local backup
+        for _ in 0..90 {
+            let resp = client
+                .get(&url_follower)
+                .header("authorization", &auth_api)
+                .send()
+                .await
+                .unwrap();
+            seen = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+            if seen["s3_latest"]["object"] == name {
+                break;
+            }
+            time::sleep(Duration::from_millis(500)).await;
+        }
+        assert_eq!(
+            seen["s3_latest"]["object"], name,
+            "node {follower} must see the leader's S3 backup: {seen}"
+        );
+    }
+
+    let url_metrics = format!("{scheme}://127.0.0.1:3100{node_id}/metrics");
+    let resp = client.get(&url_metrics).send().await.unwrap();
+    assert_eq!(resp.status(), 401, "GET /metrics must require a secret");
     let resp = client
-        .get(format!("{url}?format=prometheus"))
-        .header("authorization", &auth)
+        .get(&url_metrics)
+        .header("authorization", &auth_api)
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success());
+    assert_eq!(
+        resp.status(),
+        401,
+        "the API secret must not open GET /metrics"
+    );
+
+    let resp = client
+        .get(&url_metrics)
+        .header("authorization", &auth_metrics)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "GET /metrics: {}",
+        resp.status()
+    );
     let text = resp.text().await.unwrap();
     let ts = name
         .strip_suffix(".sqlite")
@@ -139,14 +197,6 @@ async fn test_backup_info(node_id: u64, name: &str, tls_api: bool) {
         )),
         "{text}"
     );
-
-    let resp = client
-        .get(format!("{url}?format=xml"))
-        .header("authorization", &auth)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 400);
 }
 
 pub async fn test_backup_restore_prerequisites(client: &Client) -> Result<(), Error> {

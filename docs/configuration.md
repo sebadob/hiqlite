@@ -55,6 +55,9 @@ vars override it; `--node-id` overrides the node id so one file serves every nod
 - Minimum 16 characters each, and use different values. The API secret travels as
   `Authorization: Bearer <secret_api>`, so it lands in every proxy and request log if you let it.
   See `security.md`.
+- `secret_metrics` - optional, authenticates `GET /metrics` only. At least 16 characters and
+  different from `secret_api`, so a Prometheus scrape config never holds a secret that can modify
+  the cluster. Without it, `/metrics` answers `404`.
 - `enc_keys`, `enc_key_active` - encryption for backups and for the dashboard. Mandatory when you
   enable backups, S3, or the dashboard. Keep every key you ever used in `enc_keys` as long as a
   backup made with it exists.
@@ -64,7 +67,7 @@ vars override it; `--node-id` overrides the node id so one file serves every nod
 `secrets_file` points at a second TOML file that mirrors the same table and holds only secret
 values. In the main config, set any secret-bearing key to the sentinel `$SECRETS` and the value is
 loaded from the file by key name. The secret-bearing keys are `secret_raft`, `secret_api`,
-`s3_key`, `s3_secret`, `enc_keys`, `enc_key_active`, `password_dashboard`.
+`secret_metrics`, `s3_key`, `s3_secret`, `enc_keys`, `enc_key_active`, `password_dashboard`.
 
 This keeps the config diffable and reviewable, and lets you mount secrets the way your platform
 does it: a file at `/run/secrets/hiqlite.toml`, a Kubernetes secret, a systemd credential.
