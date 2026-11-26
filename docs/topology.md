@@ -81,7 +81,10 @@ state nobody wants to debug.
 
 ## Elections
 
-- Make a node nominate itself: `Client::elect_node(node_id, force)` / `POST /cluster/election`.
+- Make a node nominate itself: `Client::elect_node(node_id)` / `POST /cluster/election`. It runs
+  openraft's Pre-Vote round, so a healthy cluster refuses it.
+- Move the seat deliberately: `Client::transfer_leadership(node_id)` /
+  `POST /cluster/transfer_leader`. This is the graceful path and the only one.
 - Turn self-nomination on and off per node: `Client::set_node_election(node_id, enable)` /
   `PUT /cluster/election`. This is the runtime switch for the `election_disable` marker.
 - The marker from the node line is applied at start. A restart re-applies the node line, so a

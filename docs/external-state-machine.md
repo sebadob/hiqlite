@@ -2,7 +2,7 @@
 
 For applications that already own a trusted consensus log. You decide the order of operations, you
 make them durable, and you decide what a snapshot means. Hiqlite gives you the SQLite engine, the
-read pool, the restore machinery, and the snapshot format.
+read threads, the restore machinery, and the snapshot format.
 
 This is opt-in and it is deliberately outside `default` and `full`. Enable `external-state-machine`
 only when you own the consensus yourself.
@@ -48,7 +48,10 @@ Implement `DeterministicSqliteOperation` for your operations and use `hiqlite::r
 ## Snapshots
 
 `build_snapshot_into` writes a snapshot to a path you own, and does not replace an existing path.
-Restore closes and recreates the read pool, so no handle survives a restore.
+Restore closes and recreates the read connections. A read that is already inside its query is waited
+for, up to a 30s grace; past it the restore proceeds, and that one read keeps answering the rows it
+started on. Nothing can interrupt a read mid-query, so a read closure that blocks is the one way to
+survive a restore.
 
 The evidence you publish is `ExternalSnapshotEvidence`, and `EXTERNAL_SQLITE_SNAPSHOT_FORMAT` names
 the page-image format. Your manifest codec maps that evidence into a versioned format that you own

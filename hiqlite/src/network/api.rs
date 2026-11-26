@@ -72,9 +72,9 @@ fn check_health(state: &AppStateExt) -> Result<(), Error> {
     #[cfg(feature = "sqlite")]
     {
         let metrics = state.raft_db.raft.metrics().borrow_watched().clone();
-        metrics.running_state?;
+        raft_is_running(metrics.running_state, "Raft DB")?;
         if metrics.current_leader.is_none() {
-            return Err(Error::LeaderChange(
+            return Err(Error::Unavailable(
                 "The leader voting process has not finished yet for Raft DB".into(),
             ));
         }
@@ -82,15 +82,26 @@ fn check_health(state: &AppStateExt) -> Result<(), Error> {
     #[cfg(feature = "cache")]
     {
         let metrics = state.raft_cache.raft.metrics().borrow_watched().clone();
-        metrics.running_state?;
+        raft_is_running(metrics.running_state, "Raft Cache")?;
         if metrics.current_leader.is_none() {
-            return Err(Error::LeaderChange(
+            return Err(Error::Unavailable(
                 "The leader voting process has not finished yet Raft Cache".into(),
             ));
         }
     }
 
     Ok(())
+}
+
+/// A Raft group that is not running is a node that is not healthy right now, which is a 503 and
+/// not a 500: the group comes back on its own, and nothing about the request is wrong.
+#[cfg(any(feature = "sqlite", feature = "cache"))]
+fn raft_is_running<T>(running_state: Result<(), T>, raft_label: &str) -> Result<(), Error>
+where
+    T: std::fmt::Display,
+{
+    running_state
+        .map_err(|err| Error::Unavailable(format!("The {raft_label} is not running: {err}").into()))
 }
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
@@ -108,7 +119,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     panic!("neither `sqlite` nor `cache` feature enabled");
 
     if state.is_shutting_down.load(Ordering::Relaxed) {
-        return Err(Error::Error("Node is shutting down".into()));
+        return Err(Error::Unavailable("Node is shutting down".into()));
     }
 
     let secs_since_start = Utc::now().sub(state.app_start).num_seconds();
@@ -121,7 +132,9 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     {
         if !state.raft_db.is_startup_finished.load(Ordering::Relaxed) {
             warn!("Node is still starting up (sqlite)");
-            return Err(Error::Error("Node is still starting up (sqlite)".into()));
+            return Err(Error::Unavailable(
+                "Node is still starting up (sqlite)".into(),
+            ));
         }
 
         // to avoid a chicken-and-egg problem, a pristine node 1 should always return ready
@@ -131,7 +144,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
         if !is_pristine_node_1 {
             if state.raft_db.is_raft_stopped.load(Ordering::Relaxed) {
                 warn!("sqlite raft is not running");
-                return Err(Error::Error("sqlite raft is not running".into()));
+                return Err(Error::Unavailable("sqlite raft is not running".into()));
             }
 
             let view = get_raft_view(&state, &RaftType::Sqlite)?;
@@ -145,7 +158,9 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
 
             if view.leader_id.is_none() && (state.id != 1 || secs_since_start < 10) {
                 warn!("sqlite raft leader vote in progress - secs_since_start: {secs_since_start}");
-                return Err(Error::Error("sqlite raft leader vote in progress".into()));
+                return Err(Error::Unavailable(
+                    "sqlite raft leader vote in progress".into(),
+                ));
             }
         }
     }
@@ -154,7 +169,9 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     {
         if !state.raft_cache.is_startup_finished.load(Ordering::Relaxed) {
             warn!("Node is still starting up (cache)");
-            return Err(Error::Error("Node is still starting up (cache)".into()));
+            return Err(Error::Unavailable(
+                "Node is still starting up (cache)".into(),
+            ));
         }
 
         let is_pristine_node_1 = state.id == 1
@@ -164,7 +181,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
         if !is_pristine_node_1 {
             if state.raft_cache.is_raft_stopped.load(Ordering::Relaxed) {
                 warn!("cache raft is not running");
-                return Err(Error::Error("cache raft is not running".into()));
+                return Err(Error::Unavailable("cache raft is not running".into()));
             }
 
             let view = get_raft_view(&state, &RaftType::Cache)?;
@@ -178,7 +195,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
 
             if view.leader_id.is_none() && (state.id != 1 || secs_since_start < 10) {
                 warn!("cache raft leader vote in progress");
-                return Err(Error::Error(
+                return Err(Error::Unavailable(
                     "cache raft leader vote in progress - secs_since_start: {secs_since_start}"
                         .into(),
                 ));
@@ -189,6 +206,9 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
     Ok(())
 }
 
+/// Readiness of this node inside one Raft group.  Every "not yet" here is a node that cannot
+/// serve right now and can serve later, so it answers 503: log replay has not applied the
+/// membership yet, a join is not committed yet, and a shutdown has started.
 fn ensure_ready_member(
     id: u64,
     learner_only: bool,
@@ -198,7 +218,7 @@ fn ensure_ready_member(
 ) -> Result<(), Error> {
     if state == ServerState::Shutdown {
         warn!("not yet a ready member of the {raft_label} raft");
-        return Err(Error::Error(
+        return Err(Error::Unavailable(
             format!("not yet a ready member of the {raft_label} raft").into(),
         ));
     }
@@ -218,7 +238,7 @@ fn ensure_ready_member(
     }
 
     warn!("not yet a ready member of the {raft_label} raft");
-    Err(Error::Error(
+    Err(Error::Unavailable(
         format!("not yet a ready member of the {raft_label} raft").into(),
     ))
 }
@@ -348,7 +368,10 @@ pub async fn get_version() -> impl IntoResponse {
 mod tests {
     use super::ensure_ready_member;
     use crate::Node;
+    use crate::error::Error;
     use crate::network::{TypeConfigWire, WireMembership};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
     use openraft::ServerState;
     use openraft::type_config::alias::{MembershipOf, StoredMembershipOf};
     use std::collections::{BTreeMap, BTreeSet};
@@ -393,6 +416,49 @@ mod tests {
         let membership = membership_with_voters_and_learners([1, 2, 3], [1, 2, 3]);
 
         assert!(ensure_ready_member(3, false, ServerState::Shutdown, &membership, "test").is_err());
+    }
+
+    /// A node that cannot serve right now and can serve later answers 503, never 400.  A probe
+    /// reads 400 as "this request is wrong", and a node replaying its log is exactly the case a
+    /// probe has to ride out.
+    #[test]
+    fn readiness_rejections_answer_service_unavailable() {
+        let membership = membership_with_voters_and_learners([1, 2], [1, 2, 3]);
+
+        for state in [ServerState::Learner, ServerState::Shutdown] {
+            let err = ensure_ready_member(3, false, state, &membership, "test")
+                .expect_err("node 3 is a learner, and readiness wants a voter");
+            assert_eq!(
+                err.into_response().status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "a {state:?} member must answer 503"
+            );
+        }
+
+        for msg in [
+            "Node is shutting down",
+            "Node is still starting up (sqlite)",
+            "sqlite raft is not running",
+            "sqlite raft leader vote in progress",
+            "The leader voting process has not finished yet for Raft DB",
+        ] {
+            assert_eq!(
+                Error::Unavailable(msg.into()).into_response().status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{msg} must answer 503"
+            );
+        }
+    }
+
+    /// The old readiness answers were 400.  This pins that the endpoints no longer build them.
+    #[test]
+    fn a_plain_error_answer_is_still_a_client_error() {
+        assert_eq!(
+            Error::Error("some request detail".into())
+                .into_response()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
     }
 
     fn membership_with_voters_and_learners<const VOTERS: usize, const MEMBERS: usize>(
@@ -914,7 +980,7 @@ async fn handle_socket_concurrent(
                     let res = query_consistent_local(
                         &state.raft_db.raft,
                         state.raft_db.log_statements,
-                        state.raft_db.read_pool.clone(),
+                        &state.raft_db.read_actors,
                         sql,
                         params,
                         read_policy.into(),
@@ -1006,7 +1072,7 @@ async fn handle_socket_concurrent(
                 ApiStreamRequestPayload::Query(Query { sql, params }) => {
                     let res = query_owned_local(
                         state.raft_db.log_statements,
-                        state.raft_db.read_pool.clone(),
+                        &state.raft_db.read_actors,
                         sql,
                         params,
                     )

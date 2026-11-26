@@ -74,21 +74,58 @@ log_statements = true
 # default: 1000
 prepared_statement_cache_capacity = 1000
 
-# The size of the pooled connections for local database reads.
+# The count of the node's local read connections, one per read actor thread.
 #
-# Do not confuse this with a pool size for network databases, as it
-# is much more efficient. You can't really translate between them,
-# because it depends on many things, but assuming a factor of 10 is
-# a good start. This means, if you needed a (read) pool size of 40
-# connections for something like a postgres before, you should start
-# at a `read_pool_size` of 4.
+# A read actor is one OS thread that owns its connection: a query is prepared, run and mapped on
+# that thread, and its prepared statement cache, its page cache and its read-only handle stay warm
+# for the whole life of the node. More threads than cores buys nothing.
 #
-# Keep in mind that this pool is only used for reads and writes will
+# A streaming query takes one of these threads for as long as you consume it, so a node runs at
+# most `read_pool_size` streams at once.
+#
+# Keep in mind that this is only used for reads and writes will
 # travel through the Raft and have their own dedicated connection.
 #
-# default: 4
+# default: one per core, at least 4 and at most 1024
 # overwritten by: HQL_READ_POOL_SIZE
 read_pool_size = 4
+
+# The queue wait at which the node logs that its read pool is saturated.
+#
+# A local read waits in the queue of the read pool for one connection to be free, and only the
+# thread that owns the connection can see that wait.  The warning carries the wait, how many reads
+# are queued behind it, and how long this connection's previous query ran - that last number is
+# what separates one query holding a connection from a pool with more reads than connections.  A
+# pool that stays saturated warns once every 10 seconds, not once per query.
+#
+# default: 100ms
+# overwritten by: HQL_SATURATED_POOL_THRESHOLD
+#saturated_pool_threshold = '100ms'
+
+# The time a local read may run on its connection before the node logs it as a slow query, naming
+# the statement and never its parameters.
+#
+# Independent of `saturated_pool_threshold` and normally higher than it: one is how long a read
+# waited for a connection, the other how long a read that got one took.
+#
+# A stream is measured from its first row to its drop, the pauses of its consumer included, because
+# its read actor is held for exactly that long. A stream you consume slowly is logged like a query
+# that ran that long, and it blocks its connection just as long.
+#
+# default: 1s
+# overwritten by: HQL_SLOW_QUERY_THRESHOLD
+#slow_query_threshold = '1s'
+
+# Log the statement text of a read that ran longer than `slow_query_threshold`.
+#
+# A statement built by the `sql!()` macros carries no value in it - parameters never reach the log.
+# A query typed into the dashboard is different: its values are inline in its text, so a slow
+# dashboard query writes them into the log. Set this to false to keep statement text out of the log
+# entirely. The saturation warning is unaffected, because it never names a statement.
+#
+# default: true
+# overwritten by: HQL_LOG_SLOW_QUERIES
+#log_slow_queries = true
 
 # Setting for Raft Log syncing / flushing.
 #

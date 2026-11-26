@@ -10,6 +10,8 @@ use tokio::sync::Mutex;
 use crate::client::stream::ClientStreamReq;
 #[cfg(feature = "dashboard")]
 use crate::dashboard::DashboardState;
+#[cfg(feature = "sqlite")]
+use crate::reader::ReaderRequest;
 #[cfg(feature = "s3")]
 use crate::s3::S3Config;
 #[cfg(feature = "dlock")]
@@ -22,9 +24,7 @@ use crate::store::state_machine::memory::{
 };
 #[cfg(feature = "sqlite")]
 use crate::store::state_machine::sqlite::{
-    TypeConfigSqlite,
-    state_machine::{SqlitePool, StateMachineSqlite},
-    writer::WriterRequest,
+    TypeConfigSqlite, state_machine::StateMachineSqlite, writer::WriterRequest,
 };
 #[cfg(any(feature = "backup", feature = "dashboard"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -102,7 +102,7 @@ pub struct StateRaftDB {
     pub raft: openraft::Raft<TypeConfigSqlite, StateMachineSqlite>,
     pub shutdown_handle: hiqlite_wal::ShutdownHandle,
     pub sql_writer: flume::Sender<WriterRequest>,
-    pub read_pool: SqlitePool,
+    pub read_actors: flume::Sender<ReaderRequest>,
     /// Where the network layer assembles an incoming snapshot, for the state machine to read.
     pub path_snapshots: String,
     pub log_statements: bool,
