@@ -57,7 +57,7 @@ async fn pristine_remote() -> String {
     serve(Router::new().route(
         "/cluster/membership/sqlite",
         get(|| async {
-            let err = Error::Config("Raft node has not been initialized".into());
+            let err = Error::RaftNotInitialized;
             (StatusCode::BAD_REQUEST, serde_json::to_vec(&err).unwrap()).into_response()
         }),
     ))

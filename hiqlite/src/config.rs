@@ -64,8 +64,9 @@ pub type EncKeysArg = Option<()>;
 /// `max_in_snapshot_log_to_keep`, because this will play a crucial role if you need to restore
 /// from a backup in case of disaster recovery.
 // The flags are the flat `[hiqlite]` TOML keys 1:1 - `log_statements`, `cache_storage_disk`,
-// `insecure_cookie`, `learner_only`, `init_require_peers` - and each is read on its own path. Grouping them into enums
-// would move those keys and break existing config files, so the flat shape stays.
+// `insecure_cookie`, `learner_only`, `init_require_peers` - and each is read on its own path.
+// Grouping them into enums would move those keys and break existing config files, so the flat
+// shape stays.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub struct NodeConfig {

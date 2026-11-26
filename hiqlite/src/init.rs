@@ -154,11 +154,6 @@ fn get_this_node(this_node: u64, nodes: &[Node]) -> Result<Node, Error> {
         })
 }
 
-/// The message a remote sends from `GET /cluster/membership/{raft_type}` while its Raft group has
-/// never been initialized. It is the only answer that counts as "not initialized" for
-/// [`should_node_1_skip_init`].
-pub(crate) const MSG_NOT_INITIALIZED: &str = "Raft node has not been initialized";
-
 /// How many consecutive rounds every remote must be unreachable before a pristine node 1 forms
 /// the cluster on its own. With a 1 second pause between rounds this is the same 10 seconds after
 /// which `/ready` reports a pristine node 1 as ready.
@@ -276,7 +271,7 @@ async fn ask_peer_membership(client: &reqwest::Client, url: &str, secret_api: &s
     }
 
     match serde_json::from_slice::<Error>(&body) {
-        Ok(Error::Config(msg)) if msg == MSG_NOT_INITIALIZED => PeerAnswer::NotInitialized,
+        Ok(Error::RaftNotInitialized) => PeerAnswer::NotInitialized,
         Ok(err) => {
             warn!("Membership check on {url} answered {status}: {err}");
             PeerAnswer::Inconclusive

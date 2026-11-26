@@ -225,7 +225,7 @@ pub(crate) async fn get_membership(
     // initialized" must only be sent when it is true: an initialized node whose Raft has not
     // been started yet answers differently.
     if !helpers::is_raft_initialized(&state, &raft_type).await? {
-        return Err(Error::Config(crate::init::MSG_NOT_INITIALIZED.into()));
+        return Err(Error::RaftNotInitialized);
     }
     if helpers::is_raft_stopped(&state, &raft_type) {
         return Err(Error::Config(
