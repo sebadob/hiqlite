@@ -65,12 +65,18 @@ The WAL header grows a fixed slot that carries the Raft `committed` log id, and 
 goes to 2. Existing files keep their version 1 header and are read and written exactly as before;
 only files created from now on are version 2, so a log directory mixes versions freely.
 
+**CAUTION: Downgrading to 0.16 is not supported.** 0.16 reads version 1 headers only, so it skips
+every file this version rolled over to version 2, with a warning, and comes back with its log behind
+its own state machine. In a cluster, the way back is an empty log directory on every node and a
+resync from the leader.
+
 The pointer is what lets a node replay its own committed log at startup without talking to anybody.
-openraft reads it out of the log store and re-applies `(last_applied, committed]` synchronously
-inside `Raft::new`, before the node binds its router: no leader, no peers, no engine. A node whose
-state machine was wiped by a crash - or by `auto-heal` - is back on its acknowledged state before
-it accepts a single request, in a cluster as well as on a single node. `wait_for_cluster_sync()`
-waits for that replay first, on every topology, and only then for the cluster tip.
+openraft reads it out of the log store and re-applies `(last_applied, committed]` with no leader, no
+peers and no engine involved. The replay can still be running when the node opens its API port, so
+`/ready` answers 503 until this node has applied the pointer: a node whose state machine was wiped
+by a crash - or by `auto-heal` - is back on its acknowledged state before it serves a single
+request, in a cluster as well as on a single node. `wait_for_cluster_sync()` waits for that replay
+first, on every topology, and only then for the cluster tip.
 
 Publishing the pointer costs no extra write: the WAL writer copies it into the header of the file it
 is flushing anyway, so `save_committed` is an in-memory assignment and never an fsync. Reading it
@@ -94,6 +100,10 @@ rolls the log back behind the first corrupt record, dropping the files after it.
 re-applies `(last_applied, committed]`, and that read fails hard on a bad record, so the range a
 replay can ask for has to be checked and repaired: the log ends up a valid prefix, the pointer
 clamps to the new tail, and the dropped entries are re-synced from the leader.
+
+Only a rollback drops files. A sealed file whose header never reached its last record is repaired by
+extending that header, and every newer file stays. A rollback that would take the log tail below the
+purge frontier is refused before any file is deleted, so the log directory is left intact.
 
 `wal_size` goes to 4 MiB. A single log entry has to fit into one WAL file on its own, so the size
 caps the largest statement a node can accept, and the cap is now exact: an entry that does not fit

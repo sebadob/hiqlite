@@ -194,10 +194,9 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
             )?;
 
             if view.leader_id.is_none() && (state.id != 1 || secs_since_start < 10) {
-                warn!("cache raft leader vote in progress");
+                warn!("cache raft leader vote in progress - secs_since_start: {secs_since_start}");
                 return Err(Error::Unavailable(
-                    "cache raft leader vote in progress - secs_since_start: {secs_since_start}"
-                        .into(),
+                    "cache raft leader vote in progress".into(),
                 ));
             }
         }

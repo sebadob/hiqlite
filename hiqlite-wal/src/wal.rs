@@ -1031,6 +1031,24 @@ impl WalFileSet {
     /// pointer makes openraft re-apply `(last_applied, committed]` at startup, and that read fails
     /// hard on a bad record, so the check has to cover the whole range a startup replay can ask for
     /// and not just the newest file.
+    ///
+    /// The rollback is bounded by `last_purged_index`, and that bound is checked before any file is
+    /// deleted and before any header is written. A refusal leaves every file and every header as it
+    /// found them; only the corrupt record's own log id is zeroed, so the same check cannot fire
+    /// twice.
+    ///
+    /// A sealed file whose header lags its own data is the other outcome, and it is not a rollback:
+    /// its header is extended to cover the records the file really holds, and every newer file
+    /// stays. Only a rollback ever drops a file, and a repair that shrinks the file's data range is
+    /// always the rollback, never the extension.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Integrity`] when the only rollback that heals the corrupt record would drop the log
+    /// tail below `last_purged_log_id`. openraft treats a log store whose last log id is behind the
+    /// purge frontier as corrupted, and no replay can bring the dropped entries back.
+    ///
+    /// [`Error::Integrity`]: crate::error::Error::Integrity
     fn check_repair_all_files(
         &mut self,
         buf: &mut Vec<u8>,
@@ -1052,7 +1070,32 @@ impl WalFileSet {
                 return Ok(());
             }
 
-            if (file.id_until, file.data_end) != before {
+            // A rollback moves this file's data backwards, the unexpected-data repair moves it
+            // forwards, and only a rollback may drop the files behind it. `data_end` is what
+            // decides: auto-heal shrinks it, down to `None`, while a file that holds exactly one
+            // log id shrinks `id_until` not at all, so `id_until` alone cannot tell the two apart.
+            if file.id_until < before.0 || file.data_end.unwrap_or(0) < before.1.unwrap_or(0) {
+                // The rollback deletes every file behind this one, so the purge frontier has to be
+                // settled first. Deleting the newer files and only then refusing would destroy the
+                // intact entries the operator is left trying to salvage.
+                if let Some(purged) = last_purged_index
+                    && file.id_until < purged
+                {
+                    // Dropping `mmap_mut` without a header write leaves this file untouched. The
+                    // zeroed log id of the corrupt record is the only byte that reaches disk.
+                    file.mmap_mut = None;
+                    file.file = None;
+                    return Err(Error::Integrity(
+                        format!(
+                            "healing WAL file {} would drop the log tail to {}, behind the purged \
+                             log {purged} - the log store cannot be repaired, no file was deleted \
+                             and no header was written, restore it from a backup",
+                            file.path, file.id_until,
+                        )
+                        .into(),
+                    ));
+                }
+
                 warn!(
                     "WAL file {} rolled back to Log ID {} during the integrity check - every log \
                      after it is dropped and re-synced from the cluster",
@@ -1063,8 +1106,19 @@ impl WalFileSet {
                 file.flush()?;
                 file.mmap_mut = None;
                 file.file = None;
-                self.truncate_files_after(idx, last_purged_index)?;
+                self.truncate_files_after(idx)?;
                 return Ok(());
+            }
+
+            if (file.id_until, file.data_end) != before {
+                warn!(
+                    "WAL file {} header extended to Log ID {} during the integrity check - the \
+                     file held records its header had not reached",
+                    file.path, file.id_until,
+                );
+                buf.clear();
+                file.update_header(buf)?;
+                file.flush()?;
             }
 
             file.mmap_mut = None;
@@ -1076,36 +1130,14 @@ impl WalFileSet {
 
     /// Removes every WAL file behind `idx` and makes it the active one.
     ///
-    /// # Errors
-    ///
-    /// [`Error::Integrity`] when the rollback drops the log tail below `last_purged_log_id`:
-    /// openraft treats a log store whose last log id is behind the purge frontier as corrupted, and
-    /// no replay can bring the dropped entries back.
-    ///
-    /// [`Error::Integrity`]: crate::error::Error::Integrity
-    fn truncate_files_after(
-        &mut self,
-        idx: usize,
-        last_purged_index: Option<u64>,
-    ) -> Result<(), Error> {
+    /// The purge frontier is already settled by [`Self::check_repair_all_files`] before this runs,
+    /// so it never removes a file the log store still needs.
+    fn truncate_files_after(&mut self, idx: usize) -> Result<(), Error> {
         while self.files.len() > idx + 1 {
             let file = self.files.pop_back().unwrap();
             fs::remove_file(&file.path)?;
         }
         self.active = Some(idx);
-
-        let tail = self.files[idx].id_until;
-        if let Some(purged) = last_purged_index
-            && tail < purged
-        {
-            return Err(Error::Integrity(
-                format!(
-                    "healing the WAL dropped the log tail to {tail}, behind the purged log \
-                     {purged} - the log store cannot be repaired; restore it from a backup"
-                )
-                .into(),
-            ));
-        }
 
         Ok(())
     }
@@ -1954,6 +1986,306 @@ mod tests {
         set.active().mmap()?;
         set.active().read_logs(1, 1, &mut memo, &mut logs)?;
         assert_eq!(logs, vec![(1, b"one".to_vec())]);
+
+        Ok(())
+    }
+
+    #[cfg(feature = "auto-heal")]
+    #[test]
+    fn deep_integrity_check_refuses_below_purged_without_touching_the_dir() -> Result<(), Error> {
+        // Regression test: the rollback deletes every file behind the corrupt one, so the purge
+        // frontier has to be settled before anything reaches disk. Refusing after the deletion
+        // destroyed the intact entries the operator is left trying to salvage.
+        let base_path = format!("{PATH}/refuse_below_purged");
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+
+        let mut buf = Vec::with_capacity(HEADER_V2);
+        let mut set = WalFileSet::read(base_path.clone(), MB2)?;
+        set.active().mmap_mut()?;
+        for (id, data) in [(1, b"one".as_slice()), (2, b"two")] {
+            buf.clear();
+            set.active().append_log(id, data, &mut buf)?;
+        }
+        buf.clear();
+        set.roll_over(MB2, &mut buf)?;
+        for (id, data) in [(3, b"three".as_slice()), (4, b"four")] {
+            buf.clear();
+            set.active().append_log(id, data, &mut buf)?;
+        }
+        buf.clear();
+        set.roll_over(MB2, &mut buf)?;
+        for (id, data) in [(5, b"five".as_slice()), (6, b"six")] {
+            buf.clear();
+            set.active().append_log(id, data, &mut buf)?;
+        }
+        buf.clear();
+        set.active().flush()?;
+        set.active().mmap_mut = None;
+        set.active().file = None;
+        drop(set);
+
+        // flip a payload byte of log 2, inside the oldest file
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("{base_path}/0000000000000001.wal"))?;
+        let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+        let record = 8 + 4 + 4 + 3;
+        let log_two_data = HEADER_V2 + record + 1 + 8 + 4 + 4;
+        mmap[log_two_data] = 0xFF;
+        mmap.flush()?;
+        drop(mmap);
+        drop(file);
+
+        let mut set = WalFileSet::read(base_path.clone(), MB2)?;
+        let mut buf = Vec::with_capacity(HEADER_V2);
+        // the frontier sits above the only rollback that heals log 2, so the node cannot start
+        let err = set.check_integrity(&mut buf, true, Some(3)).unwrap_err();
+        assert!(
+            matches!(err, Error::Integrity(_)),
+            "expected Integrity, got {err:?}"
+        );
+
+        for wal_no in [2, 3] {
+            let path = format!("{base_path}/000000000000000{wal_no}.wal");
+            assert!(fs::exists(&path)?, "{path} must survive the refusal");
+        }
+
+        // the bad file keeps its own header: the refusal must not shorten it
+        let healed = WalFile::read_from_file(format!("{base_path}/0000000000000001.wal"))?;
+        assert_eq!(healed.id_until, 2, "the header must be left as it was");
+        assert_eq!(
+            healed.data_end,
+            Some((HEADER_V2 + record + 1 + record) as u32)
+        );
+
+        // the newer files are still readable, which is the whole point of a non-destructive refusal
+        let mut memo = None;
+        let mut logs = Vec::new();
+        set.files[1].mmap()?;
+        set.files[1].read_logs(3, 4, &mut memo, &mut logs)?;
+        assert_eq!(logs, vec![(3, b"three".to_vec()), (4, b"four".to_vec())]);
+
+        Ok(())
+    }
+
+    #[cfg(feature = "auto-heal")]
+    #[test]
+    fn deep_integrity_check_keeps_newer_files_when_a_sealed_header_lags() -> Result<(), Error> {
+        // Regression test: the repair for a sealed file whose header never reached its last record
+        // EXTENDS `id_until`. Treating any header change as a rollback dropped every newer file and
+        // destroyed log entries that existed nowhere else.
+        let base_path = format!("{PATH}/sealed_header_lags");
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+
+        let mut buf = Vec::with_capacity(HEADER_V2);
+        let mut set = WalFileSet::read(base_path.clone(), MB2)?;
+        set.active().mmap_mut()?;
+        for (id, data) in [(1, b"one".as_slice()), (2, b"two")] {
+            buf.clear();
+            set.active().append_log(id, data, &mut buf)?;
+        }
+        buf.clear();
+        set.active().update_header(&mut buf)?;
+        set.active().flush()?;
+
+        // roll over seals file 1, and file 2 gets logs 3 and 4
+        buf.clear();
+        set.roll_over(MB2, &mut buf)?;
+        for (id, data) in [(3, b"three".as_slice()), (4, b"four")] {
+            buf.clear();
+            set.active().append_log(id, data, &mut buf)?;
+        }
+        buf.clear();
+        set.active().flush()?;
+        set.active().mmap_mut = None;
+        set.active().file = None;
+        drop(set);
+
+        // append into file 1 and drop the mapping WITHOUT writing the header, the way a process
+        // killed between the append and its header flush leaves it: the record reaches disk and the
+        // header keeps saying `id_until = 2`
+        let mut wal = WalFile::read_from_file(format!("{base_path}/0000000000000001.wal"))?;
+        wal.mmap_mut()?;
+        buf.clear();
+        wal.append_log(3, b"three", &mut buf)?;
+        wal.mmap_mut = None;
+        wal.file = None;
+        drop(wal);
+
+        let lagging = WalFile::read_from_file(format!("{base_path}/0000000000000001.wal"))?;
+        assert_eq!(
+            lagging.id_until, 2,
+            "the header must start out behind the data"
+        );
+
+        let mut set = WalFileSet::read(base_path.clone(), MB2)?;
+        let mut buf = Vec::with_capacity(HEADER_V2);
+        set.check_integrity(&mut buf, true, Some(0))?;
+
+        assert_eq!(
+            set.files.len(),
+            2,
+            "an extended header is a repair, it must not drop the files behind it"
+        );
+        assert!(
+            fs::exists(format!("{base_path}/0000000000000002.wal"))?,
+            "the newer file must survive"
+        );
+
+        let healed = WalFile::read_from_file(format!("{base_path}/0000000000000001.wal"))?;
+        assert_eq!(
+            healed.id_until, 3,
+            "the repaired header must cover the record the file holds"
+        );
+
+        // log 4 is the entry the old behaviour destroyed
+        let mut memo = None;
+        let mut logs = Vec::new();
+        set.files[1].mmap()?;
+        set.files[1].read_logs(3, 4, &mut memo, &mut logs)?;
+        assert_eq!(logs, vec![(3, b"three".to_vec()), (4, b"four".to_vec())]);
+
+        Ok(())
+    }
+
+    #[cfg(feature = "auto-heal")]
+    #[test]
+    fn deep_integrity_check_rolls_back_a_file_that_holds_one_record() -> Result<(), Error> {
+        // Regression test: auto-heal of a corrupt first record resets `data_end` to `None` and
+        // leaves `id_until` at `id_from`. In a file that holds exactly one log id nothing moves
+        // backwards, so a classifier that compares `id_until` alone reads the shrink as a header
+        // extension: the newer files stay and the log keeps a hole where the corrupt record was,
+        // which a range read then answers as a short read with no error at all.
+        let base_path = format!("{PATH}/single_record_file_rolls_back");
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+
+        let mut buf = Vec::with_capacity(HEADER_V2);
+        let mut set = WalFileSet::read(base_path.clone(), MB2)?;
+        set.active().mmap_mut()?;
+        for (id, data) in [(1, b"one".as_slice()), (2, b"two")] {
+            buf.clear();
+            set.active().append_log(id, data, &mut buf)?;
+        }
+        buf.clear();
+        set.roll_over(MB2, &mut buf)?;
+        // the middle file holds EXACTLY one record, so `id_from == id_until`
+        buf.clear();
+        set.active().append_log(3, b"three", &mut buf)?;
+        buf.clear();
+        set.roll_over(MB2, &mut buf)?;
+        for (id, data) in [(4, b"four".as_slice()), (5, b"five")] {
+            buf.clear();
+            set.active().append_log(id, data, &mut buf)?;
+        }
+        buf.clear();
+        set.active().flush()?;
+        set.active().mmap_mut = None;
+        set.active().file = None;
+        drop(set);
+
+        // flip a payload byte of log 3, inside the middle file
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("{base_path}/0000000000000002.wal"))?;
+        let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+        let log_three_data = HEADER_V2 + 8 + 4 + 4;
+        mmap[log_three_data] = 0xFF;
+        mmap.flush()?;
+        drop(mmap);
+        drop(file);
+
+        let mut set = WalFileSet::read(base_path.clone(), MB2)?;
+        let mut buf = Vec::with_capacity(HEADER_V2);
+        set.check_integrity(&mut buf, true, Some(0))?;
+
+        // the shrink is a rollback, so everything behind the corrupt record is gone
+        assert_eq!(set.files.len(), 2, "the rollback must drop the newer files");
+        assert_eq!(set.active, Some(1));
+        assert!(
+            !fs::exists(format!("{base_path}/0000000000000003.wal"))?,
+            "the file behind a corrupt record must be dropped"
+        );
+
+        // and the log is a valid prefix again, with no hole inside the range it claims
+        let mut memo = None;
+        let mut logs = Vec::new();
+        set.files[0].mmap()?;
+        set.files[0].read_logs(1, 2, &mut memo, &mut logs)?;
+        assert_eq!(logs, vec![(1, b"one".to_vec()), (2, b"two".to_vec())]);
+
+        Ok(())
+    }
+
+    #[cfg(feature = "auto-heal")]
+    #[test]
+    fn deep_integrity_check_refuses_a_single_record_rollback_below_purged() -> Result<(), Error> {
+        // The same shape as above, with the purge frontier above the only rollback that heals the
+        // record. The shrink has to run through the purge gate like any other rollback: refusing
+        // after the newer files were deleted would destroy the entries the operator is left trying
+        // to salvage.
+        let base_path = format!("{PATH}/single_record_refuse_below_purged");
+        let _ = fs::remove_dir_all(&base_path);
+        fs::create_dir_all(&base_path)?;
+
+        let mut buf = Vec::with_capacity(HEADER_V2);
+        let mut set = WalFileSet::read(base_path.clone(), MB2)?;
+        set.active().mmap_mut()?;
+        for (id, data) in [(1, b"one".as_slice()), (2, b"two")] {
+            buf.clear();
+            set.active().append_log(id, data, &mut buf)?;
+        }
+        buf.clear();
+        set.roll_over(MB2, &mut buf)?;
+        buf.clear();
+        set.active().append_log(3, b"three", &mut buf)?;
+        buf.clear();
+        set.roll_over(MB2, &mut buf)?;
+        for (id, data) in [(4, b"four".as_slice()), (5, b"five")] {
+            buf.clear();
+            set.active().append_log(id, data, &mut buf)?;
+        }
+        buf.clear();
+        set.active().flush()?;
+        set.active().mmap_mut = None;
+        set.active().file = None;
+        drop(set);
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("{base_path}/0000000000000002.wal"))?;
+        let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+        let log_three_data = HEADER_V2 + 8 + 4 + 4;
+        mmap[log_three_data] = 0xFF;
+        mmap.flush()?;
+        drop(mmap);
+        drop(file);
+
+        let mut set = WalFileSet::read(base_path.clone(), MB2)?;
+        let mut buf = Vec::with_capacity(HEADER_V2);
+        let err = set.check_integrity(&mut buf, true, Some(4)).unwrap_err();
+        assert!(
+            matches!(err, Error::Integrity(_)),
+            "expected Integrity, got {err:?}"
+        );
+
+        for wal_no in [2, 3] {
+            let path = format!("{base_path}/000000000000000{wal_no}.wal");
+            assert!(fs::exists(&path)?, "{path} must survive the refusal");
+        }
+
+        // the refusal must not shrink the header of the file it refuses to roll back
+        let healed = WalFile::read_from_file(format!("{base_path}/0000000000000002.wal"))?;
+        assert_eq!(healed.id_until, 3, "the header must be left as it was");
+        assert_eq!(
+            healed.data_end,
+            Some((HEADER_V2 + 8 + 4 + 4 + b"three".len()) as u32)
+        );
 
         Ok(())
     }

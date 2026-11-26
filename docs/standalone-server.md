@@ -360,10 +360,12 @@ Settings that make this smooth, and what each one protects:
   A threshold of 1 restarts a healthy pod for nothing.
 - Liveness on `/health`, readiness on `/ready`. Never point liveness at `/ready`: a node that is
   legitimately not ready yet would be killed.
-- `startupProbe` with a generous `failureThreshold`: the first start after a full state rebuild
-  streams a snapshot and replays the log. The replay is bounded by this node's own committed log
-  tail, not by the cluster tip, so size it by how much log a node can have pending. The API port is
-  closed while it runs, so `/ready` cannot answer at all until the replay is done.
+- `startupProbe` with a generous `failureThreshold`, **required**: the first start after a full
+  state rebuild streams a snapshot and replays the log, and the API port is closed while it runs,
+  so no probe answers at all. Liveness and readiness only start counting once the startup probe
+  passes - that is what keeps a long replay from restarting the pod mid-replay. The replay is
+  bounded by this node's own committed log tail, not by the cluster tip, so size
+  `failureThreshold * periodSeconds` by how much log a node can have pending.
 - `PodDisruptionBudget` with `minAvailable: 2`: a node drain cannot take the cluster below a
   majority.
 - Spread the pods. Three pods on one host is one failure. Prefer anti-affinity over a bigger CPU

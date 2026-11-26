@@ -24,32 +24,36 @@ Probe settings, including why the readiness period must stay short: `standalone-
 
 ## Startup replay
 
-A node re-applies the log it found on its own disk before it serves anything. This happens inside
-the Raft setup, before the API server is built, so the port is not even open while it runs: there
-is no window where `/ready` answers 200 on a state machine that is behind its own committed log.
+A node re-applies the log it found on its own disk before it serves anything. While it runs, the API
+port can be closed entirely, on a node that restores a snapshot and on the first node of a cluster.
+There is no window where `/ready` answers 200 on a state machine that is behind its own committed
+log.
 
 What this means for probes:
 
+- A `startupProbe` on `/health` is **required**, with `failureThreshold * periodSeconds` above the
+  worst-case replay. A probe against a closed port fails exactly like a slow one, and liveness and
+  readiness only start counting once the startup probe passes. Without it, a long replay gets the
+  pod restarted mid-replay, and the replay starts over.
 - `/ready` answers 503 while the node is re-applying. The first 200 means the replay finished, and a
   read taken at that point can observe everything the node acknowledged before it stopped.
 - The replay is bounded by **this node's own committed log tail**, never by the cluster tip. A node
   that was offline for a week replays its own log first and catches up from the leader afterwards,
   so `startupProbe` headroom is sized by how much log this node can have pending, not by how far
   the cluster has moved.
-- `/health` is liveness only: it answers as soon as the group has a leader. It never waits for the
-  replay, which is why a long replay must never make a pod get killed.
+- `/health` is liveness only: it answers as soon as the group has a leader, and it never waits for
+  the replay. Once the port is open, a long replay cannot make it fail.
 - `Client::wait_for_cluster_sync()` waits for the replay first and for the cluster tip second. The
   replay phase needs no peer, so a node whose cluster is unreachable completes it and blocks only on
   the tip.
-
-The replay is read from the log store's persisted `committed` pointer.
 
 ## Damaged log files
 
 An unclean start runs a deep integrity check over **every** WAL file, oldest first. A corrupt record
 rolls the log back to the last good one and drops the files behind it, so the log stays a valid
-prefix: the replay clamps to the new tail and the missing entries are re-synced from the leader. The
-rollback never goes below the purge frontier; if it would, the node refuses to start and says so.
+prefix: the replay clamps to the new tail and the missing entries are re-synced from the leader.
+Only a rollback drops files. The rollback never goes below the purge frontier, and a node that
+would need one refuses to start before deleting anything, so the log directory is still intact.
 
 A WAL file with no readable header is healed only when it is the newest one - that is the shape a
 crash leaves behind when it kills the process between creating a new WAL file and writing its header,
