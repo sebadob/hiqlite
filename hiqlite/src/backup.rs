@@ -655,41 +655,41 @@ const S3_LATEST_FILE: &str = "s3_latest.json";
 pub(crate) const S3_CONFIRM_TIMEOUT: Duration = Duration::from_hours(1);
 
 impl BackupStatus {
-    /// Builds the status for the backups in `backup_path`, with the newest S3 backup this node
-    /// persisted there before it was restarted.
-    pub(crate) async fn load(backup_path: &str) -> Self {
+    /// Builds an empty status for the backups in `backup_path`. With `s3`, follow it up with
+    /// [`Self::load_s3_latest`].
+    pub(crate) fn new(backup_path: &str) -> Self {
         #[cfg(not(feature = "s3"))]
         let _ = backup_path;
 
-        #[cfg(feature = "s3")]
-        let s3_latest_path = Path::new(backup_path).join(S3_LATEST_FILE);
-        #[cfg(feature = "s3")]
-        let s3_latest = match fs::read(&s3_latest_path).await {
-            Ok(bytes) => match serde_json::from_slice::<S3Backup>(&bytes) {
-                Ok(latest) => Some(latest),
-                Err(err) => {
-                    warn!("Ignoring unreadable {}: {err}", s3_latest_path.display());
-                    None
-                }
-            },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                warn!("Cannot read {}: {err}", s3_latest_path.display());
-                None
-            }
-        };
-
         Self {
-            inner: std::sync::Mutex::new(BackupStatusInner {
-                #[cfg(feature = "s3")]
-                s3_latest,
-                ..Default::default()
-            }),
+            inner: std::sync::Mutex::new(BackupStatusInner::default()),
             #[cfg(feature = "s3")]
-            s3_latest_path,
+            s3_latest_path: Path::new(backup_path).join(S3_LATEST_FILE),
             #[cfg(feature = "s3")]
             persist_lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Loads the newest S3 backup this node persisted before it was restarted. A missing or
+    /// unreadable file only means it is not known yet; it never stops the node from starting.
+    #[cfg(feature = "s3")]
+    pub(crate) async fn load_s3_latest(&self) {
+        let path = &self.s3_latest_path;
+        let latest = match fs::read(path).await {
+            Ok(bytes) => match serde_json::from_slice::<S3Backup>(&bytes) {
+                Ok(latest) => latest,
+                Err(err) => {
+                    warn!("Ignoring unreadable {}: {err}", path.display());
+                    return;
+                }
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(err) => {
+                warn!("Cannot read {}: {err}", path.display());
+                return;
+            }
+        };
+        self.update(|s| s.s3_latest = Some(latest));
     }
 
     fn update<R>(&self, f: impl FnOnce(&mut BackupStatusInner) -> R) -> R {
@@ -963,14 +963,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir).unwrap();
 
-        let status = BackupStatus::load(dir).await;
+        let status = BackupStatus::new(dir);
+        status.load_s3_latest().await;
         assert!(status.get().s3_latest.is_none());
 
         status.s3_confirmed("bkp_1_200.sqlite", 200).await;
         status.s3_confirmed("bkp_1_100.sqlite", 100).await;
         assert_eq!(status.get().s3_latest.unwrap().object, "bkp_1_200.sqlite");
 
-        let restarted = BackupStatus::load(dir).await;
+        let restarted = BackupStatus::new(dir);
+        restarted.load_s3_latest().await;
         let latest = restarted.get().s3_latest.unwrap();
         assert_eq!(latest.object, "bkp_1_200.sqlite");
         assert_eq!(latest.ts, 200);
@@ -981,7 +983,9 @@ mod tests {
 
         // a broken file is ignored, it never stops the node from starting
         std::fs::write(format!("{dir}/s3_latest.json"), b"{").unwrap();
-        assert!(BackupStatus::load(dir).await.get().s3_latest.is_none());
+        let broken = BackupStatus::new(dir);
+        broken.load_s3_latest().await;
+        assert!(broken.get().s3_latest.is_none());
 
         std::fs::remove_dir_all(dir).unwrap();
     }

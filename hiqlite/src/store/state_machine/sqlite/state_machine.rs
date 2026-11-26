@@ -193,7 +193,9 @@ impl StateMachineSqlite {
         )
         .await?;
         #[cfg(feature = "backup")]
-        let backup_status = Arc::new(crate::backup::BackupStatus::load(&path_backups).await);
+        let backup_status = Arc::new(crate::backup::BackupStatus::new(&path_backups));
+        #[cfg(feature = "s3")]
+        backup_status.load_s3_latest().await;
         #[cfg(feature = "s3")]
         if let Some(s3) = &s3_config {
             tokio::spawn(crate::backup::seed_s3_latest(
