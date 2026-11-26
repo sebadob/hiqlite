@@ -19,8 +19,8 @@ impl NodeConfig {
     ///
     /// ## Secrets
     ///
-    /// Secret-bearing values (`secret_raft`, `secret_api`, `s3_key`, `s3_secret`, `enc_keys`,
-    /// `enc_key_active`, `password_dashboard`) may be set to the case-sensitive sentinel
+    /// Secret-bearing values (`secret_raft`, `secret_api`, `secret_metrics`, `s3_key`, `s3_secret`,
+    /// `enc_keys`, `enc_key_active`, `password_dashboard`) may be set to the case-sensitive sentinel
     /// `"$SECRETS"`. In that case, the real value is looked up by the same key in a separate
     /// secrets source. This keeps the main config diffable and version-controllable while the
     /// secrets are managed separately (systemd `LoadCredential`, Docker / Kubernetes secrets, ...).
@@ -282,6 +282,13 @@ impl NodeConfig {
                 "{t_name}.secret_api is a mandatory value"
             )));
         };
+        let secret_metrics = t_str_secret(
+            &mut map,
+            t_name,
+            "secret_metrics",
+            "HQL_SECRET_METRICS",
+            secrets,
+        )?;
 
         let health_check_delay = t_duration(
             &mut map,
@@ -468,6 +475,7 @@ impl NodeConfig {
             tls_api,
             secret_raft,
             secret_api,
+            secret_metrics,
             #[cfg(any(feature = "s3", feature = "dashboard"))]
             enc_keys,
             #[cfg(feature = "backup")]

@@ -75,6 +75,7 @@ pub(crate) struct AppState {
     pub s3_config: Option<Arc<S3Config>>,
     pub secret_raft: String,
     pub secret_api: String,
+    pub secret_metrics: Option<String>,
     #[cfg(feature = "dashboard")]
     pub dashboard: DashboardState,
     #[cfg(any(feature = "backup", feature = "dashboard"))]
@@ -116,6 +117,9 @@ pub struct StateRaftDB {
     pub single_node_replay_target: Option<u64>,
     /// Set once the startup replay has finished, so it is never checked again afterward.
     pub single_node_replay_done: AtomicBool,
+    /// This node's backup outcomes since it started, for `GET /backup`.
+    #[cfg(feature = "backup")]
+    pub backup_status: Arc<crate::backup::BackupStatus>,
 }
 
 #[cfg(feature = "cache")]

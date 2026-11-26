@@ -266,8 +266,8 @@ tls_auto_certificates = true
 # diffable and reviewable while secrets are managed separately (systemd
 # LoadCredential, Docker / Kubernetes secrets, ...).
 #
-# Secret-bearing options: secret_raft, secret_api, s3_key, s3_secret,
-# enc_keys, enc_key_active, password_dashboard.
+# Secret-bearing options: secret_raft, secret_api, secret_metrics, s3_key,
+# s3_secret, enc_keys, enc_key_active, password_dashboard.
 #
 # default: not set
 # overwritten by: HQL_SECRETS_FILE
@@ -284,6 +284,16 @@ secret_raft = "SuperSecureSecret1337"
 # default: not set - required
 # overwritten by: HQL_SECRET_API
 secret_api = "SuperSecureSecret1337"
+
+# Secret for `GET /metrics` (Prometheus) and `GET /backup` (JSON), as
+# `Authorization: Bearer <secret>`. At least 16 characters long and
+# different from `secret_api`: it only reads metrics, so it can live in a
+# scrape config. Both endpoints answer 404 while it is not set.
+# May be set to "$SECRETS" to load from the `secrets_file` above.
+#
+# default: not set
+# overwritten by: HQL_SECRET_METRICS
+#secret_metrics = "SuperSecureMetricsSecret1337"
 
 # Configures the initial delay in seconds that should be applied
 # to `<API>/health` checks. During the first X seconds after node

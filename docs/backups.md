@@ -50,6 +50,53 @@ client.backup().await?;
 `Client::backup` starts the backup in the background and returns; it is not finished when the call
 returns. `POST /backup` on the API port does the same on a node.
 
+## Backup status
+
+`GET /backup` on the API port reports this node's backups. Like `GET /metrics` below, it needs
+`secret_metrics` as `Authorization: Bearer <secret_metrics>` and answers `404` while that secret is
+not set: other nodes never call it, so it is meant for monitoring and internal tooling.
+
+```json
+{
+  "node_id": 2,
+  "local": { "count": 3, "newest": { "ts": 1700000000, "file": "backup_node_1_1700000000.sqlite" } },
+  "last_backup": { "ts": 1700000002, "file": "backup_node_1_1700000000.sqlite" },
+  "last_backup_error": null,
+  "s3_latest": { "object": "backup_node_1_1700000000.sqlite", "ts": 1700000000, "confirmed_at": 1700000030 },
+  "s3_error": null
+}
+```
+
+`local` is read from the backups directory, so it survives a restart. `last_backup` and
+`last_backup_error` are kept in memory since the node started; their `ts` is when the backup
+finished, and an error entry also carries the `error` message.
+
+With the `s3` feature, every node reports the bucket, not only the leader. Only the node that
+requested a backup (the leader) uploads it, but every node knows the object name from the log
+entry, so every other node watches the bucket for that object after its own local backup is done,
+for up to an hour. `s3_latest` is the newest backup a node has seen in the bucket; it is persisted
+as `s3_latest.json` in the backups directory, so it survives a restart, and a node that has none
+yet looks it up in the bucket once at startup, listing only the objects under its backup prefix.
+The watch itself is a single `HEAD` request for the object, with a growing pause between checks. `s3_error` is the last backup this node could not
+confirm: an upload that failed for good on the leader, or an object that did not show up in time
+on any other node.
+
+## Metrics
+
+`GET /metrics` on the API port returns Prometheus gauges labeled with `node_id`. It is protected by
+its own secret, `secret_metrics` (`HQL_SECRET_METRICS`), as `Authorization: Bearer
+<secret_metrics>`, and it does not exist (`404`) while that secret is not set. Keep it different
+from `secret_api`: a scrape config often lives next to other apps or in git, and `secret_api` can
+modify the whole cluster, while `secret_metrics` only reads metrics.
+
+The backup gauges are `hiqlite_backup_local_count`,
+`hiqlite_backup_local_newest_timestamp_seconds`, `hiqlite_backup_last_success_timestamp_seconds`,
+`hiqlite_backup_last_error_timestamp_seconds` and, with `s3`,
+`hiqlite_backup_s3_latest_timestamp_seconds` and `hiqlite_backup_s3_last_error_timestamp_seconds`.
+A timestamp of `0` means "never", so an alert like
+`time() - hiqlite_backup_s3_latest_timestamp_seconds > 2 * 86400` also fires for a cluster that has
+no backup in the bucket at all, and it fires on every node.
+
 ## List and fetch
 
 ```rust, notest

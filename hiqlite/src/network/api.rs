@@ -2,9 +2,9 @@ use crate::APP_VERSION;
 use crate::app_state::RaftType;
 use crate::helpers::{deserialize, get_raft_view, serialize};
 use crate::network::handshake::HandshakeSecret;
-use crate::network::{AppStateExt, Error, WireMembership, validate_secret};
+use crate::network::{AppStateExt, Error, WireMembership, validate_bearer, validate_secret};
 use axum::extract::Path;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use bincode_next::{Decode, Encode};
 use chrono::Utc;
@@ -241,6 +241,77 @@ fn ensure_ready_member(
     Err(Error::Unavailable(
         format!("not yet a ready member of the {raft_label} raft").into(),
     ))
+}
+
+/// This node's backup state as JSON: the local backups on disk, the last local backup and failure
+/// since the node started, and with `s3` the newest backup this node has seen in the bucket.
+///
+/// Other nodes never call it, they know their own state, so it is read by monitoring and internal
+/// tooling only and shares the metrics secret with `GET /metrics`.
+pub async fn get_backup_info(
+    state: AppStateExt,
+    headers: HeaderMap,
+) -> Result<axum::response::Response, Error> {
+    let Some(secret) = state.secret_metrics.as_deref() else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    validate_bearer(secret, &headers)?;
+
+    #[cfg(not(all(feature = "backup", feature = "sqlite")))]
+    {
+        Err(Error::BadRequest(
+            "backups need the `backup` and `sqlite` features".into(),
+        ))
+    }
+
+    #[cfg(all(feature = "backup", feature = "sqlite"))]
+    {
+        let body = serde_json::to_string(&backup_info(&state).await?)
+            .map_err(|err| Error::Error(err.to_string().into()))?;
+        Ok((
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            body,
+        )
+            .into_response())
+    }
+}
+
+#[cfg(all(feature = "backup", feature = "sqlite"))]
+async fn backup_info(state: &AppStateExt) -> Result<crate::backup::BackupInfo, Error> {
+    Ok(crate::backup::BackupInfo {
+        node_id: state.id,
+        local: crate::backup::local_backups(&state.backups_dir, &state.backup_file_prefix).await?,
+        status: state.raft_db.backup_status.get(),
+    })
+}
+
+/// This node's metrics in the Prometheus text format.
+///
+/// It is authenticated with `secret_metrics`, never with `secret_api`: a scrape config is often
+/// deployed alongside other apps or kept in git, and `secret_api` can modify the whole cluster.
+/// Without a configured `secret_metrics` the endpoint does not exist.
+pub async fn get_metrics(
+    state: AppStateExt,
+    headers: HeaderMap,
+) -> Result<axum::response::Response, Error> {
+    let Some(secret) = state.secret_metrics.as_deref() else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    validate_bearer(secret, &headers)?;
+
+    #[allow(unused_mut)]
+    let mut body = String::new();
+    #[cfg(all(feature = "backup", feature = "sqlite"))]
+    body.push_str(&backup_info(&state).await?.to_prometheus());
+
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response())
 }
 
 pub async fn post_create_backup(state: AppStateExt, headers: HeaderMap) -> Result<(), Error> {
