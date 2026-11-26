@@ -1098,6 +1098,7 @@ dependencies = [
  "reqwest",
  "rust-embed",
  "rust_decimal",
+ "rustc-hash",
  "rustls",
  "rustls-platform-verifier",
  "serde",
