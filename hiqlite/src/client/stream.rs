@@ -77,8 +77,6 @@ pub(crate) enum ClientStreamReq {
     #[cfg(feature = "listen_notify")]
     Notify(ClientCachePayload),
 
-    Shutdown,
-
     // coming from the WebSocket reader
     StreamResponse(ApiStreamResponse),
     CleanupBuffer,
@@ -192,16 +190,22 @@ async fn client_stream(
 
     let mut shutdown = false;
     let mut failed_retries: u32 = 0;
+    let shutdown_signal = async {
+        if let Some(tx) = &client.inner.tx_shutdown {
+            let mut rx = tx.subscribe();
+            let _ = rx.wait_for(Option::is_some).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(shutdown_signal);
 
     loop {
-        let ws = match try_connect(
-            &leader,
-            &raft_type,
-            client.inner.tls_config.clone(),
-            &secret,
-        )
-        .await
-        {
+        let connection = select! {
+            result = try_connect(&leader, &raft_type, client.inner.tls_config.clone(), &secret) => result,
+            () = &mut shutdown_signal => break,
+        };
+        let ws = match connection {
             Ok(ws) => {
                 failed_retries = 0;
                 info!(
@@ -225,7 +229,10 @@ async fn client_stream(
                     RECONNECT_SLOW_INTERVAL
                 };
                 failed_retries += 1;
-                time::sleep(interval).await;
+                select! {
+                    () = time::sleep(interval) => {},
+                    () = &mut shutdown_signal => break,
+                }
                 error!(
                     "Could not connect Client API WebSocket to {}: {}",
                     leader.read().await.1,
@@ -257,12 +264,23 @@ async fn client_stream(
 
         loop {
             let res: Option<Result<ClientStreamReq, flume::RecvError>> = select! {
+                () = &mut shutdown_signal => {
+                    shutdown = true;
+                    break;
+                }
                 res = rx_read.recv_async() => Some(res),
                 res = rx_req.recv_async() => Some(res),
                 _ = keepalive.tick() => {
                     // Client-initiated ping: makes a half-open connection fail its writes, and the
                     // server's auto-pong gives us inbound traffic to measure.
-                    if let Err(err) = tx_write.send_async(WritePayload::Ping).await {
+                    let sent = select! {
+                        result = tx_write.send_async(WritePayload::Ping) => result,
+                        () = &mut shutdown_signal => {
+                            shutdown = true;
+                            break;
+                        }
+                    };
+                    if let Err(err) = sent {
                         error!("Error sending keepalive ping to writer: {}", err);
                         for (_, ack) in in_flight.drain() {
                             let _ = ack.send(Err(Error::Connect(
@@ -558,15 +576,17 @@ async fn client_stream(
                     awaiting_timeout = false;
                     None
                 }
-
-                ClientStreamReq::Shutdown => {
-                    shutdown = true;
-                    break;
-                }
             };
 
             if let Some((payload, request_id, ack)) = payload {
-                match tx_write.send_async(payload).await {
+                let sent = select! {
+                    result = tx_write.send_async(payload) => result,
+                    () = &mut shutdown_signal => {
+                        shutdown = true;
+                        break;
+                    }
+                };
+                match sent {
                     Ok(()) => {
                         in_flight.insert(request_id, ack);
                     }
@@ -583,6 +603,11 @@ async fn client_stream(
         handle_buf.abort();
         handle_write.abort();
         handle_read.abort();
+
+        if shutdown {
+            debug!("Shutting down Client stream receiver");
+            break;
+        }
 
         debug!("make sure reader rx is empty and closed");
         while let Ok(req) = rx_read.recv_async().await {
@@ -647,9 +672,6 @@ async fn client_stream(
                 ClientStreamReq::Notify(_) => {
                     unreachable!("we should never receive ClientStreamReq::Notify from WS reader")
                 }
-                ClientStreamReq::Shutdown => {
-                    unreachable!("we should never receive ClientStreamReq::Shutdown from WS reader")
-                }
                 ClientStreamReq::LeaderChange((node_id, node)) => {
                     update_leader(&leader, node_id, node).await;
                 }
@@ -663,11 +685,6 @@ async fn client_stream(
                     // ignore - we are re-connecting anyway
                 }
             }
-        }
-
-        if shutdown {
-            debug!("Shutting down Client stream receiver");
-            break;
         }
 
         for (req_id, ack) in in_flight.drain() {

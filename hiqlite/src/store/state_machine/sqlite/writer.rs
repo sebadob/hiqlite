@@ -5,7 +5,7 @@ use crate::store::logs;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine;
 use crate::store::state_machine::sqlite::state_machine::{
-    Params, StateMachineData, StateMachineSqlite, StoredSnapshot,
+    Params, StateMachineData, StoredSnapshot,
 };
 use crate::store::state_machine::sqlite::transaction_env::{
     TransactionEnv, TransactionParamContext,
@@ -41,7 +41,7 @@ pub enum WriterRequest {
     MetadataRead(oneshot::Sender<StateMachineData>),
     MetadataMembership(MetaMembershipRequest),
     Backup(BackupRequest),
-    Shutdown(oneshot::Sender<()>),
+    Shutdown(oneshot::Sender<Result<(), Error>>),
     #[allow(clippy::upper_case_acronyms)]
     RTT(RTTRequest),
 }
@@ -156,7 +156,7 @@ pub fn spawn_writer(
 
         let mut sm_data = StateMachineData::default();
         let mut ts_last_backup = None;
-        let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
+        let mut shutdown_ack = None;
 
         // TODO should we maybe save a backup task handle in case of shutdown overlap?
 
@@ -746,24 +746,41 @@ CREATE TABLE IF NOT EXISTS _metadata
 
         warn!("SQL writer is shutting down");
 
-        // make sure metadata is persisted before shutting down
-        persist_metadata(&conn, &sm_data).expect("Error persisting metadata");
-
-        if let Err(err) = conn.execute("PRAGMA optimize", []) {
-            error!("Error during 'PRAGMA optimize': {}", err);
-        }
-
-        // release the advisory lock, then remove the crash-marker file
-        drop(lock_file);
-        StateMachineSqlite::remove_lock_file(&path_lock_file);
-
+        let result = finish_shutdown(conn, &sm_data, lock_file, &path_lock_file);
         if let Some(ack) = shutdown_ack {
-            ack.send(())
-                .expect("Shutdown handler to always wait for ack from statemachine");
+            let _ = ack.send(result);
+        } else if let Err(err) = result {
+            error!("SQLite writer shutdown failed: {err}");
         }
     });
 
     tx
+}
+
+fn finish_shutdown(
+    conn: rusqlite::Connection,
+    metadata: &StateMachineData,
+    lock_file: std::fs::File,
+    path_lock_file: &str,
+) -> Result<(), Error> {
+    let persisted = persist_metadata(&conn, metadata);
+    if persisted.is_ok()
+        && let Err(err) = conn.execute("PRAGMA optimize", [])
+    {
+        error!("Error during 'PRAGMA optimize': {err}");
+    }
+    let closed = conn.close().map_err(|(_, err)| err);
+    persisted.and(closed)?;
+
+    // Keep the crash marker if persisting metadata or closing the connection failed.
+    drop(lock_file);
+    match std::fs::remove_file(path_lock_file) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(Error::Sqlite(
+            format!("Cannot remove SQLite crash marker {path_lock_file}: {err}").into(),
+        )),
+    }
 }
 
 #[inline]
@@ -1189,5 +1206,23 @@ mod tests {
             .or_else(|| err.downcast_ref::<&str>().copied())
             .unwrap_or_default();
         assert!(msg.contains("order mismatch"));
+    }
+
+    #[test]
+    fn failed_writer_shutdown_keeps_the_crash_marker() {
+        let marker = std::env::temp_dir().join(format!("hiqlite-marker-{}", Uuid::now_v7()));
+        let lock = std::fs::File::create_new(&marker).unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(
+            finish_shutdown(
+                conn,
+                &StateMachineData::default(),
+                lock,
+                marker.to_str().unwrap()
+            )
+            .is_err()
+        );
+        assert!(marker.exists());
+        std::fs::remove_file(marker).unwrap();
     }
 }

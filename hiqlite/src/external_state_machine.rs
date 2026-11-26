@@ -1139,7 +1139,7 @@ where
         )
         .await
         .map_err(|err| ExternalError::Pool(err.to_string()))?;
-        let read_actors = spawn_read_actors(
+        let (read_actors, _) = spawn_read_actors(
             conns,
             options.saturated_pool_threshold,
             options.slow_query_threshold,
@@ -1485,7 +1485,7 @@ where
                 | ExternalError::WriterPoisoned(_))
         );
         if writer_can_serve_reads {
-            *read_actors = Some(spawn_read_actors(
+            let (sender, _) = spawn_read_actors(
                 connect_read_conns_once(
                     &self.read_config.db_dir,
                     &self.read_config.filename,
@@ -1497,7 +1497,8 @@ where
                 self.read_config.saturated_pool_threshold,
                 self.read_config.slow_query_threshold,
                 true,
-            ));
+            );
+            *read_actors = Some(sender);
         }
         restore
     }

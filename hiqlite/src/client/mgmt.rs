@@ -1,5 +1,4 @@
 use crate::app_state::AppState;
-use crate::client::stream::ClientStreamReq;
 use crate::helpers::{deserialize, deserialize_serde, serialize};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use crate::helpers::{shutdown_transfer_deadline, transfer_leadership_before_shutdown};
@@ -11,7 +10,6 @@ use reqwest::Method;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::watch;
 use tokio::time;
 use tracing::{debug, error, info};
 
@@ -896,50 +894,68 @@ impl Client {
     /// [`Error::Error`] for a remote client, because only a node that runs its own Raft can be
     /// shut down this way, and [`Error::Error`] when the shutdown does not finish within
     /// `NodeConfig::shutdown_delay` plus [`SHUTDOWN_TEARDOWN_BUDGET`](crate::SHUTDOWN_TEARDOWN_BUDGET)
-    /// (20 s with the default delay).
+    /// (20 s with the default delay). Finish or drop any open query streams before shutting down.
+    /// Teardown continues if this call times out or is cancelled.
     pub async fn shutdown(&self) -> Result<(), Error> {
-        if let Some(state) = &self.inner.state {
-            // The pre-shutdown delay inside `shutdown_execute` plus the teardown budget.
-            if tokio::time::timeout(
-                state.shutdown_delay + crate::config::SHUTDOWN_TEARDOWN_BUDGET,
-                Self::shutdown_execute(
-                    state,
-                    #[cfg(feature = "cache")]
-                    self.inner.tls_config.is_some(),
-                    #[cfg(feature = "cache")]
-                    self.inner.tls_no_verify,
-                    #[cfg(feature = "cache")]
-                    &self.inner.tx_client_cache,
-                    #[cfg(feature = "sqlite")]
-                    &self.inner.tx_client_db,
-                    self.inner.tx_shutdown.as_ref(),
-                ),
-            )
-            .await
-            .is_err()
-            {
-                Err(Error::Error(
-                    "Timeout reached while shutting down Raft".into(),
-                ))
-            } else {
-                Ok(())
-            }
-        } else {
-            Err(Error::Error(
+        let (Some(state), Some(tx)) = (&self.inner.state, &self.inner.tx_shutdown) else {
+            return Err(Error::Error(
                 "Shutdown for remote Raft clients is not yet implemented".into(),
-            ))
+            ));
+        };
+
+        if !state.is_shutting_down.swap(true, Ordering::AcqRel) {
+            let state = state.clone();
+            let tx = tx.clone();
+            #[cfg(feature = "cache")]
+            let with_tls = self.inner.tls_config.is_some();
+            #[cfg(feature = "cache")]
+            let tls_no_verify = self.inner.tls_no_verify;
+            let shutdown = tokio::spawn(async move {
+                Self::shutdown_execute(
+                    &state,
+                    #[cfg(feature = "cache")]
+                    with_tls,
+                    #[cfg(feature = "cache")]
+                    tls_no_verify,
+                )
+                .await
+            });
+            tokio::spawn(async move {
+                let result = shutdown
+                    .await
+                    .map_err(|err| format!("Raft shutdown task did not finish: {err}"))
+                    .and_then(|result| result.map_err(|err| err.to_string()));
+                let _ = tx.send_replace(Some(result));
+            });
         }
+
+        let mut finished = tx.subscribe();
+        time::timeout(
+            state.shutdown_delay + crate::config::SHUTDOWN_TEARDOWN_BUDGET,
+            async {
+                if let Some(Err(err)) = finished
+                    .wait_for(Option::is_some)
+                    .await
+                    .map_err(|_| Error::new("Raft shutdown status channel closed"))?
+                    .as_ref()
+                {
+                    return Err(Error::new(err.clone()));
+                }
+                // The shutdown signal starts graceful server shutdown. Wait for both serving
+                // tasks to leave so an in-process restart can bind their addresses again.
+                let _ = state.servers_closed.recv_async().await;
+                Ok(())
+            },
+        )
+        .await
+        .map_err(|_| Error::new("Timeout reached while shutting down Raft"))?
     }
 
     #[allow(unused_assignments)]
-    #[allow(unused_variables)]
-    pub(crate) async fn shutdown_execute(
+    async fn shutdown_execute(
         state: &Arc<AppState>,
         #[cfg(feature = "cache")] with_tls: bool,
         #[cfg(feature = "cache")] tls_no_verify: bool,
-        #[cfg(feature = "cache")] tx_client_cache: &flume::Sender<ClientStreamReq>,
-        #[cfg(feature = "sqlite")] tx_client_db: &flume::Sender<ClientStreamReq>,
-        tx_shutdown: Option<&watch::Sender<bool>>,
     ) -> Result<(), Error> {
         info!("Starting Node shutdown");
 
@@ -970,33 +986,6 @@ impl Client {
             is_single_instance = node_count == 1;
         }
 
-        // Only one caller performs the ordered teardown below. Concurrent callers (e.g. an app that
-        // calls `Client::shutdown()` at the same time a SIGTERM unblocks `ShutdownHandle::wait`)
-        // would otherwise double-run it: a second `raft.shutdown()`, a second cluster leave, and a
-        // second `WriterRequest::Shutdown` whose ack channel is already dropped (panicking the
-        // `.expect` below). The loser therefore waits for the winner to finish instead.
-        let is_runner = state
-            .is_shutting_down
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
-            .is_ok();
-
-        if !is_runner {
-            // Wait until the winning caller signals completion by setting `tx_shutdown`, so a caller
-            // that returns from here can safely proceed (e.g. let the process exit). The outer 20s
-            // timeout in both entry points bounds this wait, so it cannot hang forever.
-            info!("Shutdown already in progress - waiting for it to complete");
-            if let Some(tx) = tx_shutdown {
-                let mut rx = tx.subscribe();
-                while !*rx.borrow() {
-                    if rx.changed().await.is_err() {
-                        break;
-                    }
-                }
-            }
-            info!("Shutdown complete (waited on concurrent shutdown)");
-            return Ok(());
-        }
-
         // This pre-shutdown delay is not strictly necessary, but it makes rolling releases
         // smoother, especially with ephemeral storage. `/ready` answers 503 from here on, so with
         // the default of 9.5 s a ready check interval of 3 seconds still catches it before the
@@ -1009,6 +998,7 @@ impl Client {
         // for two election timeouts. The group that goes first still gets its whole timeout.
         #[cfg(any(feature = "sqlite", feature = "cache"))]
         let transfer_deadline = shutdown_transfer_deadline(state);
+        let mut result = Ok(());
 
         #[cfg(feature = "cache")]
         {
@@ -1076,11 +1066,10 @@ impl Client {
                 .raft_cache
                 .is_raft_stopped
                 .store(true, Ordering::Relaxed);
-            state.raft_cache.raft.shutdown().await?;
+            result = result.and(state.raft_cache.raft.shutdown().await.map_err(Error::from));
             if let Some(handle) = &state.raft_cache.shutdown_handle {
-                handle.shutdown().await?;
+                result = result.and(handle.shutdown().await.map_err(Error::from));
             }
-            let _ = tx_client_cache.send_async(ClientStreamReq::Shutdown).await;
         };
 
         #[cfg(feature = "sqlite")]
@@ -1111,31 +1100,39 @@ impl Client {
 
             state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
 
-            state.raft_db.raft.shutdown().await?;
+            result = result.and(state.raft_db.raft.shutdown().await.map_err(Error::from));
             info!("Shutting down sqlite logs writer");
-            state.raft_db.shutdown_handle.shutdown().await?;
+            result = result.and(
+                state
+                    .raft_db
+                    .shutdown_handle
+                    .shutdown()
+                    .await
+                    .map_err(Error::from),
+            );
 
             info!("Shutting down sqlite writer");
-            let (tx_sm, rx_sm) = tokio::sync::oneshot::channel();
-            state
-                .raft_db
-                .sql_writer
-                .send_async(WriterRequest::Shutdown(tx_sm))
-                .await
-                .expect("The state machine writer to always be listening");
-            rx_sm
-                .await
-                .expect("To always get an answer from SQL writer");
+            let writer = async {
+                let (tx_sm, rx_sm) = tokio::sync::oneshot::channel();
+                state
+                    .raft_db
+                    .sql_writer
+                    .send_async(WriterRequest::Shutdown(tx_sm))
+                    .await
+                    .map_err(|_| Error::Sqlite("SQLite writer stopped before shutdown".into()))?;
+                rx_sm
+                    .await
+                    .map_err(|_| Error::Sqlite("SQLite writer did not complete shutdown".into()))?
+            }
+            .await;
+            result = result.and(writer);
 
-            let _ = tx_client_db.send_async(ClientStreamReq::Shutdown).await;
+            state.raft_db.read_actors.shutdown().await;
         }
 
-        if let Some(tx) = tx_shutdown {
-            tx.send(true)
-                .expect("The global Hiqlite shutdown handler to always listen");
+        if result.is_ok() {
+            info!("Shutdown complete");
         }
-
-        info!("Shutdown complete");
-        Ok(())
+        result
     }
 }

@@ -31,6 +31,8 @@ pub mod stream;
 #[cfg(feature = "sqlite")]
 mod transaction;
 
+pub(crate) type ShutdownResult = Result<(), String>;
+
 /// The main database client.
 ///
 /// It will handle all things you need to work with the Database / Cache / Event Bus /
@@ -58,7 +60,7 @@ pub(crate) struct DbClient {
     pub(crate) tls_no_verify: bool,
     pub(crate) api_secret: Option<String>,
     pub(crate) request_id: AtomicUsize,
-    pub(crate) tx_shutdown: Option<watch::Sender<bool>>,
+    pub(crate) tx_shutdown: Option<watch::Sender<Option<ShutdownResult>>>,
     #[cfg(feature = "listen_notify")]
     pub(crate) app_start: i64,
     #[cfg(feature = "listen_notify")]

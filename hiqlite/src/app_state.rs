@@ -11,7 +11,7 @@ use crate::client::stream::ClientStreamReq;
 #[cfg(feature = "dashboard")]
 use crate::dashboard::DashboardState;
 #[cfg(feature = "sqlite")]
-use crate::reader::ReaderRequest;
+use crate::reader::ReadPool;
 #[cfg(feature = "s3")]
 use crate::s3::S3Config;
 #[cfg(feature = "dlock")]
@@ -57,6 +57,7 @@ impl RaftType {
 pub(crate) struct AppState {
     pub app_start: chrono::DateTime<Utc>,
     pub is_shutting_down: AtomicBool,
+    pub servers_closed: flume::Receiver<()>,
     #[cfg(feature = "backup")]
     pub backups_dir: String,
     /// The prefix of every backup file name - see `NodeConfig`'s `backup_file_prefix`.
@@ -104,7 +105,7 @@ pub struct StateRaftDB {
     pub raft: openraft::Raft<TypeConfigSqlite, StateMachineSqlite>,
     pub shutdown_handle: hiqlite_wal::ShutdownHandle,
     pub sql_writer: flume::Sender<WriterRequest>,
-    pub read_actors: flume::Sender<ReaderRequest>,
+    pub(crate) read_actors: Arc<ReadPool>,
     /// Where the network layer assembles an incoming snapshot, for the state machine to read.
     pub path_snapshots: String,
     pub log_statements: bool,

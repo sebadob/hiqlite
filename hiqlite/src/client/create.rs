@@ -24,7 +24,7 @@ impl Client {
         tls_no_verify: bool,
         #[cfg(feature = "sqlite")] tx_client_db: flume::Sender<ClientStreamReq>,
         #[cfg(feature = "sqlite")] rx_client_db: flume::Receiver<ClientStreamReq>,
-        tx_shutdown: watch::Sender<bool>,
+        tx_shutdown: watch::Sender<Option<super::ShutdownResult>>,
         #[cfg(feature = "cache")] rate_limit_cache: Option<RateLimitConfig>,
         #[cfg(feature = "sqlite")] rate_limit_db: Option<RateLimitConfig>,
     ) -> Self {

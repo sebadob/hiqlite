@@ -19,8 +19,6 @@ use std::time::Duration;
 use tokio::time;
 use tracing::info;
 
-#[cfg(feature = "sqlite")]
-use crate::reader::ReaderRequest;
 #[cfg(feature = "cache")]
 use crate::{
     app_state::StateRaftCache,

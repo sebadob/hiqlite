@@ -5,7 +5,7 @@ use crate::helpers::{
 };
 use crate::migration::Migration;
 use crate::query::rows::RowsOwnedChecked;
-use crate::reader::{self, ReaderRequest};
+use crate::reader::{self, ReadPool};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::param::Param;
 use crate::store::state_machine::sqlite::snapshot_builder::SQLiteSnapshotBuilder;
@@ -148,7 +148,7 @@ pub struct StateMachineSqlite {
     #[cfg(feature = "s3")]
     s3_config: Option<Arc<crate::s3::S3Config>>,
 
-    pub(crate) read_actors: flume::Sender<ReaderRequest>,
+    pub(crate) read_actors: Arc<ReadPool>,
     pub(crate) write_tx: flume::Sender<WriterRequest>,
     #[cfg(feature = "backup")]
     pub(crate) backup_status: Arc<crate::backup::BackupStatus>,
@@ -226,7 +226,7 @@ impl StateMachineSqlite {
             read_pool_size,
         )
         .await?;
-        let read_actors = reader::spawn_read_actors(
+        let (read_sender, read_closed) = reader::spawn_read_actors(
             conns,
             saturated_pool_threshold,
             slow_query_threshold,
@@ -242,7 +242,7 @@ impl StateMachineSqlite {
             path_lock_file,
             #[cfg(feature = "s3")]
             s3_config,
-            read_actors,
+            read_actors: Arc::new(ReadPool::new(read_sender, read_closed)),
             write_tx,
             #[cfg(feature = "backup")]
             backup_status,
@@ -397,10 +397,6 @@ impl StateMachineSqlite {
         }
 
         file
-    }
-
-    pub(crate) fn remove_lock_file(path: &str) {
-        let _ = std::fs::remove_file(path);
     }
 
     /// The read-write opener: the writer's own connection, and the snapshot metadata read.

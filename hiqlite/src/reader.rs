@@ -226,15 +226,52 @@ impl QueryRequest {
 /// Requests a read actor keeps queued behind its `recv` before its senders have to wait.
 const QUEUE_PER_ACTOR: usize = 4;
 
+/// A SQLite read pool that can close even while clients still hold an `AppState`.
+#[cfg(feature = "sqlite")]
+#[derive(Debug)]
+pub(crate) struct ReadPool {
+    sender: std::sync::RwLock<Option<flume::Sender<ReaderRequest>>>,
+    closed: flume::Receiver<()>,
+}
+
+#[cfg(feature = "sqlite")]
+impl ReadPool {
+    pub(crate) fn new(sender: flume::Sender<ReaderRequest>, closed: flume::Receiver<()>) -> Self {
+        Self {
+            sender: std::sync::RwLock::new(Some(sender)),
+            closed,
+        }
+    }
+
+    pub(crate) async fn send(
+        &self,
+        request: ReaderRequest,
+    ) -> Result<(), flume::SendError<ReaderRequest>> {
+        let sender = self.sender.read().unwrap().clone();
+        match sender {
+            Some(sender) => sender.send_async(request).await,
+            None => Err(flume::SendError(request)),
+        }
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        drop(self.sender.write().unwrap().take());
+        // Existing sends can finish. Disconnection comes after the last actor drops its SQLite
+        // connection, so backup restore can safely replace the database on Windows.
+        let _ = self.closed.recv_async().await;
+    }
+}
+
 /// One thread per connection, all of them competing consumers of one channel: a request goes to
 /// whichever actor is free, a connection is never acquired, handed over, or shared, and its
 /// prepared statement cache, its page cache and its read-only handle stay warm on that thread for
 /// the whole life of the node.
 ///
-/// Dropping the returned `Sender` disconnects the receivers, so every actor leaves its loop and
+/// Dropping the last `Sender` disconnects the actors, so every actor leaves its loop and
 /// drops its connection - the last one closing the last read handle of the database.  A `flume`
 /// receiver takes the messages already in the queue before it reports the disconnect, so a pool
-/// that is closed this way serves everything it accepted.  An actor that leaves on its
+/// that is closed this way serves everything it accepted. The returned completion receiver
+/// disconnects once all actors close their connections. An actor that leaves on its
 /// [`ReaderRequest::Shutdown`] drains what is behind it and answers those requests with the pool
 /// being closed, so a request never outlives the connections it was waiting for.
 ///
@@ -250,8 +287,9 @@ pub fn spawn_read_actors(
     saturated_pool_threshold: Duration,
     slow_query_threshold: Duration,
     log_slow_queries: bool,
-) -> flume::Sender<ReaderRequest> {
+) -> (flume::Sender<ReaderRequest>, flume::Receiver<()>) {
     let (tx, rx) = flume::bounded::<ReaderRequest>(conns.len() * QUEUE_PER_ACTOR);
+    let (completion, closed) = flume::bounded::<()>(0);
     let pool = Arc::new(Saturation::new(
         conns.len(),
         saturated_pool_threshold,
@@ -262,7 +300,11 @@ pub fn spawn_read_actors(
     for conn in conns {
         let rx = rx.clone();
         let pool = pool.clone();
+        let completion = completion.clone();
         thread::spawn(move || {
+            // Drop the SQLite handle before signalling completion, including during unwinding.
+            let _completion = completion;
+            let connection = conn;
             // The time this actor spent inside the query it last ran, which is the number that
             // names a slow query, and the pair of stamps it comes from is the same pair the queue
             // wait comes from.
@@ -271,9 +313,9 @@ pub fn spawn_read_actors(
                 let dequeued = Instant::now();
                 req.warn_if_saturated(&pool, &rx, dequeued, last_busy);
                 let sql = match req {
-                    ReaderRequest::Query(req) => req.run(&conn),
+                    ReaderRequest::Query(req) => req.run(&connection),
                     #[cfg(feature = "sqlite")]
-                    ReaderRequest::Stream(req) => req.run(&conn),
+                    ReaderRequest::Stream(req) => req.run(&connection),
                     #[cfg(feature = "external-state-machine")]
                     ReaderRequest::Shutdown(ack) => {
                         let _ = ack.send(());
@@ -296,7 +338,7 @@ pub fn spawn_read_actors(
         });
     }
 
-    tx
+    (tx, closed)
 }
 
 /// Why a read handed to the read pool never reached its answer.
@@ -392,41 +434,10 @@ where
     }
 }
 
-/// [`Queued::build`] and the request handed to a read actor.
-///
-/// The request is inside the pool's queue when this returns, which is the point a caller needs:
-/// a read that must not land behind the shutdown of a snapshot restore holds the pool's lock until
-/// here, and waits for its answer after it hands the lock back.
-#[cfg(feature = "sqlite")]
-pub(crate) async fn queue_query<T, F, E>(
-    read_actors: &flume::Sender<ReaderRequest>,
-    sql: Cow<'static, str>,
-    size_hint: usize,
-    query: F,
-    on_fail: impl Fn(ActorFailure) -> E + Clone + Send + 'static,
-) -> Result<Queued<T, E>, E>
-where
-    T: Send + 'static,
-    E: Send + Sync + 'static,
-    F: for<'a> FnOnce(&'a Connection, usize, &'a str) -> Result<T, E> + Send + 'static,
-{
-    let (req, queued) = Queued::build(sql, size_hint, query, on_fail);
-
-    read_actors
-        .send_async(req)
-        .await
-        .map_err(|_| (queued.on_fail)(ActorFailure::Closed))?;
-
-    Ok(queued)
-}
-
-/// [`queue_query`] and the answer of what it queued, for a caller that waits for the result.
-///
-/// A caller that is dropped mid-query leaves the actor finishing a result nobody reads, which is
-/// the cheap answer for a point query - SQLite cannot be interrupted mid-cursor.
+/// Queue a read and wait for its answer. Dropping the caller leaves the actor free to finish.
 #[cfg(feature = "sqlite")]
 pub(crate) async fn query_on_actor<T, F, E>(
-    read_actors: &flume::Sender<ReaderRequest>,
+    read_actors: &ReadPool,
     sql: Cow<'static, str>,
     size_hint: usize,
     query: F,
@@ -437,10 +448,14 @@ where
     E: Send + Sync + 'static,
     F: for<'a> FnOnce(&'a Connection, usize, &'a str) -> Result<T, E> + Send + 'static,
 {
-    queue_query(read_actors, sql, size_hint, query, on_fail)
-        .await?
-        .answer()
+    let (req, queued) = Queued::build(sql, size_hint, query, on_fail);
+
+    read_actors
+        .send(req)
         .await
+        .map_err(|_| (queued.on_fail)(ActorFailure::Closed))?;
+
+    queued.answer().await
 }
 
 /// Whether the warning of one kind may be emitted at `now_ms`, the milliseconds since the read
@@ -485,11 +500,11 @@ mod tests {
 
     /// One actor on an in-memory DB with a `t(id)` of `ROWS` rows.
     fn actor() -> flume::Sender<ReaderRequest> {
-        actors(1)
+        actors(1).0
     }
 
     /// `n` actors, each on its own in-memory connection holding the same `t(id)` fixture.
-    fn actors(n: usize) -> flume::Sender<ReaderRequest> {
+    fn actors(n: usize) -> (flume::Sender<ReaderRequest>, flume::Receiver<()>) {
         let mut conns = Vec::with_capacity(n);
         for _ in 0..n {
             let conn = Connection::open_in_memory().expect("in-memory connection");
@@ -582,8 +597,27 @@ mod tests {
 
     #[test]
     fn the_queue_is_bounded_by_the_actor_count() {
-        let tx = actors(3);
+        let (tx, _) = actors(3);
         assert_eq!(tx.capacity(), Some(3 * QUEUE_PER_ACTOR));
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_reads_while_clients_keep_the_pool() {
+        let (sender, closed) = actors(2);
+        let pool = Arc::new(ReadPool::new(sender, closed));
+        let client = pool.clone();
+        let (reply, count) = flume::bounded(1);
+        client
+            .send(count_request(reply.clone()))
+            .await
+            .expect("the pool accepts a read");
+
+        tokio::time::timeout(Duration::from_secs(10), pool.shutdown())
+            .await
+            .expect("all connections close");
+
+        assert_eq!(count.try_recv(), Ok(ROWS));
+        assert!(client.send(count_request(reply)).await.is_err());
     }
 
     /// The saturation rate limit: the first saturation warns, the interval silences the ones
@@ -656,7 +690,7 @@ mod tests {
     #[cfg(feature = "external-state-machine")]
     #[tokio::test]
     async fn shutdown_ends_every_actor() {
-        let tx = actors(3);
+        let (tx, _) = actors(3);
         let mut acks = Vec::new();
         for _ in 0..3 {
             let (ack, rx) = oneshot::channel();
@@ -697,8 +731,7 @@ mod tests {
     /// test owns the exact moment the request enters it.
     #[cfg(feature = "external-state-machine")]
     async fn queue_count(tx: &flume::Sender<ReaderRequest>) -> Queued<i64, Error> {
-        queue_query(
-            tx,
+        let (request, queued) = Queued::build(
             Cow::from("SELECT COUNT(*) FROM t"),
             1,
             |conn, _size_hint, _sql| {
@@ -706,9 +739,11 @@ mod tests {
                     .map_err(|err| Error::Sqlite(err.to_string().into()))
             },
             ActorFailure::into_error,
-        )
-        .await
-        .expect("the pool accepts the query")
+        );
+        tx.send_async(request)
+            .await
+            .expect("the pool accepts the query");
+        queued
     }
 
     /// A read that is queued in front of the shutdowns of a closing pool still runs on its
@@ -724,7 +759,7 @@ mod tests {
     #[cfg(feature = "external-state-machine")]
     #[tokio::test]
     async fn a_query_queued_before_the_shutdowns_still_runs() {
-        let tx = actors(1);
+        let (tx, _) = actors(1);
         let keep = park_actors(&tx, 1).await;
 
         let queued = queue_count(&tx).await;
@@ -753,7 +788,7 @@ mod tests {
     #[cfg(feature = "external-state-machine")]
     #[tokio::test]
     async fn a_query_behind_the_shutdowns_gets_an_answer() {
-        let tx = actors(1);
+        let (tx, _) = actors(1);
         let keep = park_actors(&tx, 1).await;
 
         let (ack, ack_rx) = oneshot::channel();
