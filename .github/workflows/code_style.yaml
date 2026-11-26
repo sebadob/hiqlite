@@ -73,11 +73,11 @@ jobs:
             container: ghcr.io/sebadob/rauthy-builder:20261123
             continue-on-error: false
           - os: macos-latest
-            container: ''
+            container: ""
             continue-on-error: false
           # Advisory until Windows is proven; flip to false when green.
           - os: windows-latest
-            container: ''
+            container: ""
             continue-on-error: true
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.continue-on-error }}
@@ -125,7 +125,7 @@ jobs:
       - uses: ./.github/actions/setup-cargo
         with:
           key: test
-          save: 'false'
+          save: "false"
       - name: Cluster tests
         # Time out the test before the runner can cancel the entire job.
         timeout-minutes: 15

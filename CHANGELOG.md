@@ -59,6 +59,20 @@ that talks to the API by hand needs `-H "Authorization: Bearer <secret_api>"`, a
 cannot authenticate each other, which is the same stop-the-world upgrade the openraft 0.10 wire
 change forces anyway.
 
+#### rustls Crypto Backend
+
+TLS now has a selectable rustls crypto backend: the new `aws_lc_rs` and `ring` features, with
+`aws_lc_rs` the default. Exactly one must be selected whenever TLS is compiled in, and selecting both,
+or TLS with neither, is a compile error. Whichever you pick, the other backend's crates are never
+compiled in. `fips` is the FIPS-validated aws-lc-rs build; it implies `aws_lc_rs` and excludes `ring`.
+
+This is breaking for builds that disable default features and enable a TLS feature (`sqlite`, `cache`,
+`backup`, `dashboard`, `server`, `full`): they must now name `aws_lc_rs` or `ring`. Default-features
+builds are unchanged. The `s3` feature pulls `cryptr` 0.13, whose provider follows the one you pick.
+
+`aws_lc_rs` prefers the post-quantum hybrid group X25519MLKEM768 in TLS 1.3 key exchange. `ring` has
+no post-quantum group and negotiates X25519.
+
 #### WAL Header v2 and the Startup Replay Gate
 
 The WAL header grows a fixed slot that carries the Raft `committed` log id, and the header version

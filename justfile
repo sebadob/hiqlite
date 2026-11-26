@@ -85,44 +85,55 @@ clippy:
     clear
 
     # base features, each standalone: sqlite here, cache and external-state-machine below
-    cargo clippy --no-default-features --features sqlite
+    cargo clippy --no-default-features --features sqlite,aws_lc_rs
 
-    cargo clippy --no-default-features --features sqlite,cast_ints
-    cargo clippy --no-default-features --features sqlite,cast_ints_unchecked
+    cargo clippy --no-default-features --features sqlite,aws_lc_rs,cast_ints
+    cargo clippy --no-default-features --features sqlite,aws_lc_rs,cast_ints_unchecked
     # auto-heal needs one of the base features - cover both
-    cargo clippy --no-default-features --features cache,auto-heal
-    cargo clippy --no-default-features --features sqlite,auto-heal
+    cargo clippy --no-default-features --features cache,auto-heal,aws_lc_rs
+    cargo clippy --no-default-features --features sqlite,auto-heal,aws_lc_rs
     # backup / s3 should only apply to sqlite
-    cargo clippy --no-default-features --features backup
-    cargo clippy --no-default-features --features sqlite,backup
-    cargo clippy --no-default-features --features sqlite,auto-heal,backup
+    cargo clippy --no-default-features --features backup,aws_lc_rs
+    cargo clippy --no-default-features --features sqlite,backup,aws_lc_rs
+    cargo clippy --no-default-features --features sqlite,auto-heal,backup,aws_lc_rs
 
-    cargo clippy --no-default-features --features cache
-    cargo clippy --no-default-features --features cache,toml
-    cargo clippy --no-default-features --features in-memory-snapshots
-    cargo clippy --no-default-features --features counters
-    cargo clippy --no-default-features --features dlock
-    cargo clippy --no-default-features --features listen_notify
-    cargo clippy --no-default-features --features sqlite,cache,webpki-roots
+    cargo clippy --no-default-features --features cache,aws_lc_rs
+    cargo clippy --no-default-features --features cache,toml,aws_lc_rs
+    cargo clippy --no-default-features --features in-memory-snapshots,aws_lc_rs
+    cargo clippy --no-default-features --features counters,aws_lc_rs
+    cargo clippy --no-default-features --features dlock,aws_lc_rs
+    cargo clippy --no-default-features --features listen_notify,aws_lc_rs
+    cargo clippy --no-default-features --features sqlite,cache,webpki-roots,aws_lc_rs
 
-    cargo clippy --no-default-features --features dashboard
+    cargo clippy --no-default-features --features dashboard,aws_lc_rs
     # shutdown-handle needs one of the base features - cover both
-    cargo clippy --no-default-features --features cache,shutdown-handle
-    cargo clippy --no-default-features --features sqlite,shutdown-handle
+    cargo clippy --no-default-features --features cache,shutdown-handle,aws_lc_rs
+    cargo clippy --no-default-features --features sqlite,shutdown-handle,aws_lc_rs
 
     # external-state-machine must build standalone without pulling in the
     # internal `__cluster` boundary, and must not break any regular combination
     cargo clippy --no-default-features --features external-state-machine
-    cargo clippy --no-default-features --features sqlite,external-state-machine
+    cargo clippy --no-default-features --features sqlite,external-state-machine,aws_lc_rs
     cargo clippy --no-default-features --features full,external-state-machine
     cargo clippy --features external-state-machine
 
     cargo clippy --no-default-features --features server
 
+    # the rustls crypto backends: ring standalone, and the aws-lc-rs s3 path
+    cargo clippy --no-default-features --features sqlite,ring
+    cargo clippy --no-default-features --features sqlite,s3,aws_lc_rs
+
     # opt-in features of the WAL crate, including its tests
     cargo clippy -p hiqlite-wal --features oversized-entry-error -- -D warnings
     cargo check -p hiqlite-wal --tests --features oversized-entry-error
-    cargo clippy --no-default-features --features sqlite,oversized-entry-error -- -D warnings
+    cargo clippy --no-default-features --features sqlite,oversized-entry-error,aws_lc_rs -- -D warnings
+
+# the aws-lc-rs FIPS backend; needs a C toolchain + cmake + libclang to build aws-lc-fips-sys
+clippy-fips:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    clear
+    cargo clippy --no-default-features --features sqlite,fips
 
 clippy-examples:
     #!/usr/bin/env bash

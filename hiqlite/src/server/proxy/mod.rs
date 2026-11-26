@@ -19,7 +19,7 @@ mod stream;
 pub async fn start_proxy(config: Config) -> Result<(), Error> {
     if config.tls_config.is_some() {
         // Can only fail if there is already a crypto provider instaleld, which we then can ignore.
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = crate::tls::default_crypto_provider().install_default();
     }
 
     let tls_client_config = config.tls_config.as_ref().map(|c| c.client_config());
