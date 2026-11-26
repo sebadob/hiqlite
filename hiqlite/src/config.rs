@@ -36,6 +36,11 @@ const ELECTION_DISABLE: &str = "election_disable";
 /// The default of [`NodeConfig::shutdown_delay`].
 pub const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_millis(9500);
 
+/// The smallest [`NodeConfig::shutdown_delay`] a cluster node accepts. Below it, a load balancer
+/// with any realistic readiness check interval keeps routing requests to a node that is already
+/// leaving.
+pub const MIN_CLUSTER_SHUTDOWN_DELAY: Duration = Duration::from_secs(3);
+
 /// The time a graceful shutdown gets for its ordered teardown after [`NodeConfig::shutdown_delay`]:
 /// leaving the in-memory cache cluster, handing the leadership over and stopping both Raft groups.
 /// `Client::shutdown()` and `ShutdownHandle::wait()` give up after the delay plus this budget, so
@@ -256,6 +261,10 @@ pub struct NodeConfig {
     /// probes stop routing to this node before it goes away. Skipped on a single instance. The
     /// whole shutdown is bounded by this delay plus [`SHUTDOWN_TEARDOWN_BUDGET`], so keep the sum
     /// below the grace period your orchestrator gives the process.
+    ///
+    /// Keep it at least one readiness check interval plus 1 s: a shorter delay lets a load
+    /// balancer route requests to a node that is already shutting down, and those requests fail
+    /// on the client side. A cluster node needs at least [`MIN_CLUSTER_SHUTDOWN_DELAY`].
     ///
     /// default: 9.5 s
     ///
@@ -666,6 +675,18 @@ impl NodeConfig {
             ));
         }
 
+        if self.nodes.len() > 1 && self.shutdown_delay < MIN_CLUSTER_SHUTDOWN_DELAY {
+            return Err(Error::Config(
+                format!(
+                    "'shutdown_delay_millis' must be at least {} ms for a cluster, so load \
+                     balancers stop routing to a node before it shuts down - found {} ms",
+                    MIN_CLUSTER_SHUTDOWN_DELAY.as_millis(),
+                    self.shutdown_delay.as_millis(),
+                )
+                .into(),
+            ));
+        }
+
         if self.saturated_pool_threshold.is_zero() {
             return Err(Error::Config(
                 "'saturated_pool_threshold' must be larger than zero".into(),
@@ -1007,6 +1028,36 @@ mod tests {
             let err = config.is_valid().unwrap_err().to_string();
             assert!(err.contains("read_pool_size"), "{size}: {err}");
         }
+    }
+
+    #[test]
+    fn config_rejects_a_short_shutdown_delay_for_a_cluster_only() {
+        let config = |nodes: Vec<Node>, millis: u64| NodeConfig {
+            node_id: 1,
+            nodes,
+            secret_raft: "0123456789abcdef".into(),
+            secret_api: "0123456789abcdef".into(),
+            shutdown_delay: std::time::Duration::from_millis(millis),
+            ..Default::default()
+        };
+
+        for millis in [0, 2999] {
+            let err = config(vec![node(1), node(2), node(3)], millis)
+                .is_valid()
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("shutdown_delay_millis"), "{millis}: {err}");
+        }
+        // other checks may fail on this minimal config with some features, so only the delay
+        // check is looked at
+        let delay_ok = |c: NodeConfig| {
+            c.is_valid()
+                .err()
+                .is_none_or(|err| !err.to_string().contains("shutdown_delay_millis"))
+        };
+        assert!(delay_ok(config(vec![node(1), node(2), node(3)], 3000)));
+        // a single instance skips the delay, so any value is fine there
+        assert!(delay_ok(config(vec![node(1)], 0)));
     }
 
     #[test]

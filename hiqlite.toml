@@ -297,7 +297,11 @@ secret_api = "SuperSecureSecret1337"
 # The pause at the start of a graceful shutdown, before the node leaves
 # the cluster or hands its leadership over. `<API>/ready` answers 503
 # during it, so load balancers and `readinessProbe`s stop routing to
-# this node first. Skipped on a single instance, 0 disables it.
+# this node first. Skipped on a single instance.
+# Keep it at least one readiness check interval + 1s: a shorter delay
+# lets a load balancer route requests to a node that is already shutting
+# down, and those requests fail on the client side. A cluster refuses
+# to start with less than 3000.
 # The whole shutdown is bounded by this delay plus 10500 ms for the
 # teardown itself, so keep the sum below your orchestrator's grace
 # period (`terminationGracePeriodSeconds`, 30s by default).
