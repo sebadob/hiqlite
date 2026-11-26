@@ -23,7 +23,7 @@ use std::borrow::Cow;
 use std::default::Default;
 use std::io;
 use std::ops::Sub;
-use std::path::PathBuf;
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 use thread_priority::ThreadPriority;
@@ -808,11 +808,16 @@ Got:      {}
 }
 
 #[inline]
-fn create_snapshot<P: Into<PathBuf>>(conn: &rusqlite::Connection, path: P) -> Result<(), Error> {
-    let mut path = path.into();
-    // vacuum into a temp file and move it into place, so a crash can never leave a
-    // partially written snapshot at the final path
-    let mut path_temp = path.clone();
+fn create_snapshot(conn: &rusqlite::Connection, path: impl AsRef<Path>) -> Result<(), Error> {
+    vacuum_publish(conn, path.as_ref(), |_| Ok(()))
+}
+
+fn vacuum_publish(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    prepare: impl FnOnce(&Path) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut path_temp = path.to_path_buf();
     path_temp.add_extension("tmp");
     // escape single quotes so a folder name containing ' cannot break (or inject into) the SQL literal
     let q = format!(
@@ -823,15 +828,25 @@ fn create_snapshot<P: Into<PathBuf>>(conn: &rusqlite::Connection, path: P) -> Re
             .unwrap_or_default()
             .replace('\'', "''")
     );
-    if let Err(err) = conn.execute(&q, ()) {
+    let publish = (|| -> Result<(), Error> {
+        conn.execute(&q, ())
+            .map_err(|err| Error::Sqlite(err.to_string().into()))?;
+        prepare(&path_temp)?;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(cfg!(windows))
+            .open(&path_temp)?
+            .sync_data()?;
+        std::fs::rename(&path_temp, path)?;
+        Ok(())
+    })();
+    if publish.is_err() {
         let _ = std::fs::remove_file(&path_temp);
-        return Err(Error::Sqlite(err.to_string().into()));
     }
-    std::fs::File::open(&path_temp)?.sync_data();
-    std::fs::rename(&path_temp, &path)
-        .map_err(|err| Error::Error(format!("rename snapshot into place: {err}").into()))?;
+    publish?;
+    #[cfg(unix)]
     if let Some(parent) = path.parent() {
-        std::fs::File::open(parent)?.sync_data();
+        std::fs::File::open(parent)?.sync_data()?;
     }
     Ok(())
 }
@@ -865,28 +880,13 @@ fn create_backup(
     let path_full = format!("{target_folder}/{file}");
     info!("Creating database backup into {path_full}");
 
-    // vacuum into a temp file and move it into place, so a crash mid-backup can never leave
-    // a partial file under the final backup name (restore would pick it up as valid)
-    let path_temp = format!("{path_full}~");
-    // escape single quotes so a folder name containing ' cannot break (or inject into) the SQL literal
-    let path_sql = path_temp.replace('\'', "''");
-    if let Err(err) = conn.execute(&format!("VACUUM main INTO '{path_sql}'"), ()) {
-        let _ = std::fs::remove_file(&path_temp);
-        return Err(err.into());
-    }
-    if let Err(err) = std::fs::rename(&path_temp, &path_full) {
-        let _ = std::fs::remove_file(&path_temp);
-        return Err(Error::Error(
-            format!("rename backup into place: {err}").into(),
-        ));
-    }
-
-    // connect to the backup and reset metadata
-    // make sure connection is dropped before starting encrypt + push
-    {
-        let conn_bkp = rusqlite::Connection::open(&path_full)?;
-        persist_metadata(&conn_bkp, &StateMachineData::default());
-    }
+    // A backup becomes visible only after its old Raft metadata has been cleared.
+    vacuum_publish(conn, Path::new(&path_full), |staged| {
+        let backup = rusqlite::Connection::open(staged)?;
+        persist_metadata(&backup, &StateMachineData::default())?;
+        backup.close().map_err(|(_, err)| err)?;
+        Ok(())
+    })?;
 
     info!("Database backup finished");
 
@@ -1110,6 +1110,31 @@ fn apply_migration(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_publication_is_atomic_and_retryable() {
+        let path = std::env::temp_dir().join(format!("hiqlite-snapshot-{}.db", Uuid::now_v7()));
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE items (id INTEGER)", []).unwrap();
+        assert!(
+            vacuum_publish(&conn, &path, |_| Err(Error::new("backup metadata failed"))).is_err()
+        );
+        assert!(!path.exists());
+        std::fs::create_dir(&path).unwrap();
+        assert!(create_snapshot(&conn, &path).is_err());
+        std::fs::remove_dir(&path).unwrap();
+        create_snapshot(&conn, &path).unwrap();
+        conn.execute("INSERT INTO items VALUES (1)", []).unwrap();
+        create_snapshot(&conn, &path).unwrap();
+
+        let snapshot = rusqlite::Connection::open(&path).unwrap();
+        let count: i64 = snapshot
+            .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        drop(snapshot);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn migration_ts_is_deterministic() {
