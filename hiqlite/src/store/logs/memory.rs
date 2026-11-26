@@ -135,18 +135,10 @@ impl RaftLogStorage<TypeConfigCache> for LogStoreMemory {
         })
     }
 
-    // async fn save_committed(
-    //     &mut self,
-    //     committed: Option<LogId<NodeId>>,
-    // ) -> Result<(), io::Error> {
-    //     let mut lock = self.data.lock().await;
-    //     lock.commited = committed;
-    //     Ok(())
-    // }
-    //
-    // async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, io::Error> {
-    //     Ok(self.data.lock().await.commited)
-    // }
+    // `save_committed` / `read_committed` stay on openraft's no-op defaults on purpose. This store
+    // is not durable: at startup it is empty, so there is nothing to replay and `None` is the
+    // correct answer. The disk-backed cache uses the WAL log store, which persists the pointer and
+    // gets the startup replay there.
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn save_vote(&mut self, vote: &VoteOf<TypeConfigCache>) -> Result<(), io::Error> {

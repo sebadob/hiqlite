@@ -124,7 +124,7 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
 
     let secs_since_start = Utc::now().sub(state.app_start).num_seconds();
 
-    // A single node is not ready while it is still re-applying the log it found at startup.
+    // Not ready while the node is still re-applying the log it found at startup.
     #[cfg(any(feature = "sqlite", feature = "cache"))]
     check_replay(&state)?;
 
@@ -194,10 +194,9 @@ pub async fn ready(state: AppStateExt) -> Result<(), Error> {
             )?;
 
             if view.leader_id.is_none() && (state.id != 1 || secs_since_start < 10) {
-                warn!("cache raft leader vote in progress");
+                warn!("cache raft leader vote in progress - secs_since_start: {secs_since_start}");
                 return Err(Error::Unavailable(
-                    "cache raft leader vote in progress - secs_since_start: {secs_since_start}"
-                        .into(),
+                    "cache raft leader vote in progress".into(),
                 ));
             }
         }

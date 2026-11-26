@@ -10,8 +10,9 @@ use std::collections::Bound;
 use std::fmt::Debug;
 use std::io;
 use std::ops::RangeBounds;
+use std::sync::PoisonError;
 use tokio::sync::oneshot;
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[inline]
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
@@ -22,6 +23,13 @@ pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
 pub fn deserialize<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
     bincode_next::serde::decode_from_slice::<T, _>(bytes, bincode_next::config::legacy())
         .map(|(res, _)| res)
+}
+
+/// A poisoned log store lock can only come from a panic inside the WAL writer or reader, so it is
+/// reported as an I/O error and never swallowed.
+#[inline]
+fn lock_poisoned<T>(err: &PoisonError<T>) -> io::Error {
+    io::Error::other(format!("log store lock poisoned: {err}"))
 }
 
 impl<T> RaftLogReader<T> for LogStore<T>
@@ -142,6 +150,7 @@ async fn try_get_log_entries<
 impl<T> RaftLogStorage<T> for LogStore<T>
 where
     T: RaftTypeConfig,
+    LogIdOf<T>: Serialize + DeserializeOwned,
 {
     type LogReader = LogStoreReader<T>;
 
@@ -179,6 +188,61 @@ where
         debug!("Entering get_log_reader()");
 
         self.spawn_reader()
+    }
+
+    /// Keeps the pointer in memory and returns without touching the disk.
+    ///
+    /// openraft awaits this once per apply batch on its state machine command path, and the value
+    /// is only ever read back at startup - it is a startup-only pointer, so a fsync here would be
+    /// paid on every batch for no steady-state gain. The WAL writer publishes it into the active
+    /// file's header on the flush that is already running, which is the only place it becomes
+    /// durable. Losing the newest values is safe: `read_committed` then reports less, and the
+    /// missing tail is re-synced from the cluster.
+    #[tracing::instrument(level = "debug", skip_all)]
+    async fn save_committed(&mut self, committed: Option<LogIdOf<T>>) -> Result<(), io::Error> {
+        let bytes = committed
+            .map(|id| serialize(&id))
+            .transpose()
+            .map_err(|err| io::Error::from(error::Error::from(err)))?;
+        *self.committed.write().map_err(|err| lock_poisoned(&err))? = bytes;
+        Ok(())
+    }
+
+    /// Returns the persisted `committed` pointer, clamped to the durable log tail.
+    ///
+    /// The clamp is what makes the pointer safe. openraft re-applies `(last_applied, committed]`
+    /// from the log store at startup and fails hard when the range is not exactly there, so a
+    /// pointer above `last_log_id` turns a restart into a startup failure. That is reachable
+    /// here, not theoretical: the WAL acknowledges appends before flushing them, and openraft
+    /// commits on a quorum of those acks, so after a `kill -9` the log tail can be behind the
+    /// committed position. Clamping to the tail replays exactly what survived; the rest comes
+    /// from the leader.
+    #[tracing::instrument(level = "debug", skip_all)]
+    async fn read_committed(&mut self) -> Result<Option<LogIdOf<T>>, io::Error> {
+        let saved = self
+            .committed
+            .read()
+            .map_err(|err| lock_poisoned(&err))?
+            .clone();
+        let Some(bytes) = saved else {
+            return Ok(None);
+        };
+        let committed: LogIdOf<T> =
+            deserialize(&bytes).map_err(|err| io::Error::from(error::Error::from(err)))?;
+
+        let last_log_id = self.get_log_state().await?.last_log_id;
+        if let Some(last) = last_log_id
+            && committed.index > last.index
+        {
+            warn!(
+                "Persisted committed {} is ahead of the durable log tail {} - clamping to the \
+                 log tail; the entries in between are re-synced from the cluster",
+                committed.index, last.index,
+            );
+            return Ok(Some(last));
+        }
+
+        Ok(Some(committed))
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
@@ -274,5 +338,106 @@ where
             .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
         rx.await.unwrap().map_err(io::Error::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LogStore;
+    use crate::LogSync;
+    use crate::error::Error;
+    use openraft::Entry;
+    use openraft::LogId;
+    use openraft::entry::RaftEntry;
+    use openraft::impls::leader_id_adv::LeaderId;
+    use openraft::storage::IOFlushed;
+    use openraft::storage::RaftLogStorage;
+    use openraft::vote::RaftLeaderId;
+    use std::fs;
+    use std::future::Future;
+
+    openraft::declare_raft_types!(
+        pub TestConfig:
+            D = String,
+            R = u64,
+    );
+
+    fn log_id(index: u64) -> LogIdOf<TestConfig> {
+        LogId::new(LeaderId::new(1, 0), index)
+    }
+
+    /// `tokio` has no `macros` feature in this workspace, so a test runtime is built by hand.
+    fn block_on<F: Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    /// `read_committed` must never report a position past the durable log tail.
+    ///
+    /// openraft re-applies `(last_applied, committed]` from the log store at startup and fails
+    /// hard when the range is not exactly there, so an unclamped pointer turns a restart into a
+    /// startup failure. The WAL acknowledges appends before flushing them, which is how a crash
+    /// leaves the tail behind the pointer in the first place.
+    #[test]
+    fn read_committed_is_clamped_to_the_log_tail() -> Result<(), Error> {
+        block_on(async {
+            let base = "test_data/read_committed_clamp".to_string();
+            let _ = fs::remove_dir_all(&base);
+            fs::create_dir_all(&base)?;
+
+            let mut store =
+                LogStore::<TestConfig>::start(base, LogSync::Immediate, 64 * 1024).await?;
+
+            let entries = (1..=5).map(|i| Entry::new_normal(log_id(i), format!("payload-{i}")));
+            store.append(entries, IOFlushed::noop()).await.unwrap();
+
+            // a pointer above the tail, as a crash can leave it
+            store.save_committed(Some(log_id(10))).await.unwrap();
+            let committed = store.read_committed().await.unwrap();
+            assert_eq!(committed.map(|id| id.index), Some(5));
+
+            // a pointer inside the log is reported unchanged
+            store.save_committed(Some(log_id(3))).await.unwrap();
+            let committed = store.read_committed().await.unwrap();
+            assert_eq!(committed.map(|id| id.index), Some(3));
+
+            // a node that never committed anything stays `None`, so openraft re-applies nothing
+            store.save_committed(None).await.unwrap();
+            assert_eq!(store.read_committed().await.unwrap(), None);
+
+            Ok(())
+        })
+    }
+
+    /// The pointer is durable only as a passenger of the WAL flush, so a restarted store must
+    /// come back with the value it published last - and `save_committed` must not fsync.
+    #[test]
+    fn committed_survives_a_store_restart() -> Result<(), Error> {
+        block_on(async {
+            let base = "test_data/read_committed_restart".to_string();
+            let _ = fs::remove_dir_all(&base);
+            fs::create_dir_all(&base)?;
+
+            let mut store =
+                LogStore::<TestConfig>::start(base.clone(), LogSync::Immediate, 64 * 1024).await?;
+
+            let entries = (1..=5).map(|i| Entry::new_normal(log_id(i), format!("payload-{i}")));
+            store.append(entries, IOFlushed::noop()).await.unwrap();
+            store.save_committed(Some(log_id(4))).await.unwrap();
+
+            // `Action::Sync` is what carries the header, and `Immediate` flushes every append
+            store.shutdown_handle().shutdown().await.unwrap();
+
+            let mut store =
+                LogStore::<TestConfig>::start(base, LogSync::Immediate, 64 * 1024).await?;
+            let committed = store.read_committed().await.unwrap();
+            assert_eq!(committed.map(|id| id.index), Some(4));
+
+            Ok(())
+        })
     }
 }

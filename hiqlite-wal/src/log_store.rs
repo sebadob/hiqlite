@@ -18,6 +18,14 @@ where
     T: RaftTypeConfig,
 {
     meta: Arc<RwLock<Metadata>>,
+    /// The in-memory `committed` log id, serialized. Written by [`RaftLogStorage::save_committed`]
+    /// and read back by [`RaftLogStorage::read_committed`]; the WAL writer publishes it into the
+    /// active file's header on the flush that is already running, which is the only place it is
+    /// ever durable.
+    ///
+    /// [`RaftLogStorage::save_committed`]: openraft::storage::RaftLogStorage::save_committed
+    /// [`RaftLogStorage::read_committed`]: openraft::storage::RaftLogStorage::read_committed
+    pub(crate) committed: Arc<RwLock<Option<Vec<u8>>>>,
     wal: Arc<RwLock<WalFileSet>>,
     pub writer: flume::Sender<writer::Action>,
     pub reader: flume::Sender<reader::Action>,
@@ -63,6 +71,7 @@ where
 
             let meta = Metadata::read_or_create(&base_path)?;
             let meta = Arc::new(RwLock::new(meta));
+            let committed = Arc::new(RwLock::new(None));
 
             let (writer, wal) = writer::spawn(
                 base_path,
@@ -71,11 +80,13 @@ where
                 wal_size,
                 lock_exists,
                 meta.clone(),
+                committed.clone(),
             )?;
             let reader = reader::spawn(meta.clone(), wal.clone());
 
             Ok::<Self, Error>(Self {
                 meta,
+                committed,
                 wal,
                 writer,
                 reader,
@@ -124,6 +135,7 @@ where
                 wal_size,
                 lock_exists,
                 meta,
+                Arc::new(RwLock::new(None)),
             )?;
             Ok(writer)
         })

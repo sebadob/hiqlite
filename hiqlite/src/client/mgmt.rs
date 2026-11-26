@@ -624,12 +624,15 @@ impl Client {
     /// cannot know how far its server-side node has caught up. A single instance returns right
     /// away, as it is always in sync with itself.
     ///
-    /// This is meant to be called after `start_node()` returned and before serving traffic: a
-    /// node that was offline for longer catches up in the background, and this function waits
-    /// until its state machine(s) are close enough to the cluster tip to serve reads again.
-    /// "Close enough" means within `CLUSTER_SYNC_ALLOWED_DIFF` log entries of the leader's last
-    /// log index - followers are normally a bit behind the leader, so we never require an exact
-    /// index match.
+    /// This is meant to be called after `start_node()` returned and before serving traffic. It
+    /// runs in two phases:
+    ///
+    /// 1. Re-apply the log this node found on its own disk, up to the startup replay target it
+    ///    computed from its own log store at startup. This phase needs no peer at all, so a node
+    ///    whose cluster is unreachable completes it and only blocks on phase two.
+    /// 2. Follow the cluster tip. "Close enough" means within `CLUSTER_SYNC_ALLOWED_DIFF` log
+    ///    entries of the leader's last log index - followers are normally a bit behind the
+    ///    leader, so we never require an exact index match.
     pub async fn wait_for_cluster_sync(&self) {
         // Fast path: a single instance will always be in sync with itself.
         // The node list only belongs to a remote client, so a local client takes the member count
@@ -667,9 +670,11 @@ impl Client {
             single_instance = self.inner.nodes.len() == 1;
         }
 
+        // Phase one on every topology: re-applying the log on this node's own disk needs no peer,
+        // so a node whose cluster is unreachable finishes this and only blocks on phase two.
+        self.wait_for_startup_replay().await;
+
         if single_instance {
-            // ... once it has re-applied the log it found at startup.
-            self.wait_for_single_node_replay().await;
             return;
         }
 
@@ -699,7 +704,11 @@ impl Client {
         }
     }
 
-    async fn wait_for_single_node_replay(&self) {
+    /// Waits until this node has re-applied the log it found on its own disk at startup.
+    ///
+    /// The target is read from the local log store, so this never talks to a peer and never
+    /// needs a leader.
+    async fn wait_for_startup_replay(&self) {
         let Some(state) = &self.inner.state else {
             return;
         };

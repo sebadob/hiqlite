@@ -81,7 +81,9 @@ does it: a file at `/run/secrets/hiqlite.toml`, a Kubernetes secret, a systemd c
   `immediate_async` flushes without waiting, `interval_<ms>` flushes on a timer when buffers are
   dirty. Highest throughput is `interval`, highest safety is `immediate`. On a single node, use
   `immediate`: there is no peer to re-sync from.
-- `wal_size` - the write-ahead log size budget.
+- `wal_size` - the write-ahead log size budget, 4 MiB by default. A single log entry has to fit into
+  one WAL file on its own, so this also caps the largest statement a node can accept. Existing files
+  keep their size; a change applies from the next roll-over.
 - `logs_until_snapshot` - how many log entries accumulate before a snapshot. Higher values give
   write throughput and cost disk space and slower snapshot creation. Tune it together with
   `wal_size`.

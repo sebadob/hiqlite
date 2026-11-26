@@ -190,6 +190,12 @@ pub struct NodeConfig {
     /// panic by default. WAL files do not grow. They will have this fixed size all the time. Set
     /// to a reasonable size that matches queries. Optimal is if you have 2-4 WAL files around all
     /// the time (after log roll-over).
+    ///
+    /// A single log entry must fit into one WAL file on its own, so this also caps the largest
+    /// statement a node can accept. Files written before a size increase keep their size; the new
+    /// one applies to the next roll-over.
+    ///
+    /// default: `4 * 1024 * 1024` (4 MiB)
     pub wal_size: u32,
     /// Set to `true` to store the cache WAL + Snapshots on disk instead of keeping them in memory.
     /// The Caches themselves will always be in-memory only. The default is `true`, which will
@@ -314,7 +320,7 @@ impl Default for NodeConfig {
             slow_query_threshold: Duration::from_secs(1),
             log_slow_queries: true,
             wal_sync: hiqlite_wal::LogSync::IntervalMillis(200),
-            wal_size: 2 * 1024 * 1024,
+            wal_size: 4 * 1024 * 1024,
             #[cfg(feature = "cache")]
             cache_storage_disk: true,
             raft_config: Self::default_raft_config(10_000),
@@ -520,7 +526,7 @@ impl NodeConfig {
             wal_size: env::var("HQL_WAL_SIZE")
                 .ok()
                 .as_deref()
-                .map_or(2 * 1024 * 1024, |v| {
+                .map_or(4 * 1024 * 1024, |v| {
                     v.parse::<u32>().expect("Cannot parse HQL_WAL_SIZE as u32")
                 }),
             #[cfg(feature = "cache")]

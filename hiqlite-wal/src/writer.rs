@@ -100,16 +100,37 @@ pub fn spawn(
     wal_size: u32,
     wal_deep_integrity_check: bool,
     meta: Arc<RwLock<Metadata>>,
+    committed: Arc<RwLock<Option<Vec<u8>>>>,
 ) -> Result<(flume::Sender<Action>, Arc<RwLock<WalFileSet>>), Error> {
     let mut set = WalFileSet::read(base_path, wal_size)?;
-    // TODO emit a warning log in that case and tell the user how to resolve or "force start" in
-    // that case, or should be maybe `auto-heal` as much as possible?
+    // The purge frontier is the lowest log id the log store may end up behind, and it bounds the
+    // rollback the deep integrity check can do.
+    let last_purged_index = meta
+        .read()?
+        .last_purged_log_id
+        .as_ref()
+        .map(|bytes| {
+            let id: openraft::LogId<openraft::impls::leader_id_adv::LeaderId<u64, u64>> =
+                deserialize(bytes)?;
+            Ok::<_, Error>(id.index)
+        })
+        .transpose()?;
     let mut buf = Vec::with_capacity(32);
-    set.check_integrity(&mut buf, wal_deep_integrity_check)?;
+    set.check_integrity(&mut buf, wal_deep_integrity_check, last_purged_index)?;
     if set.files.is_empty() {
         buf.clear();
-        set.add_file(wal_size, &mut buf)?;
+        set.add_file(wal_size, &mut buf, None)?;
     }
+    // The WAL header is the durable home of the `committed` pointer, so the value the node
+    // recovers at startup is the one the newest file published last.
+    let seeded = set
+        .files
+        .back()
+        .map(|f| f.committed.clone())
+        .unwrap_or_default();
+    *committed
+        .write()
+        .map_err(|err| Error::Generic(format!("committed lock poisoned: {err}").into()))? = seeded;
     let wal_locked = Arc::new(RwLock::new(set.clone_no_map()));
 
     // TODO remove with version > 0.14
@@ -141,7 +162,8 @@ pub fn spawn(
     let (tx, rx) = flume::bounded::<Action>(1);
     let wal = wal_locked.clone();
     let snc = sync;
-    thread::spawn(move || run(lockfile, &meta, &wal, set, &rx, &snc, wal_size));
+    let shared = Shared { meta, committed };
+    thread::spawn(move || run(lockfile, &shared, &wal, set, &rx, &snc, wal_size));
 
     if let LogSync::IntervalMillis(millis) = &sync {
         let interval = time::interval(Duration::from_millis(*millis));
@@ -149,6 +171,16 @@ pub fn spawn(
     }
 
     Ok((tx, wal_locked))
+}
+
+/// Copies the in-memory `committed` pointer into the active file's header fields.
+///
+/// The header bytes themselves are written by the caller's `update_header`, which runs inside the
+/// WAL flush that is happening anyway. The pointer is durable only as a passenger of that flush,
+/// so publishing it costs no extra write and no extra fsync.
+fn publish_committed(wal: &mut WalFileSet, committed: &Arc<RwLock<Option<Vec<u8>>>>) {
+    let value = committed.read().unwrap().clone();
+    wal.active().committed = value;
 }
 
 /// Flush the active WAL file so that everything written to it is on disk.
@@ -159,11 +191,13 @@ fn flush_blocking(
     wal: &mut WalFileSet,
     buf: &mut Vec<u8>,
     is_dirty: &mut bool,
+    committed: &Arc<RwLock<Option<Vec<u8>>>>,
 ) -> Result<(), Error> {
     if !*is_dirty {
         return Ok(());
     }
 
+    publish_committed(wal, committed);
     let active = wal.active();
     buf.clear();
     active.update_header(buf)?;
@@ -185,6 +219,13 @@ fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
     });
 }
 
+/// The startup state the writer thread works against, shared with the store: the Raft metadata
+/// and the in-memory `committed` pointer.
+struct Shared {
+    meta: Arc<RwLock<Metadata>>,
+    committed: Arc<RwLock<Option<Vec<u8>>>>,
+}
+
 /// There are a lot of `unwrap()`s in this task. The reason is simply, if most of these fail, it can
 /// only be because of a non-recoverable error anyway and the application should crash, so that
 /// the next health check can restart it.
@@ -193,7 +234,7 @@ fn spawn_syncer(tx_writer: flume::Sender<Action>, mut interval: Interval) {
 /// this regard, it's either a physical storage or OS issue and this code an do nothing about it.
 fn run(
     lockfile: LockFile,
-    meta: &Arc<RwLock<Metadata>>,
+    shared: &Shared,
     wal_locked: &Arc<RwLock<WalFileSet>>,
     mut wal: WalFileSet,
     rx: &flume::Receiver<Action>,
@@ -204,7 +245,6 @@ fn run(
 
     let mut is_dirty = false;
     let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
-    let data_len_limit = wal_size as usize - wal.active().offset_logs() - 2;
 
     // openraft will read chunks of 64 logs for bigger tasks
     let mut buf: Vec<u8> = Vec::with_capacity(64);
@@ -227,6 +267,9 @@ fn run(
                     // If that ever happens, there is no one listening on the other end of your ack
                     // and callback, which means no one would ever even get our result.
                     while let Ok(Some((id, bytes))) = rx.recv() {
+                        // read from the active file: a roll_over can hand over a header of a
+                        // different version, and with it a different usable size
+                        let data_len_limit = active.max_data_len(wal_size);
                         if bytes.len() > data_len_limit {
                             // A single raft entry cannot span WAL files. By default an
                             // oversized entry is a non-recoverable setup issue (it needs a
@@ -261,6 +304,9 @@ fn run(
 
                         if !active.has_space(bytes.len() as u32) {
                             buf.clear();
+                            // publish first: `roll_over` seals the current file and carries its
+                            // header values, including `committed`, into the new file
+                            publish_committed(&mut wal, &shared.committed);
                             wal.roll_over(wal_size, &mut buf)?;
                             {
                                 let mut lock = wal_locked.write().unwrap();
@@ -309,7 +355,9 @@ fn run(
                 is_dirty = true;
                 match &sync {
                     LogSync::Immediate => {
-                        if let Err(err) = flush_blocking(&mut wal, &mut buf, &mut is_dirty) {
+                        if let Err(err) =
+                            flush_blocking(&mut wal, &mut buf, &mut is_dirty, &shared.committed)
+                        {
                             // If an immediate flush fails, we want to stop for data consistency.
                             error!(
                                 "Error during immediate WAL file sync. Stopping Writer to preserve \
@@ -345,6 +393,7 @@ fn run(
                 // TODO fixed 4kB -> make configurable?
                 if wal.active().space_left() < 4 * 1024 {
                     buf.clear();
+                    publish_committed(&mut wal, &shared.committed);
                     wal.roll_over(wal_size, &mut buf)?;
                     {
                         let mut lock = wal_locked.write().unwrap();
@@ -372,7 +421,9 @@ fn run(
                 // The flush has to block. `flush_async` only starts the writeback and returns,
                 // so a crash during the removal below can still land after the deletions and
                 // before the header reaches disk, which is the hole this guards against.
-                if let Err(err) = flush_blocking(&mut wal, &mut buf, &mut is_dirty) {
+                if let Err(err) =
+                    flush_blocking(&mut wal, &mut buf, &mut is_dirty, &shared.committed)
+                {
                     if ack.send(Err(err)).is_err() {
                         error!(
                             "WAL writer ack channel closed after removal flush - stopping writer"
@@ -384,11 +435,11 @@ fn run(
 
                 // Persist the purge frontier before deleting (too low = hole into deleted files;
                 // too high = extra files). Revert it again if the deletion fails below.
-                let previous_purged = meta.read()?.last_purged_log_id.clone();
+                let previous_purged = shared.meta.read()?.last_purged_log_id.clone();
                 let persist_purged = last_log.is_some();
                 if persist_purged {
-                    meta.write()?.last_purged_log_id = last_log;
-                    Metadata::write(meta, &wal.base_path)?;
+                    shared.meta.write()?.last_purged_log_id = last_log;
+                    Metadata::write(&shared.meta, &wal.base_path)?;
                 }
 
                 buf.clear();
@@ -410,12 +461,13 @@ fn run(
                             // deletion failed: revert the frontier, but still report the error
                             let revert_res = {
                                 // `Metadata::write` re-locks the meta, so release the guard first
-                                let mut m = meta
+                                let mut m = shared
+                                    .meta
                                     .write()
                                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                                 m.last_purged_log_id = previous_purged;
                                 drop(m);
-                                Metadata::write(meta, &wal.base_path)
+                                Metadata::write(&shared.meta, &wal.base_path)
                             };
                             if let Err(revert_err) = revert_res {
                                 error!(
@@ -437,10 +489,10 @@ fn run(
 
                 // Blocking on purpose: clearing `is_dirty` while an msync is still in flight
                 // would make the interval ticker skip a WAL that never reached disk.
-                flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
+                flush_blocking(&mut wal, &mut buf, &mut is_dirty, &shared.committed)?;
 
-                meta.write()?.vote = Some(value);
-                let res = Metadata::write(meta, &wal.base_path);
+                shared.meta.write()?.vote = Some(value);
+                let res = Metadata::write(&shared.meta, &wal.base_path);
 
                 if ack.send(res).is_err() {
                     error!("WAL writer ack channel closed after vote - stopping writer");
@@ -450,7 +502,7 @@ fn run(
             Action::Sync => {
                 // The ticker is the only flush in `IntervalMillis` mode and no append waits on
                 // it, so it blocks: `msync(MS_ASYNC)` starts no writeback on Linux at all.
-                flush_blocking(&mut wal, &mut buf, &mut is_dirty)?;
+                flush_blocking(&mut wal, &mut buf, &mut is_dirty, &shared.committed)?;
             }
             Action::Shutdown(ack) => {
                 debug!("Raft logs store writer is being shut down");
@@ -462,11 +514,12 @@ fn run(
 
     debug!("Logs Writer exiting");
 
+    publish_committed(&mut wal, &shared.committed);
     let active = wal.active();
     buf.clear();
     active.update_header(&mut buf)?;
     active.flush()?;
-    Metadata::write(meta, &wal.base_path)?;
+    Metadata::write(&shared.meta, &wal.base_path)?;
 
     // drop the lockfile before trying to remove it to unlock it
     drop(lockfile);
@@ -517,6 +570,7 @@ mod tests {
             64 * 1024,
             false,
             meta.clone(),
+            Arc::new(RwLock::new(None)),
         )
         .unwrap();
 
@@ -552,6 +606,7 @@ mod tests {
             64 * 1024,
             false,
             meta.clone(),
+            Arc::new(RwLock::new(None)),
         )
         .unwrap();
 
