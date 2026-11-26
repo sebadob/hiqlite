@@ -54,10 +54,17 @@ default = ["auto-heal", "aws_lc_rs", "backup", "sqlite", "toml"]
 # compiled in, and `aws_lc_rs` is the default. `fips` is the aws-lc-rs FIPS build and implies
 # `aws_lc_rs`. Each forwards the backend to every TLS dependency so the unselected provider is never
 # compiled in.
+#
+# `aws_lc_rs` also prefers the post-quantum hybrid group X25519MLKEM768. rustls'
+# `prefer-post-quantum` implies `aws_lc_rs`, so it can only ever be enabled from inside this
+# feature - on the workspace `rustls` line it would compile aws-lc-rs into a `ring` build.
+# `ring` has no post-quantum group at all, so a `ring` build negotiates X25519. `fips` keeps the
+# preference: rustls treats ML-KEM as FIPS-compliant when aws-lc is in FIPS mode.
 aws_lc_rs = [
   "cryptr?/aws_lc_rs",
   "rcgen/aws_lc_rs",
   "rustls/aws_lc_rs",
+  "rustls/prefer-post-quantum",
   "tokio-rustls/aws_lc_rs",
 ]
 ring = [
