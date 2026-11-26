@@ -3,10 +3,12 @@ name: Check
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -16,6 +18,10 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  HIQLITE_CI_CACHE_PREFIX: hiqlite-ci-v1
+  HIQLITE_CI_PLATFORM_FEATURES: cache,counters,dashboard,dlock,listen_notify,macros,toml
   RUST_BACKTRACE: short
   TERM: xterm
 
@@ -29,6 +35,9 @@ jobs:
       image: ghcr.io/sebadob/rauthy-builder:20261123
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-cargo
+        with:
+          key: lint
       - name: Code format
         run: cargo fmt --check
       - name: Clippy
@@ -47,6 +56,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Share the target directory across examples
         run: printf 'CARGO_TARGET_DIR=%s/target\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/setup-cargo
+        with:
+          key: examples
       - name: Clippy examples
         run: just clippy-examples
 
@@ -78,6 +90,9 @@ jobs:
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: stable
+      - uses: ./.github/actions/setup-cargo
+        with:
+          key: test
       - name: Test the Linux workspace without S3
         if: runner.os == 'Linux'
         run: just test-no-s3
@@ -85,7 +100,8 @@ jobs:
         if: runner.os != 'Linux'
         env:
           TEST_SKIP_S3_RESTORE: "true"
-        run: cargo test -p hiqlite --features cache,counters,dashboard,dlock,listen_notify,macros,toml --lib --bins
+        shell: bash
+        run: cargo test -p hiqlite --features "$HIQLITE_CI_PLATFORM_FEATURES" --lib --bins
       - name: Test hiqlite-wal and hiqlite-derive (macOS and Windows)
         if: runner.os != 'Linux'
         run: cargo test -p hiqlite-wal -p hiqlite-derive
@@ -106,13 +122,54 @@ jobs:
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: stable
+      - uses: ./.github/actions/setup-cargo
+        with:
+          key: test
+          save: 'false'
       - name: Cluster tests
         # Time out the test before the runner can cancel the entire job.
         timeout-minutes: 15
         env:
           TEST_SKIP_S3_RESTORE: "true"
           HQL_DISABLE_COLD_RESTART_GUARD: "true"
-        run: cargo test --features cache,counters,dlock,listen_notify,macros,toml --test cluster
+        shell: bash
+        run: cargo test -p hiqlite --features "$HIQLITE_CI_PLATFORM_FEATURES" --test cluster
+
+  cache-retention:
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [lint, examples, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      actions: write
+    steps:
+      - name: Keep Cargo caches within 6 GB
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Keep the newest archive for each job, OS, and architecture first.
+          prefix="$HIQLITE_CI_CACHE_PREFIX-"
+          plan=$(gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/caches?ref=refs%2Fheads%2Fmain&key=$prefix&per_page=100" |
+            jq --arg prefix "$prefix" --argjson budget 6000000000 '
+              [.[].actions_caches[]
+                | select(.ref == "refs/heads/main" and (.key | startswith($prefix)))
+                | . + {group: (.key | ltrimstr($prefix) | split("-") | .[:3])}]
+              | group_by(.group)
+              | map(sort_by(.created_at) | reverse)
+              | (map(first) | sort_by(.last_accessed_at) | reverse)
+                + (map(.[1:][]) | sort_by(.last_accessed_at) | reverse)
+              | reduce .[] as $entry ({bytes: 0, remove: []};
+                  if .bytes + $entry.size_in_bytes <= $budget
+                  then .bytes += $entry.size_in_bytes
+                  else .remove += [$entry.id]
+                  end)')
+          while IFS= read -r id; do
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id"
+          done < <(jq -r '.remove[]' <<< "$plan")
+          printf 'Retained %s bytes of Cargo caches\n' "$(jq -r '.bytes' <<< "$plan")"
 
   check:
     if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
