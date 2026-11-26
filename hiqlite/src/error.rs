@@ -131,6 +131,11 @@ pub enum Error {
     Transaction(#[bincode(with_serde)] Cow<'static, str>),
     #[error("Unauthorized: {0}")]
     Unauthorized(#[bincode(with_serde)] Cow<'static, str>),
+    /// The node is not usable right now and a retry later can succeed: it is replaying its log,
+    /// it has no leader yet, it is not a member of a healthy group, or it is shutting down.
+    /// `/ready` and `/health` answer with this so a probe sees 503, not a client error.
+    #[error("Unavailable: {0}")]
+    Unavailable(#[bincode(with_serde)] Cow<'static, str>),
     #[error("WAL: {0}")]
     WAL(String),
     #[error("WebSocket: {0}")]
@@ -219,7 +224,7 @@ impl IntoResponse for Error {
             | Error::WAL(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::QueryReturnedNoRows(_) => StatusCode::NOT_FOUND,
             Error::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
-            Error::Connect(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Error::Connect(_) | Error::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Error::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
             Error::Token(_) | Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         };
@@ -435,14 +440,6 @@ impl From<rusqlite::Error> for Error {
 //         Self::Sqlite(value.to_string().into())
 //     }
 // }
-
-#[cfg(feature = "sqlite")]
-impl From<deadpool::unmanaged::PoolError> for Error {
-    fn from(value: deadpool::unmanaged::PoolError) -> Self {
-        trace!("Sqlite: {value}");
-        Self::Sqlite(value.to_string().into())
-    }
-}
 
 impl From<serde_json::Error> for Error {
     fn from(value: serde_json::Error) -> Self {

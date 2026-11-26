@@ -7,7 +7,6 @@ use crate::{Node, helpers};
 use axum::body;
 use axum::body::Body;
 use axum::extract::Path;
-use axum::extract::Query;
 use axum::http::HeaderMap;
 use axum::response::Response;
 use bincode_next::{Decode, Encode};
@@ -528,13 +527,6 @@ pub struct ElectionReq {
     pub enable_elect: bool,
 }
 
-/// The query of `POST /cluster/election`: `?force=true` skips openraft's Pre-Vote round.
-#[derive(Debug, Deserialize)]
-pub struct ElectQuery {
-    #[serde(default)]
-    pub force: bool,
-}
-
 /// Every Raft group this build runs.
 pub(crate) fn raft_types() -> Vec<RaftType> {
     let types = [
@@ -604,11 +596,10 @@ pub(crate) async fn local_set_enable_elect(
 
 /// The local counterpart of `POST /cluster/election` for an embedded client's own node.
 ///
-/// A learner is refused outright: it can never win an election, it can only inflate the term.
-pub(crate) async fn local_elect(
-    state: &Arc<AppState>,
-    force: bool,
-) -> Result<ElectionState, Error> {
+/// A learner is refused outright: it can never win an election, it can only inflate the term. A node
+/// with its own elections disabled is refused by openraft's gate, and the campaign is a Pre-Vote
+/// probe, so a refusal never touches the term.
+pub(crate) async fn local_elect(state: &Arc<AppState>) -> Result<ElectionState, Error> {
     for raft_type in raft_types() {
         let view = helpers::get_raft_view(state, &raft_type)?;
         if view.state == ServerState::Learner {
@@ -629,14 +620,7 @@ pub(crate) async fn local_elect(
             return Err(Error::Error("Raft is not initialized".into()));
         }
 
-        if force {
-            warn!(
-                "Node {} forces an election for its {:?} group: the Pre-Vote is bypassed and the \
-                 term climbs even when this node cannot win",
-                state.id, raft_type
-            );
-        }
-        helpers::trigger_elect(state, &raft_type, force).await?;
+        helpers::trigger_elect(state, &raft_type).await?;
     }
 
     election_state(state)
@@ -676,19 +660,19 @@ pub(crate) async fn put_election(
 
 /// Make this node campaign for the leadership of all its groups: `POST /cluster/election`.
 ///
-/// Without `?force=true` openraft runs a Pre-Vote round first, so the term is untouched when this
-/// node cannot win - a node whose own leader lease is still valid is refused locally. With
-/// `?force=true` the Pre-Vote is bypassed and the term climbs unconditionally. A learner is
-/// refused outright: it can never win, it can only inflate the term.
+/// openraft runs its Pre-Vote round first, so the term is untouched when this node cannot win - a
+/// node whose own leader lease is still valid is refused locally, and so is a node with its own
+/// elections disabled. A learner is refused outright: it can never win, it can only inflate the
+/// term. There is no way to bypass the Pre-Vote: a leader change that must happen is a leadership
+/// transfer on `POST /cluster/transfer_leader`.
 #[tracing::instrument(skip_all)]
 pub(crate) async fn post_election(
     state: AppStateExt,
     headers: HeaderMap,
-    Query(query): Query<ElectQuery>,
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    fmt_ok(&headers, local_elect(&state, query.force).await?)
+    fmt_ok(&headers, local_elect(&state).await?)
 }
 
 /// The membership of one Raft group, as this node sees it.
