@@ -4,7 +4,7 @@ use crate::query::rows::{
     TryRowMapper,
 };
 use crate::query::stream::{QueryStream, StreamVerdict};
-use crate::reader::{ActorFailure, QueryRequest, ReaderRequest, query_on_actor};
+use crate::reader::{ActorFailure, QueryRequest, ReadPool, ReaderRequest, query_on_actor};
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::param::Param;
 use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
@@ -31,7 +31,7 @@ pub(crate) const ROWS_HINT: usize = 4;
 pub(crate) async fn query_consistent_local<S>(
     raft: &Raft<TypeConfigSqlite, StateMachineSqlite>,
     log_statements: bool,
-    read_actors: &flume::Sender<ReaderRequest>,
+    read_actors: &ReadPool,
     stmt: S,
     params: Params,
     read_policy: ReadPolicy,
@@ -45,7 +45,7 @@ where
 
 pub(crate) async fn query_owned_local<S>(
     log_statements: bool,
-    read_actors: &flume::Sender<ReaderRequest>,
+    read_actors: &ReadPool,
     sql: S,
     params: Params,
 ) -> Result<RowsOwned, Error>
@@ -305,7 +305,7 @@ where
     state
         .raft_db
         .read_actors
-        .send_async(ReaderRequest::Stream(QueryRequest {
+        .send(ReaderRequest::Stream(QueryRequest {
             size_hint: 0,
             sql,
             work: Box::new(move |conn, _size_hint, sql| {

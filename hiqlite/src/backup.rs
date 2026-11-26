@@ -1,7 +1,9 @@
 use crate::app_state::AppState;
 #[cfg(feature = "s3")]
 use crate::helpers::parse_duration;
-use crate::helpers::{atomic_file_switch, set_path_access, validate_db_backup_snapshot};
+use crate::helpers::{
+    atomic_file_switch, set_path_access, sync_file_data, validate_db_backup_snapshot,
+};
 use crate::store::logs;
 use crate::store::state_machine::sqlite::state_machine::{QueryWrite, StateMachineSqlite};
 use crate::{Client, Error, NodeConfig, NodeId};
@@ -378,7 +380,6 @@ async fn cleanup_restore_data_dirs(data_dir: &str) -> Result<(), Error> {
     let sqlite_paths = [
         StateMachineSqlite::path_db(data_dir),
         StateMachineSqlite::path_snapshots(data_dir),
-        StateMachineSqlite::path_lock_file(data_dir),
         logs::logs_dir_db(data_dir),
     ];
     #[cfg(feature = "cache")]
@@ -399,6 +400,17 @@ async fn cleanup_restore_data_dirs(data_dir: &str) -> Result<(), Error> {
         }
     }
 
+    let lock = StateMachineSqlite::path_lock_file(data_dir);
+    match fs::remove_file(&lock).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(Error::Sqlite(
+                format!("Cannot remove old SQLite crash marker {lock}: {err}").into(),
+            ));
+        }
+    }
+
     #[cfg(feature = "cache")]
     for path in &cache_paths {
         match fs::remove_dir_all(path).await {
@@ -413,6 +425,28 @@ async fn cleanup_restore_data_dirs(data_dir: &str) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+async fn stage_local_backup(source: String, directory: &str) -> Result<String, Error> {
+    let path = format!("{directory}/restore-{}.tmp", uuid::Uuid::now_v7());
+    task::spawn_blocking(move || {
+        if !std::fs::metadata(&source)?.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "backup source must be a regular file",
+            ));
+        }
+        let mut source = std::fs::File::open(source)?;
+        let mut staged = std::fs::File::create_new(&path)?;
+        if let Err(err) = std::io::copy(&mut source, &mut staged) {
+            drop(staged);
+            let _ = std::fs::remove_file(&path);
+            return Err(err);
+        }
+        Ok(path)
+    })
+    .await?
+    .map_err(Error::from)
 }
 
 /// Apply the given backup and move it onto the node's database path.
@@ -451,18 +485,17 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
             s3_config.pull(&s3_obj, &path_backup).await?;
             path_backup
         }
-        BackupSource::File(path_src) => {
-            let (path, filename) = path_src.rsplit_once('/').unwrap_or(("", &path_src));
-            debug!("Given backup path full: '{path_src}', after parsing: '{path}' / '{filename}'");
-            let path_backup = format!("{path_backups}/{filename}");
-
-            fs::copy(path_src, &path_backup).await?;
-            path_backup
-        }
+        BackupSource::File(path_src) => stage_local_backup(path_src, &path_backups).await?,
     };
-    fs::File::open(&path_backup).await?.sync_data().await?;
-
-    validate_backup_db(path_backup.clone()).await?;
+    let preparation = async {
+        sync_file_data(&path_backup).await?;
+        validate_backup_db(path_backup.clone()).await
+    }
+    .await;
+    if let Err(err) = preparation {
+        let _ = fs::remove_file(&path_backup).await;
+        return Err(err);
+    }
     debug!("Database backup validation passed (metadata + integrity check)");
 
     debug!("Removing old data");
@@ -951,6 +984,46 @@ impl BackupInfo {
 #[cfg(test)]
 mod tests {
     use super::{backup_file_name, backup_ts_from_name, is_valid_file_prefix};
+
+    #[tokio::test]
+    async fn local_restore_stages_a_separate_copy_of_a_read_only_backup() {
+        let directory = std::env::temp_dir().join(uuid::Uuid::now_v7().to_string());
+        std::fs::create_dir(&directory).unwrap();
+        let source = directory.join("backup.sqlite");
+        std::fs::write(&source, b"backup").unwrap();
+        let original = std::fs::metadata(&source).unwrap().permissions();
+        let mut permissions = original.clone();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&source, permissions).unwrap();
+
+        let staged = super::stage_local_backup(
+            source.to_str().unwrap().to_owned(),
+            directory.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        super::sync_file_data(&staged).await.unwrap();
+        assert_ne!(std::path::Path::new(&staged), source.as_path());
+        assert_eq!(std::fs::read(staged).unwrap(), b"backup");
+        assert_eq!(std::fs::read(&source).unwrap(), b"backup");
+        std::fs::set_permissions(source, original).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn restore_cleanup_removes_a_crash_marker() {
+        let dir = "test_data/restore_cleanup_crash_marker";
+        let path = super::StateMachineSqlite::path_lock_file(dir);
+        let path = std::path::Path::new(&path);
+        super::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        super::fs::write(path, b"").await.unwrap();
+
+        super::cleanup_restore_data_dirs(dir).await.unwrap();
+
+        assert!(!super::fs::try_exists(path).await.unwrap());
+    }
 
     /// The newest S3 backup survives a restart, and an older confirmation, e.g. a slow watcher
     /// of an earlier backup, never moves it back.

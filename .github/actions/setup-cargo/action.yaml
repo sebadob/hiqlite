@@ -1,0 +1,22 @@
+name: Set up Cargo cache
+
+description: Reuse Cargo dependencies and their build artifacts.
+
+inputs:
+  key:
+    description: Cache group shared by jobs that build the same dependencies.
+    required: true
+  save:
+    description: Allow this job to seed the cache on main.
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        prefix-key: ${{ env.HIQLITE_CI_CACHE_PREFIX }}
+        shared-key: ${{ inputs.key }}
+        env-vars: HIQLITE_CI_PLATFORM_FEATURES
+        cache-bin: 'false'
+        save-if: ${{ inputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}

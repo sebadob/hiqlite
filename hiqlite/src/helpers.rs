@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -21,8 +21,19 @@ use tokio::fs;
 use tokio::time::Instant;
 use tracing::{error, info, warn};
 
-/// Will fsync the `src`, then `rename` to `dest`, and then flush the parent dir of `dest` to
-/// guarantee the rename is persistent.
+pub(crate) async fn sync_file_data(path: impl AsRef<Path>) -> Result<(), Error> {
+    // Windows requires a writable handle to flush a file.
+    fs::OpenOptions::new()
+        .read(true)
+        .write(cfg!(windows))
+        .open(path)
+        .await?
+        .sync_data()
+        .await?;
+    Ok(())
+}
+
+/// Flushes `src` before replacing `dest`. On Unix it also flushes `dest`'s parent directory.
 pub async fn atomic_file_switch<S, D>(src: S, dest: D) -> Result<(), Error>
 where
     S: Into<PathBuf>,
@@ -31,8 +42,9 @@ where
     let src = src.into();
     let dest = dest.into();
 
-    fs::File::open(&src).await?.sync_data().await?;
+    sync_file_data(&src).await?;
     fs::rename(src, &dest).await?;
+    #[cfg(unix)]
     if let Some(parent) = dest.parent() {
         fs::File::open(parent).await?.sync_data().await?;
     }

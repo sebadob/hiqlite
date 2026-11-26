@@ -133,12 +133,15 @@ async fn exec_tests() -> Result<(), Error> {
     log("Remote-only client tests finished");
 
     log("Test shutdown and restart");
-    join_all([
+    for result in join_all([
         client_1.shutdown(),
         client_2.shutdown(),
         client_3.shutdown(),
     ])
-    .await;
+    .await
+    {
+        result?;
+    }
     log("Clients shutdown complete");
 
     // logs sync task runs every 200ms -> needs to catch the closed channel
@@ -173,12 +176,15 @@ async fn exec_tests() -> Result<(), Error> {
     log("Current database has been changed");
 
     log("Shutting down nodes");
-    join_all([
+    for result in join_all([
         client_1.shutdown(),
         client_2.shutdown(),
         client_3.shutdown(),
     ])
-    .await;
+    .await
+    {
+        result?;
+    }
 
     // just give the s3 upload task in the background some time to finish
     time::sleep(Duration::from_millis(1000)).await;
@@ -214,12 +220,15 @@ async fn exec_tests() -> Result<(), Error> {
     log("Current database has been changed");
 
     log("Shutting down nodes");
-    join_all([
+    for result in join_all([
         client_1.shutdown(),
         client_2.shutdown(),
         client_3.shutdown(),
     ])
-    .await;
+    .await
+    {
+        result?;
+    }
 
     time::sleep(Duration::from_millis(1000)).await;
 

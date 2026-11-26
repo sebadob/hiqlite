@@ -1,0 +1,86 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories:
+      - /
+      - /examples/*
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    # Cooldowns apply to version updates only.
+    cooldown:
+      default-days: 10
+      semver-patch-days: 10
+      semver-minor-days: 14
+      semver-major-days: 28
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    commit-message:
+      prefix: "chore(deps): "
+    labels:
+      - dependencies
+    groups:
+      rust-dependencies:
+        patterns:
+          - "*"
+        update-types: [minor, patch]
+    ignore:
+      # Compatibility tests use bincode 2.x to read the old format.
+      - dependency-name: bincode
+        versions:
+          - "3.*"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    cooldown:
+      default-days: 10
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(docker): "
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    cooldown:
+      default-days: 10
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(ci): "
+    labels:
+      - dependencies
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: npm
+    directory: /dashboard
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    cooldown:
+      default-days: 10
+      semver-patch-days: 7
+      semver-minor-days: 14
+      semver-major-days: 28
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    commit-message:
+      prefix: "chore(dashboard): "
+    labels:
+      - dependencies

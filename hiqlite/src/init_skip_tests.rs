@@ -34,6 +34,18 @@ async fn closed_addr() -> String {
     addr
 }
 
+// Close each connection immediately so repeated probes do not wait for TCP connect backoff.
+async fn disconnecting_remote() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
+    addr
+}
+
 /// A remote that is a member of an initialized cluster of nodes 1, 2 and 3.
 async fn initialized_remote() -> String {
     let nodes = (1..=3)
@@ -133,8 +145,8 @@ async fn pristine_peers_let_node_1_initialize() {
 async fn all_unreachable_lets_node_1_initialize_by_default() {
     let nodes = [
         node(1, closed_addr().await),
-        node(2, closed_addr().await),
-        node(3, closed_addr().await),
+        node(2, disconnecting_remote().await),
+        node(3, disconnecting_remote().await),
     ];
     assert_eq!(
         skip_init(&nodes, Duration::from_secs(15)).await,

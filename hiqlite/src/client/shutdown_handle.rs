@@ -1,52 +1,24 @@
-use crate::app_state::AppState;
-use crate::client::stream::ClientStreamReq;
 use crate::{Client, Error};
-use std::sync::Arc;
 use tokio::sync::watch;
-use tokio::time;
-use tracing::{debug, info};
 
 pub struct ShutdownHandle {
-    state: Arc<AppState>,
-    #[cfg(feature = "cache")]
-    with_tls: bool,
-    #[cfg(feature = "cache")]
-    tls_no_verify: bool,
-    #[cfg(feature = "cache")]
-    tx_client_cache: flume::Sender<ClientStreamReq>,
-    #[cfg(feature = "sqlite")]
-    tx_client_db: flume::Sender<ClientStreamReq>,
-    tx_shutdown: Option<watch::Sender<bool>>,
+    client: Client,
+    finished: watch::Receiver<Option<super::ShutdownResult>>,
     rx_shutdown: watch::Receiver<bool>,
 }
 
 impl ShutdownHandle {
+    /// Wait for an OS signal or for another caller to complete shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same shutdown errors as [`Client::shutdown`].
     pub async fn wait(&mut self) -> Result<(), Error> {
-        let _ = self.rx_shutdown.changed().await;
-        info!("ShutdownHandle received shutdown signal - shutting down the Raft node now");
-
-        // The pre-shutdown delay inside `shutdown_execute` plus the teardown budget.
-        if time::timeout(
-            self.state.shutdown_delay + crate::config::SHUTDOWN_TEARDOWN_BUDGET,
-            Client::shutdown_execute(
-                &self.state,
-                #[cfg(feature = "cache")]
-                self.with_tls,
-                #[cfg(feature = "cache")]
-                self.tls_no_verify,
-                #[cfg(feature = "cache")]
-                &self.tx_client_cache,
-                #[cfg(feature = "sqlite")]
-                &self.tx_client_db,
-                self.tx_shutdown.as_ref(),
-            ),
-        )
-        .await
-        .is_err()
-        {
-            debug!("Timeout reached while waiting for Client::shutdown_execute");
+        tokio::select! {
+            _ = self.rx_shutdown.wait_for(|signal| *signal) => {}
+            _ = self.finished.wait_for(Option::is_some) => {}
         }
-        Ok(())
+        self.client.shutdown().await
     }
 }
 
@@ -63,7 +35,7 @@ impl Client {
     /// own.
     #[allow(unused)]
     pub fn shutdown_handle(&self) -> Result<ShutdownHandle, Error> {
-        if let Some(state) = self.inner.state.clone() {
+        if let Some(finished) = self.inner.tx_shutdown.as_ref() {
             let (tx, rx_shutdown) = watch::channel(false);
 
             ctrlc::set_handler(move || {
@@ -72,16 +44,8 @@ impl Client {
             .expect("Error setting shutdown handle");
 
             Ok(ShutdownHandle {
-                state,
-                #[cfg(feature = "cache")]
-                with_tls: self.inner.tls_config.is_some(),
-                #[cfg(feature = "cache")]
-                tls_no_verify: self.inner.tls_no_verify,
-                #[cfg(feature = "cache")]
-                tx_client_cache: self.inner.tx_client_cache.clone(),
-                #[cfg(feature = "sqlite")]
-                tx_client_db: self.inner.tx_client_db.clone(),
-                tx_shutdown: self.inner.tx_shutdown.clone(),
+                client: self.clone(),
+                finished: finished.subscribe(),
                 rx_shutdown,
             })
         } else {

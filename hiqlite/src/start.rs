@@ -116,9 +116,12 @@ where
     #[cfg(feature = "sqlite")]
     let (tx_client_stream, rx_client_stream) = flume::bounded(1);
 
+    let (api_server_alive, servers_closed) = flume::bounded(0);
+    let raft_server_alive = api_server_alive.clone();
     let state = Arc::new(AppState {
         app_start: Utc::now(),
         is_shutting_down: AtomicBool::new(false),
+        servers_closed,
         #[cfg(feature = "backup")]
         backups_dir: format!("{}/state_machine/backups", node_config.data_dir),
         #[cfg(feature = "backup")]
@@ -156,7 +159,7 @@ where
         backup::restore_backup_finish(&state).await;
     }
 
-    let (tx_shutdown, rx_shutdown) = tokio::sync::watch::channel(false);
+    let (tx_shutdown, rx_shutdown) = tokio::sync::watch::channel(None);
 
     let router_internal = Router::new()
         // .route("/stream", get(raft_server_split::stream))
@@ -187,9 +190,11 @@ where
         let handle = axum_server::Handle::<std::net::SocketAddr>::new();
         let h_shutdown = handle.clone();
         task::spawn(Box::pin(async move {
+            let _alive = raft_server_alive;
+            let listener = std_listener;
             let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(config)
                 .acceptor(ConfiguredStreamAcceptor);
-            axum_server::from_tcp(std_listener)
+            axum_server::from_tcp(listener)
                 // errors when the socket is blocking
                 .expect("properly configured TCP listener")
                 .acceptor(acceptor)
@@ -214,6 +219,7 @@ where
                 )
             })?;
         task::spawn(Box::pin(async move {
+            let _alive = raft_server_alive;
             axum::serve(
                 listener.tap_io(configure_tcp_stream),
                 router_internal.into_make_service(),
@@ -320,9 +326,11 @@ where
         let handle = axum_server::Handle::<std::net::SocketAddr>::new();
         let h_shutdown = handle.clone();
         task::spawn(Box::pin(async move {
+            let _alive = api_server_alive;
+            let listener = std_listener;
             let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(config)
                 .acceptor(ConfiguredStreamAcceptor);
-            axum_server::from_tcp(std_listener)
+            axum_server::from_tcp(listener)
                 // errors when the socket is blocking
                 .expect("properly configured TCP listener")
                 .acceptor(acceptor)
@@ -346,6 +354,7 @@ where
             })?;
 
         task::spawn(Box::pin(async move {
+            let _alive = api_server_alive;
             axum::serve(
                 listener.tap_io(configure_tcp_stream),
                 router_api.into_make_service(),
@@ -440,6 +449,8 @@ fn build_listen_addr(listen_addr: &str, node_addr: &str, tls: bool) -> String {
     format!("{listen_addr}:{port}")
 }
 
-async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) {
-    let _ = rx.changed().await;
+async fn shutdown_signal(
+    mut rx: tokio::sync::watch::Receiver<Option<crate::client::ShutdownResult>>,
+) {
+    let _ = rx.wait_for(Option::is_some).await;
 }

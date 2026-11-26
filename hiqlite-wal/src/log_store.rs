@@ -7,7 +7,6 @@ use openraft::RaftTypeConfig;
 use std::fs;
 use std::marker::PhantomData;
 use std::sync::{Arc, RwLock};
-use tokio::sync::oneshot;
 use tokio::task;
 use tracing::warn;
 
@@ -29,6 +28,9 @@ where
     wal: Arc<RwLock<WalFileSet>>,
     pub writer: flume::Sender<writer::Action>,
     pub reader: flume::Sender<reader::Action>,
+    pub(crate) reader_closed: flume::Receiver<()>,
+    readers: Arc<reader::Readers>,
+    shutdown: ShutdownHandle,
     _marker: PhantomData<T>,
 }
 
@@ -82,7 +84,9 @@ where
                 meta.clone(),
                 committed.clone(),
             )?;
-            let reader = reader::spawn(meta.clone(), wal.clone());
+            let readers = Arc::new(reader::Readers::new());
+            let (reader, reader_closed) = readers.spawn(meta.clone(), wal.clone());
+            let shutdown = ShutdownHandle::new(writer.clone(), readers.clone());
 
             Ok::<Self, Error>(Self {
                 meta,
@@ -90,6 +94,9 @@ where
                 wal,
                 writer,
                 reader,
+                reader_closed,
+                readers,
+                shutdown,
                 _marker: PhantomData,
             })
         })
@@ -144,31 +151,24 @@ where
 
     #[must_use]
     pub fn shutdown_handle(&self) -> ShutdownHandle {
-        ShutdownHandle::new(self.writer.clone(), self.reader.clone())
+        self.shutdown.clone()
     }
 
     ///
     /// # Errors
     ///
     /// [`Error::Internal`] when the WAL writer task is no longer reachable, and
-    /// [`Error::Generic`] when its shutdown acknowledgement is never sent.
+    /// [`Error::Generic`] when a shutdown acknowledgement is never sent.
     pub async fn stop(self) -> Result<(), Error> {
-        let (tx_ack, ack) = oneshot::channel();
-        self.writer
-            .send_async(writer::Action::Shutdown(tx_ack))
-            .await?;
-        ack.await?;
-
-        let _ = self.reader.send_async(reader::Action::Shutdown).await;
-
-        Ok(())
+        self.shutdown_handle().shutdown().await
     }
 
     pub(crate) fn spawn_reader(&self) -> LogStoreReader<T> {
-        let tx = reader::spawn(self.meta.clone(), self.wal.clone());
+        let (tx, closed) = self.readers.spawn(self.meta.clone(), self.wal.clone());
 
         LogStoreReader {
             tx,
+            closed,
             _marker: self._marker,
         }
     }
@@ -180,5 +180,6 @@ where
     T: RaftTypeConfig,
 {
     pub tx: flume::Sender<reader::Action>,
+    pub(crate) closed: flume::Receiver<()>,
     _marker: PhantomData<T>,
 }
