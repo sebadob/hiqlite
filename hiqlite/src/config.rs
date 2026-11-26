@@ -209,9 +209,9 @@ pub struct NodeConfig {
     pub secret_raft: String,
     /// Secret for Raft management and DB API - at least 16 characters long
     pub secret_api: String,
-    /// Secret for the `GET /metrics` Prometheus endpoint - at least 16 characters long, and
-    /// different from `secret_api`. It only grants reading metrics, so it can live in a scrape
-    /// config that never sees `secret_api`. `None` disables `/metrics`.
+    /// Secret for the read-only `GET /metrics` (Prometheus) and `GET /backup` (JSON) endpoints - at
+    /// least 16 characters long, and different from `secret_api`. It only grants reading them, so
+    /// it can live in a scrape config that never sees `secret_api`. `None` disables both.
     pub secret_metrics: Option<String>,
     /// The Encryption Keys used for Backups and Dashboard cookies
     #[cfg(any(feature = "s3", feature = "dashboard"))]

@@ -52,8 +52,9 @@ returns. `POST /backup` on the API port does the same on a node.
 
 ## Backup status
 
-`GET /backup` on the API port (with the API secret as `Authorization: Bearer <secret_api>`) reports
-this node's backups:
+`GET /backup` on the API port reports this node's backups. Like `GET /metrics` below, it needs
+`secret_metrics` as `Authorization: Bearer <secret_metrics>` and answers `404` while that secret is
+not set: other nodes never call it, so it is meant for monitoring and internal tooling.
 
 ```json
 {
@@ -75,7 +76,8 @@ requested a backup (the leader) uploads it, but every node knows the object name
 entry, so every other node watches the bucket for that object after its own local backup is done,
 for up to an hour. `s3_latest` is the newest backup a node has seen in the bucket; it is persisted
 as `s3_latest.json` in the backups directory, so it survives a restart, and a node that has none
-yet looks it up in the bucket once at startup. `s3_error` is the last backup this node could not
+yet looks it up in the bucket once at startup, listing only the objects under its backup prefix.
+The watch itself is a single `HEAD` request for the object, with a growing pause between checks. `s3_error` is the last backup this node could not
 confirm: an upload that failed for good on the leader, or an object that did not show up in time
 on any other node.
 

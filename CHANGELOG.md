@@ -400,13 +400,12 @@ at all: its shape is published by the derive, including the parts it flattens.
 last successful and the last failed local backup since the node started, and with `s3` the newest
 backup this node has seen in the bucket. Every node reports the bucket, not only the leader that
 uploads: each other node watches the bucket for the object named in the backup entry, and keeps the
-newest one in `s3_latest.json` in its backups dir, so it survives a restart. It needs the API secret,
-like `POST /backup`.
+newest one in `s3_latest.json` in its backups dir, so it survives a restart.
 
-`GET /metrics` returns the same as Prometheus gauges. It has its own secret, the new optional
-`secret_metrics` (TOML key, `HQL_SECRET_METRICS`, at least 16 characters and different from
-`secret_api`), so a scrape config never needs the secret that can modify the cluster. Without it,
-`/metrics` answers `404`. See `docs/backups.md`.
+`GET /metrics` returns the same as Prometheus gauges. Both are read-only and have their own secret,
+the new optional `secret_metrics` (TOML key, `HQL_SECRET_METRICS`, at least 16 characters and
+different from `secret_api`), so a scrape config never needs the secret that can modify the
+cluster. Without it, both answer `404`. See `docs/backups.md`.
 
 #### `backup_file_prefix` config var
 

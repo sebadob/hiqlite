@@ -88,8 +88,8 @@ pub async fn test_backup(client_1: &Client, tls_api: bool) -> Result<(), Error> 
     Ok(())
 }
 
-/// `GET /backup` on `node_id` (JSON, behind the API secret) and `GET /metrics` (Prometheus text,
-/// behind the metrics secret only), both showing `name` as the newest local backup.
+/// `GET /backup` on `node_id` (JSON) and `GET /metrics` (Prometheus text), both behind the metrics
+/// secret only and both showing `name` as the newest local backup.
 async fn test_backup_info(node_id: u64, name: &str, tls_api: bool) {
     let client = reqwest::Client::builder()
         .tls_danger_accept_invalid_certs(tls_api)
@@ -101,26 +101,22 @@ async fn test_backup_info(node_id: u64, name: &str, tls_api: bool) {
     let auth_metrics = format!("Bearer {}", crate::start::SECRET_METRICS);
 
     let resp = client.get(&url).send().await.unwrap();
-    assert_eq!(
-        resp.status(),
-        401,
-        "GET /backup must require the API secret"
-    );
+    assert_eq!(resp.status(), 401, "GET /backup must require a secret");
     let resp = client
         .get(&url)
-        .header("authorization", &auth_metrics)
+        .header("authorization", &auth_api)
         .send()
         .await
         .unwrap();
     assert_eq!(
         resp.status(),
         401,
-        "the metrics secret must not open GET /backup"
+        "the API secret must not open GET /backup"
     );
 
     let resp = client
         .get(&url)
-        .header("authorization", &auth_api)
+        .header("authorization", &auth_metrics)
         .send()
         .await
         .unwrap();
@@ -143,7 +139,7 @@ async fn test_backup_info(node_id: u64, name: &str, tls_api: bool) {
         for _ in 0..90 {
             let resp = client
                 .get(&url_follower)
-                .header("authorization", &auth_api)
+                .header("authorization", &auth_metrics)
                 .send()
                 .await
                 .unwrap();

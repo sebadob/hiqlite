@@ -903,7 +903,7 @@ fn create_backup(
                 match s3.push(&path_full, &file).await {
                     Ok(()) => {
                         info!("Push backup to S3 has been finished");
-                        backup_status.s3_confirmed(&file, ts);
+                        backup_status.s3_confirmed(&file, ts).await;
                         break;
                     }
                     Err(err) if attempt < S3_MAX_RETRIES => {

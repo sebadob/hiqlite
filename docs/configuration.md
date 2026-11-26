@@ -55,9 +55,9 @@ vars override it; `--node-id` overrides the node id so one file serves every nod
 - Minimum 16 characters each, and use different values. The API secret travels as
   `Authorization: Bearer <secret_api>`, so it lands in every proxy and request log if you let it.
   See `security.md`.
-- `secret_metrics` - optional, authenticates `GET /metrics` only. At least 16 characters and
-  different from `secret_api`, so a Prometheus scrape config never holds a secret that can modify
-  the cluster. Without it, `/metrics` answers `404`.
+- `secret_metrics` - optional, authenticates the read-only `GET /metrics` and `GET /backup` only.
+  At least 16 characters and different from `secret_api`, so a Prometheus scrape config never holds
+  a secret that can modify the cluster. Without it, both answer `404`.
 - `enc_keys`, `enc_key_active` - encryption for backups and for the dashboard. Mandatory when you
   enable backups, S3, or the dashboard. Keep every key you ever used in `enc_keys` as long as a
   backup made with it exists.

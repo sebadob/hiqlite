@@ -322,10 +322,10 @@ secret_raft = "{{ SECRET_RAFT }}"
 #secret_api = "SuperSecureApiSecret1337"
 secret_api = "{{ SECRET_API }}"
 
-# Secret for `GET /metrics` (Prometheus), as `Authorization: Bearer <secret>`.
-# At least 16 characters long and different from `secret_api`: it only
-# reads metrics, so it can live in a scrape config. `/metrics` answers
-# 404 while it is not set.
+# Secret for `GET /metrics` (Prometheus) and `GET /backup` (JSON), as
+# `Authorization: Bearer <secret>`. At least 16 characters long and
+# different from `secret_api`: it only reads metrics, so it can live in a
+# scrape config. Both endpoints answer 404 while it is not set.
 # May be set to "$SECRETS" to load from the `secrets_file` above.
 #
 # default: not set

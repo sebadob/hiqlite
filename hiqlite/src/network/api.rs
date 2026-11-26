@@ -245,11 +245,17 @@ fn ensure_ready_member(
 
 /// This node's backup state as JSON: the local backups on disk, the last local backup and failure
 /// since the node started, and with `s3` the newest backup this node has seen in the bucket.
+///
+/// Other nodes never call it, they know their own state, so it is read by monitoring and internal
+/// tooling only and shares the metrics secret with `GET /metrics`.
 pub async fn get_backup_info(
     state: AppStateExt,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, Error> {
-    validate_secret(&state, &headers)?;
+    let Some(secret) = state.secret_metrics.as_deref() else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    validate_bearer(secret, &headers)?;
 
     #[cfg(not(all(feature = "backup", feature = "sqlite")))]
     {

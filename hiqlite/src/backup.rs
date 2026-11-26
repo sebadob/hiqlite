@@ -594,6 +594,9 @@ pub(crate) struct BackupStatus {
     inner: std::sync::Mutex<BackupStatusInner>,
     #[cfg(feature = "s3")]
     s3_latest_path: std::path::PathBuf,
+    /// Serializes writes of `s3_latest_path`.
+    #[cfg(feature = "s3")]
+    persist_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
@@ -654,14 +657,14 @@ pub(crate) const S3_CONFIRM_TIMEOUT: Duration = Duration::from_hours(1);
 impl BackupStatus {
     /// Builds the status for the backups in `backup_path`, with the newest S3 backup this node
     /// persisted there before it was restarted.
-    pub(crate) fn new(backup_path: &str) -> Self {
+    pub(crate) async fn load(backup_path: &str) -> Self {
         #[cfg(not(feature = "s3"))]
         let _ = backup_path;
 
         #[cfg(feature = "s3")]
         let s3_latest_path = Path::new(backup_path).join(S3_LATEST_FILE);
         #[cfg(feature = "s3")]
-        let s3_latest = match std::fs::read(&s3_latest_path) {
+        let s3_latest = match fs::read(&s3_latest_path).await {
             Ok(bytes) => match serde_json::from_slice::<S3Backup>(&bytes) {
                 Ok(latest) => Some(latest),
                 Err(err) => {
@@ -684,6 +687,8 @@ impl BackupStatus {
             }),
             #[cfg(feature = "s3")]
             s3_latest_path,
+            #[cfg(feature = "s3")]
+            persist_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -708,7 +713,7 @@ impl BackupStatus {
 
     /// Records `object` as being on S3 and persists it, unless a newer backup is known already.
     #[cfg(feature = "s3")]
-    pub(crate) fn s3_confirmed(&self, object: &str, ts: i64) {
+    pub(crate) async fn s3_confirmed(&self, object: &str, ts: i64) {
         let latest = S3Backup {
             object: object.to_string(),
             ts,
@@ -721,7 +726,17 @@ impl BackupStatus {
             s.s3_latest = Some(latest.clone());
             true
         });
-        if is_newer && let Err(err) = self.persist_s3_latest(&latest) {
+        if !is_newer {
+            return;
+        }
+
+        // Two confirmations may race here. The lock keeps their writes apart, and each one writes
+        // whatever is newest by the time it holds it, so an older backup never ends up on disk.
+        let _guard = self.persist_lock.lock().await;
+        let Some(latest) = self.get().s3_latest else {
+            return;
+        };
+        if let Err(err) = self.persist_s3_latest(&latest).await {
             warn!(
                 "Cannot persist {}: {err} - the newest S3 backup is reported until the next \
                  restart only",
@@ -739,10 +754,10 @@ impl BackupStatus {
 
     /// Writes into a temp file and moves it into place, so a crash never leaves half a file.
     #[cfg(feature = "s3")]
-    fn persist_s3_latest(&self, latest: &S3Backup) -> std::io::Result<()> {
+    async fn persist_s3_latest(&self, latest: &S3Backup) -> std::io::Result<()> {
         let tmp = self.s3_latest_path.with_extension("json~");
-        std::fs::write(&tmp, serde_json::to_vec(latest)?)?;
-        std::fs::rename(&tmp, &self.s3_latest_path)
+        fs::write(&tmp, serde_json::to_vec(latest)?).await?;
+        fs::rename(&tmp, &self.s3_latest_path).await
     }
 
     pub(crate) fn get(&self) -> BackupStatusInner {
@@ -753,16 +768,15 @@ impl BackupStatus {
     }
 }
 
-/// Whether `object` exists in the configured bucket. A listing with the object name as the prefix
-/// is one cheap request, and unlike a `HEAD` it answers "not there" without an error.
+/// Whether `object` exists in the configured bucket, with a single `HEAD` request. A `404` means
+/// "not there (yet)"; any other failure is an error.
 #[cfg(feature = "s3")]
 async fn s3_has_object(s3: &S3Config, object: &str) -> Result<bool, Error> {
-    let list = s3.bucket.list(object, None).await?;
-    Ok(list
-        .iter()
-        .filter(|b| b.name == s3.bucket.name)
-        .flat_map(|b| &b.contents)
-        .any(|o| o.key == object))
+    match s3.bucket.head(object).await {
+        Ok(_) => Ok(true),
+        Err(crate::s3::S3Error::HttpFailWithBody(404, _)) => Ok(false),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Watches the bucket on a node that did not push the backup itself, until `object` shows up or
@@ -781,7 +795,7 @@ pub(crate) async fn await_s3_backup(
         match s3_has_object(&s3, &object).await {
             Ok(true) => {
                 debug!("Backup {object} confirmed on S3");
-                status.s3_confirmed(&object, ts);
+                status.s3_confirmed(&object, ts).await;
                 return;
             }
             Ok(false) => {}
@@ -804,13 +818,14 @@ pub(crate) async fn await_s3_backup(
 
 /// Fills in the newest backup on S3 for a node that has none persisted yet, e.g. a node that was
 /// added after the last backup, or one upgraded from a version without `s3_latest.json`. It only
-/// runs once: after that, every backup entry the node applies keeps it up to date.
+/// runs once: after that, every backup entry the node applies keeps it up to date. The listing is
+/// limited to this node's backup prefix, so it never walks the rest of the bucket.
 #[cfg(feature = "s3")]
 pub(crate) async fn seed_s3_latest(s3: Arc<S3Config>, status: Arc<BackupStatus>, prefix: String) {
     if status.get().s3_latest.is_some() {
         return;
     }
-    let list = match s3.bucket.list("", None).await {
+    let list = match s3.bucket.list(&format!("{prefix}_"), None).await {
         Ok(list) => list,
         Err(err) => {
             warn!("Cannot list S3 to find the newest backup: {err}");
@@ -824,7 +839,7 @@ pub(crate) async fn seed_s3_latest(s3: Arc<S3Config>, status: Arc<BackupStatus>,
         .filter_map(|o| backup_ts_from_name(&o.key, &prefix).map(|ts| (ts, &o.key)))
         .max_by_key(|(ts, _)| *ts);
     if let Some((ts, object)) = newest {
-        status.s3_confirmed(object, ts);
+        status.s3_confirmed(object, ts).await;
     }
 }
 
@@ -940,22 +955,22 @@ mod tests {
     /// The newest S3 backup survives a restart, and an older confirmation, e.g. a slow watcher
     /// of an earlier backup, never moves it back.
     #[cfg(feature = "s3")]
-    #[test]
-    fn the_newest_s3_backup_is_persisted_and_only_moves_forward() {
+    #[tokio::test]
+    async fn the_newest_s3_backup_is_persisted_and_only_moves_forward() {
         use super::BackupStatus;
 
         let dir = "test_data/backup_status_s3_latest";
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir).unwrap();
 
-        let status = BackupStatus::new(dir);
+        let status = BackupStatus::load(dir).await;
         assert!(status.get().s3_latest.is_none());
 
-        status.s3_confirmed("bkp_1_200.sqlite", 200);
-        status.s3_confirmed("bkp_1_100.sqlite", 100);
+        status.s3_confirmed("bkp_1_200.sqlite", 200).await;
+        status.s3_confirmed("bkp_1_100.sqlite", 100).await;
         assert_eq!(status.get().s3_latest.unwrap().object, "bkp_1_200.sqlite");
 
-        let restarted = BackupStatus::new(dir);
+        let restarted = BackupStatus::load(dir).await;
         let latest = restarted.get().s3_latest.unwrap();
         assert_eq!(latest.object, "bkp_1_200.sqlite");
         assert_eq!(latest.ts, 200);
@@ -966,7 +981,7 @@ mod tests {
 
         // a broken file is ignored, it never stops the node from starting
         std::fs::write(format!("{dir}/s3_latest.json"), b"{").unwrap();
-        assert!(BackupStatus::new(dir).get().s3_latest.is_none());
+        assert!(BackupStatus::load(dir).await.get().s3_latest.is_none());
 
         std::fs::remove_dir_all(dir).unwrap();
     }
