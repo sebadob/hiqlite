@@ -62,6 +62,8 @@ pub(crate) async fn add_learner(
     };
     info!("{:?} requests to be added as {:?} Learner", node, raft_type);
     let lock = state.raft_lock.lock().await;
+    // see `leave_cluster_exec`: the check in front of the lock can be stale
+    are_we_leader(&state, &raft_type).await?;
     let nid = node.id;
     let res = helpers::add_new_learner(&state, &raft_type, node).await;
     match res {
@@ -113,6 +115,8 @@ pub(crate) async fn become_member(
     are_we_leader(&state, &raft_type).await?;
 
     let lock = state.raft_lock.lock().await;
+    // see `leave_cluster_exec`: the check in front of the lock can be stale
+    are_we_leader(&state, &raft_type).await?;
     let payload = get_payload::<LearnerReq>(&headers, &body)?;
     info!("{:?} Node membership request: {:?}", raft_type, payload);
 
@@ -162,10 +166,27 @@ pub(crate) async fn become_member(
     }
 }
 
+/// Checks that this node leads the group and is still one of its voters.
+///
+/// A leader that removed itself from the voters while staying in the node map keeps the Leader
+/// state: openraft only steps a leader down once the committed membership no longer contains it
+/// at all. Such a node must not approve any further membership change, or it shrinks the voter
+/// set without being part of the quorum it leaves behind.
 async fn are_we_leader(state: &Arc<AppState>, raft_type: &RaftType) -> Result<(), Error> {
     if let Some(leader_id) = helpers::get_raft_leader(state, raft_type).await? {
         if leader_id == state.id {
-            Ok(())
+            let view = helpers::get_raft_view(state, raft_type)?;
+            if view.membership.voter_ids().any(|id| id == state.id) {
+                Ok(())
+            } else {
+                Err(Error::LeaderChange(
+                    format!(
+                        "Node {} leads the {raft_type:?} group but is no longer one of its voters",
+                        state.id
+                    )
+                    .into(),
+                ))
+            }
         } else {
             let view = helpers::get_raft_view(state, raft_type)?;
             let Some(leader) = view.membership.membership().get_node(&leader_id) else {
@@ -272,6 +293,8 @@ pub(crate) async fn post_membership(
     // Take the shared raft_lock like the other membership endpoints so this full-set change
     // cannot race with join/leave flows that poll for their commit.
     let _lock = state.raft_lock.lock().await;
+    // see `leave_cluster_exec`: the check in front of the lock can be stale
+    are_we_leader(&state, &raft_type).await?;
     let membership = helpers::get_raft_view(&state, &raft_type)?.membership;
     let old_voters: BTreeSet<u64> = membership.voter_ids().collect();
 
@@ -342,7 +365,14 @@ pub async fn leave_cluster_exec(
 ) -> Result<(), Error> {
     info!("{:?} Node {:?}", raft_type, payload);
 
+    if payload.node_id == state.id && payload.stay_as_learner {
+        return Err(leader_self_demotion_refused(state.id));
+    }
+
     let lock = state.raft_lock.lock().await;
+    // The check in front of the lock can be stale: a concurrent change that held the lock may
+    // have removed us from the voters, or moved the leadership, while we waited.
+    are_we_leader(state, raft_type).await?;
 
     let membership = helpers::get_raft_view(state, raft_type)?.membership;
     let is_member = membership.nodes().any(|(id, _)| *id == payload.node_id);
@@ -783,8 +813,13 @@ pub(crate) async fn local_promote(
 ) -> Result<MembersState, Error> {
     require_we_lead_all_groups(state).await?;
 
+    let lock = state.raft_lock.lock().await;
+    // see `leave_cluster_exec`: the check in front of the lock can be stale
+    require_we_lead_all_groups(state).await?;
+
     // All groups are checked before the first change runs, so one group that does not know the
-    // node cannot leave the other groups already changed.
+    // node cannot leave the other groups already changed. This runs under the lock, so no
+    // concurrent change can move the membership between the check and the change.
     let mut targets = Vec::new();
     for raft_type in raft_types() {
         let view = helpers::get_raft_view(state, &raft_type)?;
@@ -802,7 +837,6 @@ pub(crate) async fn local_promote(
         targets.push((raft_type, is_voter));
     }
 
-    let lock = state.raft_lock.lock().await;
     for (raft_type, is_voter) in targets {
         if is_voter {
             info!("Node {node_id} is a voter in the {raft_type:?} group already");
@@ -853,19 +887,12 @@ pub(crate) async fn local_demote(
     // quota cannot finalize the two-step change. The cluster would sit on the joint config
     // forever. Moving the leadership first and demoting from the new leader is the way to do it.
     if self_removal && stay_as_learner {
-        return Err(Error::Error(
-            format!(
-                "Node {} is the leader: demoting itself to a Learner is refused, because it would \
-                 keep leading and the membership change could not complete. Move the leadership \
-                 to another voter first (`POST /cluster/transfer_leader`) and then demote node \
-                 {node_id} from that node.",
-                state.id
-            )
-            .into(),
-        ));
+        return Err(leader_self_demotion_refused(state.id));
     }
 
     let lock = state.raft_lock.lock().await;
+    // see `leave_cluster_exec`: the check in front of the lock can be stale
+    require_we_lead_all_groups(state).await?;
 
     for raft_type in raft_types() {
         let view = helpers::get_raft_view(state, &raft_type)?;
@@ -925,6 +952,23 @@ pub(crate) async fn local_demote(
 
     drop(lock);
     members_state(state)
+}
+
+/// The error for a leader that would demote itself to a learner.
+///
+/// It keeps leading in that shape: openraft's step-down watcher steps a Leader down only when the
+/// committed membership no longer contains it at all, so it would go on approving membership
+/// changes from outside the voter set.
+fn leader_self_demotion_refused(node_id: NodeId) -> Error {
+    Error::Error(
+        format!(
+            "Node {node_id} is the leader: demoting itself to a Learner is refused, because it \
+             would keep leading and the membership change could not complete. Move the \
+             leadership to another voter first (`POST /cluster/transfer_leader`) and then demote \
+             node {node_id} from that node."
+        )
+        .into(),
+    )
 }
 
 /// The local counterpart of `POST /cluster/transfer_leader`: hand the leadership of every group to

@@ -103,6 +103,20 @@ async fn master_slave_switch_promote_transfer_and_demote() {
     let err = client_2.demote_node(2, true).await.unwrap_err();
     log(format!("self-demotion of the leader refused: {err}"));
 
+    // 7b. the same self-demotion through the per-group leave endpoint is refused as well: on that
+    //    path the leader used to remove itself from the voters, keep leading as a learner, and
+    //    go on approving the removal of the remaining voters (F-107)
+    let status = leave_group(&nodes()[1].addr_api, 2, true).await;
+    assert!(
+        !status.is_success(),
+        "self-demotion of the leader via /cluster/membership/sqlite must be refused, got {status}"
+    );
+    let members = client_2.cluster_membership().await.unwrap();
+    let own = members.get(&2).unwrap();
+    assert!(own.sqlite.is_voter, "{own:?}");
+    assert_eq!(own.sqlite.voters, vec![2, 3], "{own:?}");
+    assert_eq!(own.sqlite.leader, Some(2), "{own:?}");
+
     // 8. the switchover in the documented order: name the node that shall lead, then demote the
     //    old leader from that node - the answer carries the new shape and the new leader
     let members = client_2.transfer_leadership(3).await.unwrap();
@@ -171,6 +185,21 @@ async fn master_slave_switch_promote_transfer_and_demote() {
 
     join_shutdown([client_1, client_2, client_3]).await;
     let _ = fs::remove_dir_all(TEST_DATA_DIR).await;
+}
+
+/// `DELETE /cluster/membership/sqlite` against one node, the per-group leave endpoint.
+async fn leave_group(addr_api: &str, node_id: u64, stay_as_learner: bool) -> reqwest::StatusCode {
+    reqwest::Client::new()
+        .delete(format!("http://{addr_api}/cluster/membership/sqlite"))
+        .bearer_auth(crate::start::SECRET_API)
+        .header("content-type", "application/json")
+        .body(format!(
+            r#"{{"node_id":{node_id},"stay_as_learner":{stay_as_learner}}}"#
+        ))
+        .send()
+        .await
+        .unwrap()
+        .status()
 }
 
 fn nodes() -> Vec<Node> {
