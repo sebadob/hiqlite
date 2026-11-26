@@ -221,10 +221,16 @@ pub(crate) async fn get_membership(
 ) -> Result<Response, Error> {
     validate_secret(&state, &headers)?;
 
-    if helpers::is_raft_stopped(&state, &raft_type)
-        || !helpers::is_raft_initialized(&state, &raft_type).await?
-    {
-        return Err(Error::Config("Raft node has not been initialized".into()));
+    // A pristine node 1 decides whether to form a new cluster from this answer, so "not
+    // initialized" must only be sent when it is true: an initialized node whose Raft has not
+    // been started yet answers differently.
+    if !helpers::is_raft_initialized(&state, &raft_type).await? {
+        return Err(Error::Config(crate::init::MSG_NOT_INITIALIZED.into()));
+    }
+    if helpers::is_raft_stopped(&state, &raft_type) {
+        return Err(Error::Config(
+            "Raft node is initialized but not running".into(),
+        ));
     }
 
     let mut members = helpers::get_raft_view(&state, &raft_type)?.membership;

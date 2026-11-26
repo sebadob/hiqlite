@@ -145,8 +145,16 @@ HQL_NODE_ID=2 HQL_DATA_DIR=./n2 cargo run
 HQL_NODE_ID=3 HQL_DATA_DIR=./n3 cargo run
 ```
 
-The first node to start forms the cluster. Nodes that come up later join it, fetch the current
-snapshot and log, and are serving reads as soon as they are caught up. Nothing is seeded by hand.
+Node 1 forms the cluster. Nodes that come up later join it, fetch the current snapshot and log,
+and are serving reads as soon as they are caught up. Nothing is seeded by hand.
+
+Before a node 1 without any Raft state forms a new cluster, it asks the other nodes. It joins as
+soon as one of them already belongs to a cluster, and it forms a new one once a majority of the
+other nodes answered that they were never initialized. While some of them are unreachable and the
+rest is not enough for that majority, it keeps asking, because an unreachable node may hold the
+existing cluster. If no other node is reachable at all for 10 seconds, node 1 forms the cluster
+alone: that is a fresh cluster whose nodes are started one after the other. A node 1 that lost its
+data during a full outage looks exactly the same, so in that case start the other nodes first.
 
 For a node to join, three things must be true: it can reach the Raft ports of the members, its
 secrets match, and its data dir is a directory it owns that no other node uses.

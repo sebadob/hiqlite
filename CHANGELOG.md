@@ -536,6 +536,17 @@ yet, but a good starting point.
   `503`. A readiness probe that reads `400` has no way to tell a node that is catching up from a
   node that is broken, so it is the number, not the answer, that was wrong. `/health` uses `503`
   for the same states now, where it used `409` and `500`.
+- A node 1 without any Raft state could form a second cluster next to the existing one. Before it
+  initializes, node 1 asks the other nodes whether a cluster exists, but it stopped asking after the
+  first one and counted a connection error as "not initialized". With node 2 unreachable and node 3
+  holding the cluster, node 1 initialized on its own and accepted writes; the two clusters even
+  shared the same log ids (a new cluster always starts with node 1 in term 1), so Raft never noticed
+  the conflict when they met again. Node 1 now asks every other node in each round, joins as soon as
+  one of them is initialized, and initializes only once a majority of the other nodes answered that
+  they were never initialized. A wrong API secret or an initialized node whose Raft is not running
+  yet no longer counts as "not initialized" either. If no other node is reachable at all for 10
+  seconds, node 1 still forms the cluster alone, because that is how a fresh cluster started one
+  node after the other (`podManagementPolicy: OrderedReady`) and the disaster recovery path look.
 - `wait_for_cluster_sync()`'s single-instance fast path only looked at the node list, which a local
   client never has, so it never fired for an embedded single node. A local client now takes the
   member count from its own Raft membership, like `shutdown_execute` does.
