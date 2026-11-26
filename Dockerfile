@@ -1,4 +1,4 @@
-FROM rust:1.98.1-trixie AS builder
+FROM rust:1.99.1-trixie AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
