@@ -89,6 +89,7 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -921,13 +922,14 @@ impl Drop for InitLock {
 
 /// Single-writer SQLite state machine driven by an existing consensus layer.
 pub struct ExternalSqlite<C, O> {
-    read_actors: RwLock<Option<flume::Sender<ReaderRequest>>>,
+    read_actors: Arc<RwLock<Option<flume::Sender<ReaderRequest>>>>,
     read_config: ExternalReadConfig,
     write_tx: flume::Sender<WriterRequest<C>>,
     snapshots_dir: PathBuf,
     _operation: PhantomData<fn(O)>,
 }
 
+#[derive(Clone)]
 struct ExternalReadConfig {
     db_dir: String,
     filename: String,
@@ -1160,7 +1162,7 @@ where
         init_lock.disarm();
 
         Ok(Self {
-            read_actors: RwLock::new(Some(read_actors)),
+            read_actors: Arc::new(RwLock::new(Some(read_actors))),
             read_config: ExternalReadConfig {
                 db_dir: db_dir_text,
                 filename: options.filename,
@@ -1420,7 +1422,8 @@ where
     ///
     /// Format, application identity, checkpoint, receipt window, file size,
     /// SHA-256, and SQLite `quick_check` are verified before the live database
-    /// is touched. Older snapshots are rejected.
+    /// is touched. Older snapshots are rejected. Once the restore starts, it
+    /// finishes even if the caller stops waiting.
     ///
     /// # Errors
     ///
@@ -1434,73 +1437,68 @@ where
         &self,
         snapshot: ExternalSnapshot<C>,
     ) -> Result<ExternalSnapshotEvidence<C>, ExternalError> {
-        let source = snapshot.path.clone();
-        let source_evidence = snapshot.evidence.clone();
-        task::spawn_blocking(move || validate_snapshot_file::<C, O>(&source, &source_evidence))
-            .await??;
-
         let parsed_id = Uuid::parse_str(&snapshot.evidence.snapshot_id)
             .map_err(|err| ExternalError::SnapshotMismatch(err.to_string()))?;
         let destination = self.snapshots_dir.join(parsed_id.to_string());
-        if destination != snapshot.path {
-            if fs::try_exists(&destination).await? {
-                let path = destination.clone();
-                let evidence = snapshot.evidence.clone();
-                task::spawn_blocking(move || validate_snapshot_file::<C, O>(&path, &evidence))
-                    .await??;
+        let source = snapshot.path;
+        let evidence = snapshot.evidence;
+        let staged_evidence = evidence.clone();
+        let staged = destination.clone();
+        task::spawn_blocking(move || {
+            let validate = |path: &Path| validate_snapshot_file::<C, O>(path, &staged_evidence);
+            if source == staged {
+                validate(&source)
+            } else if staged.try_exists()? {
+                validate(&source)?;
+                validate(&staged)
             } else {
-                let staging = self.snapshots_dir.join(format!("{parsed_id}.incoming"));
-                let _ = fs::remove_file(&staging).await;
-                fs::copy(&snapshot.path, &staging).await?;
-                sync_file(staging.clone()).await?;
-                fs::rename(&staging, &destination).await?;
-                sync_file_and_parent(destination.clone()).await?;
+                stage_snapshot(&source, &staged, validate)
             }
-        }
+        })
+        .await??;
 
-        // Prevent an old read transaction or prepared handle from spanning the
-        // restore. Closing the complete actor set also makes every post-restore
-        // read open against the restored SQLite generation.
-        let mut read_actors = self.read_actors.write().await;
-        close_read_actors(read_actors.take(), self.read_config.size).await;
+        let mut read_actors = self.read_actors.clone().write_owned().await;
+        let read_config = self.read_config.clone();
+        let write_tx = self.write_tx.clone();
+        // Once read handles are closed, restore and reopen them even if the caller stops waiting.
+        task::spawn(async move {
+            close_read_actors(read_actors.take(), read_config.size).await;
 
-        let (ack, rx) = oneshot::channel();
-        let restore = match self
-            .write_tx
-            .send_async(WriterRequest::Restore {
-                path: destination,
-                evidence: Box::new(snapshot.evidence),
-                ack,
-            })
-            .await
-        {
-            Ok(()) => rx.await.map_err(|_| ExternalError::WriterStopped)?,
-            Err(_) => Err(ExternalError::WriterClosed),
-        };
-
-        let writer_can_serve_reads = !matches!(
-            restore,
-            Err(ExternalError::WriterClosed
-                | ExternalError::WriterStopped
-                | ExternalError::WriterPoisoned(_))
-        );
-        if writer_can_serve_reads {
-            let (sender, _) = spawn_read_actors(
-                connect_read_conns_once(
-                    &self.read_config.db_dir,
-                    &self.read_config.filename,
-                    self.read_config.prepared_statement_cache_capacity,
-                    self.read_config.size,
-                )
+            let (ack, rx) = oneshot::channel();
+            write_tx
+                .send_async(WriterRequest::Restore {
+                    path: destination,
+                    evidence: Box::new(evidence),
+                    ack,
+                })
                 .await
-                .map_err(|err| ExternalError::Pool(err.to_string()))?,
-                self.read_config.saturated_pool_threshold,
-                self.read_config.slow_query_threshold,
-                true,
-            );
-            *read_actors = Some(sender);
-        }
-        restore
+                .map_err(|_| ExternalError::WriterClosed)?;
+            let restore = rx.await.map_err(|_| ExternalError::WriterStopped)?;
+
+            if !matches!(
+                restore,
+                Err(ExternalError::WriterClosed
+                    | ExternalError::WriterStopped
+                    | ExternalError::WriterPoisoned(_))
+            ) {
+                let (sender, _) = spawn_read_actors(
+                    connect_read_conns_once(
+                        &read_config.db_dir,
+                        &read_config.filename,
+                        read_config.prepared_statement_cache_capacity,
+                        read_config.size,
+                    )
+                    .await
+                    .map_err(|err| ExternalError::Pool(err.to_string()))?,
+                    read_config.saturated_pool_threshold,
+                    read_config.slow_query_threshold,
+                    true,
+                );
+                *read_actors = Some(sender);
+            }
+            restore
+        })
+        .await?
     }
 
     /// Gracefully checkpoints/closes the writer, removes the dirty marker, and
@@ -1518,7 +1516,8 @@ where
             snapshots_dir: _,
             _operation: _,
         } = self;
-        close_read_actors(read_actors.into_inner(), read_config.size).await;
+        let actors = read_actors.write().await.take();
+        close_read_actors(actors, read_config.size).await;
         let (ack, rx) = oneshot::channel();
         write_tx
             .send_async(WriterRequest::Shutdown(ack))
@@ -2718,13 +2717,35 @@ fn hash_file_blocking(path: &Path) -> Result<Sha256Digest, ExternalError> {
     Ok(Sha256Digest(hasher.finalize().into()))
 }
 
-async fn sync_file(path: PathBuf) -> Result<(), ExternalError> {
-    task::spawn_blocking(move || File::open(path)?.sync_all()).await??;
-    Ok(())
-}
-
-async fn sync_file_and_parent(path: PathBuf) -> Result<(), ExternalError> {
-    task::spawn_blocking(move || sync_file_and_parent_blocking(&path)).await??;
+fn stage_snapshot(
+    source: &Path,
+    destination: &Path,
+    validate: impl Fn(&Path) -> Result<(), ExternalError>,
+) -> Result<(), ExternalError> {
+    if !source.metadata()?.is_file() {
+        return Err(ExternalError::SnapshotMismatch(
+            "snapshot source must be a regular file".into(),
+        ));
+    }
+    let staging = destination.with_extension(format!("{}.incoming", Uuid::now_v7()));
+    let mut source = File::open(source)?;
+    let mut staged = File::create_new(&staging)?;
+    let result = (|| {
+        std::io::copy(&mut source, &mut staged)?;
+        staged.sync_all()?;
+        drop(staged);
+        validate(&staging)?;
+        match std::fs::hard_link(&staging, destination) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => validate(destination),
+            Err(err) => Err(err.into()),
+        }
+    })();
+    let _ = std::fs::remove_file(&staging);
+    result?;
+    if let Some(parent) = destination.parent() {
+        sync_parent_directory(parent)?;
+    }
     Ok(())
 }
 
@@ -2783,11 +2804,22 @@ fn finalize_projection(conn: &Connection) -> Result<(), ExternalError> {
 fn sync_parent_directory(path: &Path) -> Result<(), ExternalError> {
     #[cfg(unix)]
     File::open(path)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn sync_file_blocking(path: &Path) -> Result<(), ExternalError> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(cfg!(windows))
+        .open(path)?
+        .sync_all()?;
     Ok(())
 }
 
 fn sync_file_and_parent_blocking(path: &Path) -> Result<(), ExternalError> {
-    File::open(path)?.sync_all()?;
+    sync_file_blocking(path)?;
     if let Some(parent) = path.parent() {
         sync_parent_directory(parent)?;
     }
@@ -3170,6 +3202,25 @@ mod tests {
         reopened.shutdown().await.unwrap();
     }
 
+    #[test]
+    fn staging_does_not_replace_an_existing_snapshot() {
+        let directory = TestDir::new("staging-collision");
+        let source = directory.0.join("source");
+        let destination = directory.0.join("snapshot");
+        std::fs::write(&source, b"new").unwrap();
+        std::fs::write(&destination, b"existing").unwrap();
+        let result = stage_snapshot(&source, &destination, |path| {
+            if std::fs::read(path)? == b"new" {
+                Ok(())
+            } else {
+                Err(ExternalError::SnapshotMismatch("different bytes".into()))
+            }
+        });
+        assert!(matches!(result, Err(ExternalError::SnapshotMismatch(_))));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"existing");
+        assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 2);
+    }
+
     #[tokio::test]
     async fn snapshot_evidence_restore_receipts_and_staleness() {
         let source_dir = TestDir::new("snapshot-source");
@@ -3268,10 +3319,19 @@ mod tests {
             ExternalError::SnapshotMismatch(_)
         ));
 
+        let mut permissions = std::fs::metadata(&snapshot.path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&snapshot.path, permissions).unwrap();
         assert_eq!(
             target.install_snapshot(snapshot.clone()).await.unwrap(),
             snapshot.evidence.clone()
         );
+        #[cfg(windows)]
+        {
+            let mut permissions = std::fs::metadata(&snapshot.path).unwrap().permissions();
+            permissions.set_readonly(false);
+            std::fs::set_permissions(&snapshot.path, permissions).unwrap();
+        }
         assert_eq!(count_items(&target).await, 1);
         assert_eq!(
             target
@@ -3346,7 +3406,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn snapshot_restore_waits_for_reads_and_replaces_the_pool() {
+    async fn snapshot_restore_replaces_the_pool_even_if_the_caller_stops_waiting() {
         let source_dir = TestDir::new("restore-read-source");
         let source = TestEngine::open(options(&source_dir)).await.unwrap();
         source
@@ -3385,16 +3445,24 @@ mod tests {
             .expect("read closure should start");
 
         let installer = std::sync::Arc::clone(&target);
-        let mut install = tokio::spawn(async move { installer.install_snapshot(snapshot).await });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut install)
-                .await
-                .is_err()
-        );
+        let install = tokio::spawn(async move { installer.install_snapshot(snapshot).await });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while target.read_actors.try_read().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("restore should take the pool lock");
+        install.abort();
+        assert!(install.await.unwrap_err().is_cancelled());
         release_tx.send(()).unwrap();
         assert_eq!(read.await.unwrap().unwrap(), 1);
-        install.await.unwrap().unwrap();
-        assert_eq!(count_items(&target).await, 1);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), count_items(&target))
+                .await
+                .unwrap(),
+            1
+        );
 
         std::sync::Arc::try_unwrap(target)
             .ok()

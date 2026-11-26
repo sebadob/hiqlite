@@ -22,7 +22,7 @@ pub enum ReaderRequest {
     /// gone and answers the scan verdict its closure captured.
     #[cfg(feature = "sqlite")]
     Stream(QueryRequest),
-    /// Ends the actor: it answers its ack and drops the connection it owns.
+    /// Ends the actor and acknowledges after closing its connection.
     #[cfg(feature = "external-state-machine")]
     Shutdown(oneshot::Sender<()>),
 }
@@ -85,22 +85,20 @@ impl ReaderRequest {
         }
     }
 
-    /// Answer a request that no connection will ever take, and acknowledge a shutdown that no
-    /// actor is left to take.
+    /// Answer a request that no connection will ever take.
     ///
     /// A queued request carries its reply senders inside its own closures.  Left in the queue of a
     /// pool that is closing, they stay alive, its reply channel stays connected, and its caller
     /// waits on an answer that nothing can send any more.  Only a sender can break that, so
     /// whoever takes a request off a closing pool has to answer it.
+    #[cfg(feature = "external-state-machine")]
     fn fail_as_closed(self) {
         match self {
             Self::Query(req) => (req.fail)(ActorFailure::Closed),
             #[cfg(feature = "sqlite")]
             Self::Stream(req) => (req.fail)(ActorFailure::Closed),
             #[cfg(feature = "external-state-machine")]
-            Self::Shutdown(ack) => {
-                let _ = ack.send(());
-            }
+            Self::Shutdown(_) => {}
         }
     }
 }
@@ -318,22 +316,17 @@ pub fn spawn_read_actors(
                     ReaderRequest::Stream(req) => req.run(&connection),
                     #[cfg(feature = "external-state-machine")]
                     ReaderRequest::Shutdown(ack) => {
+                        drop(connection);
+                        while let Ok(req) = rx.try_recv() {
+                            req.fail_as_closed();
+                        }
+                        drop(rx);
                         let _ = ack.send(());
-                        break;
+                        return;
                     }
                 };
                 last_busy = dequeued.elapsed();
                 pool.warn_if_slow(last_busy, &sql);
-            }
-
-            // The actor is gone, and everything it still takes off the queue has no connection
-            // left to run it.  Draining is what answers those callers: `flume` hands a receiver the
-            // messages already in the queue before it answers `Disconnected`, so the only way a
-            // request is stranded here is an actor leaving on its shutdown with more behind it -
-            // which is a snapshot restore closing the pool.  On a disconnect the queue is empty by
-            // the time this runs, so the drain answers nothing and changes nothing.
-            while let Ok(req) = rx.try_recv() {
-                req.fail_as_closed();
             }
         });
     }
@@ -686,21 +679,18 @@ mod tests {
         );
     }
 
-    /// Ends every actor of a pool with its shutdown, after `park` has parked them.
+    /// Each shutdown acknowledgement confirms that a distinct actor has closed.
     #[cfg(feature = "external-state-machine")]
     #[tokio::test]
     async fn shutdown_ends_every_actor() {
         let (tx, _) = actors(3);
-        let mut acks = Vec::new();
         for _ in 0..3 {
             let (ack, rx) = oneshot::channel();
             tx.send(ReaderRequest::Shutdown(ack))
                 .expect("the actors are listening");
-            acks.push(rx);
+            rx.await.expect("the actor acknowledged its shutdown");
         }
-        for ack in acks {
-            ack.await.expect("the actor acknowledged its shutdown");
-        }
+        assert!(tx.is_disconnected());
     }
 
     /// Park every actor of a pool inside a query and hand back the sender that releases them.
