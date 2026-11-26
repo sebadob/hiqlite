@@ -28,10 +28,16 @@ updates:
           - "*"
         update-types: [minor, patch]
     ignore:
+      # skip all major updates
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
       # Compatibility tests use bincode 2.x to read the old format.
       - dependency-name: bincode
         versions:
           - "3.*"
+      # Svelte currently requires v6
+      - dependency-name: "typescript"
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: docker
     directory: /
