@@ -35,8 +35,11 @@ What this means for probes:
   worst-case replay. A probe against a closed port fails exactly like a slow one, and liveness and
   readiness only start counting once the startup probe passes. Without it, a long replay gets the
   pod restarted mid-replay, and the replay starts over.
-- `/ready` answers 503 while the node is re-applying. The first 200 means the replay finished, and a
-  read taken at that point can observe everything the node acknowledged before it stopped.
+- `/ready` answers 503 while the node is re-applying. The first 200 means the replay reached this
+  node's persisted `committed` pointer. On a single node that is everything it acknowledged before
+  it stopped. In a cluster the pointer is only as fresh as the last WAL flush that carried it, so a
+  read at the first 200 can sit behind what this node served before the restart, by up to one flush
+  interval, until the leader re-sends the entries it is missing.
 - The replay is bounded by **this node's own committed log tail**, never by the cluster tip. A node
   that was offline for a week replays its own log first and catches up from the leader afterwards,
   so `startupProbe` headroom is sized by how much log this node can have pending, not by how far
@@ -45,7 +48,7 @@ What this means for probes:
   the replay. Once the port is open, a long replay cannot make it fail.
 - `Client::wait_for_cluster_sync()` waits for the replay first and for the cluster tip second. The
   replay phase needs no peer, so a node whose cluster is unreachable completes it and blocks only on
-  the tip.
+  the tip. It is the call to make when a read must not go back in time across a restart.
 
 ## Damaged log files
 

@@ -56,10 +56,8 @@ pub type StorageResult<T> = Result<T, io::Error>;
 /// the peer-free target here, and the store clamps it to the log tail, so it is never ahead of
 /// what this node can replay.
 ///
-/// Which part of this is load-bearing depends on when the node opens its port. A node that binds
-/// its router before the replay finishes - every node but the first - is gated by the check on
-/// `/ready`. The first node is not: its startup path already waits for the replay, so `/ready` is
-/// unreachable until the target is met, and the check there is a backstop, not the gate.
+/// The replay finishes before any node binds its router, so on every node the closed port is what
+/// keeps requests out during it. The check on `/ready` is the backstop behind that, not the gate.
 async fn startup_replay_target<T, C>(
     log_store: &mut T,
     single_node: bool,
