@@ -110,12 +110,12 @@ pub use client::dlock::Lock;
 pub use migration::AppliedMigration;
 
 /// Re-export of the exact `rusqlite` version Hiqlite is built with.
-///
-/// Use this instead of adding a separate `rusqlite` dependency to avoid
-/// version conflicts, e.g. when implementing a `DeterministicSqliteOperation`
-/// against the `rusqlite::Transaction` type.
 #[cfg(any(feature = "sqlite", feature = "external-state-machine"))]
 pub use rusqlite;
+
+/// Re-export of the exact `serde_rusqlite` version Hiqlite is built with.
+#[cfg(feature = "sqlite")]
+pub use serde_rusqlite;
 
 /// Re-export of the `StreamExt` combinators of the exact `futures-util` version Hiqlite is built
 /// with.

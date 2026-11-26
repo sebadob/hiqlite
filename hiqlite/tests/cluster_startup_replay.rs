@@ -135,7 +135,7 @@ async fn cluster_node_replays_its_committed_log_at_startup() {
 
     let dir = fresh();
 
-    let mut clients = start_cluster(dir.clone()).await;
+    let clients = start_cluster(dir.clone()).await;
     for client in &clients {
         client.wait_until_healthy_db().await;
     }
@@ -172,7 +172,7 @@ async fn cluster_node_replays_its_committed_log_at_startup() {
     // machine from its snapshot and its log on the next start
     std::fs::write(format!("{dir}/node_2/state_machine/lock"), b"").unwrap();
 
-    let mut clients = start_cluster(dir.clone()).await;
+    let clients = start_cluster(dir.clone()).await;
     let client_2 = &clients[1];
 
     // `Raft::new` re-applies `(last_applied, committed]` before it returns, so node 2 is already
