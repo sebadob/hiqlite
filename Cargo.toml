@@ -47,7 +47,7 @@ used_underscore_binding = "allow"
 argon2 = { version = "0.6", features = ["parallel", "zeroize"] }
 axum = { version = "0.8.1", features = ["http2", "tokio"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
-axum-server = { version = "0.8", features = [
+axum-server = { version = "0.9", features = [
   "tls-rustls-no-provider",
 ] }
 # only kept as a dev dependency for compat tests between this and *-next
