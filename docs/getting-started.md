@@ -155,6 +155,10 @@ rest is not enough for that majority, it keeps asking, because an unreachable no
 existing cluster. If no other node is reachable at all for 10 seconds, node 1 forms the cluster
 alone: that is a fresh cluster whose nodes are started one after the other. A node 1 that lost its
 data during a full outage looks exactly the same, so in that case start the other nodes first.
+Setting `init_require_peers = true` (`HQL_INIT_REQUIRE_PEERS`) takes that decision away from
+timing: node 1 then waits for the other nodes however long it takes. All nodes must be started
+together for that (e.g. `podManagementPolicy: Parallel`), and recovering a cluster from node 1
+alone needs it unset for that one start.
 
 For a node to join, three things must be true: it can reach the Raft ports of the members, its
 secrets match, and its data dir is a directory it owns that no other node uses.

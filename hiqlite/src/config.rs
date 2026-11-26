@@ -63,8 +63,8 @@ pub type EncKeysArg = Option<()>;
 /// network, you might want to tune the `RaftConfig`. However, you should never adjust the
 /// `max_in_snapshot_log_to_keep`, because this will play a crucial role if you need to restore
 /// from a backup in case of disaster recovery.
-// The four flags are the flat `[hiqlite]` TOML keys 1:1 - `log_statements`, `cache_storage_disk`,
-// `insecure_cookie`, `learner_only` - and each is read on its own path. Grouping them into enums
+// The flags are the flat `[hiqlite]` TOML keys 1:1 - `log_statements`, `cache_storage_disk`,
+// `insecure_cookie`, `learner_only`, `init_require_peers` - and each is read on its own path. Grouping them into enums
 // would move those keys and break existing config files, so the flat shape stays.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
@@ -245,6 +245,15 @@ pub struct NodeConfig {
     /// If true, keep a newly joining node as a learner instead of promoting it to a voting member
     /// during startup reconciliation. This does not demote an existing voter.
     pub learner_only: bool,
+    /// If `true`, a node 1 without any Raft state never forms a new cluster while none of the
+    /// other nodes is reachable. By default it does so after 10 seconds, because a fresh cluster
+    /// started one node after the other looks like that. A node 1 that lost its data during a
+    /// full outage looks exactly the same though, and forming a new cluster then splits it off
+    /// from the data the other nodes still hold.
+    ///
+    /// With this set, all nodes must be started together (e.g. `podManagementPolicy: Parallel`),
+    /// and recovering a cluster from node 1 alone needs it to be unset for that start.
+    pub init_require_peers: bool,
     /// The node ids whose node line carries the `election_disable` marker.
     ///
     /// When this node's own id is in this list, `raft_config.enable_elect` is set to `false`
@@ -307,6 +316,7 @@ impl Default for NodeConfig {
             insecure_cookie: false,
             health_check_delay: Duration::from_secs(30),
             learner_only: false,
+            init_require_peers: false,
             election_disable: vec![],
             #[cfg(feature = "cache")]
             rate_limit_cache: None,
@@ -518,6 +528,11 @@ impl NodeConfig {
                 .unwrap_or("false")
                 .parse::<bool>()
                 .expect("Cannot parse HQL_LEARNER_ONLY as bool"),
+            init_require_peers: env::var("HQL_INIT_REQUIRE_PEERS")
+                .as_deref()
+                .unwrap_or("false")
+                .parse::<bool>()
+                .expect("Cannot parse HQL_INIT_REQUIRE_PEERS as bool"),
             #[cfg(feature = "backup")]
             backup_keep_for_local,
             #[cfg(feature = "backup")]
@@ -866,6 +881,7 @@ mod tests {
         assert_eq!(c.secret_raft, "SuperSecureSecret1337");
         assert_eq!(c.secret_api, "SuperSecureSecret1337");
         assert!(!c.learner_only);
+        assert!(!c.init_require_peers);
         assert!(c.election_disable.is_empty());
         assert!(c.raft_config.enable_elect);
     }

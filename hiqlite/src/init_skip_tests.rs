@@ -3,7 +3,7 @@
 //! The remotes are tiny HTTP servers that answer `GET /cluster/membership/sqlite` the way a real
 //! node does, plus a closed port for a node that is down.
 
-use super::should_node_1_skip_init;
+use super::{InitCheck, should_node_1_skip_init};
 use crate::app_state::RaftType;
 use crate::{Error, Node, NodeId};
 use axum::Router;
@@ -72,16 +72,24 @@ async fn serve(router: Router) -> String {
 }
 
 async fn skip_init(nodes: &[Node], within: Duration) -> Option<bool> {
+    skip_init_with(nodes, within, false).await
+}
+
+async fn skip_init_with(nodes: &[Node], within: Duration, require_peers: bool) -> Option<bool> {
     // `start_node` installs it in a real node; it fails when another test already did
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    time::timeout(
-        within,
-        should_node_1_skip_init(&RaftType::Sqlite, nodes, SECRET, false, false),
-    )
-    .await
-    .ok()
-    .map(|res| res.unwrap())
+    let check = InitCheck {
+        nodes,
+        secret_api: SECRET,
+        tls: false,
+        tls_no_verify: false,
+        require_peers,
+    };
+    time::timeout(within, should_node_1_skip_init(&RaftType::Sqlite, &check))
+        .await
+        .ok()
+        .map(|res| res.unwrap())
 }
 
 /// F-118: node 2 is down, node 3 holds the existing cluster. Node 1 must join it instead of
@@ -117,4 +125,44 @@ async fn pristine_peers_let_node_1_initialize() {
         node(3, pristine_remote().await),
     ];
     assert_eq!(skip_init(&nodes, Duration::from_secs(4)).await, Some(false));
+}
+
+/// No other node is reachable: by default node 1 forms the cluster alone after 10 rounds, as a
+/// fresh cluster started one node after the other needs it to.
+#[tokio::test]
+async fn all_unreachable_lets_node_1_initialize_by_default() {
+    let nodes = [
+        node(1, closed_addr().await),
+        node(2, closed_addr().await),
+        node(3, closed_addr().await),
+    ];
+    assert_eq!(
+        skip_init(&nodes, Duration::from_secs(15)).await,
+        Some(false)
+    );
+}
+
+/// F-118, full outage: with `init_require_peers` node 1 never forms the cluster alone, however
+/// long no other node is reachable, and joins once one of them answers.
+#[tokio::test]
+async fn require_peers_keeps_node_1_waiting_while_all_are_unreachable() {
+    let nodes = [
+        node(1, closed_addr().await),
+        node(2, closed_addr().await),
+        node(3, closed_addr().await),
+    ];
+    assert_eq!(
+        skip_init_with(&nodes, Duration::from_secs(15), true).await,
+        None
+    );
+
+    let nodes = [
+        node(1, closed_addr().await),
+        node(2, closed_addr().await),
+        node(3, initialized_remote().await),
+    ];
+    assert_eq!(
+        skip_init_with(&nodes, Duration::from_secs(10), true).await,
+        Some(true)
+    );
 }

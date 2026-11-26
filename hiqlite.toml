@@ -301,6 +301,19 @@ secret_api = "SuperSecureSecret1337"
 # overwritten by: HQL_LEARNER_ONLY
 #learner_only = false
 
+# A node 1 without any Raft state asks the other nodes before it forms a
+# new cluster. If none of them is reachable for 10 seconds, it forms the
+# cluster alone, because that is how a fresh cluster started one node after
+# the other looks. A node 1 that lost its data during a full outage looks
+# the same, and forming a new cluster then splits it off from the data the
+# other nodes still hold. Set this to never form a cluster without peers:
+# all nodes must then be started together (e.g. `podManagementPolicy:
+# Parallel`), and recovering from node 1 alone needs it unset for that start.
+#
+# default: false
+# overwritten by: HQL_INIT_REQUIRE_PEERS
+#init_require_peers = false
+
 # When the auto-backup task should run.
 # Accepts cron syntax:
 # "sec min hour day_of_month month day_of_week year"

@@ -45,6 +45,8 @@ vars override it; `--node-id` overrides the node id so one file serves every nod
 - `listen_addr_api`, `listen_addr_raft` - what the node binds. Defaults to all interfaces.
 - `learner_only` - start as a learner: replicates and serves reads, no vote. Promote it when it is
   caught up. See `topology.md`.
+- `init_require_peers` - a node 1 without any Raft state never forms a new cluster alone, not even
+  when no other node is reachable. Start all nodes together with it. See `getting-started.md`.
 - `election_disable` comes from the node line, not from its own key: a node marked in the list
   never nominates itself. See `topology.md`.
 

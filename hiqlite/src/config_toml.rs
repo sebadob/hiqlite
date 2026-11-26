@@ -292,6 +292,13 @@ impl NodeConfig {
         .unwrap_or(Duration::from_secs(30));
         let learner_only =
             t_bool(&mut map, t_name, "learner_only", "HQL_LEARNER_ONLY")?.unwrap_or(false);
+        let init_require_peers = t_bool(
+            &mut map,
+            t_name,
+            "init_require_peers",
+            "HQL_INIT_REQUIRE_PEERS",
+        )?
+        .unwrap_or(false);
 
         #[cfg(feature = "backup")]
         let (backup_config, backup_keep_for_local, backup_file_prefix) = {
@@ -484,6 +491,7 @@ impl NodeConfig {
             insecure_cookie,
             health_check_delay,
             learner_only,
+            init_require_peers,
             #[cfg(feature = "cache")]
             rate_limit_cache,
             #[cfg(feature = "sqlite")]

@@ -547,6 +547,8 @@ yet, but a good starting point.
   yet no longer counts as "not initialized" either. If no other node is reachable at all for 10
   seconds, node 1 still forms the cluster alone, because that is how a fresh cluster started one
   node after the other (`podManagementPolicy: OrderedReady`) and the disaster recovery path look.
+  The new `init_require_peers` (`HQL_INIT_REQUIRE_PEERS`, default `false`) turns that off: node 1
+  then never forms a cluster without the other nodes answering.
 - `wait_for_cluster_sync()`'s single-instance fast path only looked at the node list, which a local
   client never has, so it never fired for an embedded single node. A local client now takes the
   member count from its own Raft membership, like `shutdown_execute` does.
