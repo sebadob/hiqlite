@@ -2,7 +2,6 @@ use crate::app_state::AppState;
 use crate::client::stream::ClientStreamReq;
 use crate::{Client, Error};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
 use tracing::{debug, info};
@@ -26,10 +25,9 @@ impl ShutdownHandle {
         let _ = self.rx_shutdown.changed().await;
         info!("ShutdownHandle received shutdown signal - shutting down the Raft node now");
 
-        // Must exceed the 9.5 s Kubernetes rolling-release pre-sleep inside
-        // `shutdown_execute`, leaving headroom for the ordered teardown itself.
+        // The pre-shutdown delay inside `shutdown_execute` plus the teardown budget.
         if time::timeout(
-            Duration::from_secs(20),
+            self.state.shutdown_delay + crate::config::SHUTDOWN_TEARDOWN_BUDGET,
             Client::shutdown_execute(
                 &self.state,
                 #[cfg(feature = "cache")]

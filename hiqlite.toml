@@ -294,6 +294,18 @@ secret_api = "SuperSecureSecret1337"
 # default: '30s'
 #health_check_delay = '30s'
 
+# The pause at the start of a graceful shutdown, before the node leaves
+# the cluster or hands its leadership over. `<API>/ready` answers 503
+# during it, so load balancers and `readinessProbe`s stop routing to
+# this node first. Skipped on a single instance, 0 disables it.
+# The whole shutdown is bounded by this delay plus 10500 ms for the
+# teardown itself, so keep the sum below your orchestrator's grace
+# period (`terminationGracePeriodSeconds`, 30s by default).
+#
+# default: 9500
+# overwritten by: HQL_SHUTDOWN_DELAY_MILLIS
+#shutdown_delay_millis = 9500
+
 # Set a newly joining node to stay a learner during startup reconciliation.
 # This is useful for read-only replicas that should not become voting
 # Raft members automatically. This does not demote an existing voter.

@@ -885,14 +885,14 @@ impl Client {
     /// # Errors
     ///
     /// [`Error::Error`] for a remote client, because only a node that runs its own Raft can be
-    /// shut down this way, and [`Error::Error`] when the ordered teardown does not finish
-    /// within its 20 seconds.
+    /// shut down this way, and [`Error::Error`] when the shutdown does not finish within
+    /// `NodeConfig::shutdown_delay` plus [`SHUTDOWN_TEARDOWN_BUDGET`](crate::SHUTDOWN_TEARDOWN_BUDGET)
+    /// (20 s with the default delay).
     pub async fn shutdown(&self) -> Result<(), Error> {
         if let Some(state) = &self.inner.state {
-            // Must exceed the 9.5 s Kubernetes rolling-release pre-sleep inside
-            // `shutdown_execute`, leaving headroom for the ordered teardown itself.
+            // The pre-shutdown delay inside `shutdown_execute` plus the teardown budget.
             if tokio::time::timeout(
-                Duration::from_secs(20),
+                state.shutdown_delay + crate::config::SHUTDOWN_TEARDOWN_BUDGET,
                 Self::shutdown_execute(
                     state,
                     #[cfg(feature = "cache")]
@@ -989,11 +989,11 @@ impl Client {
         }
 
         // This pre-shutdown delay is not strictly necessary, but it makes rolling releases
-        // smoother, especially with ephemeral storage. It also allows to set a ready check
-        // interval of 3 seconds while it will still catch it before it actually starts the
-        // shutdown, so services can stop sending requests to this node.
-        if !is_single_instance {
-            time::sleep(Duration::from_millis(9500)).await;
+        // smoother, especially with ephemeral storage. `/ready` answers 503 from here on, so with
+        // the default of 9.5 s a ready check interval of 3 seconds still catches it before the
+        // shutdown actually starts, and services stop sending requests to this node.
+        if !is_single_instance && !state.shutdown_delay.is_zero() {
+            time::sleep(state.shutdown_delay).await;
         }
 
         // The handovers of this shutdown share one budget, so a build with both groups doesn't stall

@@ -33,6 +33,15 @@ pub static REFERENCE_CONFIG: &str = include_str!("../../REFERENCE_CONFIG.toml");
 /// starts an election on its own. See [`Node::parse_line`] and `NodeConfig::election_disable`.
 const ELECTION_DISABLE: &str = "election_disable";
 
+/// The default of [`NodeConfig::shutdown_delay`].
+pub const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_millis(9500);
+
+/// The time a graceful shutdown gets for its ordered teardown after [`NodeConfig::shutdown_delay`]:
+/// leaving the in-memory cache cluster, handing the leadership over and stopping both Raft groups.
+/// `Client::shutdown()` and `ShutdownHandle::wait()` give up after the delay plus this budget, so
+/// with the default delay the whole shutdown stays bounded by 20 s.
+pub const SHUTDOWN_TEARDOWN_BUDGET: Duration = Duration::from_millis(10_500);
+
 #[derive(Debug)]
 pub struct RateLimitConfig {
     pub rps: u32,
@@ -242,6 +251,15 @@ pub struct NodeConfig {
     /// necessary to solve a chicken-and-egg problem when cold starting cluster which depend on
     /// health checks.
     pub health_check_delay: Duration,
+    /// The pause at the start of a graceful shutdown, before the node leaves or hands over its
+    /// leadership. `/ready` answers 503 during it, so load balancers and Kubernetes readiness
+    /// probes stop routing to this node before it goes away. Skipped on a single instance. The
+    /// whole shutdown is bounded by this delay plus [`SHUTDOWN_TEARDOWN_BUDGET`], so keep the sum
+    /// below the grace period your orchestrator gives the process.
+    ///
+    /// default: 9.5 s
+    ///
+    pub shutdown_delay: Duration,
     /// If true, keep a newly joining node as a learner instead of promoting it to a voting member
     /// during startup reconciliation. This does not demote an existing voter.
     pub learner_only: bool,
@@ -306,6 +324,7 @@ impl Default for NodeConfig {
             #[cfg(feature = "dashboard")]
             insecure_cookie: false,
             health_check_delay: Duration::from_secs(30),
+            shutdown_delay: DEFAULT_SHUTDOWN_DELAY,
             learner_only: false,
             election_disable: vec![],
             #[cfg(feature = "cache")]
@@ -512,6 +531,16 @@ impl NodeConfig {
                 .as_deref()
                 .map_or(Duration::from_secs(30), |v| {
                     parse_duration(v).expect("Cannot parse HQL_HEALTH_CHECK_DELAY as Duration")
+                }),
+            shutdown_delay: env::var("HQL_SHUTDOWN_DELAY_MILLIS")
+                .ok()
+                .as_deref()
+                .map_or(DEFAULT_SHUTDOWN_DELAY, |v| {
+                    Duration::from_millis(
+                        v.trim()
+                            .parse::<u64>()
+                            .expect("Cannot parse HQL_SHUTDOWN_DELAY_MILLIS as u64"),
+                    )
                 }),
             learner_only: env::var("HQL_LEARNER_ONLY")
                 .as_deref()

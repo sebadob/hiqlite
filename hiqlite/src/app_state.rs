@@ -82,6 +82,8 @@ pub(crate) struct AppState {
     #[cfg(any(feature = "backup", feature = "dashboard"))]
     pub tx_client_stream: flume::Sender<ClientStreamReq>,
     pub health_check_delay: Duration,
+    /// See `NodeConfig::shutdown_delay`.
+    pub shutdown_delay: Duration,
     pub learner_only: bool,
     /// The node ids that are configured to never start an election on their own. The leader uses
     /// this list to pick a handover target that is actually able to become one.

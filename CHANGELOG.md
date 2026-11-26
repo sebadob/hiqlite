@@ -415,6 +415,21 @@ budget, because a transfer that lands on a node which is unreachable, or whose l
 silently ignored. Only the leader does anything, and a single node has nobody to hand over to, so it
 shuts down exactly like before.
 
+#### `shutdown_delay_millis` config var
+
+The pause at the start of a graceful shutdown on a multi-node cluster was a fixed 9.5 s. It is now
+`shutdown_delay_millis` (TOML key, `HQL_SHUTDOWN_DELAY_MILLIS`, `NodeConfig::shutdown_delay`),
+9500 by default, and `0` turns it off. v0.12 removed the old key of the same name in favor of the
+automatic delay; the automatic behavior stays the default, and the key is back only as an override,
+for orchestrators with a short grace period or setups where nothing routes by readiness. `/ready`
+answers 503 for the whole delay, so readiness probes and load balancers drain the node before it
+goes away. A 3-node cluster measured 9.55 to 9.75 s from SIGTERM to exit with the default.
+
+`Client::shutdown()` and `ShutdownHandle::wait()` now give up after the delay plus
+`SHUTDOWN_TEARDOWN_BUDGET` (10.5 s) instead of a fixed 20 s, which is the same 20 s with the
+default delay. Keep the sum below your orchestrator's grace period, 30 s for a Kubernetes pod by
+default.
+
 #### Test Suite
 
 `openraft`'s storage test suite now runs against both cache log stores, the WAL and the in-memory

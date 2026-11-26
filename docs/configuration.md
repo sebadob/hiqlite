@@ -199,6 +199,12 @@ what the `election_disable` marker of a node line sets. See `geo-replication.md`
 - `health_check_delay` - a grace window right after start, during which a health check reports the
   node as healthy. It exists so a node that is still forming, joining, or catching up is not
   punished by probes. See `standalone-server.md`.
+- `shutdown_delay_millis` - the pause at the start of a graceful shutdown, 9.5 s by default and skipped on a
+  single instance. `/ready` answers 503 from its first moment, so probes and load balancers stop
+  routing to the node before it leaves or hands its leadership over. The whole shutdown is bounded
+  by this delay plus 10.5 s for the teardown (`SHUTDOWN_TEARDOWN_BUDGET`), so keep the sum below the
+  grace period of your orchestrator. `0` turns it off, for example when nothing routes by
+  readiness.
 
 ## Danger switches
 
