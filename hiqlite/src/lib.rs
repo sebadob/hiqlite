@@ -37,6 +37,21 @@ compile_error!("feature `toml` needs one of the base features `sqlite` or `cache
 ))]
 compile_error!("feature `webpki-roots` needs one of the base features `sqlite` or `cache`");
 
+// Exactly one rustls crypto backend. Both would give rustls two providers, and TLS compiled in with
+// neither leaves the Raft / API stack with a TLS layer that cannot connect. `fips` is aws-lc-rs only.
+#[cfg(all(feature = "ring", feature = "aws_lc_rs"))]
+compile_error!("features `ring` and `aws_lc_rs` are mutually exclusive, pick exactly one");
+
+#[cfg(all(feature = "fips", feature = "ring"))]
+compile_error!("feature `fips` needs `aws_lc_rs`, not `ring`");
+
+#[cfg(all(
+    feature = "__cluster",
+    not(feature = "ring"),
+    not(feature = "aws_lc_rs")
+))]
+compile_error!("TLS needs exactly one of `ring` or `aws_lc_rs`");
+
 #[cfg(all(
     feature = "jemalloc",
     not(target_env = "msvc"),

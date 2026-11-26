@@ -17,6 +17,16 @@ use tracing::info;
 
 static KEY_PAIR: OnceLock<rcgen::KeyPair> = OnceLock::new();
 
+/// The rustls crypto provider selected by the `ring` / `aws_lc_rs` feature.
+#[must_use]
+pub fn default_crypto_provider() -> rustls::crypto::CryptoProvider {
+    #[cfg(feature = "ring")]
+    let provider = rustls::crypto::ring::default_provider();
+    #[cfg(feature = "aws_lc_rs")]
+    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    provider
+}
+
 /// `TlsAutoCertificates` will generate self-signed TLS certificates. Clients will not validate
 /// the certificates for ease of use because they don't have to. They do a 3-way handshake
 /// anyway, which validates both client and server without the secret ever being sent over the
@@ -205,7 +215,7 @@ pub fn build_tls_config(tls_no_verify: bool) -> Arc<ClientConfig> {
         let config = {
             use rustls_platform_verifier::BuilderVerifierExt;
 
-            let arc_crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
+            let arc_crypto_provider = Arc::new(default_crypto_provider());
             tokio_rustls::rustls::ClientConfig::builder_with_provider(arc_crypto_provider)
                 .with_safe_default_protocol_versions()
                 .unwrap()

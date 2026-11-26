@@ -195,9 +195,20 @@ faster now.
 By default, the following features are enabled:
 
 - `auto-heal`
+- `aws_lc_rs`
 - `backup`
 - `sqlite`
 - `toml`
+
+### `aws_lc_rs` / `ring` / `fips`
+
+The rustls crypto backend. Exactly one of `aws_lc_rs` or `ring` must be selected whenever TLS is
+compiled in (the `sqlite` and `cache` features enable it), and `aws_lc_rs` is the default. Selecting
+both, or TLS with neither, is a compile error. Whichever you pick, the other backend's crates are
+never compiled in.
+
+`fips` is the FIPS-validated aws-lc-rs build. It implies `aws_lc_rs` and cannot be combined with
+`ring`. It builds `aws-lc-fips-sys` from source, so it needs a C toolchain, `cmake` and `libclang`.
 
 ### `auto-heal`
 

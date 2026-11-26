@@ -33,7 +33,7 @@ where
 {
     node_config.is_valid()?;
 
-    if rustls::crypto::ring::default_provider()
+    if crate::tls::default_crypto_provider()
         .install_default()
         .is_err()
     {

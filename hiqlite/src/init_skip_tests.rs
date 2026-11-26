@@ -77,7 +77,7 @@ async fn skip_init(nodes: &[Node], within: Duration) -> Option<bool> {
 
 async fn skip_init_with(nodes: &[Node], within: Duration, require_peers: bool) -> Option<bool> {
     // `start_node` installs it in a real node; it fails when another test already did
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = crate::tls::default_crypto_provider().install_default();
 
     let check = InitCheck {
         nodes,
