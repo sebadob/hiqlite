@@ -5,7 +5,7 @@ use crate::store::logs;
 use crate::store::state_machine::sqlite::TypeConfigSqlite;
 use crate::store::state_machine::sqlite::state_machine;
 use crate::store::state_machine::sqlite::state_machine::{
-    Params, StateMachineData, StateMachineSqlite, StoredSnapshot,
+    Params, StateMachineData, StoredSnapshot,
 };
 use crate::store::state_machine::sqlite::transaction_env::{
     TransactionEnv, TransactionParamContext,
@@ -23,7 +23,7 @@ use std::borrow::Cow;
 use std::default::Default;
 use std::io;
 use std::ops::Sub;
-use std::path::PathBuf;
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 use thread_priority::ThreadPriority;
@@ -41,7 +41,7 @@ pub enum WriterRequest {
     MetadataRead(oneshot::Sender<StateMachineData>),
     MetadataMembership(MetaMembershipRequest),
     Backup(BackupRequest),
-    Shutdown(oneshot::Sender<()>),
+    Shutdown(oneshot::Sender<Result<(), Error>>),
     #[allow(clippy::upper_case_acronyms)]
     RTT(RTTRequest),
 }
@@ -156,7 +156,7 @@ pub fn spawn_writer(
 
         let mut sm_data = StateMachineData::default();
         let mut ts_last_backup = None;
-        let mut shutdown_ack: Option<oneshot::Sender<()>> = None;
+        let mut shutdown_ack = None;
 
         // TODO should we maybe save a backup task handle in case of shutdown overlap?
 
@@ -746,24 +746,41 @@ CREATE TABLE IF NOT EXISTS _metadata
 
         warn!("SQL writer is shutting down");
 
-        // make sure metadata is persisted before shutting down
-        persist_metadata(&conn, &sm_data).expect("Error persisting metadata");
-
-        if let Err(err) = conn.execute("PRAGMA optimize", []) {
-            error!("Error during 'PRAGMA optimize': {}", err);
-        }
-
-        // release the advisory lock, then remove the crash-marker file
-        drop(lock_file);
-        StateMachineSqlite::remove_lock_file(&path_lock_file);
-
+        let result = finish_shutdown(conn, &sm_data, lock_file, &path_lock_file);
         if let Some(ack) = shutdown_ack {
-            ack.send(())
-                .expect("Shutdown handler to always wait for ack from statemachine");
+            let _ = ack.send(result);
+        } else if let Err(err) = result {
+            error!("SQLite writer shutdown failed: {err}");
         }
     });
 
     tx
+}
+
+fn finish_shutdown(
+    conn: rusqlite::Connection,
+    metadata: &StateMachineData,
+    lock_file: std::fs::File,
+    path_lock_file: &str,
+) -> Result<(), Error> {
+    let persisted = persist_metadata(&conn, metadata);
+    if persisted.is_ok()
+        && let Err(err) = conn.execute("PRAGMA optimize", [])
+    {
+        error!("Error during 'PRAGMA optimize': {err}");
+    }
+    let closed = conn.close().map_err(|(_, err)| err);
+    persisted.and(closed)?;
+
+    // Keep the crash marker if persisting metadata or closing the connection failed.
+    drop(lock_file);
+    match std::fs::remove_file(path_lock_file) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(Error::Sqlite(
+            format!("Cannot remove SQLite crash marker {path_lock_file}: {err}").into(),
+        )),
+    }
 }
 
 #[inline]
@@ -808,11 +825,16 @@ Got:      {}
 }
 
 #[inline]
-fn create_snapshot<P: Into<PathBuf>>(conn: &rusqlite::Connection, path: P) -> Result<(), Error> {
-    let mut path = path.into();
-    // vacuum into a temp file and move it into place, so a crash can never leave a
-    // partially written snapshot at the final path
-    let mut path_temp = path.clone();
+fn create_snapshot(conn: &rusqlite::Connection, path: impl AsRef<Path>) -> Result<(), Error> {
+    vacuum_publish(conn, path.as_ref(), |_| Ok(()))
+}
+
+fn vacuum_publish(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    prepare: impl FnOnce(&Path) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut path_temp = path.to_path_buf();
     path_temp.add_extension("tmp");
     // escape single quotes so a folder name containing ' cannot break (or inject into) the SQL literal
     let q = format!(
@@ -823,15 +845,25 @@ fn create_snapshot<P: Into<PathBuf>>(conn: &rusqlite::Connection, path: P) -> Re
             .unwrap_or_default()
             .replace('\'', "''")
     );
-    if let Err(err) = conn.execute(&q, ()) {
+    let publish = (|| -> Result<(), Error> {
+        conn.execute(&q, ())
+            .map_err(|err| Error::Sqlite(err.to_string().into()))?;
+        prepare(&path_temp)?;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(cfg!(windows))
+            .open(&path_temp)?
+            .sync_data()?;
+        std::fs::rename(&path_temp, path)?;
+        Ok(())
+    })();
+    if publish.is_err() {
         let _ = std::fs::remove_file(&path_temp);
-        return Err(Error::Sqlite(err.to_string().into()));
     }
-    std::fs::File::open(&path_temp)?.sync_data();
-    std::fs::rename(&path_temp, &path)
-        .map_err(|err| Error::Error(format!("rename snapshot into place: {err}").into()))?;
+    publish?;
+    #[cfg(unix)]
     if let Some(parent) = path.parent() {
-        std::fs::File::open(parent)?.sync_data();
+        std::fs::File::open(parent)?.sync_data()?;
     }
     Ok(())
 }
@@ -865,28 +897,13 @@ fn create_backup(
     let path_full = format!("{target_folder}/{file}");
     info!("Creating database backup into {path_full}");
 
-    // vacuum into a temp file and move it into place, so a crash mid-backup can never leave
-    // a partial file under the final backup name (restore would pick it up as valid)
-    let path_temp = format!("{path_full}~");
-    // escape single quotes so a folder name containing ' cannot break (or inject into) the SQL literal
-    let path_sql = path_temp.replace('\'', "''");
-    if let Err(err) = conn.execute(&format!("VACUUM main INTO '{path_sql}'"), ()) {
-        let _ = std::fs::remove_file(&path_temp);
-        return Err(err.into());
-    }
-    if let Err(err) = std::fs::rename(&path_temp, &path_full) {
-        let _ = std::fs::remove_file(&path_temp);
-        return Err(Error::Error(
-            format!("rename backup into place: {err}").into(),
-        ));
-    }
-
-    // connect to the backup and reset metadata
-    // make sure connection is dropped before starting encrypt + push
-    {
-        let conn_bkp = rusqlite::Connection::open(&path_full)?;
-        persist_metadata(&conn_bkp, &StateMachineData::default());
-    }
+    // A backup becomes visible only after its old Raft metadata has been cleared.
+    vacuum_publish(conn, Path::new(&path_full), |staged| {
+        let backup = rusqlite::Connection::open(staged)?;
+        persist_metadata(&backup, &StateMachineData::default())?;
+        backup.close().map_err(|(_, err)| err)?;
+        Ok(())
+    })?;
 
     info!("Database backup finished");
 
@@ -1112,6 +1129,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn snapshot_publication_is_atomic_and_retryable() {
+        let path = std::env::temp_dir().join(format!("hiqlite-snapshot-{}.db", Uuid::now_v7()));
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE items (id INTEGER)", []).unwrap();
+        assert!(
+            vacuum_publish(&conn, &path, |_| Err(Error::new("backup metadata failed"))).is_err()
+        );
+        assert!(!path.exists());
+        std::fs::create_dir(&path).unwrap();
+        assert!(create_snapshot(&conn, &path).is_err());
+        std::fs::remove_dir(&path).unwrap();
+        create_snapshot(&conn, &path).unwrap();
+        conn.execute("INSERT INTO items VALUES (1)", []).unwrap();
+        create_snapshot(&conn, &path).unwrap();
+
+        let snapshot = rusqlite::Connection::open(&path).unwrap();
+        let count: i64 = snapshot
+            .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        drop(snapshot);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn migration_ts_is_deterministic() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         create_migrations_table(&conn).unwrap();
@@ -1164,5 +1206,23 @@ mod tests {
             .or_else(|| err.downcast_ref::<&str>().copied())
             .unwrap_or_default();
         assert!(msg.contains("order mismatch"));
+    }
+
+    #[test]
+    fn failed_writer_shutdown_keeps_the_crash_marker() {
+        let marker = std::env::temp_dir().join(format!("hiqlite-marker-{}", Uuid::now_v7()));
+        let lock = std::fs::File::create_new(&marker).unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(
+            finish_shutdown(
+                conn,
+                &StateMachineData::default(),
+                lock,
+                marker.to_str().unwrap()
+            )
+            .is_err()
+        );
+        assert!(marker.exists());
+        std::fs::remove_file(marker).unwrap();
     }
 }

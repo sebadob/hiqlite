@@ -1,7 +1,7 @@
 use crate::error::Error;
 use crate::metadata::Metadata;
 use crate::wal::WalFileSet;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use tokio::sync::oneshot;
 use tracing::{debug, error};
@@ -45,13 +45,62 @@ pub struct LogReadMemo {
     pub data_end: u32,
 }
 
-pub fn spawn(
+#[derive(Debug)]
+struct ReaderWorker {
+    sender: flume::WeakSender<Action>,
+    closed: flume::Receiver<()>,
+}
+
+/// Tracks the main reader and all independent log readers without keeping idle readers alive.
+#[derive(Debug)]
+pub(crate) struct Readers(Mutex<Option<Vec<ReaderWorker>>>);
+
+impl Readers {
+    pub(crate) fn new() -> Self {
+        Self(Mutex::new(Some(Vec::new())))
+    }
+
+    pub(crate) fn spawn(
+        &self,
+        meta: Arc<RwLock<Metadata>>,
+        wal: Arc<RwLock<WalFileSet>>,
+    ) -> (flume::Sender<Action>, flume::Receiver<()>) {
+        let mut registry = self.0.lock().unwrap();
+        let Some(workers) = registry.as_mut() else {
+            return (flume::bounded(1).0, flume::bounded(0).1);
+        };
+        workers.retain(|worker| !worker.closed.is_disconnected());
+        let (sender, closed) = spawn(meta, wal);
+        workers.push(ReaderWorker {
+            sender: sender.downgrade(),
+            closed: closed.clone(),
+        });
+        (sender, closed)
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        let workers = self.0.lock().unwrap().take().unwrap_or_default();
+        for worker in workers {
+            if let Some(sender) = worker.sender.upgrade() {
+                let _ = sender.send_async(Action::Shutdown).await;
+            }
+            let _ = worker.closed.recv_async().await;
+        }
+    }
+}
+
+fn spawn(
     meta: Arc<RwLock<Metadata>>,
     wal_locked: Arc<RwLock<WalFileSet>>,
-) -> flume::Sender<Action> {
+) -> (flume::Sender<Action>, flume::Receiver<()>) {
     let (tx, rx) = flume::bounded::<Action>(1);
-    thread::spawn(move || run(&meta, &wal_locked, &rx));
-    tx
+    let (done, closed) = flume::bounded::<()>(0);
+    thread::spawn(move || {
+        let _done = done;
+        let receiver = rx;
+        run(&meta, &wal_locked, &receiver);
+    });
+    (tx, closed)
 }
 
 /// There are a lot of `unwrap()`s in this task. The reason is simply, if most of these fail, it can
@@ -110,7 +159,9 @@ fn run(
                             Ok(_) => {
                                 for (_id, data) in buf.drain(..) {
                                     debug_assert!(_id >= from_next && _id <= until);
-                                    ack.send(Some(Ok(data))).unwrap();
+                                    if ack.send(Some(Ok(data))).is_err() {
+                                        break 'logs;
+                                    }
                                 }
 
                                 // If the until goes beyond our current file, we want to remove the `mmap`
@@ -120,7 +171,7 @@ fn run(
                             }
                             Err(err) => {
                                 error!("Error reading logs: {:?}", err);
-                                ack.send(Some(Err(err))).unwrap();
+                                let _ = ack.send(Some(Err(err)));
                                 break 'logs;
                             }
                         }
@@ -133,19 +184,21 @@ fn run(
                         match log.read_logs(from_next, until, &mut memo, &mut buf) {
                             Ok(_) => {
                                 for (_, data) in buf.drain(..) {
-                                    ack.send(Some(Ok(data))).unwrap();
+                                    if ack.send(Some(Ok(data))).is_err() {
+                                        break 'logs;
+                                    }
                                 }
                             }
                             Err(err) => {
                                 error!("Error reading logs: {:?}", err);
-                                ack.send(Some(Err(err))).unwrap();
+                                let _ = ack.send(Some(Err(err)));
                             }
                         }
                         break;
                     }
                 }
 
-                ack.send(None).unwrap();
+                let _ = ack.send(None);
             }
             Action::LogState(ack) => {
                 debug!("WAL Reader - Action::LogState");
@@ -201,12 +254,12 @@ fn run(
                     "WAL Reader - Action::LogState -> latest_log_id: {:?}\n{:?}",
                     latest_log_id, st
                 );
-                ack.send(Ok(st)).unwrap();
+                let _ = ack.send(Ok(st));
             }
             Action::Vote(ack) => {
                 debug!("WAL Reader - Action::Vote");
                 let vote = meta.read().unwrap().vote.clone();
-                ack.send(Ok(vote)).unwrap();
+                let _ = ack.send(Ok(vote));
             }
             Action::Shutdown => {
                 debug!("Raft logs store reader is being shut down");
@@ -269,7 +322,7 @@ mod tests {
             vote: None,
         }));
 
-        let tx = spawn(meta, Arc::new(RwLock::new(set)));
+        let (tx, _) = spawn(meta, Arc::new(RwLock::new(set)));
         let (ack, rx) = flume::bounded(2);
         tx.send(Action::Logs {
             from: 2,

@@ -258,19 +258,27 @@ async fn wait_for_health(client: &Client) -> Result<(), Error> {
     client.is_healthy_cache().await
 }
 
-/// Poll until this node sees the wanted leader.
+/// Poll until this node has applied an entry from the new leader's term in both groups.
 async fn wait_for_leader(client: &Client, want: u64, polls: u32) -> Result<u64, Error> {
     for _ in 0..polls {
-        let leader = client.metrics_db().await?.current_leader;
-        if leader == Some(want) {
+        let sqlite = client.metrics_db().await?;
+        let cache = client.metrics_cache().await?;
+        if sqlite.current_leader == Some(want)
+            && cache.current_leader == Some(want)
+            && sqlite.last_applied.is_some_and(|log| {
+                log.leader_id.term == sqlite.current_term && log.leader_id.node_id == want
+            })
+            && cache.last_applied.is_some_and(|log| {
+                log.leader_id.term == cache.current_term && log.leader_id.node_id == want
+            })
+        {
             return Ok(want);
         }
         time::sleep(Duration::from_millis(500)).await;
     }
 
-    let leader = client.metrics_db().await?.current_leader;
     Err(Error::Error(
-        format!("node {want} did not become the leader, current: {leader:?}").into(),
+        format!("node {want} did not commit its term in both groups").into(),
     ))
 }
 

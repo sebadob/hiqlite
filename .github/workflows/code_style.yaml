@@ -1,36 +1,187 @@
 name: Check
 
 on:
-    pull_request:
-        types:
-            - opened
-            - reopened
-            - synchronize
-            - ready_for_review
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 env:
-    CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE: allow
-    CARGO_TERM_COLOR: always
-    # `clear` in the just recipes fails without TERM on CI runners
-    TERM: xterm
+  CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE: allow
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  HIQLITE_CI_CACHE_PREFIX: hiqlite-ci-v1
+  HIQLITE_CI_PLATFORM_FEATURES: cache,counters,dashboard,dlock,listen_notify,macros,toml
+  RUST_BACKTRACE: short
+  TERM: xterm
 
 jobs:
-    check:
-        if: github.event.pull_request.draft == false
-        name: Check
-        runs-on: ubuntu-latest
-        container:
-            image: ghcr.io/sebadob/rauthy-builder:20261123
-        steps:
-            - uses: actions/checkout@v4
-            - name: Code Format
-              run: cargo fmt --check
-            - name: Clippy
-              run: cargo clippy
-            - name: Clippy (feature matrix)
-              run: just clippy
-            - name: Clippy (examples)
-              run: just clippy-examples
-            - name: Tests
-              # S3 tests cannot be done inside GitHub CI
-              run: just test-no-s3
+  lint:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    name: Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/sebadob/rauthy-builder:20261123
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-cargo
+        with:
+          key: lint
+      - name: Code format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy
+      - name: Clippy (feature matrix)
+        run: just clippy
+
+  examples:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    name: Clippy (examples)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/sebadob/rauthy-builder:20261123
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Share the target directory across examples
+        run: printf 'CARGO_TARGET_DIR=%s/target\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/setup-cargo
+        with:
+          key: examples
+      - name: Clippy examples
+        run: just clippy-examples
+
+  test:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    name: Tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            container: ghcr.io/sebadob/rauthy-builder:20261123
+            continue-on-error: false
+          - os: macos-latest
+            container: ''
+            continue-on-error: false
+          # Advisory until Windows is proven; flip to false when green.
+          - os: windows-latest
+            container: ''
+            continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.continue-on-error }}
+    timeout-minutes: 30
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain (non-Linux)
+        if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/setup-cargo
+        with:
+          key: test
+      - name: Test the Linux workspace without S3
+        if: runner.os == 'Linux'
+        run: just test-no-s3
+      - name: Test hiqlite lib and bins (macOS and Windows)
+        if: runner.os != 'Linux'
+        env:
+          TEST_SKIP_S3_RESTORE: "true"
+        shell: bash
+        run: cargo test -p hiqlite --features "$HIQLITE_CI_PLATFORM_FEATURES" --lib --bins
+      - name: Test hiqlite-wal and hiqlite-derive (macOS and Windows)
+        if: runner.os != 'Linux'
+        run: cargo test -p hiqlite-wal -p hiqlite-derive
+
+  cluster:
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+    name: Cluster integration
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/setup-cargo
+        with:
+          key: test
+          save: 'false'
+      - name: Cluster tests
+        # Time out the test before the runner can cancel the entire job.
+        timeout-minutes: 15
+        env:
+          TEST_SKIP_S3_RESTORE: "true"
+          HQL_DISABLE_COLD_RESTART_GUARD: "true"
+        shell: bash
+        run: cargo test -p hiqlite --features "$HIQLITE_CI_PLATFORM_FEATURES" --test cluster
+
+  cache-retention:
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [lint, examples, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      actions: write
+    steps:
+      - name: Keep Cargo caches within 6 GB
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Keep the newest archive for each job, OS, and architecture first.
+          prefix="$HIQLITE_CI_CACHE_PREFIX-"
+          plan=$(gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/caches?ref=refs%2Fheads%2Fmain&key=$prefix&per_page=100" |
+            jq --arg prefix "$prefix" --argjson budget 6000000000 '
+              [.[].actions_caches[]
+                | select(.ref == "refs/heads/main" and (.key | startswith($prefix)))
+                | . + {group: (.key | ltrimstr($prefix) | split("-") | .[:3])}]
+              | group_by(.group)
+              | map(sort_by(.created_at) | reverse)
+              | (map(first) | sort_by(.last_accessed_at) | reverse)
+                + (map(.[1:][]) | sort_by(.last_accessed_at) | reverse)
+              | reduce .[] as $entry ({bytes: 0, remove: []};
+                  if .bytes + $entry.size_in_bytes <= $budget
+                  then .bytes += $entry.size_in_bytes
+                  else .remove += [$entry.id]
+                  end)')
+          while IFS= read -r id; do
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id"
+          done < <(jq -r '.remove[]' <<< "$plan")
+          printf 'Retained %s bytes of Cargo caches\n' "$(jq -r '.bytes' <<< "$plan")"
+
+  check:
+    if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    name: Check
+    needs: [lint, examples, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report required checks
+        env:
+          LINT: ${{ needs.lint.result }}
+          EXAMPLES: ${{ needs.examples.result }}
+          TESTS: ${{ needs.test.result }}
+        run: |
+          printf 'lint=%s examples=%s tests=%s\n' "$LINT" "$EXAMPLES" "$TESTS"
+          test "$LINT" = success && test "$EXAMPLES" = success && test "$TESTS" = success

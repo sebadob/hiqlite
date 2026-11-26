@@ -521,13 +521,13 @@ fn run(
     active.flush()?;
     Metadata::write(&shared.meta, &wal.base_path)?;
 
+    drop(wal.files);
     // drop the lockfile before trying to remove it to unlock it
     drop(lockfile);
     LockFile::remove(&wal.base_path).expect("LockFile removal failed");
 
     if let Some(ack) = shutdown_ack {
-        ack.send(())
-            .expect("Shutdown handler to always wait for ack from logs");
+        let _ = ack.send(());
     }
 
     Ok(())

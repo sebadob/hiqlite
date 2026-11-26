@@ -120,7 +120,22 @@ async fn sqlite_rebuild_after_unclean_stop_is_not_ready_before_replay() {
             .unwrap();
     }
     assert_eq!(count(&client).await.unwrap(), ROWS);
-    client.shutdown().await.unwrap();
+    // Cancelling one waiter must not stop teardown or strand the next waiter.
+    tokio::select! {
+        biased;
+        result = client.shutdown() => result.unwrap(),
+        () = std::future::ready(()) => {}
+    }
+    let (first, second) = tokio::join!(client.shutdown(), client.shutdown());
+    first.unwrap();
+    second.unwrap();
+    for listener in [port, port + 1] {
+        assert!(
+            tokio::net::TcpStream::connect(("127.0.0.1", listener))
+                .await
+                .is_err()
+        );
+    }
     drop(client);
 
     // the crash marker a killed process leaves behind

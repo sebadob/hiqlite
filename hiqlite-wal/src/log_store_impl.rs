@@ -8,9 +8,12 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::Bound;
 use std::fmt::Debug;
+use std::future::{Future, poll_fn};
 use std::io;
 use std::ops::RangeBounds;
+use std::pin::pin;
 use std::sync::PoisonError;
+use std::task::Poll;
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 
@@ -40,27 +43,14 @@ where
         &mut self,
         range: RB,
     ) -> Result<Vec<EntryOf<T>>, io::Error> {
-        try_get_log_entries::<T, _>(&self.reader, range).await
+        try_get_log_entries::<T, _>(&self.reader, &self.reader_closed, range).await
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn read_vote(&mut self) -> Result<Option<VoteOf<T>>, io::Error> {
         debug!("Entering read_vote()");
 
-        let (ack, rx) = oneshot::channel();
-
-        self.reader
-            .send_async(reader::Action::Vote(ack))
-            .await
-            .map_err(|err| io::Error::from(error::Error::from(err)))?;
-
-        let vote = rx
-            .await
-            .unwrap()
-            .map_err(io::Error::from)?
-            .map(|b| deserialize(&b).unwrap());
-
-        Ok(vote)
+        read_vote(&self.reader, &self.reader_closed).await
     }
 }
 
@@ -72,28 +62,52 @@ where
         &mut self,
         range: RB,
     ) -> Result<Vec<EntryOf<T>>, io::Error> {
-        try_get_log_entries::<T, _>(&self.tx, range).await
+        try_get_log_entries::<T, _>(&self.tx, &self.closed, range).await
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn read_vote(&mut self) -> Result<Option<VoteOf<T>>, io::Error> {
         debug!("Entering read_vote()");
 
-        let (ack, rx) = oneshot::channel();
-
-        self.tx
-            .send_async(reader::Action::Vote(ack))
-            .await
-            .map_err(|err| io::Error::from(error::Error::from(err)))?;
-
-        let vote = rx
-            .await
-            .unwrap()
-            .map_err(io::Error::from)?
-            .map(|b| deserialize(&b).unwrap());
-
-        Ok(vote)
+        read_vote(&self.tx, &self.closed).await
     }
+}
+
+async fn read_vote<V: DeserializeOwned>(
+    tx: &flume::Sender<reader::Action>,
+    closed: &flume::Receiver<()>,
+) -> Result<Option<V>, io::Error> {
+    let (ack, rx) = oneshot::channel();
+    tx.send_async(reader::Action::Vote(ack))
+        .await
+        .map_err(|err| io::Error::from(error::Error::from(err)))?;
+
+    let vote = read_response(closed, async {
+        rx.await.map_err(io::Error::other)?.map_err(io::Error::from)
+    })
+    .await?;
+    vote.map(|bytes| deserialize(&bytes).map_err(io::Error::other))
+        .transpose()
+}
+
+async fn read_response<T>(
+    closed: &flume::Receiver<()>,
+    response: impl Future<Output = io::Result<T>>,
+) -> io::Result<T> {
+    let mut response = pin!(response);
+    let mut closed = pin!(closed.recv_async());
+    // A request queued behind shutdown can still own its reply sender after the reader exits.
+    poll_fn(|cx| match response.as_mut().poll(cx) {
+        Poll::Pending if closed.as_mut().poll(cx).is_ready() => match response.as_mut().poll(cx) {
+            Poll::Ready(result) => Poll::Ready(result),
+            Poll::Pending => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "WAL reader stopped",
+            ))),
+        },
+        result => result,
+    })
+    .await
 }
 
 #[tracing::instrument(skip_all)]
@@ -103,6 +117,7 @@ async fn try_get_log_entries<
     RB: RangeBounds<u64> + Clone + Debug + OptionalSend,
 >(
     tx: &flume::Sender<reader::Action>,
+    closed: &flume::Receiver<()>,
     range: RB,
 ) -> Result<Vec<EntryOf<T>>, io::Error> {
     let from = match range.start_bound() {
@@ -137,14 +152,16 @@ async fn try_get_log_entries<
         .await
         .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
-    while let Some(data_res) = rx.recv_async().await.unwrap() {
-        let data = data_res.map_err(io::Error::from)?;
-        let entry = deserialize::<EntryOf<T>>(&data)
-            .map_err(|err| io::Error::from(error::Error::from(err)))?;
-        res.push(entry);
-    }
-
-    Ok(res)
+    read_response(closed, async {
+        while let Some(data_res) = rx.recv_async().await.map_err(io::Error::other)? {
+            let data = data_res.map_err(io::Error::from)?;
+            let entry = deserialize::<EntryOf<T>>(&data)
+                .map_err(|err| io::Error::from(error::Error::from(err)))?;
+            res.push(entry);
+        }
+        Ok(res)
+    })
+    .await
 }
 
 impl<T> RaftLogStorage<T> for LogStore<T>
@@ -164,7 +181,10 @@ where
             .await
             .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
-        let log_state = rx.await.unwrap().map_err(io::Error::from)?;
+        let log_state = read_response(&self.reader_closed, async {
+            rx.await.map_err(io::Error::other)?.map_err(io::Error::from)
+        })
+        .await?;
 
         let last_purged_log_id = if let Some(bytes) = log_state.last_purged_log_id {
             Some(deserialize(&bytes).map_err(|err| io::Error::from(error::Error::from(err)))?)
@@ -376,6 +396,19 @@ mod tests {
             .block_on(f)
     }
 
+    #[test]
+    fn reader_shutdown_unblocks_a_queued_response() {
+        block_on(async {
+            let (done, closed) = flume::bounded::<()>(0);
+            let (_queued_reply, reply) = oneshot::channel::<()>();
+            drop(done);
+            let err = read_response(&closed, async { reply.await.map_err(io::Error::other) })
+                .await
+                .unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+        });
+    }
+
     /// `read_committed` must never report a position past the durable log tail.
     ///
     /// openraft re-applies `(last_applied, committed]` from the log store at startup and fails
@@ -428,9 +461,28 @@ mod tests {
             let entries = (1..=5).map(|i| Entry::new_normal(log_id(i), format!("payload-{i}")));
             store.append(entries, IOFlushed::noop()).await.unwrap();
             store.save_committed(Some(log_id(4))).await.unwrap();
+            assert!(store.get_log_state().await.unwrap().last_log_id.is_some());
+            let mut reader = store.get_log_reader().await;
+            assert_eq!(reader.try_get_log_entries(1..=5).await.unwrap().len(), 5);
 
-            // `Action::Sync` is what carries the header, and `Immediate` flushes every append
-            store.shutdown_handle().shutdown().await.unwrap();
+            let shutdown = store.shutdown_handle();
+            {
+                let mut waiting = pin!(shutdown.shutdown());
+                poll_fn(|cx| {
+                    let _ = waiting.as_mut().poll(cx);
+                    Poll::Ready(())
+                })
+                .await;
+            }
+            let concurrent = tokio::spawn(async move { shutdown.shutdown().await });
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                store.shutdown_handle().shutdown().await.unwrap();
+                concurrent.await.unwrap().unwrap();
+            })
+            .await
+            .unwrap();
+            assert!(store.reader.is_disconnected());
+            assert!(reader.tx.is_disconnected());
 
             let mut store =
                 LogStore::<TestConfig>::start(base, LogSync::Immediate, 64 * 1024).await?;
