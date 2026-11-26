@@ -297,6 +297,13 @@ impl NodeConfig {
             "HQL_HEALTH_CHECK_DELAY",
         )?
         .unwrap_or(Duration::from_secs(30));
+        let shutdown_delay = t_u64(
+            &mut map,
+            t_name,
+            "shutdown_delay_millis",
+            "HQL_SHUTDOWN_DELAY_MILLIS",
+        )?
+        .map_or(crate::config::DEFAULT_SHUTDOWN_DELAY, Duration::from_millis);
         let learner_only =
             t_bool(&mut map, t_name, "learner_only", "HQL_LEARNER_ONLY")?.unwrap_or(false);
 
@@ -491,6 +498,7 @@ impl NodeConfig {
             #[cfg(feature = "dashboard")]
             insecure_cookie,
             health_check_delay,
+            shutdown_delay,
             learner_only,
             #[cfg(feature = "cache")]
             rate_limit_cache,

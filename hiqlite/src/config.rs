@@ -33,6 +33,20 @@ pub static REFERENCE_CONFIG: &str = include_str!("../../REFERENCE_CONFIG.toml");
 /// starts an election on its own. See [`Node::parse_line`] and `NodeConfig::election_disable`.
 const ELECTION_DISABLE: &str = "election_disable";
 
+/// The default of [`NodeConfig::shutdown_delay`].
+pub const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_millis(9500);
+
+/// The smallest [`NodeConfig::shutdown_delay`] a cluster node accepts. Below it, a load balancer
+/// with any realistic readiness check interval keeps routing requests to a node that is already
+/// leaving.
+pub const MIN_CLUSTER_SHUTDOWN_DELAY: Duration = Duration::from_secs(3);
+
+/// The time a graceful shutdown gets for its ordered teardown after [`NodeConfig::shutdown_delay`]:
+/// leaving the in-memory cache cluster, handing the leadership over and stopping both Raft groups.
+/// `Client::shutdown()` and `ShutdownHandle::wait()` give up after the delay plus this budget, so
+/// with the default delay the whole shutdown stays bounded by 20 s.
+pub const SHUTDOWN_TEARDOWN_BUDGET: Duration = Duration::from_millis(10_500);
+
 #[derive(Debug)]
 pub struct RateLimitConfig {
     pub rps: u32,
@@ -246,6 +260,19 @@ pub struct NodeConfig {
     /// necessary to solve a chicken-and-egg problem when cold starting cluster which depend on
     /// health checks.
     pub health_check_delay: Duration,
+    /// The pause at the start of a graceful shutdown, before the node leaves or hands over its
+    /// leadership. `/ready` answers 503 during it, so load balancers and Kubernetes readiness
+    /// probes stop routing to this node before it goes away. Skipped on a single instance. The
+    /// whole shutdown is bounded by this delay plus [`SHUTDOWN_TEARDOWN_BUDGET`], so keep the sum
+    /// below the grace period your orchestrator gives the process.
+    ///
+    /// Keep it at least one readiness check interval plus 1 s: a shorter delay lets a load
+    /// balancer route requests to a node that is already shutting down, and those requests fail
+    /// on the client side. A cluster node needs at least [`MIN_CLUSTER_SHUTDOWN_DELAY`].
+    ///
+    /// default: 9.5 s
+    ///
+    pub shutdown_delay: Duration,
     /// If true, keep a newly joining node as a learner instead of promoting it to a voting member
     /// during startup reconciliation. This does not demote an existing voter.
     pub learner_only: bool,
@@ -311,6 +338,7 @@ impl Default for NodeConfig {
             #[cfg(feature = "dashboard")]
             insecure_cookie: false,
             health_check_delay: Duration::from_secs(30),
+            shutdown_delay: DEFAULT_SHUTDOWN_DELAY,
             learner_only: false,
             election_disable: vec![],
             #[cfg(feature = "cache")]
@@ -519,6 +547,16 @@ impl NodeConfig {
                 .map_or(Duration::from_secs(30), |v| {
                     parse_duration(v).expect("Cannot parse HQL_HEALTH_CHECK_DELAY as Duration")
                 }),
+            shutdown_delay: env::var("HQL_SHUTDOWN_DELAY_MILLIS")
+                .ok()
+                .as_deref()
+                .map_or(DEFAULT_SHUTDOWN_DELAY, |v| {
+                    Duration::from_millis(
+                        v.trim()
+                            .parse::<u64>()
+                            .expect("Cannot parse HQL_SHUTDOWN_DELAY_MILLIS as u64"),
+                    )
+                }),
             learner_only: env::var("HQL_LEARNER_ONLY")
                 .as_deref()
                 .unwrap_or("false")
@@ -638,6 +676,18 @@ impl NodeConfig {
                 format!(
                     "Invalid nodes configured: must not contain duplicate IDs: {:?}",
                     self.nodes
+                )
+                .into(),
+            ));
+        }
+
+        if self.nodes.len() > 1 && self.shutdown_delay < MIN_CLUSTER_SHUTDOWN_DELAY {
+            return Err(Error::Config(
+                format!(
+                    "'shutdown_delay_millis' must be at least {} ms for a cluster, so load \
+                     balancers stop routing to a node before it shuts down - found {} ms",
+                    MIN_CLUSTER_SHUTDOWN_DELAY.as_millis(),
+                    self.shutdown_delay.as_millis(),
                 )
                 .into(),
             ));
@@ -1028,6 +1078,36 @@ mod tests {
             let err = config.is_valid().unwrap_err().to_string();
             assert!(err.contains("read_pool_size"), "{size}: {err}");
         }
+    }
+
+    #[test]
+    fn config_rejects_a_short_shutdown_delay_for_a_cluster_only() {
+        let config = |nodes: Vec<Node>, millis: u64| NodeConfig {
+            node_id: 1,
+            nodes,
+            secret_raft: "0123456789abcdef".into(),
+            secret_api: "0123456789abcdef".into(),
+            shutdown_delay: std::time::Duration::from_millis(millis),
+            ..Default::default()
+        };
+
+        for millis in [0, 2999] {
+            let err = config(vec![node(1), node(2), node(3)], millis)
+                .is_valid()
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("shutdown_delay_millis"), "{millis}: {err}");
+        }
+        // other checks may fail on this minimal config with some features, so only the delay
+        // check is looked at
+        let delay_ok = |c: NodeConfig| {
+            c.is_valid()
+                .err()
+                .is_none_or(|err| !err.to_string().contains("shutdown_delay_millis"))
+        };
+        assert!(delay_ok(config(vec![node(1), node(2), node(3)], 3000)));
+        // a single instance skips the delay, so any value is fine there
+        assert!(delay_ok(config(vec![node(1)], 0)));
     }
 
     #[test]

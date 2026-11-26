@@ -67,7 +67,10 @@ pub use backup::{BackupSource, DEFAULT_BACKUP_FILE_PREFIX};
 #[cfg(feature = "config-embed")]
 pub use config::REFERENCE_CONFIG;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
-pub use config::{EncKeysArg, NodeConfig, RaftConfig, RateLimitConfig};
+pub use config::{
+    DEFAULT_SHUTDOWN_DELAY, EncKeysArg, MIN_CLUSTER_SHUTDOWN_DELAY, NodeConfig, RaftConfig,
+    RateLimitConfig, SHUTDOWN_TEARDOWN_BUDGET,
+};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub use network::management::{ElectionState, MembersState, NodeElection, NodeMembers};
 #[cfg(feature = "sqlite")]

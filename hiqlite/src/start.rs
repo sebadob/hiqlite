@@ -144,6 +144,7 @@ where
         #[cfg(any(feature = "backup", feature = "dashboard"))]
         tx_client_stream: tx_client_stream.clone(),
         health_check_delay: node_config.health_check_delay,
+        shutdown_delay: node_config.shutdown_delay,
         learner_only: node_config.learner_only,
         election_disable: node_config.election_disable.clone(),
         #[cfg(feature = "s3")]
