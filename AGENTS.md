@@ -64,8 +64,8 @@ one. A pile of allows is a pile of lint-blind spots.
           leadership handover, and the leader-following retry they run through
     - `hiqlite/src/network/` API + Raft cluster setup and operations
         - `hiqlite/src/network/raft_client.rs` the leader's Raft transport: one WebSocket per peer,
-          unary RPCs and the pipelined append stream, `RAFT_STREAM_DEPTH` is how many appends that
-          stream keeps in flight
+          unary RPCs and the pipelined append stream, which keeps a connection's unanswered requests
+          in its reorder buffer until each one can be handed back in send order
         - `hiqlite/src/network/raft_server.rs` the follower side: the socket reader that answers
           every request, pipelined appends included, in the order it received them
         - `hiqlite/src/network/management.rs` the `/cluster/*` endpoints behind those calls

@@ -191,17 +191,14 @@ write's round trip is covered by the writes behind it instead of by nothing.
   time, in order, on the same connection as the appends.
 - A follower that cannot answer closes its connection, and the leader re-syncs to it like it
   already did on a dead append. No write is acknowledged by a pipeline that stopped answering.
-- Measured on one host over loopback, where a round trip costs nothing to hide, at 250 000 writes
-  and the default window: a single INSERT is at parity and a cache PUT is about 14% faster than
-  before. At concurrency 8 and above the pipelined transport is behind the previous one by 8 to 12%
-  on INSERTs, which is measured and not fixed. The round trip this mechanism hides is the one to a
-  distant voter, and that measurement is still to come.
-- The window of appends in flight is `HQL_RAFT_STREAM_DEPTH`, and its default is 8. A leader whose
-  log has nothing new to send builds a request that carries only its commit, and a window that
-  drains quickly makes it build one per commit: measured at three of them per write. The transport
-  drops a commit-carrying request when a request with entries follows it in the same batch, because
-  that request carries the same commit, and it always sends the last one of a run, because a
-  follower applies log entries only up to the commit it has been told about.
+- An append is as big as the log entries the leader has queued, and the limit on them counts entries
+  and never bytes. An append that is big travels as one message, is collected and decoded as one
+  message on the follower, and every other message on that connection queues up behind it. A node
+  logs a warning when an append goes over 8 MB. Keep transactions small enough to stay out of that
+  log.
+
+The round trip this mechanism hides is the one to a distant voter. Measurements of the pipelined
+transport against the previous one, on a machine built for running them, are still to come.
 
 #### Local Read Threads
 

@@ -14,7 +14,6 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use openraft::errors::RPCError;
 use openraft::errors::Unreachable;
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -172,21 +171,41 @@ impl AckTarget {
 /// arrive in send order. Keeping the ids makes that an assumption and not a requirement: an answer
 /// naming a later request waits until the request the connection expects next is answered, and
 /// everything that queued up behind it is delivered with it.
-struct InFlightTree {
+/// Slots the reorder buffer starts with.
+///
+/// The buffer only ever holds the requests that are in flight on one connection, and openraft keeps
+/// at most `max_payload_entries` of them per replication stream. Half of its default covers a normal
+/// connection, and the map grows from there when a stream runs deeper.
+const INFLIGHT_CAPACITY: usize = 16;
+
+/// The reorder buffer of one connection.
+///
+/// The socket answers a connection in the order it received its requests, and openraft wants the
+/// answers of a replication stream in that same order. A hash map on the request id is keyed by
+/// exactly what an answer names, and ids are integers, so the hash is a multiply and a shift.
+struct InFlight {
     /// The id of the oldest request that is not delivered yet.
     expected: usize,
     /// Sent, not answered.
-    targets: BTreeMap<usize, AckTarget>,
+    targets: rustc_hash::FxHashMap<usize, AckTarget>,
     /// Answered, not delivered.
-    ready: BTreeMap<usize, RaftStreamResponsePayload>,
+    ready: rustc_hash::FxHashMap<usize, RaftStreamResponsePayload>,
 }
 
-impl InFlightTree {
-    const fn new() -> Self {
+impl InFlight {
+    /// A reorder map with the buffer's starting capacity, keyed by the request id.
+    fn map<V>() -> rustc_hash::FxHashMap<usize, V> {
+        rustc_hash::FxHashMap::with_capacity_and_hasher(
+            INFLIGHT_CAPACITY,
+            rustc_hash::FxBuildHasher,
+        )
+    }
+
+    fn new() -> Self {
         Self {
             expected: 0,
-            targets: BTreeMap::new(),
-            ready: BTreeMap::new(),
+            targets: Self::map(),
+            ready: Self::map(),
         }
     }
 
@@ -224,6 +243,15 @@ impl InFlightTree {
         true
     }
 
+    /// Requests sent and not answered yet.
+    fn len(&self) -> usize {
+        self.targets.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.targets.is_empty()
+    }
+
     /// Fail everything the connection sent on a socket that is gone. A response for those requests
     /// can never arrive on the next connection: the server answers every request on the connection
     /// it received it on.
@@ -234,190 +262,6 @@ impl InFlightTree {
         self.ready.clear();
     }
 }
-
-/// One slot of the queue-ordered buffer: the caller's place to answer into, and the answer once it
-/// arrived.
-struct Slot {
-    target: Option<AckTarget>,
-    payload: Option<RaftStreamResponsePayload>,
-}
-
-/// The reorder buffer as a queue of slots. Request ids are a dense counter, so a slot's position is
-/// its id minus the id the connection expects next: push is a tail append, an answer writes into the
-/// slot at its offset, and delivery drains the head while the head is answered. No key, no tree, no
-/// hash.
-struct InFlightQueue {
-    expected: usize,
-    slots: std::collections::VecDeque<Slot>,
-}
-
-impl InFlightQueue {
-    const fn new() -> Self {
-        Self {
-            expected: 0,
-            slots: std::collections::VecDeque::new(),
-        }
-    }
-
-    #[inline]
-    fn push(&mut self, id: usize, target: AckTarget) {
-        if self.slots.is_empty() {
-            self.expected = id;
-        }
-        self.slots.push_back(Slot {
-            target: Some(target),
-            payload: None,
-        });
-    }
-
-    #[inline]
-    fn answer(&mut self, id: usize, payload: RaftStreamResponsePayload) -> bool {
-        let Some(offset) = id.checked_sub(self.expected) else {
-            return false;
-        };
-        let Some(slot) = self.slots.get_mut(offset) else {
-            return false;
-        };
-        if slot.payload.is_some() {
-            return false;
-        }
-        slot.payload = Some(payload);
-
-        while self.slots.front().is_some_and(|slot| slot.payload.is_some()) {
-            let slot = self.slots.pop_front().expect("the front slot is present");
-            self.expected += 1;
-            let target = slot
-                .target
-                .expect("a slot is created with the target it was sent with");
-            if !target.deliver(slot.payload.expect("the drain loop only takes answered slots")) {
-                error!("sending back stream response from raft server");
-            }
-        }
-
-        true
-    }
-
-    fn fail_all(&mut self, err: &str) {
-        for slot in std::mem::take(&mut self.slots) {
-            if let Some(target) = slot.target {
-                target.fail(Error::Connect(err.into()));
-            }
-        }
-    }
-}
-
-/// The reorder buffer as a hash map on the request id. Ids are integers, so the hash is a multiply
-/// and a shift, and the map is keyed by exactly what an answer names.
-struct InFlightHash {
-    expected: usize,
-    targets: rustc_hash::FxHashMap<usize, AckTarget>,
-    ready: rustc_hash::FxHashMap<usize, RaftStreamResponsePayload>,
-}
-
-impl InFlightHash {
-    fn new() -> Self {
-        Self {
-            expected: 0,
-            targets: rustc_hash::FxHashMap::default(),
-            ready: rustc_hash::FxHashMap::default(),
-        }
-    }
-
-    #[inline]
-    fn push(&mut self, id: usize, target: AckTarget) {
-        if self.targets.is_empty() {
-            self.expected = id;
-        }
-        self.targets.insert(id, target);
-    }
-
-    #[inline]
-    fn answer(&mut self, id: usize, payload: RaftStreamResponsePayload) -> bool {
-        if !self.targets.contains_key(&id) {
-            return false;
-        }
-        self.ready.insert(id, payload);
-
-        while let Some(payload) = self.ready.remove(&self.expected) {
-            let target = self
-                .targets
-                .remove(&self.expected)
-                .expect("an answer in the reorder buffer always has the target it was sent with");
-            self.expected += 1;
-            if !target.deliver(payload) {
-                error!("sending back stream response from raft server");
-            }
-        }
-
-        true
-    }
-
-    fn fail_all(&mut self, err: &str) {
-        for (_, target) in std::mem::take(&mut self.targets) {
-            target.fail(Error::Connect(err.into()));
-        }
-        self.ready.clear();
-    }
-}
-
-/// The reorder buffer as an unordered `Vec` with a linear scan: an answer is found by walking the
-/// entries, and delivery walks them again for everything that became deliverable.
-struct InFlightVec {
-    expected: usize,
-    entries: Vec<(usize, AckTarget, Option<RaftStreamResponsePayload>)>,
-}
-
-impl InFlightVec {
-    const fn new() -> Self {
-        Self {
-            expected: 0,
-            entries: Vec::new(),
-        }
-    }
-
-    #[inline]
-    fn push(&mut self, id: usize, target: AckTarget) {
-        if self.entries.is_empty() {
-            self.expected = id;
-        }
-        self.entries.push((id, target, None));
-    }
-
-    #[inline]
-    fn answer(&mut self, id: usize, payload: RaftStreamResponsePayload) -> bool {
-        let Some((_, _, entry_payload)) = self
-            .entries
-            .iter_mut()
-            .find(|(entry_id, _, entry_payload)| *entry_id == id && entry_payload.is_none())
-        else {
-            return false;
-        };
-        *entry_payload = Some(payload);
-
-        while let Some(index) = self
-            .entries
-            .iter()
-            .position(|(entry_id, _, entry_payload)| *entry_id == self.expected && entry_payload.is_some())
-        {
-            let (_, target, payload) = self.entries.swap_remove(index);
-            self.expected += 1;
-            if !target.deliver(payload.expect("the drain only takes answered entries")) {
-                error!("sending back stream response from raft server");
-            }
-        }
-
-        true
-    }
-
-    fn fail_all(&mut self, err: &str) {
-        for (_, target, _) in std::mem::take(&mut self.entries) {
-            target.fail(Error::Connect(err.into()));
-        }
-    }
-}
-
-/// The reorder buffer the connection uses.
-type InFlight = InFlightTree;
 
 /// The wire pair of one Raft group's `AppendEntries` RPC: how to wrap the request for the socket,
 /// and how to take the answer back out of a response payload.
@@ -813,9 +657,9 @@ impl NetworkStreaming {
                 }
             };
             debug_assert!(
-                in_flight.targets.is_empty(),
+                in_flight.is_empty(),
                 "raft in flight buffer should always be empty when restoring a connection: {}",
-                in_flight.targets.len()
+                in_flight.len()
             );
 
             // The relay loop below is the single point both directions run through, and a pipelined

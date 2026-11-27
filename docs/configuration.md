@@ -195,6 +195,11 @@ appends, sent side by side, and a follower answers them as they arrive. The batc
 turn when a write's round trip is the cost you are chasing, which is the case on a far node and on
 a hot write path. Measure it on your own link before you move it.
 
+The limit counts entries and never bytes, so an append is as big as the entries the leader had
+queued, and a transaction is a single entry of whatever size you give it. An append that is big
+enough travels as one message, is collected and decoded as one message on the follower, and every
+other message on that connection queues up behind it. The node logs a warning when an append goes over 8 MB. Keep your transactions small enough to stay out of that log.
+
 ## TLS
 
 - `tls_auto_certificates` - generate self-signed certificates for Raft and API traffic. Clients
