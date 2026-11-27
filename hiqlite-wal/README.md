@@ -41,7 +41,12 @@ data block:
 
 The `auto-heal` feature will try to auto heal corrupted WAL files by reverting the latest Raft Log
 ID to the highest healthy one. In case of lost or unrecoverable logs, this will only work, if
-`allow_log_reversion` is set on the `RaftConfig`. Hiqlite enables it for its cache group only, the
-`SQLite` group keeps the stricter behavior. Such an integrity check can also be forced at startup
-(for the latest existing WAL) by setting the ENV var `HQL_CHECK_WAL_INTEGRITY=true`, but there is
-usually no need to do this, as long as the lock file has not been deleted manually.
+`allow_log_reversion` is set on the `RaftConfig`. Such an integrity check can also be forced at
+startup (for the latest existing WAL) by setting the ENV var `HQL_CHECK_WAL_INTEGRITY=true`, but
+there is usually no need to do this, as long as the lock file has not been deleted manually.
+
+`NodeConfig::default_raft_config` enables `allow_log_reversion`, and hiqlite uses the same
+`RaftConfig` for its `SQLite` and its cache group. The flag only lets the leader replicate again to
+a follower whose log went backwards. It does not bring back entries the follower had acknowledged
+and then lost: under the async `LogSync` levels a power loss can drop such entries, and when they
+were part of a commit, they survive only on the nodes that still hold them.

@@ -621,11 +621,15 @@ impl NodeConfig {
             enable_tick: true,
             enable_heartbeat: true,
             enable_elect: true,
-            // A wiped or corrupted volume must be able to re-sync on its own: a reset only ever
-            // overwrites a follower's log with the leader's, and the leader's log holds every
-            // committed entry, so a reverted log can only ever drop entries that were never
-            // committed on that node. Without this, a follower that reverts under the same leader
-            // panics that leader in debug builds and stalls its replication in release builds.
+            // Applies to both Raft groups. A wiped or corrupted volume must be able to re-sync on
+            // its own. This flag only lets the leader reset its replication progress for a
+            // follower whose log went backwards and replicate to it again from the leader's own
+            // log. It never removes an entry and never lowers the commit index. Entries the
+            // follower lost were lost by its storage: with `LogSync::Immediate` that takes a
+            // wiped or damaged volume, with the async levels a power loss is enough (see
+            // `NodeConfig::wal_sync`). Without this, a follower that reverts under the same leader
+            // panics that leader in debug builds and stalls its replication in release builds,
+            // which keeps the follower behind and protects nothing.
             // Set it to `Some(false)` on a node to keep the strict behavior.
             allow_log_reversion: Some(true),
             ..Default::default()
