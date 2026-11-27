@@ -58,7 +58,7 @@ pub async fn test_dlock(
     log("Test that the heartbeat keeps a held lock alive past its lease window");
     let lock_hb = client_1.lock("heartbeat").await?;
     // Wait longer than one full lease window (2 s in debug builds, 10 s otherwise): without
-    // the heartbeat ticker the sweep would have promoted the waiter by now.
+    // the heartbeat ticker the leader would have expired the holder by now.
     #[cfg(debug_assertions)]
     let lease_plus_one = Duration::from_secs(3);
     #[cfg(not(debug_assertions))]
