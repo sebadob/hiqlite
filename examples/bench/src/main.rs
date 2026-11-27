@@ -4,7 +4,7 @@ use hiqlite::{start_node_with_cache, Client, Error, Node, NodeConfig, RateLimitC
 use std::fmt::{Debug, Display};
 use std::fs::File;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::fs;
 use tokio::time;
 
@@ -75,20 +75,15 @@ pub struct Options {
     #[clap(long, default_value = "false")]
     pub cache_only: bool,
 
-    /// The tokio worker threads each node process gets. A node is CPU-bound on its apply path, so
-    /// give every node at least one core of its own.
+    /// The tokio worker threads of every node process, node 1 and its client included. A node is
+    /// CPU-bound on its apply path, so give every node at least one core of its own.
     #[clap(long, default_value = "8")]
     pub node_threads: usize,
 
-    /// The tokio worker threads the benchmark client gets. Keep these well below the core count:
-    /// every thread here is a thread that is not available to a node.
-    #[clap(long, default_value = "4")]
-    pub client_threads: usize,
-
-    /// Core lists to pin the node processes to, one per node, space separated, e.g.
-    /// `0-4,16-20 5-9,21-25 10-14,26-30`. Linux only: with this set, each node is started under
-    /// `taskset -c`, which is the only real core pinning available. Empty means no pinning, and
-    /// the budgets above are the only lever.
+    /// Core lists to pin the node processes to, one per node in node id order, space separated,
+    /// e.g. `0-4,16-20 5-9,21-25 10-14,26-30`. The first entry pins the process that runs node 1
+    /// and the benchmark client, the rest pin the spawned nodes. Linux only. Empty means no
+    /// pinning, and the thread budget is the only lever.
     ///
     /// Give each node whole physical cores. On a machine with hyperthreading, the siblings of a
     /// core are usually `N` and `N + physical_cores`, and two nodes sharing one physical core
@@ -341,7 +336,7 @@ fn main() -> Result<(), Error> {
     // throttles a process onto the efficiency cores. On Linux, pin the nodes with `--node-cpus` and
     // the budgets are yours to pick.
     let workers = match &args {
-        Args::Cluster(opts) => opts.client_threads,
+        Args::Cluster(opts) => opts.node_threads,
         Args::Node(opts) => opts.threads,
         Args::Single(_) | Args::Remote(_) => default_workers(),
     };
@@ -412,12 +407,28 @@ async fn run(args: Args) -> Result<(), Error> {
 /// Start one node and stay up. `cluster` spawns these, and a run ends when its parent kills it.
 async fn run_node(options: &NodeOptions) -> Result<(), Error> {
     let config = node_config(test_nodes(), &NodeSetup::from(options)).await;
-    let _client = start_node_with_cache::<Cache>(config).await?;
+    let client = start_node_with_cache::<Cache>(config).await?;
     log(format!("Node {} is up", options.id));
 
-    loop {
-        time::sleep(Duration::from_secs(3600)).await;
+    // The shape that kills a Rauthy node: the first write right after startup. A node that reports
+    // itself in sync and then cannot write has a leader that is not writable, which is exactly
+    // what the startup gate is supposed to prevent.
+    let key = format!("bench_startup_check_{}", options.id);
+    match client
+        .put(Cache::One, key, &"ok".to_string(), Some(30))
+        .await
+    {
+        Ok(()) => log(format!("Node {} startup write ok", options.id)),
+        Err(err) => {
+            log(format!("Node {} startup write FAILED: {err}", options.id));
+            return Err(err);
+        }
     }
+
+    // Stay up until this process is asked to stop. The handle runs Hiqlite's graceful shutdown, so
+    // a node that is stopped here hands its leadership over and seals its log instead of dying
+    // mid-election.
+    client.shutdown_handle()?.wait().await
 }
 
 /// Spawn one process per node, then benchmark them through a plain remote client. The client and
@@ -427,14 +438,37 @@ async fn run_cluster(options: Options) -> Result<(), Error> {
     let _ = fs::remove_dir_all("data").await;
     fs::create_dir_all("data").await?;
 
-    // Nodes are terminated when this guard drops, on a successful run and on a failing one alike.
-    let _children = Children(spawn_nodes(&options)?);
+    let cpus = cpu_lists(&options.node_cpus);
+    if !cpus.is_empty() {
+        if cpus.len() != NODE_IDS.len() {
+            return Err(Error::Error(
+                format!(
+                    "--node-cpus needs exactly {} entries, one per node, got {}",
+                    NODE_IDS.len(),
+                    cpus.len()
+                )
+                .into(),
+            ));
+        }
+        if cfg!(not(target_os = "linux")) {
+            log("--node-cpus is Linux only, the nodes start unpinned");
+        }
+        // Node 1 is this process, so its core list is applied here, before the children inherit it.
+        pin_self(&cpus[0]);
+    }
 
-    let client = cluster_client().await?;
+    // Nodes 2 and 3 are separate processes. Node 1 and the client stay in this one, which is the
+    // shape Hiqlite is actually deployed in: an embedded client writing straight into its own Raft.
+    let _children = Children(spawn_nodes(&options, &cpus)?);
+
+    let config = node_config(test_nodes(), &NodeSetup::from(&options)).await;
+    let client = start_node_with_cache::<Cache>(config).await?;
+    log("Node 1 is up, with the benchmark client inside it");
+
     wait_for_cluster(&client).await?;
 
     client.migrate::<Migrations>().await?;
-    bench::start_benchmark(client, options, true).await?;
+    bench::start_benchmark(client, options, false).await?;
 
     time::sleep(Duration::from_secs(3)).await;
     Ok(())
@@ -493,7 +527,6 @@ async fn run_remote(options: OptionsRemote) -> Result<(), Error> {
         cache_only: options.cache_only,
         // A remote run drives a cluster it does not own, so it has no node processes to size.
         node_threads: 8,
-        client_threads: default_workers(),
         node_cpus: String::new(),
     };
 
@@ -509,7 +542,26 @@ struct Children(Vec<Child>);
 
 impl Drop for Children {
     fn drop(&mut self) {
+        // Ask every node to shut down gracefully first. A node that is killed leaves the cluster
+        // mid-election, and the next run would start from that state, which is not the state a
+        // restart of a real cluster has.
+        #[cfg(unix)]
+        for child in self.0.iter() {
+            unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+        }
+
+        let grace = Duration::from_millis(
+            std::env::var("HQL_BENCH_SHUTDOWN_GRACE_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(20_000),
+        );
+
         for child in &mut self.0 {
+            let start = Instant::now();
+            while start.elapsed() < grace && matches!(child.try_wait(), Ok(None)) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -518,30 +570,29 @@ impl Drop for Children {
 
 /// Start one process per node. Each node writes its own log next to its data, so a node that dies
 /// during startup is readable.
-fn spawn_nodes(options: &Options) -> Result<Vec<Child>, Error> {
+/// Spawn the follower nodes as separate processes, each pinned to its own core list.
+///
+/// Node 1 is the calling process, so `cpus[0]` belongs to it and is applied with `pin_self`.
+fn spawn_nodes(options: &Options, cpus: &[String]) -> Result<Vec<Child>, Error> {
     let exe = std::env::current_exe()
         .map_err(|err| Error::Error(format!("Cannot find own executable: {err}").into()))?;
-    let cpus = cpu_lists(&options.node_cpus);
 
-    if !cpus.is_empty() && !cfg!(target_os = "linux") {
-        log("--node-cpus is Linux only, the nodes start unpinned");
-    }
-
-    let mut children = Vec::with_capacity(NODE_IDS.len());
-    for (idx, id) in NODE_IDS.iter().enumerate() {
+    let mut children = Vec::with_capacity(NODE_IDS.len() - 1);
+    for (idx, id) in NODE_IDS.iter().enumerate().skip(1) {
         let log = File::create(format!("data/node_{id}.log")).map_err(|err| {
             Error::Error(format!("Cannot open the log of node {id}: {err}").into())
         })?;
 
-        let mut cmd = Command::new("taskset");
-        if cfg!(target_os = "linux") && !cpus.is_empty() {
-            let list = cpus.get(idx).ok_or_else(|| {
-                Error::Error(format!("--node-cpus has no entry for node {id}").into())
-            })?;
-            cmd.arg("-c").arg(list).arg(&exe);
-        } else {
-            cmd = Command::new(&exe);
-        }
+        // `taskset` is the only real core pinning on Linux. A child inherits the mask of its
+        // parent, so every one of them has to be pinned to its own list explicitly.
+        let mut cmd = match (cfg!(target_os = "linux"), cpus.get(idx)) {
+            (true, Some(list)) => {
+                let mut cmd = Command::new("taskset");
+                cmd.arg("-c").arg(list).arg(&exe);
+                cmd
+            }
+            _ => Command::new(&exe),
+        };
 
         let log_dup = log.try_clone().map_err(|err| {
             Error::Error(format!("Cannot duplicate the log of node {id}: {err}").into())
@@ -580,30 +631,95 @@ fn cpu_lists(node_cpus: &str) -> Vec<String> {
         .collect()
 }
 
-/// A plain remote client against the nodes this run spawned.
-async fn cluster_client() -> Result<Client, Error> {
-    let config = NodeConfig::from_toml("../../hiqlite.toml", None, None, None)
-        .await
-        .map_err(|err| Error::Error(format!("Cannot read the bench config: {err}").into()))?;
-    let nodes = test_nodes().into_iter().map(|node| node.addr_api).collect();
-
-    // The bench's nodes run with `tls_auto_certificates`, so a client speaks TLS to them and cannot
-    // verify the self-signed certificates it gets.
-    Client::remote(nodes, true, true, config.secret_api, true, None, None).await
+/// The core ids in a `taskset` style list, e.g. `0-4,16-20`.
+#[cfg(target_os = "linux")]
+fn cpu_ids(list: &str) -> Vec<usize> {
+    let mut ids = Vec::new();
+    for part in list.split(',') {
+        let part = part.trim();
+        if let Some((start, end)) = part.split_once('-') {
+            let (Ok(start), Ok(end)) = (start.trim().parse::<usize>(), end.trim().parse::<usize>())
+            else {
+                continue;
+            };
+            ids.extend(start..=end);
+        } else if let Ok(id) = part.parse::<usize>() {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
-/// Poll until every node has joined and the cluster answers on both of its groups.
-async fn wait_for_cluster(client: &Client) -> Result<(), Error> {
-    let mut members = 0;
-    while members != NODE_IDS.len() {
-        match client.metrics_db().await {
-            Ok(metrics) => members = metrics.membership_config.nodes().count(),
-            Err(err) => log(format!("Cluster not answering yet: {err}")),
-        }
+/// Pin this process to a core list, which is node 1 and the benchmark client. Linux only, and it
+/// has to happen before the follower processes are spawned, because a child inherits the mask of
+/// its parent.
+#[cfg(target_os = "linux")]
+fn pin_self(list: &str) {
+    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    for cpu in cpu_ids(list) {
+        unsafe { libc::CPU_SET(cpu, &mut set) };
+    }
+
+    if unsafe { libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) } == 0 {
         log(format!(
-            "Waiting for nodes to join the cluster. Nodes joined: {members}"
+            "Node 1 and the benchmark client are pinned to {list}"
         ));
-        time::sleep(Duration::from_secs(1)).await;
+    } else {
+        log(format!(
+            "Cannot pin node 1 and the client to {list}, they run unpinned"
+        ));
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pin_self(_list: &str) {}
+
+/// Poll until every node has joined and both of its groups have a leader.
+///
+/// A group without a leader answers every write with `ForwardToLeader`, and a fresh cluster elects
+/// its DB group and its Cache group at different moments, so a run that only checks membership
+/// starts writing into a group that has no leader yet.
+async fn wait_for_cluster(client: &Client) -> Result<(), Error> {
+    loop {
+        let db = client.metrics_db().await;
+        let cache = client.metrics_cache().await;
+
+        let ready = match (&db, &cache) {
+            (Ok(db), Ok(cache)) => {
+                let db_members = db.membership_config.nodes().count();
+                let cache_members = cache.membership_config.nodes().count();
+                let ready = db_members == NODE_IDS.len()
+                    && cache_members == NODE_IDS.len()
+                    && db.current_leader.is_some()
+                    && cache.current_leader.is_some();
+
+                if !ready {
+                    log(format!(
+                        "Waiting for the cluster. DB members: {db_members}, DB leader: {:?}, \
+                        Cache members: {cache_members}, Cache leader: {:?}",
+                        db.current_leader, cache.current_leader
+                    ));
+                }
+                ready
+            }
+            (db, cache) => {
+                log(format!(
+                    "Cluster not answering yet. DB: {}, Cache: {}",
+                    db.as_ref().err().map(|e| e.to_string()).unwrap_or_default(),
+                    cache
+                        .as_ref()
+                        .err()
+                        .map(|e| e.to_string())
+                        .unwrap_or_default(),
+                ));
+                false
+            }
+        };
+
+        if ready {
+            break;
+        }
+        time::sleep(Duration::from_millis(500)).await;
     }
 
     client.wait_until_healthy_db().await;

@@ -1,8 +1,9 @@
-use crate::app_state::AppState;
+use crate::app_state::{AppState, RaftType};
 use crate::helpers::{deserialize, deserialize_serde, serialize};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use crate::helpers::{shutdown_transfer_deadline, transfer_leadership_before_shutdown};
 use crate::{Client, Error, NodeId};
+use openraft::Instant;
 use openraft::RaftTypeConfig;
 use openraft::ServerState;
 use openraft::type_config::async_runtime::watch::WatchReceiver;
@@ -759,6 +760,96 @@ impl Client {
             })
     }
 
+    /// Check that this node's own metrics show it leading a group with a live quorum.
+    ///
+    /// A node that believes it leads is not enough: a leader that is cut off from a quorum keeps
+    /// believing it, and it answers a write with a `ForwardToLeader` that names no target at all.
+    /// The proof is a quorum acknowledgement inside one election timeout, which is the lease the
+    /// leader holds its leadership by.
+    ///
+    /// This check only works on the node that recorded the acknowledgement. openraft's
+    /// `last_quorum_acked` is an instant on that node's own monotonic clock, and an instant read on
+    /// a different node has no meaning, so the age can only be taken here.
+    fn assert_leading_here<C>(
+        rtype: RaftType,
+        our_id: NodeId,
+        metrics: &RaftMetrics<C>,
+        lease: Duration,
+    ) -> Result<(), Error>
+    where
+        C: RaftTypeConfig<NodeId = u64>,
+    {
+        if metrics.state != ServerState::Leader || metrics.current_leader != Some(our_id) {
+            return Err(Error::LeaderChange(
+                format!(
+                    "Node {our_id} is not the {} leader it believes it is - it reports state \
+                    {:?} and leader {:?}",
+                    rtype.as_str(),
+                    metrics.state,
+                    metrics.current_leader
+                )
+                .into(),
+            ));
+        }
+
+        match metrics.last_quorum_acked.as_ref() {
+            None => Err(Error::LeaderChange(
+                format!(
+                    "Node {our_id} leads the {} but no quorum has acknowledged it yet",
+                    rtype.as_str()
+                )
+                .into(),
+            )),
+            Some(acked) => {
+                let age = acked.elapsed();
+                if age > lease {
+                    Err(Error::LeaderChange(
+                        format!(
+                            "Node {our_id} leads the {} but its last quorum acknowledgement is \
+                            {age:?} old, past its lease of {lease:?}",
+                            rtype.as_str()
+                        )
+                        .into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// Check that the node a client would write to confirms that it leads the group.
+    ///
+    /// A node inside an election reports a leader it does not know, and a demoted node still has
+    /// the old leadership in its logs, so the answer has to name itself as the leader of the group
+    /// it is answering about.
+    ///
+    /// The liveness of a remote leader is proven by the request that fetched this answer: it is a
+    /// live round trip to that node, taken now. Its quorum acknowledgement cannot be checked here,
+    /// because `last_quorum_acked` is an instant on the leader's own monotonic clock.
+    fn assert_leader_confirms<C>(
+        rtype: RaftType,
+        leader_id: NodeId,
+        metrics: &RaftMetrics<C>,
+    ) -> Result<(), Error>
+    where
+        C: RaftTypeConfig<NodeId = u64>,
+    {
+        if metrics.state != ServerState::Leader || metrics.current_leader != Some(leader_id) {
+            return Err(Error::LeaderChange(
+                format!(
+                    "The {} leader {leader_id} does not confirm its leadership - it reports \
+                    state {:?} and leader {:?}",
+                    rtype.as_str(),
+                    metrics.state,
+                    metrics.current_leader
+                )
+                .into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Check if this node's database state machine is in sync with the cluster.
     /// Works on local clients only.
     #[cfg(feature = "sqlite")]
@@ -775,24 +866,35 @@ impl Client {
         let applied = our_metrics.last_applied.map_or(0, |l| l.index);
         let own_last_log_index = our_metrics.last_log_index.unwrap_or(0);
 
+        // A leader holds its leadership for one election timeout without a quorum acknowledgement.
+        let lease = Duration::from_millis(state.raft_db.raft.config().election_timeout_min);
+
+        // `find_set_leader` takes the metrics, so the check on our own view of the leadership runs
+        // before it. A node that sees itself as the leader has to actually be one, or nothing in
+        // front of it is writable.
+        let our_leader = our_metrics.current_leader;
+        if our_leader == Some(state.id) {
+            Self::assert_leading_here(RaftType::Sqlite, state.id, &our_metrics, lease)?;
+        }
+
         // Keep the cached leader address up to date and fail loud on stale metrics, like
         // `find_set_active_leader` does at startup.
         Self::find_set_leader(our_metrics, &self.inner.leader_db).await?;
+        let leader_id = self.inner.leader_db.read().await.0;
 
         // The cluster tip is the leader's last log index. Followers are normally a bit behind
         // it, so we compare against `CLUSTER_SYNC_ALLOWED_DIFF` instead of requiring an exact
         // match.
-        let tip = if state.id == self.inner.leader_db.read().await.0 {
+        let tip = if state.id == leader_id {
             // We are the leader: our own log is the cluster tip.
             own_last_log_index
         } else {
             let url = self
                 .build_addr("/cluster/metrics/sqlite", &self.inner.leader_db)
                 .await;
-            self.get_metrics_local::<TypeConfigSqlite>(url)
-                .await?
-                .last_log_index
-                .unwrap_or(0)
+            let leader_metrics = self.get_metrics_local::<TypeConfigSqlite>(url).await?;
+            Self::assert_leader_confirms(RaftType::Sqlite, leader_id, &leader_metrics)?;
+            leader_metrics.last_log_index.unwrap_or(0)
         };
 
         if tip.saturating_sub(applied) <= CLUSTER_SYNC_ALLOWED_DIFF {
@@ -821,24 +923,35 @@ impl Client {
         let applied = our_metrics.last_applied.map_or(0, |l| l.index);
         let own_last_log_index = our_metrics.last_log_index.unwrap_or(0);
 
+        // A leader holds its leadership for one election timeout without a quorum acknowledgement.
+        let lease = Duration::from_millis(state.raft_cache.raft.config().election_timeout_min);
+
+        // `find_set_leader` takes the metrics, so the check on our own view of the leadership runs
+        // before it. A node that sees itself as the leader has to actually be one, or nothing in
+        // front of it is writable.
+        let our_leader = our_metrics.current_leader;
+        if our_leader == Some(state.id) {
+            Self::assert_leading_here(RaftType::Cache, state.id, &our_metrics, lease)?;
+        }
+
         // Keep the cached leader address up to date and fail loud on stale metrics, like
         // `find_set_active_leader` does at startup.
         Self::find_set_leader(our_metrics, &self.inner.leader_cache).await?;
+        let leader_id = self.inner.leader_cache.read().await.0;
 
         // The cluster tip is the leader's last log index. Followers are normally a bit behind
         // it, so we compare against `CLUSTER_SYNC_ALLOWED_DIFF` instead of requiring an exact
         // match.
-        let tip = if state.id == self.inner.leader_cache.read().await.0 {
+        let tip = if state.id == leader_id {
             // We are the leader: our own log is the cluster tip.
             own_last_log_index
         } else {
             let url = self
                 .build_addr("/cluster/metrics/cache", &self.inner.leader_cache)
                 .await;
-            self.get_metrics_local::<TypeConfigCache>(url)
-                .await?
-                .last_log_index
-                .unwrap_or(0)
+            let leader_metrics = self.get_metrics_local::<TypeConfigCache>(url).await?;
+            Self::assert_leader_confirms(RaftType::Cache, leader_id, &leader_metrics)?;
+            leader_metrics.last_log_index.unwrap_or(0)
         };
 
         if tip.saturating_sub(applied) <= CLUSTER_SYNC_ALLOWED_DIFF {

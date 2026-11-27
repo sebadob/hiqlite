@@ -9,8 +9,8 @@ in that case.
 
 All inserted data is prepared and kept in memory before the actual `INSERT`s start to influence the tests as little as
 possible. For the same reason, statement logging is disabled as well.  
-A `cluster` run writes through a plain remote client, exactly like a real application does: the client is a process of
-its own, and every insert pays the round trip to the leader.
+A `cluster` run writes through the embedded client of node 1, which is the shape Hiqlite is deployed in: the client
+lives inside the node process, and its writes go straight into that node's own Raft.
 
 We activate the `jemalloc` feature, which is quite a bit faster than glibc `malloc`. For cache performance, remember
 that this example runs the Cache fully in-memory, Snapshots included: it builds with the `in-memory-snapshots` feature,
@@ -20,24 +20,26 @@ restart does not make you lose cached data. A pure in-memory version is a lot fa
 
 ## The Shape Of A Run
 
-`cluster` spawns one OS process per node and runs the benchmark from the parent process. The client never shares a
-thread with a node, which is what makes a replication number mean something: a client thread stealing a core from the
-leader's apply path shows up as a throughput loss that has nothing to do with Raft.
+`cluster` runs node 1 and the benchmark client in the parent process and spawns nodes 2 and 3 as separate OS
+processes. That is the shape a real deployment has, and it is the shape whose replication numbers mean something. A
+remote client pays a network round trip for every write, and that cost buries the replication cost a run is supposed
+to measure.
 
 ```
 cargo run --release -- cluster -c 64 -r 1000000
 ```
 
-Each node is started as `bench node --id N`, and you can run that yourself to assemble a cluster by hand across
-machines. A node stays up until the process that spawned it terminates it.
+Each follower is started as `bench node --id N`, and you can run that yourself to assemble a cluster by hand across
+machines. A node stays up until the process that spawned it terminates it. The run starts only once both groups have
+a leader, because a group without one answers every write with `ForwardToLeader`, and a fresh cluster elects its DB
+group and its Cache group at different moments.
 
-- `--node-threads` is the tokio worker budget of every node process. A node is CPU-bound on its apply path, so give
-  every node at least one core of its own.
-- `--client-threads` is the budget of the benchmark client. Keep it small: every thread here is a thread a node does
-  not get.
-- `--node-cpus` pins the node processes, one core list per node, space separated, e.g.
-  `--node-cpus "0-4,16-20 5-9,21-25 10-14,26-30"`. Linux only, it runs each node under `taskset -c`, and it is the
-  only real core pinning there is.
+- `--node-threads` is the tokio worker budget of every node process, node 1 and its client included. A node is
+  CPU-bound on its apply path, so give every node at least one core of its own.
+- `--node-cpus` pins the node processes, one core list per node in node id order, space separated, e.g.
+  `--node-cpus "0-4,16-20 5-9,21-25 10-14,26-30"`. The first entry pins node 1 together with the client, the rest pin
+  the spawned followers. Linux only: node 1 is pinned with `sched_setaffinity`, the followers are started under
+  `taskset -c`. This is the only real core pinning there is.
 
 Pin whole physical cores to a node. On a machine with hyperthreading, the two threads of one core are usually
 numbered `N` and `N + physical_cores`, so on a 16 core box the siblings of core 0 are 0 and 16. A range like
@@ -64,9 +66,10 @@ whole sweep. The depth is read from `HQL_RAFT_STREAM_DEPTH`, which is a temporar
 DEPTHS="1 8 32" NODE_CPUS="0-4,16-20 5-9,21-25 10-14,26-30" ./sweep.sh 1000000 64 2 128 256 512
 ```
 
-Everything else is an env knob: `DEPTHS` (default `1 32`), `NODE_THREADS` (8), `CLIENT_THREADS` (4), `NODE_CPUS`
-(unset), `BENCH_ARGS` (extra bench flags, e.g. `--cache-only`), `BENCH` (the binary). Output lands in
-`sweep/<timestamp>/sweep.log` with every cell, and `sweep/<timestamp>/table.txt` with the per-payload averages.
+Everything else is an env knob: `DEPTHS` (default `1 32`), `NODE_THREADS` (8), `NODE_CPUS` (unset), `BENCH_ARGS`
+(extra bench flags, e.g. `--cache-only`), `BENCH` (the binary), `CELL_TIMEOUT` (1800 s per cell). Output lands in
+`sweep/<timestamp>/sweep.log` with every cell and its exit code, and `sweep/<timestamp>/table.txt` with the per-payload
+averages. A cell that fails is recorded and the sweep continues.
 
 Nothing else should run while a sweep runs. A cell is only comparable when its nodes own their cores.
 

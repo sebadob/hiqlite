@@ -4,7 +4,9 @@ use hiqlite::macros::params;
 use hiqlite::{Client, Error, Params, Row};
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
+use std::time::Duration;
 use tokio::task;
+use tokio::time;
 use tokio::time::Instant;
 
 /// Matches our test table for this example.
@@ -88,6 +90,20 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     Ok(())
 }
 
+/// A leader change during a run is a normal event in a Raft cluster. The client has no
+/// leader-following retry for a write, so a write that lands on a node which is not the leader
+/// comes back as `ForwardToLeader`, and this example repeats it a few times instead of dying.
+const LEADER_RETRIES: u32 = 5;
+const LEADER_RETRY_DELAY: Duration = Duration::from_millis(200);
+
+/// `ForwardToLeader` is the shape of a write that hit a node which is not the leader, and of a node
+/// that does not know who the leader is yet. Matched on the message because this example does not
+/// depend on openraft directly.
+fn is_leader_change(err: &Error) -> bool {
+    let msg = err.to_string();
+    msg.contains("ForwardToLeader") || msg.contains("NotLeader")
+}
+
 async fn insert_concurrent(
     client: Client,
     options: &Options,
@@ -120,13 +136,25 @@ async fn insert_concurrent(
         } else {
             task::spawn(async move {
                 for entity in set {
-                    let rows_affected = client
-                        .execute(
-                            "INSERT INTO _bench (id, ts, name) VALUES ($1, $2, $3)",
-                            params!(entity.id, entity.ts, entity.name.clone()),
-                        )
-                        .await
-                        .unwrap();
+                    let mut rows_affected = 0;
+                    for attempt in 1..=LEADER_RETRIES {
+                        match client
+                            .execute(
+                                "INSERT INTO _bench (id, ts, name) VALUES ($1, $2, $3)",
+                                params!(entity.id, entity.ts, entity.name.clone()),
+                            )
+                            .await
+                        {
+                            Ok(rows) => {
+                                rows_affected = rows;
+                                break;
+                            }
+                            Err(err) if attempt < LEADER_RETRIES && is_leader_change(&err) => {
+                                time::sleep(LEADER_RETRY_DELAY).await;
+                            }
+                            Err(err) => panic!("{err}"),
+                        }
+                    }
                     assert_eq!(rows_affected, 1);
                 }
             })
@@ -201,10 +229,18 @@ async fn put_cache(
 
         let handle = task::spawn(async move {
             for entity in set {
-                client
-                    .put(Cache::One, entity.name.clone(), &entity, Some(30))
-                    .await
-                    .unwrap();
+                for attempt in 1..=LEADER_RETRIES {
+                    match client
+                        .put(Cache::One, entity.name.clone(), &entity, Some(30))
+                        .await
+                    {
+                        Ok(()) => break,
+                        Err(err) if attempt < LEADER_RETRIES && is_leader_change(&err) => {
+                            time::sleep(LEADER_RETRY_DELAY).await;
+                        }
+                        Err(err) => panic!("{err}"),
+                    }
+                }
             }
         });
 
