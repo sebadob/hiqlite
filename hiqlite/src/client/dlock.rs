@@ -187,15 +187,14 @@ impl Client {
                     return Ok(Self::acquired(self, key, id));
                 }
                 LockState::Queued(id) => {
-                    // Wait for our position. The lock may be granted directly while waiting if
-                    // the previous holder's lease expired.
+                    // Wait for our position. The await is answered by whichever node we talk
+                    // to, which may lag behind the log, so its answer only tells us when to
+                    // claim it: the lock is ours only once that claim, written through Raft,
+                    // answers `Locked`.
                     match self.lock_await(key.clone(), id).await? {
-                        LockState::Locked(id) => {
-                            return Ok(Self::acquired(self, key, id));
-                        }
-                        // Released: the handler promoted our ticket. Re-request with the same
-                        // ticket to claim it.
-                        LockState::Released => ticket = Some(id),
+                        // Locked: our ticket was promoted. Released: our ticket left the queue,
+                        // or the key went away. Either way, re-request with the same ticket.
+                        LockState::Locked(_) | LockState::Released => ticket = Some(id),
                         // An `Await` is answered with `Locked` when our ticket is promoted and
                         // with `Released` when the key goes away - a queue position is never
                         // pushed to a waiter.
