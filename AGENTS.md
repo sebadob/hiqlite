@@ -63,6 +63,11 @@ one. A pile of allows is a pile of lint-blind spots.
         - `hiqlite/src/client/mgmt.rs` the cluster-control calls: election state, promote, demote,
           leadership handover, and the leader-following retry they run through
     - `hiqlite/src/network/` API + Raft cluster setup and operations
+        - `hiqlite/src/network/raft_client.rs` the leader's Raft transport: one WebSocket per peer,
+          unary RPCs and the pipelined append stream, which keeps a connection's unanswered requests
+          in its reorder buffer until each one can be handed back in send order
+        - `hiqlite/src/network/raft_server.rs` the follower side: the socket reader that answers
+          every request, pipelined appends included, in the order it received them
         - `hiqlite/src/network/management.rs` the `/cluster/*` endpoints behind those calls
         - `hiqlite/src/network/mod.rs` the API secret header (`Authorization` bearer token) and its
           validation, shared by the node router and the proxy router

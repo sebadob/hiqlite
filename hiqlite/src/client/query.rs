@@ -743,7 +743,12 @@ impl Client {
             Ok(res) => Ok(res),
             Err(err) => {
                 if self
-                    .was_leader_update_error(&err, &self.inner.leader_db, &self.inner.tx_client_db)
+                    .was_leader_update_error(
+                        &err,
+                        &self.inner.leader_db,
+                        &self.inner.leader_lookup_db,
+                        &self.inner.tx_client_db,
+                    )
                     .await
                 {
                     self.query_remote_req(query, read_policy).await

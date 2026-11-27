@@ -4,7 +4,7 @@ use crate::config::RateLimitConfig;
 use crate::http_client::build_http_client;
 use crate::{Client, Error, tls};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
 use tokio::sync::{RwLock, watch};
 
 #[cfg(feature = "listen_notify")]
@@ -53,6 +53,10 @@ impl Client {
             leader_cache,
             #[cfg(feature = "sqlite")]
             leader_db,
+            #[cfg(feature = "sqlite")]
+            leader_lookup_db: AtomicBool::new(false),
+            #[cfg(feature = "cache")]
+            leader_lookup_cache: AtomicBool::new(false),
             nodes: Vec::default(),
             client: None,
             #[cfg(feature = "cache")]
@@ -184,8 +188,12 @@ impl Client {
             state: None,
             #[cfg(feature = "sqlite")]
             leader_db,
+            #[cfg(feature = "sqlite")]
+            leader_lookup_db: AtomicBool::new(false),
             #[cfg(feature = "cache")]
             leader_cache,
+            #[cfg(feature = "cache")]
+            leader_lookup_cache: AtomicBool::new(false),
             nodes,
             client: Some(build_http_client(tls_no_verify)),
             #[cfg(feature = "cache")]

@@ -361,6 +361,7 @@ dependencies = [
  "clap",
  "console-subscriber",
  "hiqlite",
+ "libc",
  "serde",
  "tokio",
  "tracing",

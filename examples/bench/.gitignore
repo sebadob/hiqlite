@@ -4,3 +4,5 @@
 ./hiqlite
 heaptrack.*
 profile.json.gz
+sweep/
+

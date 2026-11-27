@@ -61,7 +61,12 @@ impl Client {
                     is_leader
                 );
                 if self
-                    .was_leader_update_error(&err, &self.inner.leader_db, &self.inner.tx_client_db)
+                    .was_leader_update_error(
+                        &err,
+                        &self.inner.leader_db,
+                        &self.inner.leader_lookup_db,
+                        &self.inner.tx_client_db,
+                    )
                     .await
                 {
                     // TODO sometimes the backup task can get stuck here -> leader not updating properly?

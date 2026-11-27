@@ -35,6 +35,11 @@ const STREAM_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 /// `STREAM_KEEPALIVE_INTERVAL` with margin.
 const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(35);
 
+/// Frames the client stream manager and the two socket tasks pass through their channels at the
+/// same time. Requests are answered one task per request on the server, so several are always in
+/// flight, and a capacity of 1 would serialise them all over again.
+const CLIENT_STREAM_BUFFER: usize = 32;
+
 /// Number of consecutive connection failures that retry at the fast (1 s) interval before the
 /// reconnect loop backs off to `RECONNECT_SLOW_INTERVAL`. A restarting node is only briefly
 /// unreachable, so a handful of quick attempts is enough; anything more just delays reconnection.
@@ -236,8 +241,11 @@ async fn client_stream(
             }
         };
 
-        let (tx_write, rx_write) = flume::bounded(1);
-        let (tx_read, rx_read) = flume::bounded(1);
+        // Both channels carry a pipeline: the server answers every API request in a task of its
+        // own, so a client with several concurrent statements has several answers in flight at the
+        // same time. A capacity of 1 would serialise them all over again.
+        let (tx_write, rx_write) = flume::bounded(CLIENT_STREAM_BUFFER);
+        let (tx_read, rx_read) = flume::bounded(CLIENT_STREAM_BUFFER);
 
         // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
         let (rx, write) = ws.split(tokio::io::split);
