@@ -36,6 +36,11 @@ impl CacheVariants for Cache {
     fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
         &[(0, "One")]
     }
+
+    fn hiqlite_cache_map() -> &'static hiqlite::phf::Map<&'static str, usize> {
+        static MAP: hiqlite::phf::Map<&'static str, usize> = phf::phf_map! { "One" => 0 };
+        &MAP
+    }
 }
 
 fn fresh(case: &str) -> String {

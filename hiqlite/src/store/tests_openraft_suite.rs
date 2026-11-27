@@ -36,6 +36,11 @@ impl CacheVariants for TestCache {
     fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
         &[(0, "One")]
     }
+
+    fn hiqlite_cache_map() -> &'static phf::Map<&'static str, usize> {
+        static MAP: phf::Map<&'static str, usize> = phf::phf_map! { "One" => 0 };
+        &MAP
+    }
 }
 
 type Wal = LogStore<TypeConfigCache>;

@@ -161,6 +161,33 @@ pub(crate) async fn start_raft_db(
     })
 }
 
+/// Up to v0.16, the cache log and snapshots identified a cache by its position in the enum, and
+/// `cache_index.meta` guarded that order. A data dir with that file cannot be read anymore, so its
+/// cache log and snapshots are dropped once. The whole cluster is stopped for this upgrade anyway,
+/// so every node starts with an empty cache.
+#[cfg(feature = "cache")]
+async fn drop_index_based_cache_data(data_dir: &str) -> Result<(), Error> {
+    let path_sm = StateMachineMemory::path_sm(data_dir);
+    let path_meta = format!("{path_sm}/cache_index.meta");
+    if !tokio::fs::try_exists(&path_meta).await? {
+        return Ok(());
+    }
+
+    tracing::warn!("Dropping the cache data of an older version: it identifies caches by index");
+    for dir in [
+        logs::logs_dir_cache(data_dir),
+        format!("{path_sm}/snapshots"),
+    ] {
+        if let Err(err) = tokio::fs::remove_dir_all(&dir).await
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            return Err(Error::Cache(format!("cannot remove {dir}: {err}").into()));
+        }
+    }
+    tokio::fs::remove_file(&path_meta).await?;
+    Ok(())
+}
+
 #[cfg(feature = "cache")]
 pub(crate) async fn start_raft_cache<C>(
     node_config: &NodeConfig,
@@ -178,6 +205,8 @@ where
     // The runtime mirror of openraft's `enable_elect`, seeded from our config value.
     let enable_elect = Arc::new(AtomicBool::new(raft_config.enable_elect));
 
+    drop_index_based_cache_data(&node_config.data_dir).await?;
+
     let state_machine_store = Arc::new(
         StateMachineMemory::new::<C>(&node_config.data_dir, !node_config.cache_storage_disk)
             .await?,
@@ -193,6 +222,7 @@ where
     };
 
     let tx_caches = state_machine_store.tx_caches.clone();
+    let cache_map = state_machine_store.cache_map;
     let path_snapshots = format!(
         "{}/snapshots",
         StateMachineMemory::path_sm(&node_config.data_dir)
@@ -248,6 +278,7 @@ where
     Ok(StateRaftCache {
         raft,
         tx_caches,
+        cache_map,
         #[cfg(feature = "listen_notify")]
         tx_notify,
         #[cfg(feature = "listen_notify")]

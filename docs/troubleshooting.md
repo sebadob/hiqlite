@@ -17,9 +17,6 @@ Symptom first, then what to check in order. The fix is usually the first thing i
   of the same node.
 - A data dir the process cannot write, or a data dir shared with a second node. One node, one
   directory.
-- A cache index message that lists a stored variant set and your current one: the `CacheVariants`
-  enum changed. A rename needs `HQL_CACHE_META_RESET=true` on every node, for a single start; a
-  removal needs that plus a full cache clear on every node. See `caches.md`.
 - A cold-restart message about versions: this release needs the whole cluster stopped at once, and a
   member is still running an older version. See `upgrades.md`.
 - A lock file left in the data dir: the node was killed hard. The first start rebuilds its state

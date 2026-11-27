@@ -28,7 +28,7 @@ impl Client {
 
         self.cache_req_retry(
             CacheRequest::Clear {
-                cache_idx: cache.hiqlite_cache_index(),
+                cache: cache.hiqlite_cache_name().into(),
             },
             false,
         )
@@ -54,7 +54,7 @@ impl Client {
 
         self.cache_req_retry(
             CacheRequest::ClearCounters {
-                cache_idx: cache.hiqlite_cache_index(),
+                cache: cache.hiqlite_cache_name().into(),
             },
             false,
         )
@@ -153,7 +153,7 @@ impl Client {
             let res = self
                 .cache_req_retry(
                     CacheRequest::Get {
-                        cache_idx: cache.hiqlite_cache_index(),
+                        cache: cache.hiqlite_cache_name().into(),
                         key: key.into(),
                     },
                     true,
@@ -275,7 +275,7 @@ impl Client {
 
         self.cache_req_retry(
             CacheRequest::Put {
-                cache_idx: cache.hiqlite_cache_index(),
+                cache: cache.hiqlite_cache_name().into(),
                 key: key.into(),
                 value,
                 expires: ttl.map(|seconds| {
@@ -308,7 +308,7 @@ impl Client {
 
         self.cache_req_retry(
             CacheRequest::Delete {
-                cache_idx: cache.hiqlite_cache_index(),
+                cache: cache.hiqlite_cache_name().into(),
                 key: key.into(),
             },
             false,
@@ -366,7 +366,7 @@ impl Client {
         let res = self
             .cache_req_retry(
                 CacheRequest::GetRemove {
-                    cache_idx: cache.hiqlite_cache_index(),
+                    cache: cache.hiqlite_cache_name().into(),
                     key: key.into(),
                 },
                 false,
@@ -441,7 +441,7 @@ impl Client {
         let res = self
             .cache_req_retry(
                 CacheRequest::Replace {
-                    cache_idx: cache.hiqlite_cache_index(),
+                    cache: cache.hiqlite_cache_name().into(),
                     key: key.into(),
                     value,
                     expires: ttl.map(|seconds| {
@@ -494,7 +494,7 @@ impl Client {
             let res = self
                 .cache_req_retry(
                     CacheRequest::CounterGet {
-                        cache_idx: cache.hiqlite_cache_index(),
+                        cache: cache.hiqlite_cache_name().into(),
                         key: key.into(),
                     },
                     true,
@@ -525,7 +525,7 @@ impl Client {
 
         self.cache_req_retry(
             CacheRequest::CounterSet {
-                cache_idx: cache.hiqlite_cache_index(),
+                cache: cache.hiqlite_cache_name().into(),
                 key: key.into(),
                 value,
             },
@@ -559,7 +559,7 @@ impl Client {
         let resp = self
             .cache_req_retry(
                 CacheRequest::CounterAdd {
-                    cache_idx: cache.hiqlite_cache_index(),
+                    cache: cache.hiqlite_cache_name().into(),
                     key: key.into(),
                     value,
                 },
@@ -593,7 +593,7 @@ impl Client {
 
         self.cache_req_retry(
             CacheRequest::CounterDel {
-                cache_idx: cache.hiqlite_cache_index(),
+                cache: cache.hiqlite_cache_name().into(),
                 key: key.into(),
             },
             false,

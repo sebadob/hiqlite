@@ -69,7 +69,7 @@ pub use openraft::raft::ReadPolicy;
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "sqlite", feature = "cache"))]
-use std::fmt::{Debug, Display, Write as _};
+use std::fmt::{Debug, Display};
 use std::num::NonZeroUsize;
 use std::thread;
 
@@ -217,6 +217,16 @@ pub(crate) fn default_read_pool_size() -> usize {
 }
 
 #[cfg(any(feature = "sqlite", feature = "cache"))]
+#[doc(hidden)]
+pub use phf;
+
+/// The caches of a node, usually an enum with `#[derive(CacheVariants)]`.
+///
+/// The cluster identifies a cache by its variant name: the raft log and the snapshots carry the
+/// name, and each node maps it to its own index. Reordering the variants is therefore safe. A
+/// renamed variant is a new, empty cache, and the entries of the old name stay in the cluster until
+/// they expire or a `clear_cache_all()`.
+#[cfg(any(feature = "sqlite", feature = "cache"))]
 pub trait CacheVariants {
     /// Returns the Enum Variants index, strictly matching the output of `hiqlite_cache_variants()`.
     fn hiqlite_cache_index(&self) -> usize;
@@ -224,46 +234,13 @@ pub trait CacheVariants {
     /// Returns the Enum Variants as `(idx, name)` in strictly ascending order, starting at `0`.
     fn hiqlite_cache_variants() -> &'static [(usize, &'static str)];
 
-    /// Returns the cache variants as a stable, line-oriented text form: one `<index> <name>`
-    /// pair per line in ascending index order (e.g. `0 App\n1 AuthCodes\n`). This is the
-    /// on-disk metadata format written by the cache state machine; parse each line with
-    /// `split_once(' ')`.
-    #[must_use]
-    fn hiqlite_cache_variants_normalized() -> String {
-        let mut out = String::new();
-        for &(idx, name) in Self::hiqlite_cache_variants() {
-            // appending to a String can never fail
-            let _ = writeln!(out, "{idx} {name}");
-        }
-        out
-    }
+    /// Returns the map from each variant name to its index in `hiqlite_cache_variants()`.
+    fn hiqlite_cache_map() -> &'static phf::Map<&'static str, usize>;
 
-    /// Returns `true` when every `(index, name)` pair recorded in `stored` (the normalized
-    /// form of a previously persisted cache index) still exists unchanged in the current enum.
-    /// Adding new variants at the end is allowed (enum expansion); any re-order,
-    /// insert-in-between, removal, or rename makes it incompatible and returns `false`.
-    ///
-    /// A rename is recovered by starting every node once with `HQL_CACHE_META_RESET=true`, which
-    /// re-initializes the persisted metadata from the current enum. A removal needs that plus a
-    /// full cache clear on every node before anything reads a cache; the entries of the removed
-    /// index are persisted, and every index behind it has shifted.
+    /// Returns the variant name, which identifies the cache in the cluster.
     #[must_use]
-    fn hiqlite_cache_compatible_with(stored: &str) -> bool {
-        let variants = Self::hiqlite_cache_variants();
-        for line in stored.lines() {
-            let Some((idx, name)) = line.split_once(' ') else {
-                return false;
-            };
-            let idx: usize = match idx.parse() {
-                Ok(idx) => idx,
-                Err(_) => return false,
-            };
-            match variants.get(idx).map(|v| v.1) {
-                Some(n) if n == name => {}
-                _ => return false,
-            }
-        }
-        true
+    fn hiqlite_cache_name(&self) -> &'static str {
+        Self::hiqlite_cache_variants()[self.hiqlite_cache_index()].1
     }
 }
 
@@ -309,6 +286,11 @@ mod empty {
 
         fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
             &[]
+        }
+
+        fn hiqlite_cache_map() -> &'static phf::Map<&'static str, usize> {
+            static MAP: phf::Map<&'static str, usize> = phf::Map::new();
+            &MAP
         }
     }
 }

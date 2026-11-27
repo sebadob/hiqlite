@@ -130,6 +130,8 @@ pub struct StateRaftDB {
 pub struct StateRaftCache {
     pub raft: openraft::Raft<TypeConfigCache, Arc<StateMachineMemory>>,
     pub tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
+    /// The variant name of each cache -> its index in `tx_caches`
+    pub cache_map: &'static phf::Map<&'static str, usize>,
     #[cfg(feature = "listen_notify")]
     pub tx_notify: flume::Sender<NotifyRequest>,
     #[cfg(feature = "listen_notify")]

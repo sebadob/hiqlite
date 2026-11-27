@@ -146,8 +146,8 @@ restore request in the sense that it does not apply the backup; it only clears i
 > for a single node whose Raft log volume is corrupt and which has no healthy peer left to re-sync
 > from.
 
-`HQL_DANGER_RAFT_STATE_RESET=true` deletes the Raft logs, the snapshots of both groups, and the
-cache-index fingerprint, and keeps your database. Local backups stay. The cache content is gone.
+`HQL_DANGER_RAFT_STATE_RESET=true` deletes the Raft logs and the snapshots of both groups, and keeps
+your database. Local backups stay. The cache content is gone.
 
 **CAUTION:** This will lead to data losses if not everything from the WAL file was applied to the DB
 **AND** you did a clean shutdown! Be VERY careful with this setting. If the node was force-killed,
@@ -155,9 +155,7 @@ it will always delete the DB and rebuilt it from snapshot + WAL files to guarant
 you, at the same time, set `HQL_BACKUP_SKIP_VALIDATION`, you will end up with all data lost on that
 node.
 
-**A cache index problem never needs this.** A renamed variant is a metadata reset:
-`HQL_CACHE_META_RESET=true` on every node, for a single start. A removed variant is that reset plus
-a full cache clear on every node. Both are in `caches.md`, and neither touches your Raft state.
+**A changed `CacheVariants` enum never needs this.** See `caches.md`.
 
 ## Actions that can lose acknowledged writes
 
