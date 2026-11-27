@@ -4,12 +4,9 @@ use crate::network::raft_client::RAFT_STREAM_DEPTH;
 use crate::network::{AppStateExt, Error};
 use axum::response::IntoResponse;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
-use futures_util::stream::{self, StreamExt};
 use openraft::errors::{Fatal, RaftError, StreamingError, Unreachable};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
 use tokio::task;
 use tracing::{debug, error, warn};
 
@@ -183,24 +180,6 @@ async fn handle_socket(
     // IMPORTANT: the reader is NOT CANCEL SAFE in v0.8!
     let mut read = FragmentCollectorRead::new(rx);
 
-    // Appends are answered in their own task, fed by a channel of their own. Votes, snapshot
-    // chunks and leadership transfers stay on the reader: a snapshot is a sequence of chunks that
-    // must land in order, and a vote has nothing to pipeline.
-    //
-    // The one order this gives up is between an append that is still queued here and a snapshot
-    // install that arrives on the reader afterwards: RaftCore may apply them in the other order.
-    // That is safe - the append then reports a conflict and the leader resyncs - and it costs one
-    // replication round on a node that is catching up from a snapshot anyway.
-    #[cfg(feature = "sqlite")]
-    let (tx_append_db, rx_append_db) = flume::bounded(*RAFT_STREAM_DEPTH);
-    #[cfg(feature = "sqlite")]
-    spawn_append_stream_db(&state, rx_append_db, tx_write.clone());
-
-    #[cfg(feature = "cache")]
-    let (tx_append_cache, rx_append_cache) = flume::bounded(*RAFT_STREAM_DEPTH);
-    #[cfg(feature = "cache")]
-    spawn_append_stream_cache(&state, rx_append_cache, tx_write.clone());
-
     task::spawn(async move {
         while let Ok(req) = rx_write.recv_async().await {
             match req {
@@ -279,18 +258,24 @@ async fn handle_socket(
             }
         };
 
-        // Appends go into the pipelined stream task, which answers them in request order. The
-        // rest is answered right here, in wire order.
+        // Appends are answered right here, in wire order, exactly like every other request. The
+        // reader is the only consumer of this connection, so the answers it writes are already in
+        // request order and nothing has to be paired up afterwards.
         let (request_id, payload) = match req {
             #[cfg(feature = "sqlite")]
             RaftStreamRequest::AppendDB((request_id, req)) => {
-                // The append task ends with the socket writer, so on a closing connection this
-                // send fails on a normal shutdown, not on a problem.
-                if tx_append_db.send_async((request_id, req)).await.is_err() {
-                    debug!("Raft DB append stream closed - exiting");
+                let res = state
+                    .raft_db
+                    .raft
+                    .append_entries(req)
+                    .await
+                    .map(AppendEntriesResponse::from);
+                if let Err(RaftError::Fatal(Fatal::Stopped)) = &res {
+                    debug!("Raft DB stopped - exiting");
+                    state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
                     break;
                 }
-                continue;
+                (request_id, RaftStreamResponsePayload::AppendDB(res))
             }
             #[cfg(feature = "sqlite")]
             RaftStreamRequest::VoteDB((request_id, req)) => {
@@ -316,12 +301,21 @@ async fn handle_socket(
 
             #[cfg(feature = "cache")]
             RaftStreamRequest::AppendCache((request_id, req)) => {
-                // Same as the DB group: this send fails on a normal connection close.
-                if tx_append_cache.send_async((request_id, req)).await.is_err() {
-                    debug!("Raft Cache append stream closed - exiting");
+                let res = state
+                    .raft_cache
+                    .raft
+                    .append_entries(req)
+                    .await
+                    .map(AppendEntriesResponse::from);
+                if let Err(RaftError::Fatal(Fatal::Stopped)) = &res {
+                    debug!("Raft Cache stopped - exiting");
+                    state
+                        .raft_cache
+                        .is_raft_stopped
+                        .store(true, Ordering::Relaxed);
                     break;
                 }
-                continue;
+                (request_id, RaftStreamResponsePayload::AppendCache(res))
             }
             #[cfg(feature = "cache")]
             RaftStreamRequest::VoteCache((request_id, req)) => {
@@ -369,149 +363,6 @@ async fn handle_socket(
     debug!("handle_socket exiting");
 
     Ok(())
-}
-
-/// The request ids whose `AppendEntries` openraft is answering, in the order they went in.
-///
-/// `Raft::stream_append` answers in request order, so the answer at the front always belongs to
-/// the id at the front of this queue.
-#[derive(Clone, Default)]
-struct AnswerIds(Arc<Mutex<VecDeque<usize>>>);
-
-impl AnswerIds {
-    /// Records a request that goes into the stream.
-    fn push_sent(&self, request_id: usize) {
-        self.0.lock().unwrap().push_back(request_id);
-    }
-
-    /// Takes the id the next answer belongs to.
-    fn pop_answered(&self) -> Option<usize> {
-        self.0.lock().unwrap().pop_front()
-    }
-}
-
-/// Answers `AppendEntries` through openraft's pipelined `stream_append` in a task of its own, so
-/// the socket reader is free to take the next frame while this request is still being applied.
-///
-/// The leader pipelines at most `RAFT_STREAM_DEPTH` appends, which is also the capacity of the
-/// channel here, so the reader never blocks on a full one.
-#[cfg(feature = "sqlite")]
-fn spawn_append_stream_db(
-    state: &AppStateExt,
-    rx: flume::Receiver<(usize, AppendEntriesRequest<TypeConfigSqlite>)>,
-    tx_write: flume::Sender<WsWriteMsg>,
-) {
-    let raft = state.raft_db.raft.clone();
-    let is_raft_stopped = state.raft_db.is_raft_stopped.clone();
-
-    task::spawn(async move {
-        let ids = AnswerIds::default();
-        let input = stream::unfold(rx, {
-            let ids = ids.clone();
-            move |rx| {
-                let ids = ids.clone();
-                async move {
-                    let (request_id, req) = rx.recv_async().await.ok()?;
-                    ids.push_sent(request_id);
-                    Some((req, rx))
-                }
-            }
-        });
-
-        let mut answers = Box::pin(raft.stream_append(input));
-        while let Some(answer) = answers.next().await {
-            let Some(request_id) = ids.pop_answered() else {
-                error!("Raft DB answered an append with no request in flight");
-                break;
-            };
-
-            let payload = match answer {
-                Ok(res) => {
-                    RaftStreamResponsePayload::AppendDB(Ok(AppendEntriesResponse::from(res)))
-                }
-                Err(_fatal) => {
-                    debug!("Raft DB stopped - closing the connection");
-                    is_raft_stopped.store(true, Ordering::Relaxed);
-                    // The old sequential path closed the socket here, and the leader has to
-                    // notice: a stopped Raft answers nothing, so break the writer and let the
-                    // leader reconnect instead of letting it wait out its answer deadline.
-                    let _ = tx_write.try_send(WsWriteMsg::Break);
-                    break;
-                }
-            };
-
-            let msg = WsWriteMsg::Payload(serialize_serde(&RaftStreamResponse {
-                request_id,
-                payload,
-            }));
-            if tx_write.send_async(msg).await.is_err() {
-                error!("Error forwarding raft append response to WebSocket writer");
-                break;
-            }
-        }
-
-        debug!("Raft DB append stream exiting");
-    });
-}
-
-/// The Cache twin of the DB append stream above.
-#[cfg(feature = "cache")]
-fn spawn_append_stream_cache(
-    state: &AppStateExt,
-    rx: flume::Receiver<(usize, AppendEntriesRequest<TypeConfigCache>)>,
-    tx_write: flume::Sender<WsWriteMsg>,
-) {
-    let raft = state.raft_cache.raft.clone();
-    let is_raft_stopped = state.raft_cache.is_raft_stopped.clone();
-
-    task::spawn(async move {
-        let ids = AnswerIds::default();
-        let input = stream::unfold(rx, {
-            let ids = ids.clone();
-            move |rx| {
-                let ids = ids.clone();
-                async move {
-                    let (request_id, req) = rx.recv_async().await.ok()?;
-                    ids.push_sent(request_id);
-                    Some((req, rx))
-                }
-            }
-        });
-
-        let mut answers = Box::pin(raft.stream_append(input));
-        while let Some(answer) = answers.next().await {
-            let Some(request_id) = ids.pop_answered() else {
-                error!("Raft Cache answered an append with no request in flight");
-                break;
-            };
-
-            let payload = match answer {
-                Ok(res) => {
-                    RaftStreamResponsePayload::AppendCache(Ok(AppendEntriesResponse::from(res)))
-                }
-                Err(_fatal) => {
-                    debug!("Raft Cache stopped - closing the connection");
-                    is_raft_stopped.store(true, Ordering::Relaxed);
-                    // The old sequential path closed the socket here, and the leader has to
-                    // notice: a stopped Raft answers nothing, so break the writer and let the
-                    // leader reconnect instead of letting it wait out its answer deadline.
-                    let _ = tx_write.try_send(WsWriteMsg::Break);
-                    break;
-                }
-            };
-
-            let msg = WsWriteMsg::Payload(serialize_serde(&RaftStreamResponse {
-                request_id,
-                payload,
-            }));
-            if tx_write.send_async(msg).await.is_err() {
-                error!("Error forwarding raft append response to WebSocket writer");
-                break;
-            }
-        }
-
-        debug!("Raft Cache append stream exiting");
-    });
 }
 
 /// openraft hands the network the snapshot data instead of a payload, so the chunk assembly is

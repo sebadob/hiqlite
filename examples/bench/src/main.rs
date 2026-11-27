@@ -410,6 +410,23 @@ async fn run_node(options: &NodeOptions) -> Result<(), Error> {
     let client = start_node_with_cache::<Cache>(config).await?;
     log(format!("Node {} is up", options.id));
 
+    // The shape that kills a Rauthy node: the first write after startup work, not the first write
+    // after startup. Rauthy syncs, runs its migrations, then clears its cache, and the failure is
+    // inside that gap. This reproduces the gap: sync, a pause, then the write.
+    let gap = Duration::from_millis(
+        std::env::var("HQL_BENCH_STARTUP_GAP_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0),
+    );
+    if !gap.is_zero() {
+        log(format!(
+            "Node {} waiting {gap:?} between sync and its first write",
+            options.id
+        ));
+        time::sleep(gap).await;
+    }
+
     // The shape that kills a Rauthy node: the first write right after startup. A node that reports
     // itself in sync and then cannot write has a leader that is not writable, which is exactly
     // what the startup gate is supposed to prevent.

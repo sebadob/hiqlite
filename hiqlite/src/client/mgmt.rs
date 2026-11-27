@@ -771,7 +771,7 @@ impl Client {
     /// `last_quorum_acked` is an instant on that node's own monotonic clock, and an instant read on
     /// a different node has no meaning, so the age can only be taken here.
     fn assert_leading_here<C>(
-        rtype: RaftType,
+        rtype: &RaftType,
         our_id: NodeId,
         metrics: &RaftMetrics<C>,
         lease: Duration,
@@ -828,7 +828,7 @@ impl Client {
     /// live round trip to that node, taken now. Its quorum acknowledgement cannot be checked here,
     /// because `last_quorum_acked` is an instant on the leader's own monotonic clock.
     fn assert_leader_confirms<C>(
-        rtype: RaftType,
+        rtype: &RaftType,
         leader_id: NodeId,
         metrics: &RaftMetrics<C>,
     ) -> Result<(), Error>
@@ -874,7 +874,7 @@ impl Client {
         // front of it is writable.
         let our_leader = our_metrics.current_leader;
         if our_leader == Some(state.id) {
-            Self::assert_leading_here(RaftType::Sqlite, state.id, &our_metrics, lease)?;
+            Self::assert_leading_here(&RaftType::Sqlite, state.id, &our_metrics, lease)?;
         }
 
         // Keep the cached leader address up to date and fail loud on stale metrics, like
@@ -893,7 +893,7 @@ impl Client {
                 .build_addr("/cluster/metrics/sqlite", &self.inner.leader_db)
                 .await;
             let leader_metrics = self.get_metrics_local::<TypeConfigSqlite>(url).await?;
-            Self::assert_leader_confirms(RaftType::Sqlite, leader_id, &leader_metrics)?;
+            Self::assert_leader_confirms(&RaftType::Sqlite, leader_id, &leader_metrics)?;
             leader_metrics.last_log_index.unwrap_or(0)
         };
 
@@ -931,7 +931,7 @@ impl Client {
         // front of it is writable.
         let our_leader = our_metrics.current_leader;
         if our_leader == Some(state.id) {
-            Self::assert_leading_here(RaftType::Cache, state.id, &our_metrics, lease)?;
+            Self::assert_leading_here(&RaftType::Cache, state.id, &our_metrics, lease)?;
         }
 
         // Keep the cached leader address up to date and fail loud on stale metrics, like
@@ -950,7 +950,7 @@ impl Client {
                 .build_addr("/cluster/metrics/cache", &self.inner.leader_cache)
                 .await;
             let leader_metrics = self.get_metrics_local::<TypeConfigCache>(url).await?;
-            Self::assert_leader_confirms(RaftType::Cache, leader_id, &leader_metrics)?;
+            Self::assert_leader_confirms(&RaftType::Cache, leader_id, &leader_metrics)?;
             leader_metrics.last_log_index.unwrap_or(0)
         };
 

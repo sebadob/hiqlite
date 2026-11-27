@@ -66,8 +66,8 @@ one. A pile of allows is a pile of lint-blind spots.
         - `hiqlite/src/network/raft_client.rs` the leader's Raft transport: one WebSocket per peer,
           unary RPCs and the pipelined append stream, `RAFT_STREAM_DEPTH` is how many appends that
           stream keeps in flight
-        - `hiqlite/src/network/raft_server.rs` the follower side: the socket reader, and the
-          per-group append stream task that answers pipelined appends in request order
+        - `hiqlite/src/network/raft_server.rs` the follower side: the socket reader that answers
+          every request, pipelined appends included, in the order it received them
         - `hiqlite/src/network/management.rs` the `/cluster/*` endpoints behind those calls
         - `hiqlite/src/network/mod.rs` the API secret header (`Authorization` bearer token) and its
           validation, shared by the node router and the proxy router
