@@ -148,14 +148,16 @@ does it: a file at `/run/secrets/hiqlite.toml`, a Kubernetes secret, a systemd c
   your own prefix are ever listed, cleaned up, and deleted. Set one per application when clusters
   share a bucket. See `backups.md`.
 - `backup_keep_for` - retention of the encrypted copies on S3. S3 side only.
+- `backup_restore_keep_previous` - `false` by default. On a restore, every node other than 1
+  moves its state into `{data_dir}/pre_restore` instead of deleting it, and removes it once it is a
+  member of the restored cluster. Opt-in, because until then every node needs as much additional
+  disk space as its database, snapshots and logs take. See `disaster-recovery.md`.
 - `s3_url`, `s3_bucket`, `s3_region`, `s3_key`, `s3_secret`, `s3_path_style` - all of these need
   the `s3` feature; without it backups stay on the local disk.
 - `HQL_BACKUP_RESTORE` - env only, read at startup only. `s3:<object>` or `file:<path>`. Node 1
-  applies the backup; every other node that sees the variable moves the state it knows into
-  `{data_dir}/pre_restore` and joins empty. That copy is removed once the node is a member of the
-  restored cluster. Set it on all nodes for a full-cluster restore, and remove it once the cluster
-  is alive. An `s3:` value on a build without the `s3` feature is refused at startup instead of
-  being ignored.
+  applies the backup; every other node that sees the variable clears the state it knows and joins
+  empty. Set it on all nodes for a full-cluster restore, and remove it once the cluster is alive. An
+  `s3:` value on a build without the `s3` feature is refused at startup instead of being ignored.
   Apps with several instances in one process use `start_node_from_backup` and pass the source
   directly. See `disaster-recovery.md`.
 - `HQL_BACKUP_SKIP_VALIDATION=true` - skips the integrity validation of a backup before it is

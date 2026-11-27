@@ -347,9 +347,9 @@ pub(crate) enum RestoreStart {
     None,
     /// Node 1 applied the backup. `restore_backup_finish` must run once the Raft is up.
     Applied,
-    /// Any other node moved its state aside and joins the restored cluster empty. The state that
-    /// was moved aside is removed by `discard_pre_restore_state` once this node is a member of
-    /// that cluster.
+    /// Any other node moved its state aside with `backup_restore_keep_previous` and joins the
+    /// restored cluster empty. The state that was moved aside is removed by
+    /// `discard_pre_restore_state` once this node is a member of that cluster.
     Rejoin,
 }
 
@@ -357,7 +357,8 @@ pub(crate) enum RestoreStart {
 /// `HQL_BACKUP_RESTORE` env var when no explicit source was given.
 ///
 /// Every node of the cluster must be started with the same restore source: node 1 applies the
-/// backup, all other nodes move their own state aside and join the new cluster clean.
+/// backup, all other nodes wipe their own state (or move it aside with
+/// `backup_restore_keep_previous`) and join the new cluster clean.
 ///
 /// Nothing is touched while another live process holds the state machine lock of this
 /// `data_dir`.
@@ -380,14 +381,20 @@ pub(crate) async fn restore_backup_start(
     }
 
     let mut lock = RestoreLock::acquire(&node_config.data_dir)?;
-    // Node 1 has not even looked at the backup yet, and it may still fail to apply it. Deleting
-    // the state here would cost the cluster this node's copy for nothing, so it is only moved
-    // aside, and removed once the restored cluster has taken this node in.
-    warn!("Moving existing state aside and starting restore cluster join");
-    move_state_aside(&node_config.data_dir).await?;
+    let start = if node_config.backup_restore_keep_previous {
+        // Node 1 has not even looked at the backup yet, and it may still fail to apply it. The
+        // state is only moved aside, and removed once the restored cluster has taken this node in.
+        warn!("Moving existing state aside and starting restore cluster join");
+        move_state_aside(&node_config.data_dir).await?;
+        RestoreStart::Rejoin
+    } else {
+        warn!("Cleaning up existing files and start restore cluster join");
+        cleanup_restore_data_dirs(&node_config.data_dir).await?;
+        RestoreStart::None
+    };
     lock.state_replaced();
 
-    Ok(RestoreStart::Rejoin)
+    Ok(start)
 }
 
 /// The state machine lock of a `data_dir`, held while a restore changes its state.
@@ -447,7 +454,8 @@ fn restore_state_dirs(data_dir: &str) -> Vec<String> {
     ]
 }
 
-/// Where a node other than 1 keeps the state it had before it joined a restored cluster. The
+/// Where a node other than 1 keeps the state it had before it joined a restored cluster, with
+/// `backup_restore_keep_previous`. The
 /// directory has the layout of a `data_dir` itself.
 pub(crate) fn path_pre_restore(data_dir: &str) -> String {
     format!("{data_dir}/pre_restore")

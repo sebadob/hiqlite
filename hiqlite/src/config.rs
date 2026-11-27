@@ -253,6 +253,18 @@ pub struct NodeConfig {
     /// default: `backup_node`
     #[cfg(feature = "backup")]
     pub backup_file_prefix: Cow<'static, str>,
+    /// On a backup restore, every node other than 1 deletes its state before it joins the restored
+    /// cluster. With this set, it moves the state into `{data_dir}/pre_restore` instead, and only
+    /// removes it once it is a member of the restored cluster. If node 1 fails to apply the
+    /// backup, the previous state of the other nodes is then still there.
+    ///
+    /// The old state stays on disk next to the state the node receives from the restored cluster.
+    /// This needs as much additional disk space as the database, its snapshots and logs take, on
+    /// every node, until the node joined.
+    ///
+    /// default: `false`
+    #[cfg(feature = "backup")]
+    pub backup_restore_keep_previous: bool,
     /// If an `S3Config` is given, it will be used to push backups to the S3 bucket. feature `s3`
     #[cfg(feature = "s3")]
     pub s3_config: Option<std::sync::Arc<crate::s3::S3Config>>,
@@ -347,6 +359,8 @@ impl Default for NodeConfig {
             backup_keep_for_local: Duration::from_hours(3 * 24),
             #[cfg(feature = "backup")]
             backup_file_prefix: backup::DEFAULT_BACKUP_FILE_PREFIX.into(),
+            #[cfg(feature = "backup")]
+            backup_restore_keep_previous: false,
             #[cfg(feature = "s3")]
             s3_config: None,
             #[cfg(feature = "dashboard")]
@@ -590,6 +604,12 @@ impl NodeConfig {
             backup_file_prefix: env::var("HQL_BACKUP_FILE_PREFIX")
                 .unwrap_or_else(|_| backup::DEFAULT_BACKUP_FILE_PREFIX.to_string())
                 .into(),
+            #[cfg(feature = "backup")]
+            backup_restore_keep_previous: env::var("HQL_BACKUP_RESTORE_KEEP_PREVIOUS")
+                .as_deref()
+                .unwrap_or("false")
+                .parse::<bool>()
+                .expect("Cannot parse HQL_BACKUP_RESTORE_KEEP_PREVIOUS as bool"),
             #[cfg(feature = "cache")]
             rate_limit_cache,
             #[cfg(feature = "sqlite")]

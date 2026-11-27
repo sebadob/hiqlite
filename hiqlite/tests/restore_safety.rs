@@ -1,7 +1,8 @@
 //! A backup restore must never destroy state it does not own, or state it still needs.
 //!
-//! - A node other than 1 prepares for the restore before node 1 has even looked at the backup. If
-//!   node 1 then fails to apply it, the state of the other nodes must still be there.
+//! - A node other than 1 prepares for the restore before node 1 has even looked at the backup.
+//!   With `backup_restore_keep_previous`, if node 1 then fails to apply it, the state of the other
+//!   nodes must still be there. Without it, the state is deleted.
 //! - A restore started against the `data_dir` of a live node must refuse to touch it.
 
 #![cfg(all(feature = "sqlite", feature = "backup"))]
@@ -65,7 +66,9 @@ async fn a_follower_keeps_its_state_until_it_joined_the_restored_cluster() {
     plant_state(&dir);
 
     let source = BackupSource::File(format!("{dir}/does_not_exist.sqlite"));
-    let start = hiqlite::start_node_from_backup(config(2, 3, &dir, 37201), source);
+    let mut config = config(2, 3, &dir, 37201);
+    config.backup_restore_keep_previous = true;
+    let start = hiqlite::start_node_from_backup(config, source);
     // Node 1 never comes up, so node 2 waits to join forever.
     let res = tokio::time::timeout(Duration::from_secs(5), start).await;
     if let Ok(res) = res {
@@ -87,6 +90,25 @@ async fn a_follower_keeps_its_state_until_it_joined_the_restored_cluster() {
     );
 }
 
+/// Without `backup_restore_keep_previous`, node 2 deletes its state and keeps no copy of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn by_default_a_follower_deletes_its_state_for_the_restore() {
+    let dir = fresh("follower_deletes_state");
+    plant_state(&dir);
+
+    let source = BackupSource::File(format!("{dir}/does_not_exist.sqlite"));
+    let start = hiqlite::start_node_from_backup(config(2, 3, &dir, 37291), source);
+    let res = tokio::time::timeout(Duration::from_secs(5), start).await;
+    if let Ok(res) = res {
+        panic!("node 2 cannot start without node 1: {:?}", res.err());
+    }
+
+    assert!(!std::fs::exists(format!("{dir}/pre_restore")).unwrap());
+    assert!(!std::fs::exists(format!("{dir}/logs/wal")).unwrap());
+    let db = std::fs::read(format!("{dir}/state_machine/db/hiqlite.db"));
+    assert!(db.map_or(true, |db| db != b"old db"));
+}
+
 /// A node that is restarted for the same restore before it joined keeps the state it moved aside
 /// the first time: the state it has now is only what it built while waiting.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -103,7 +125,9 @@ async fn a_repeated_restore_start_keeps_the_first_state_that_was_moved_aside() {
     .unwrap();
 
     let source = BackupSource::File(format!("{dir}/does_not_exist.sqlite"));
-    let start = hiqlite::start_node_from_backup(config(2, 3, &dir, 37231), source);
+    let mut config = config(2, 3, &dir, 37231);
+    config.backup_restore_keep_previous = true;
+    let start = hiqlite::start_node_from_backup(config, source);
     let res = tokio::time::timeout(Duration::from_secs(5), start).await;
     if let Ok(res) = res {
         panic!("node 2 cannot start without node 1: {:?}", res.err());
