@@ -65,7 +65,7 @@ async fn a_follower_keeps_its_state_until_it_joined_the_restored_cluster() {
     plant_state(&dir);
 
     let source = BackupSource::File(format!("{dir}/does_not_exist.sqlite"));
-    let start = hiqlite::start_node_from_backup(config(2, 3, &dir, 36201), source);
+    let start = hiqlite::start_node_from_backup(config(2, 3, &dir, 37201), source);
     // Node 1 never comes up, so node 2 waits to join forever.
     let res = tokio::time::timeout(Duration::from_secs(5), start).await;
     if let Ok(res) = res {
@@ -103,7 +103,7 @@ async fn a_repeated_restore_start_keeps_the_first_state_that_was_moved_aside() {
     .unwrap();
 
     let source = BackupSource::File(format!("{dir}/does_not_exist.sqlite"));
-    let start = hiqlite::start_node_from_backup(config(2, 3, &dir, 36231), source);
+    let start = hiqlite::start_node_from_backup(config(2, 3, &dir, 37231), source);
     let res = tokio::time::timeout(Duration::from_secs(5), start).await;
     if let Ok(res) = res {
         panic!("node 2 cannot start without node 1: {:?}", res.err());
@@ -123,7 +123,7 @@ async fn a_repeated_restore_start_keeps_the_first_state_that_was_moved_aside() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restore_never_touches_the_data_dir_of_a_live_node() {
     let dir = fresh("live_node");
-    let port = 36261;
+    let port = 37261;
 
     let client = hiqlite::start_node(config(1, 1, &dir, port)).await.unwrap();
     client.wait_until_healthy_db().await;
