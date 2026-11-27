@@ -21,7 +21,7 @@ tokio-console = ["dep:console-subscriber"]
 
 [dependencies]
 hiqlite = { path = "../../hiqlite", features = [
-    "cache", "dlock", "listen_notify", "macros", "shutdown-handle"
+    "cache", "dlock", "in-memory-snapshots", "listen_notify", "macros", "shutdown-handle"
 ] }
 
 chrono = "0.4.38"

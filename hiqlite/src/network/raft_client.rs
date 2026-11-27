@@ -7,9 +7,12 @@ use crate::network::raft_server::{
 };
 use crate::network::{WireSnapshotMeta, WireVote, web_socket_connect};
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocketWrite};
+use futures_util::Stream;
+use futures_util::StreamExt;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use openraft::errors::RPCError;
+use openraft::errors::Timeout;
 use openraft::errors::Unreachable;
 use rustc_hash::FxHashMap;
 use std::future::Future;
@@ -32,25 +35,150 @@ use crate::store::state_machine::sqlite::TypeConfigSqlite;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use crate::Error;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
-use openraft::OptionalSend;
+use openraft::base::{BoxFuture, BoxStream};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
-use openraft::RaftTypeConfig;
+use openraft::entry::RaftEntry;
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::errors::RaftError;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::errors::ReplicationClosed;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::errors::StreamingError;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::network::RPCTypes;
+#[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::network::{RPCOption, RaftNetworkFactory, RaftNetworkV2};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::raft::{
-    AppendEntriesRequest, AppendResult, SnapshotResponse, TransferLeaderRequest,
-    TransferLeaderResponse, VoteRequest, VoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse, AppendResult, SnapshotResponse,
+    TransferLeaderRequest, TransferLeaderResponse, VoteRequest, VoteResponse,
 };
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::type_config::alias::{SnapshotOf, VoteOf};
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::{OptionalSend, RaftTypeConfig};
 
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 const SNAPSHOT_CHUNK_SIZE_FALLBACK: usize = 3 * 1024 * 1024;
+
+/// `AppendEntries` RPCs a single replication stream keeps on the socket at the same time.
+///
+/// 1 is openraft's own sequential behaviour: one request, its answer, then the next. Anything
+/// above 1 pipelines, meaning the leader sends the next request while the previous one is still
+/// being answered, so the round trip stops being paid per batch. The follower answers appends
+/// through `Raft::stream_append`, whose own pipeline buffer is 64, so any depth up to that is
+/// safe on both ends.
+///
+/// The depth used when `HQL_RAFT_STREAM_DEPTH` is unset, unparsable, or out of range.
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+const DEFAULT_RAFT_STREAM_DEPTH: usize = 32;
+
+/// openraft's own pipeline buffer size on the follower side, the practical ceiling for a depth.
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+const MAX_RAFT_STREAM_DEPTH: usize = 64;
+
+/// TEMPORARY, for the depth sweep only: the value is read once from `HQL_RAFT_STREAM_DEPTH`,
+/// clamped into the safe range, so a benchmark run does not rebuild the crate per value. Revert
+/// this to a plain `const` before merging.
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+pub(crate) static RAFT_STREAM_DEPTH: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+    let env = "HQL_RAFT_STREAM_DEPTH";
+    let depth = std::env::var(env)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_RAFT_STREAM_DEPTH);
+    if depth != DEFAULT_RAFT_STREAM_DEPTH {
+        info!("Raft stream depth set to {depth} by {env}");
+    }
+    depth.clamp(1, MAX_RAFT_STREAM_DEPTH)
+});
+
+/// Multiplier on openraft's `soft_ttl()` for the answer deadline of one pipelined append.
+///
+/// openraft hands a replication stream its heartbeat interval as the soft TTL, and a follower
+/// that has a snapshot install in front of its queue needs far more than one heartbeat to answer
+/// the requests queued behind it.
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+const RAFT_STREAM_TTL_FACTOR: u32 = 8;
+
+/// Lower bound for that deadline, matching the default `install_snapshot_timeout` a snapshot in
+/// front of the queue can take.
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+const RAFT_STREAM_TTL_FLOOR: Duration = Duration::from_secs(10);
+
+/// The answer of one group's `AppendEntries` RPC, as it travels back over the wire.
+type AppendAnswer<C> = Result<AppendEntriesResponse<C>, RaftError<C>>;
+
+/// The boxed answer stream openraft's `stream_append` expects from a transport.
+type AppendStream<'s, C> = BoxStream<'s, Result<AppendResult<C>, RPCError<C>>>;
+
+/// What opening that stream answers: the stream itself, or the reason it never opened.
+type OpenAppendStream<'s, C> = Result<AppendStream<'s, C>, RPCError<C>>;
+
+/// The wire pair of one Raft group's `AppendEntries` RPC: how to wrap the request for the socket,
+/// and how to take the answer back out of a response payload.
+///
+/// The two travel together so the request type of one group can never be paired with the answer
+/// type of the other.
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+trait AppendWire: Copy + 'static {
+    type Config: RaftTypeConfig<NodeId = NodeId>;
+
+    /// Wraps an `AppendEntries` request and its ack into the message for the socket.
+    fn request(
+        ack: oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
+        req: AppendEntriesRequest<Self::Config>,
+    ) -> RaftRequest;
+
+    /// Takes the `AppendEntries` answer out of a response payload, `None` for any other payload.
+    fn response(payload: RaftStreamResponsePayload) -> Option<AppendAnswer<Self::Config>>;
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Clone, Copy)]
+struct AppendDb;
+
+#[cfg(feature = "sqlite")]
+impl AppendWire for AppendDb {
+    type Config = TypeConfigSqlite;
+
+    fn request(
+        ack: oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
+        req: AppendEntriesRequest<Self::Config>,
+    ) -> RaftRequest {
+        RaftRequest::AppendDB((ack, req))
+    }
+
+    fn response(payload: RaftStreamResponsePayload) -> Option<AppendAnswer<Self::Config>> {
+        match payload {
+            RaftStreamResponsePayload::AppendDB(res) => Some(res),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "cache")]
+#[derive(Clone, Copy)]
+struct AppendCache;
+
+#[cfg(feature = "cache")]
+impl AppendWire for AppendCache {
+    type Config = TypeConfigCache;
+
+    fn request(
+        ack: oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
+        req: AppendEntriesRequest<Self::Config>,
+    ) -> RaftRequest {
+        RaftRequest::AppendCache((ack, req))
+    }
+
+    fn response(payload: RaftStreamResponsePayload) -> Option<AppendAnswer<Self::Config>> {
+        match payload {
+            RaftStreamResponsePayload::AppendCache(res) => Some(res),
+            _ => None,
+        }
+    }
+}
 
 /// The wire's snapshot message builder, so the chunk helper stays generic over both groups.
 type SnapshotRequestFn = fn(
@@ -79,7 +207,10 @@ impl RaftNetworkFactory<TypeConfigCache> for NetworkStreaming {
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
         debug!("Building new Raft Cache client with target {}", node);
 
-        let (sender, rx) = flume::bounded(1);
+        // Unbounded on purpose: `Drop` signals shutdown with a `try_send`, which must never fail,
+        // and a replication stream only ever queues `RAFT_STREAM_DEPTH` appends plus a few unary
+        // RPCs that each wait for their own answer.
+        let (sender, rx) = flume::unbounded();
 
         let task = tokio::task::spawn(Box::pin(Self::ws_handler(
             self.node_id,
@@ -94,6 +225,7 @@ impl RaftNetworkFactory<TypeConfigCache> for NetworkStreaming {
         )));
 
         NetworkConnectionStreaming {
+            local_id: self.node_id,
             node: node.clone(),
             sender,
             task: Some(task),
@@ -109,7 +241,8 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
         debug!("Building new Raft DB client with target {}", node);
 
-        let (sender, rx) = flume::bounded(1);
+        // Unbounded for the same reason as the Cache group above.
+        let (sender, rx) = flume::unbounded();
 
         let task = tokio::task::spawn(Box::pin(Self::ws_handler(
             self.node_id,
@@ -124,6 +257,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
         )));
 
         NetworkConnectionStreaming {
+            local_id: self.node_id,
             node: node.clone(),
             sender,
             task: Some(task),
@@ -244,9 +378,11 @@ impl NetworkStreaming {
         is_startup_finished: Arc<AtomicBool>,
     ) {
         let mut request_id = 0usize;
-        // This map holds at most one entry per connection: `NetworkConnectionStreaming::send`
-        // awaits its own ack before returning, and openraft's `stream_append` default is
-        // sequential. It is a request/response correlation for the shared socket, not a queue.
+        // Every request the socket has sent and not answered yet, keyed by its id. A pipelined
+        // replication stream holds up to `RAFT_STREAM_DEPTH` appends here at once, plus the unary
+        // RPCs (vote, snapshot chunk, leadership transfer) that each wait for their own answer.
+        // All of them are failed on the reconnect path, so the map is empty again before a new
+        // connection starts.
         let mut in_flight: FxHashMap<
             usize,
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
@@ -283,41 +419,42 @@ impl NetworkStreaming {
                     Err(err) => {
                         error!("Socket connect error to node {}: {:?}", node.id, err);
 
-                        for _ in 0..3 {
-                            // if there is a network error, no reason to try too hard to connect
-                            time::sleep(Duration::from_millis(heartbeat_interval)).await;
+                        // if there is a network error, no reason to try too hard to connect
+                        time::sleep(Duration::from_millis(heartbeat_interval)).await;
 
-                            // make sure channel is always free
-                            if let Ok(req) = rx.try_recv() {
-                                let ack = match req {
-                                    #[cfg(feature = "sqlite")]
-                                    RaftRequest::AppendDB((ack, _)) => Some(ack),
-                                    #[cfg(feature = "sqlite")]
-                                    RaftRequest::VoteDB((ack, _)) => Some(ack),
-                                    #[cfg(feature = "sqlite")]
-                                    RaftRequest::SnapshotDB((ack, _)) => Some(ack),
-                                    #[cfg(feature = "sqlite")]
-                                    RaftRequest::TransferLeaderDB((ack, _)) => Some(ack),
-                                    #[cfg(feature = "cache")]
-                                    RaftRequest::AppendCache((ack, _)) => Some(ack),
-                                    #[cfg(feature = "cache")]
-                                    RaftRequest::VoteCache((ack, _)) => Some(ack),
-                                    #[cfg(feature = "cache")]
-                                    RaftRequest::SnapshotCache((ack, _)) => Some(ack),
-                                    #[cfg(feature = "cache")]
-                                    RaftRequest::TransferLeaderCache((ack, _)) => Some(ack),
-                                    RaftRequest::StreamResponse(_) => None,
-                                    RaftRequest::ReaderExit => {
-                                        continue;
-                                    }
-                                    RaftRequest::Shutdown => {
-                                        break 'outer;
-                                    }
-                                };
-
-                                if let Some(ack) = ack {
-                                    let _ = ack.send(Err(Error::Connect(err.to_string())));
+                        // Nothing reaches the socket while we are not connected, so every queued
+                        // request has to be failed here. A pipelined stream queues up to
+                        // `RAFT_STREAM_DEPTH` appends at once, and the channel is unbounded, so
+                        // this has to drain fully rather than take a fixed number of items.
+                        while let Ok(req) = rx.try_recv() {
+                            let ack = match req {
+                                #[cfg(feature = "sqlite")]
+                                RaftRequest::AppendDB((ack, _)) => Some(ack),
+                                #[cfg(feature = "sqlite")]
+                                RaftRequest::VoteDB((ack, _)) => Some(ack),
+                                #[cfg(feature = "sqlite")]
+                                RaftRequest::SnapshotDB((ack, _)) => Some(ack),
+                                #[cfg(feature = "sqlite")]
+                                RaftRequest::TransferLeaderDB((ack, _)) => Some(ack),
+                                #[cfg(feature = "cache")]
+                                RaftRequest::AppendCache((ack, _)) => Some(ack),
+                                #[cfg(feature = "cache")]
+                                RaftRequest::VoteCache((ack, _)) => Some(ack),
+                                #[cfg(feature = "cache")]
+                                RaftRequest::SnapshotCache((ack, _)) => Some(ack),
+                                #[cfg(feature = "cache")]
+                                RaftRequest::TransferLeaderCache((ack, _)) => Some(ack),
+                                RaftRequest::StreamResponse(_) => None,
+                                RaftRequest::ReaderExit => {
+                                    continue;
                                 }
+                                RaftRequest::Shutdown => {
+                                    break 'outer;
+                                }
+                            };
+
+                            if let Some(ack) = ack {
+                                let _ = ack.send(Err(Error::Connect(err.to_string())));
                             }
                         }
 
@@ -325,13 +462,15 @@ impl NetworkStreaming {
                     }
                 }
             };
-            assert!(
+            debug_assert!(
                 in_flight.is_empty(),
                 "raft in flight buffer should always be empty when restoring a connection"
             );
 
-            let (tx_write, rx_write) = flume::bounded(1);
-            let (tx_read, rx_read) = flume::bounded(1);
+            // Both channels carry a whole pipeline: `RAFT_STREAM_DEPTH` requests go out and their
+            // answers come back in bursts, so a capacity of 1 would serialise them all over again.
+            let (tx_write, rx_write) = flume::bounded(*RAFT_STREAM_DEPTH);
+            let (tx_read, rx_read) = flume::bounded(*RAFT_STREAM_DEPTH);
 
             // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
             let (read, write) = socket.split(tokio::io::split);
@@ -346,6 +485,17 @@ impl NetworkStreaming {
             ))));
             let handle_write =
                 AbortOnDrop(task::spawn(Box::pin(Self::stream_writer(write, rx_write))));
+
+            // Drop our copy of the reader's sender so the reader task's clone is the only one
+            // left. The reader exiting is then visible as a disconnected channel.
+            drop(tx_read);
+
+            // Frames the previous connection's reader had already queued belong to requests that
+            // path failed when it broke the connection. Drop them rather than matching them
+            // against this connection's ids.
+            while let Ok(req) = rx_read.try_recv() {
+                debug!("Dropping a frame of the previous raft connection: {req:?}");
+            }
 
             loop {
                 let res = select! {
@@ -452,11 +602,11 @@ impl NetworkStreaming {
 
             let _ = tx_write.send_async(WritePayload::Close).await;
 
+            // A response for a request sent on the dead socket can never arrive on the next one:
+            // the server answers every request on the connection it received it on.
             for (_, ack) in in_flight.drain() {
                 let _ = ack.send(Err(Error::Connect("Raft WebSocket stream ended".into())));
             }
-            // replace the map so the allocation a large drain leaves behind is released
-            in_flight = FxHashMap::default();
 
             // Give the writer enough time to possibly send out the close request.
             // Since we need to re-connect, there is no need to rush anyway.
@@ -544,6 +694,8 @@ impl NetworkStreaming {
 
 #[allow(clippy::type_complexity)]
 pub struct NetworkConnectionStreaming {
+    /// The id of the node this connection was built for, used in openraft's timeout errors.
+    local_id: NodeId,
     node: Node,
     sender: flume::Sender<RaftRequest>,
     task: Option<JoinHandle<()>>,
@@ -551,6 +703,7 @@ pub struct NetworkConnectionStreaming {
 
 impl Drop for NetworkConnectionStreaming {
     fn drop(&mut self) {
+        // The request channel is unbounded, so this never fails on a full queue.
         let _ = self.sender.try_send(RaftRequest::Shutdown);
         if let Some(task) = self.task.take() {
             task.abort();
@@ -598,18 +751,32 @@ impl RaftNetworkV2<TypeConfigSqlite> for NetworkConnectionStreaming {
         let last_log_id = req.entries.last().map(|entry| entry.log_id);
 
         let (ack, rx) = oneshot::channel();
-        match self
-            .send(RaftRequest::AppendDB((ack, req)), rx)
-            .await
-            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
-        {
-            RaftStreamResponsePayload::AppendDB(res) => res
-                // An append request without entries only asks for an ack, which is the request's
-                // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
+        match AppendDb::response(
+            self.send(RaftRequest::AppendDB((ack, req)), rx)
+                .await
+                .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?,
+        ) {
+            // An append request without entries only asks for an ack, which is the request's
+            // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
+            Some(res) => res
                 .map(|res| res.into_append_result(prev_log_id, last_log_id.or(prev_log_id)))
                 .map_err(|err| RPCError::Unreachable(Unreachable::new(&err))),
-            _ => unreachable!(),
+            None => Err(RPCError::Unreachable(Unreachable::from_string(
+                "Raft append answer carries a different payload type",
+            ))),
         }
+    }
+
+    /// Pipelined instead of openraft's sequential default - see `append_stream`.
+    fn stream_append<S>(
+        &mut self,
+        input: S,
+        option: RPCOption,
+    ) -> BoxFuture<'_, OpenAppendStream<'_, TypeConfigSqlite>>
+    where
+        S: Stream<Item = AppendEntriesRequest<TypeConfigSqlite>> + OptionalSend + Unpin + 'static,
+    {
+        self.append_stream::<AppendDb, S>(input, &option)
     }
 
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
@@ -695,18 +862,32 @@ impl RaftNetworkV2<TypeConfigCache> for NetworkConnectionStreaming {
         let last_log_id = rpc.entries.last().map(|entry| entry.log_id);
 
         let (ack, rx) = oneshot::channel();
-        match self
-            .send(RaftRequest::AppendCache((ack, rpc)), rx)
-            .await
-            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?
-        {
-            RaftStreamResponsePayload::AppendCache(res) => res
-                // An append request without entries only asks for an ack, which is the request's
-                // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
+        match AppendCache::response(
+            self.send(RaftRequest::AppendCache((ack, rpc)), rx)
+                .await
+                .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?,
+        ) {
+            // An append request without entries only asks for an ack, which is the request's
+            // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
+            Some(res) => res
                 .map(|res| res.into_append_result(prev_log_id, last_log_id.or(prev_log_id)))
                 .map_err(|err| RPCError::Unreachable(Unreachable::new(&err))),
-            _ => unreachable!(),
+            None => Err(RPCError::Unreachable(Unreachable::from_string(
+                "Raft append answer carries a different payload type",
+            ))),
         }
+    }
+
+    /// Pipelined instead of openraft's sequential default - see `append_stream`.
+    fn stream_append<S>(
+        &mut self,
+        input: S,
+        option: RPCOption,
+    ) -> BoxFuture<'_, OpenAppendStream<'_, TypeConfigCache>>
+    where
+        S: Stream<Item = AppendEntriesRequest<TypeConfigCache>> + OptionalSend + Unpin + 'static,
+    {
+        self.append_stream::<AppendCache, S>(input, &option)
     }
 
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
@@ -830,5 +1011,202 @@ impl NetworkConnectionStreaming {
                 return Ok(payload);
             }
         }
+    }
+
+    /// The pipelined transport behind `RaftNetworkV2::stream_append`.
+    ///
+    /// `buffered()` is the whole pipeline: it keeps up to `RAFT_STREAM_DEPTH` RPCs on the socket at
+    /// the same time and yields their answers in request order, which is exactly what openraft
+    /// asks of a pipelined transport.
+    ///
+    /// Termination follows openraft's own sequential default. A full acknowledgement is what lets
+    /// the stream go on, and openraft stops at the first answer that is not one - a conflict, a
+    /// higher vote, an RPC error - so nothing queued behind it is ever asked for. When the input
+    /// stream ends, `buffered` drains what is still on the socket and the answer stream ends.
+    ///
+    /// The input stream is only ever polled by `map()` and `buffered()`, never by a `select!`,
+    /// because openraft builds it with `stream::unfold`: dropping a pending `next()` of an `unfold`
+    /// stream destroys its state, and the stream would end as if it had run out of entries.
+    fn append_stream<'s, W, S>(
+        &self,
+        input: S,
+        option: &RPCOption,
+    ) -> BoxFuture<'s, OpenAppendStream<'s, W::Config>>
+    where
+        W: AppendWire,
+        S: Stream<Item = AppendEntriesRequest<W::Config>> + OptionalSend + Unpin + 'static,
+    {
+        let sender = self.sender.clone();
+        let ids = (self.local_id, self.node.id);
+        let ttl = Self::response_ttl(option);
+
+        let stream = input
+            .map(move |req| {
+                let sender = sender.clone();
+                async move { Self::send_append::<W>(&sender, ids, req, ttl).await }
+            })
+            .buffered(*RAFT_STREAM_DEPTH);
+
+        Box::pin(async move { Ok(Box::pin(stream) as BoxStream<'s, _>) })
+    }
+
+    /// Sends one `AppendEntries` RPC on the shared socket and waits for its answer. Several of these
+    /// run at the same time, one per pipelined request, and the socket's reader routes each answer
+    /// back through this call's own ack.
+    async fn send_append<W>(
+        sender: &flume::Sender<RaftRequest>,
+        ids: (NodeId, NodeId),
+        req: AppendEntriesRequest<W::Config>,
+        ttl: Duration,
+    ) -> Result<AppendResult<W::Config>, RPCError<W::Config>>
+    where
+        W: AppendWire,
+    {
+        let prev_log_id = req.prev_log_id.clone();
+        // An append request without entries only asks for an ack, which is the request's
+        // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
+        let last_log_id = req
+            .entries
+            .last()
+            .map(|entry| entry.log_id())
+            .or(prev_log_id.clone());
+
+        let (ack, rx) = oneshot::channel();
+        sender
+            .send_async(W::request(ack, req))
+            .await
+            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?;
+
+        match time::timeout(ttl, rx).await {
+            Err(_elapsed) => Err(RPCError::Timeout(Timeout {
+                action: RPCTypes::AppendEntries,
+                id: ids.0,
+                target: ids.1,
+                timeout: ttl,
+            })),
+            // The ack is dropped by `ws_handler` when the connection ends, which is the same
+            // "we do not know what happened to this request" case a connect failure is.
+            Ok(Err(_)) => Err(RPCError::Unreachable(Unreachable::from_string(
+                "Raft stream answer dropped",
+            ))),
+            Ok(Ok(Err(err))) => Err(RPCError::Unreachable(Unreachable::new(&err))),
+            Ok(Ok(Ok(payload))) => W::response(payload)
+                .ok_or_else(|| {
+                    RPCError::Unreachable(Unreachable::from_string(
+                        "Raft stream answer carries a different payload type",
+                    ))
+                })?
+                .map(move |res| res.into_append_result(prev_log_id, last_log_id))
+                .map_err(|err| RPCError::Unreachable(Unreachable::new(&err))),
+        }
+    }
+
+    /// The answer deadline openraft asks for with `RPCOption`, kept inside the bounds a pipelined
+    /// stream can actually respect.
+    fn response_ttl(option: &RPCOption) -> Duration {
+        option
+            .soft_ttl()
+            .saturating_mul(RAFT_STREAM_TTL_FACTOR)
+            .max(RAFT_STREAM_TTL_FLOOR)
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+    use crate::store::state_machine::sqlite::TypeConfigSqlite;
+    use futures_util::stream;
+    use openraft::Vote;
+    use openraft::impls::leader_id_adv::LeaderId;
+    use openraft::log_id::LogId;
+    use openraft::type_config::alias::LogIdOf;
+    use openraft::type_config::alias::VoteOf;
+
+    /// The proof of the pipeline: every request of a stream has to reach the socket before any of
+    /// them is answered, and answers that come back out of order have to be yielded in request
+    /// order again.
+    #[tokio::test]
+    async fn append_stream_sends_the_whole_pipeline_and_answers_in_order() {
+        let (tx, rx) = flume::unbounded();
+        let conn = NetworkConnectionStreaming {
+            local_id: 1,
+            node: Node {
+                id: 2,
+                addr_api: "127.0.0.1:8102".to_string(),
+                addr_raft: "127.0.0.1:8202".to_string(),
+            },
+            sender: tx,
+            task: None,
+        };
+
+        let requests: Vec<_> = (1..=3u64)
+            .map(|index| AppendEntriesRequest::<TypeConfigSqlite> {
+                vote: VoteOf::<TypeConfigSqlite>::from(Vote::new_committed(1, 1)),
+                prev_log_id: Some(LogIdOf::<TypeConfigSqlite>::from(LogId {
+                    leader_id: LeaderId {
+                        term: 1u64,
+                        node_id: 1u64,
+                    },
+                    index,
+                })),
+                leader_commit: None,
+                entries: vec![],
+            })
+            .collect();
+        let expected: Vec<_> = requests.iter().map(|req| req.prev_log_id).collect();
+
+        let mut answers = Box::pin(
+            conn.append_stream::<AppendDb, _>(
+                stream::iter(requests),
+                &RPCOption::new(Duration::from_millis(500)),
+            )
+            .await
+            .unwrap(),
+        );
+
+        // Nothing is answered yet, so the first poll must not resolve. By the time it gives up,
+        // all three requests have to sit on the socket already.
+        let first = time::timeout(Duration::from_millis(50), answers.next()).await;
+        assert!(
+            first.is_err(),
+            "an answer arrived before the pipeline was sent"
+        );
+
+        let mut acks = Vec::new();
+        for _ in 0..3 {
+            match rx.try_recv().expect("a request never reached the socket") {
+                RaftRequest::AppendDB((ack, _)) => acks.push(ack),
+                other => panic!("unexpected request on the socket: {other:?}"),
+            }
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "the stream sent more requests than its input had"
+        );
+
+        // Answer them out of order; the stream has to put them back.
+        let third = acks.pop().unwrap();
+        let second = acks.pop().unwrap();
+        let first_ack = acks.pop().unwrap();
+        for ack in [third, first_ack, second] {
+            ack.send(Ok(RaftStreamResponsePayload::AppendDB(Ok(
+                AppendEntriesResponse::Success,
+            ))))
+            .expect("the answer was not taken");
+        }
+
+        let mut got = Vec::new();
+        for _ in 0..3 {
+            let answer = time::timeout(Duration::from_millis(500), answers.next())
+                .await
+                .expect("the stream stalled")
+                .expect("the stream ended too early")
+                .expect("the stream yielded an RPC error");
+            match answer {
+                Ok(matching) => got.push(matching),
+                Err(err) => panic!("the stream reported an append error: {err}"),
+            }
+        }
+        assert_eq!(got, expected);
     }
 }

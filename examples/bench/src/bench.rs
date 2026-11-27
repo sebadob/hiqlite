@@ -32,6 +32,18 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     let concurrency = options.concurrency;
     let rows = options.rows;
 
+    // The in-memory cache is the Raft group with no disk in its way, so its numbers are the
+    // cleanest signal for replication depth. Run it on its own to keep a run short.
+    if options.cache_only {
+        let elapsed = put_cache(client.clone(), &options, data).await?;
+        let per_second = rows * 1000 / max(elapsed as usize, 1);
+        log(format!(
+            "{rows} single cache PUTs with concurrency {concurrency} took:\n{elapsed} ms \
+            -> {per_second} inserts / s"
+        ));
+        return Ok(());
+    }
+
     // make sure everything is clean
     client.execute("DELETE FROM _bench", params!()).await?;
 
@@ -42,6 +54,10 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
         -> {per_second} inserts / s"
     ));
 
+    // TEMPORARY for the pipeline benchmark: the transactional insert is a showcase of how fast a
+    // transaction is, not a signal for replication depth, and it doubles the length of every run.
+    // Re-activate this block and `cleanup` before pushing.
+    /*
     // We only want to run transactional inserts without rate-limiting. This impl is very naive, and
     // it can easily crash everything for very high row counts.
     if options.db_rps.is_none() {
@@ -56,6 +72,7 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
             took:\n{elapsed} ms -> {per_second} inserts / s"
         ));
     }
+    */
 
     select_timings(client.clone(), remote).await?;
 
@@ -213,10 +230,13 @@ async fn get_timings(client: Client) -> Result<(), Error> {
     Ok(())
 }
 
+// Only used by the commented-out transactional insert block above.
+/*
 async fn cleanup(client: &Client) -> Result<(), Error> {
     client.execute("DELETE FROM _bench", params!()).await?;
     Ok(())
 }
+*/
 
 fn prepare_data(options: &Options) -> Vec<Vec<Entity>> {
     let concurrency = options.concurrency;

@@ -175,6 +175,24 @@ Migration:
 
 ### Changes
 
+#### Pipelined Raft Replication
+
+A leader no longer waits for a follower's answer before it sends the next append. Appends to a
+follower travel as a pipeline, and the follower answers them in the order it received them, so a
+write's round trip is covered by the writes behind it instead of by nothing.
+
+- Writes on a link with distance get their throughput back. The round trip to a far voter is no
+  longer paid once per write, and a write that arrives while its leader is already replicating does
+  not queue behind that round trip. This is the change that makes the far-node shape of
+  `geo-replication.md` faster, and it is measurable on a plain LAN as well.
+- Nothing to configure. Replication behaviour is unchanged for a single writer that waits for its
+  own ack, and for every read.
+- Snapshot installs, votes and leadership transfers are untouched: they keep travelling one at a
+  time, in order, on the same connection as the appends.
+- A follower that cannot answer closes its connection, and the leader re-syncs to it like it
+  already did on a dead append. No write is acknowledged by a pipeline that stopped answering.
+- Measured numbers follow with the 1 million row benchmark run.
+
 #### Local Read Threads
 
 A local read does not wait for a pooled connection anymore. The node keeps one thread per read
