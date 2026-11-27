@@ -132,7 +132,7 @@ Check in this order:
 
 A restore that was interrupted after the backup had been validated, e.g. by a crash or a killed
 pod, is finished by the next start of that node, with or without the variable: the validated backup
-waits as `state_machine/backups/restore.sqlite` until it replaced the database.
+waits as `state_machine/backups/restore_pending.sqlite` until it replaced the database.
 
 `HQL_BACKUP_SKIP_VALIDATION=true` skips the validation of the restored database. Use it when you
 know the file is good and the validator is the thing that is wrong, and understand that you are

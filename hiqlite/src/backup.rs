@@ -433,8 +433,9 @@ pub(crate) async fn restore_backup_start(
 }
 
 /// The record of the last finished restore of a node: the restore source, in the form of the
-/// `HQL_BACKUP_RESTORE` env var, see `RestoredMarker::identity`. It lets a node that is started again with the same restore
-/// request skip it, instead of applying the backup again and losing everything written since.
+/// `HQL_BACKUP_RESTORE` env var, see `RestoredMarker::identity`. It lets a node that is started
+/// again with the same restore request skip it, instead of applying the backup again and losing
+/// everything written since.
 struct RestoredMarker;
 
 impl RestoredMarker {
@@ -769,9 +770,13 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
 
 /// Where a validated backup waits until it replaced the database. While this file exists, a
 /// restore has been started and not finished yet.
+///
+/// A backup only ever gets this name by an atomic rename after its validation. Older versions
+/// pulled S3 backups straight to `BACKUP_DB_NAME`, which can therefore hold a partial download and
+/// is never applied without a request.
 fn path_pending_restore(data_dir: &str) -> String {
     format!(
-        "{}/{BACKUP_DB_NAME}",
+        "{}/restore_pending.sqlite",
         StateMachineSqlite::path_backups(data_dir)
     )
 }

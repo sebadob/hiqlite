@@ -284,7 +284,7 @@ async fn an_interrupted_restore_is_finished_by_the_next_start() {
     // state is gone
     std::fs::copy(
         &backup,
-        format!("{dir}/state_machine/backups/restore.sqlite"),
+        format!("{dir}/state_machine/backups/restore_pending.sqlite"),
     )
     .unwrap();
     for path in [
@@ -303,6 +303,37 @@ async fn an_interrupted_restore_is_finished_by_the_next_start() {
         1,
         "the backup has been applied"
     );
-    assert!(!std::fs::exists(format!("{dir}/state_machine/backups/restore.sqlite")).unwrap());
+    assert!(
+        !std::fs::exists(format!(
+            "{dir}/state_machine/backups/restore_pending.sqlite"
+        ))
+        .unwrap()
+    );
+    client.shutdown().await.unwrap();
+}
+
+/// A partial download, from a failed pull of this version or under the name older versions used,
+/// has never been validated. A start without a request must leave the database alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_partial_backup_download_is_never_applied() {
+    let dir = fresh("restore_partial");
+    let port = 37341;
+
+    let client = hiqlite::start_node(config(1, 1, &dir, port)).await.unwrap();
+    client.wait_until_healthy_db().await;
+    create_and_insert(&client, 1).await;
+    client.shutdown().await.unwrap();
+
+    for name in ["restore-0190f4b2-partial.tmp", "restore.sqlite"] {
+        std::fs::write(
+            format!("{dir}/state_machine/backups/{name}"),
+            b"SQLite format 3\0 cut off",
+        )
+        .unwrap();
+    }
+
+    let client = hiqlite::start_node(config(1, 1, &dir, port)).await.unwrap();
+    client.wait_until_healthy_db().await;
+    assert_eq!(count(&client).await.unwrap(), 1);
     client.shutdown().await.unwrap();
 }
