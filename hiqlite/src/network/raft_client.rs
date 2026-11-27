@@ -11,7 +11,7 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use openraft::errors::RPCError;
 use openraft::errors::Unreachable;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -244,13 +244,13 @@ impl NetworkStreaming {
         is_startup_finished: Arc<AtomicBool>,
     ) {
         let mut request_id = 0usize;
-        // TODO probably, a Vec<_> is faster here since we would never have too many in flight reqs
-        // for raft internal replication and voting? -> check
-        // maybe feature-gate an alternative impl, even though it might not make the biggest difference
-        let mut in_flight: HashMap<
+        // This map holds at most one entry per connection: `NetworkConnectionStreaming::send`
+        // awaits its own ack before returning, and openraft's `stream_append` default is
+        // sequential. It is a request/response correlation for the shared socket, not a queue.
+        let mut in_flight: FxHashMap<
             usize,
             oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-        > = HashMap::with_capacity(4);
+        > = FxHashMap::default();
         let mut shutdown = false;
 
         'outer: loop {
@@ -455,8 +455,8 @@ impl NetworkStreaming {
             for (_, ack) in in_flight.drain() {
                 let _ = ack.send(Err(Error::Connect("Raft WebSocket stream ended".into())));
             }
-            // reset to a reasonable size for the next start to keep memory usage under control
-            in_flight = HashMap::with_capacity(4);
+            // replace the map so the allocation a large drain leaves behind is released
+            in_flight = FxHashMap::default();
 
             // Give the writer enough time to possibly send out the close request.
             // Since we need to re-connect, there is no need to rush anyway.
