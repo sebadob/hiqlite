@@ -642,7 +642,7 @@ mod tests {
         lockfile.lock().unwrap();
         let meta = Arc::new(RwLock::new(Metadata::read_or_create(&base).unwrap()));
 
-        let (tx, _wal) = spawn(
+        let (tx, _closed, _wal) = spawn(
             base.clone(),
             lockfile,
             LogSync::Immediate,
@@ -678,7 +678,7 @@ mod tests {
         lockfile.lock().unwrap();
         let meta = Arc::new(RwLock::new(Metadata::read_or_create(&base).unwrap()));
 
-        let (tx, _wal) = spawn(
+        let (tx, _closed, _wal) = spawn(
             base.clone(),
             lockfile,
             LogSync::Immediate,

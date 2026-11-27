@@ -403,6 +403,7 @@ mod tests {
     use openraft::impls::leader_id_adv::LeaderId;
     use openraft::storage::IOFlushed;
     use openraft::storage::RaftLogStorage;
+    use openraft::type_config::TypeConfigExt;
     use openraft::vote::RaftLeaderId;
     use std::fs;
     use std::future::Future;
@@ -537,7 +538,7 @@ mod tests {
     }
 
     fn entry_bytes(index: u64) -> (u64, Vec<u8>) {
-        let entry = Entry::<TestConfig>::new_normal(log_id(index), format!("payload-{index}"));
+        let entry = EntryOf::<TestConfig>::new_normal(log_id(index), format!("payload-{index}"));
         (index, serialize(&entry).unwrap())
     }
 
@@ -656,7 +657,7 @@ mod tests {
     fn a_failed_roll_over_fails_the_append() -> Result<(), Error> {
         block_on(async {
             let mut store = start_store("failed_roll_over", 64 * 1024).await?;
-            let big = |i: u64| Entry::new_normal(log_id(i), "x".repeat(30 * 1024));
+            let big = |i: u64| Entry::new_normal(log_id(i), "x".repeat(40 * 1024));
             store
                 .append([big(1)], IOFlushed::noop())
                 .await
@@ -664,7 +665,7 @@ mod tests {
 
             // the next entry needs a new WAL file, and its directory is gone
             fs::remove_dir_all("test_data/failed_roll_over")?;
-            let (cb_tx, cb_rx) = oneshot::channel();
+            let (cb_tx, cb_rx) = TestConfig::oneshot();
             let res = timeout(PROMPTLY, store.append([big(2)], IOFlushed::signal(cb_tx)))
                 .await
                 .unwrap();
