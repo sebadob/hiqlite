@@ -27,6 +27,8 @@ where
     pub(crate) committed: Arc<RwLock<Option<Vec<u8>>>>,
     wal: Arc<RwLock<WalFileSet>>,
     pub writer: flume::Sender<writer::Action>,
+    /// Disconnects once the WAL writer thread has exited, for any reason.
+    pub(crate) writer_closed: flume::Receiver<()>,
     pub reader: flume::Sender<reader::Action>,
     pub(crate) reader_closed: flume::Receiver<()>,
     readers: Arc<reader::Readers>,
@@ -75,7 +77,7 @@ where
             let meta = Arc::new(RwLock::new(meta));
             let committed = Arc::new(RwLock::new(None));
 
-            let (writer, wal) = writer::spawn(
+            let (writer, writer_closed, wal) = writer::spawn(
                 base_path,
                 lockfile,
                 sync,
@@ -86,13 +88,15 @@ where
             )?;
             let readers = Arc::new(reader::Readers::new());
             let (reader, reader_closed) = readers.spawn(meta.clone(), wal.clone());
-            let shutdown = ShutdownHandle::new(writer.clone(), readers.clone());
+            let shutdown =
+                ShutdownHandle::new(writer.clone(), writer_closed.clone(), readers.clone());
 
             Ok::<Self, Error>(Self {
                 meta,
                 committed,
                 wal,
                 writer,
+                writer_closed,
                 reader,
                 reader_closed,
                 readers,
@@ -135,7 +139,7 @@ where
         task::spawn_blocking(move || {
             let meta = Metadata::read_or_create(&base_path)?;
             let meta = Arc::new(RwLock::new(meta));
-            let (writer, _) = writer::spawn(
+            let (writer, _, _) = writer::spawn(
                 base_path,
                 lockfile,
                 LogSync::IntervalMillis(200),

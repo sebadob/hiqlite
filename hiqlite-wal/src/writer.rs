@@ -101,7 +101,14 @@ pub fn spawn(
     wal_deep_integrity_check: bool,
     meta: Arc<RwLock<Metadata>>,
     committed: Arc<RwLock<Option<Vec<u8>>>>,
-) -> Result<(flume::Sender<Action>, Arc<RwLock<WalFileSet>>), Error> {
+) -> Result<
+    (
+        flume::Sender<Action>,
+        flume::Receiver<()>,
+        Arc<RwLock<WalFileSet>>,
+    ),
+    Error,
+> {
     let mut set = WalFileSet::read(base_path, wal_size)?;
     // The purge frontier is the lowest log id the log store may end up behind, and it bounds the
     // rollback the deep integrity check can do.
@@ -160,17 +167,26 @@ pub fn spawn(
     }
 
     let (tx, rx) = flume::bounded::<Action>(1);
+    let (done, closed) = flume::bounded::<()>(0);
     let wal = wal_locked.clone();
     let snc = sync;
     let shared = Shared { meta, committed };
-    thread::spawn(move || run(lockfile, &shared, &wal, set, &rx, &snc, wal_size));
+    thread::spawn(move || {
+        // dropped after `rx`, also on a panic: whoever waits on an answer from the writer
+        // watches `closed`, because an action still queued in `rx` is never answered
+        let _done = done;
+        let rx = rx;
+        if let Err(err) = run(lockfile, &shared, &wal, set, &rx, &snc, wal_size) {
+            error!("WAL writer stopped with an error: {err}");
+        }
+    });
 
     if let LogSync::IntervalMillis(millis) = &sync {
         let interval = time::interval(Duration::from_millis(*millis));
         spawn_syncer(tx.clone(), interval);
     }
 
-    Ok((tx, wal_locked))
+    Ok((tx, closed, wal_locked))
 }
 
 /// Copies the in-memory `committed` pointer into the active file's header fields.
@@ -226,6 +242,14 @@ struct Shared {
     committed: Arc<RwLock<Option<Vec<u8>>>>,
 }
 
+impl Shared {
+    /// Applies `update` to the in-memory metadata and writes it to disk.
+    fn write_meta(&self, base_path: &str, update: impl FnOnce(&mut Metadata)) -> Result<(), Error> {
+        update(&mut *self.meta.write()?);
+        Metadata::write(&self.meta, base_path)
+    }
+}
+
 /// There are a lot of `unwrap()`s in this task. The reason is simply, if most of these fail, it can
 /// only be because of a non-recoverable error anyway and the application should crash, so that
 /// the next health check can restart it.
@@ -258,15 +282,28 @@ fn run(
                 debug!("WAL Writer - Action::Append");
 
                 let mut res = Ok(());
+                // A batch whose entry sender is dropped before its `None` end marker holds an
+                // unknown number of entries. A later append could continue it with a gap or an
+                // overlap, so the writer stops after answering it.
+                let mut truncated = false;
+                let mut roll_over_failed = false;
                 {
                     let mut active = wal.active();
 
-                    // There is no need to specifically catch a possibly closed channel and respond
-                    // with an error. If that channel is being closed mid-batch append, it means
-                    // openraft (and all other tasks) when down, and it dropped the whole log store.
-                    // If that ever happens, there is no one listening on the other end of your ack
-                    // and callback, which means no one would ever even get our result.
-                    while let Ok(Some((id, bytes))) = rx.recv() {
+                    loop {
+                        let (id, bytes) = match rx.recv() {
+                            Ok(Some(entry)) => entry,
+                            Ok(None) => break,
+                            Err(_) => {
+                                res = Err(Error::Internal(
+                                    "append batch ended without its end marker - the entry \
+                                    sender was dropped"
+                                        .into(),
+                                ));
+                                truncated = true;
+                                break;
+                            }
+                        };
                         // read from the active file: a roll_over can hand over a header of a
                         // different version, and with it a different usable size
                         let data_len_limit = active.max_data_len(wal_size);
@@ -307,7 +344,11 @@ fn run(
                             // publish first: `roll_over` seals the current file and carries its
                             // header values, including `committed`, into the new file
                             publish_committed(&mut wal, &shared.committed);
-                            wal.roll_over(wal_size, &mut buf)?;
+                            if let Err(err) = wal.roll_over(wal_size, &mut buf) {
+                                res = Err(err);
+                                roll_over_failed = true;
+                                break;
+                            }
                             {
                                 let mut lock = wal_locked.write().unwrap();
                                 lock.active = wal.active;
@@ -329,16 +370,34 @@ fn run(
                     }
                 }
 
+                let mut res_cb = match &res {
+                    Ok(()) => Ok(()),
+                    Err(err) => Err(io::Error::other(err.to_string())),
+                };
+
+                if roll_over_failed {
+                    // The WAL file set is left half rolled over, so not even the exit path may
+                    // touch it any more.
+                    error!("Rolling over to a new WAL file failed - stopping writer: {res:?}");
+                    let _ = ack.send(res);
+                    callback(res_cb);
+                    return Err(Error::Internal(
+                        "rolling over to a new WAL file failed".into(),
+                    ));
+                }
+
                 {
                     let mut lock = wal_locked.write().unwrap();
                     debug_assert_eq!(lock.active, wal.active);
                     lock.active().clone_from_no_mmap(wal.active());
                 }
 
-                let mut res_cb = match &res {
-                    Ok(()) => Ok(()),
-                    Err(err) => Err(io::Error::other(err.to_string())),
-                };
+                if truncated {
+                    error!("Incomplete WAL append batch - stopping writer");
+                    let _ = ack.send(res);
+                    callback(res_cb);
+                    break;
+                }
                 // We want to ack before flush for throughput. If anything goes wrong during flush,
                 // the openraft callback will get notified about it.
                 if ack.send(res).is_err() {
@@ -435,11 +494,26 @@ fn run(
 
                 // Persist the purge frontier before deleting (too low = hole into deleted files;
                 // too high = extra files). Revert it again if the deletion fails below.
-                let previous_purged = shared.meta.read()?.last_purged_log_id.clone();
+                let previous_purged = match shared.meta.read() {
+                    Ok(meta) => meta.last_purged_log_id.clone(),
+                    Err(err) => {
+                        let err = Error::from(err);
+                        error!("Reading the WAL metadata failed - stopping writer: {err}");
+                        let _ = ack.send(Err(err));
+                        break;
+                    }
+                };
                 let persist_purged = last_log.is_some();
-                if persist_purged {
-                    shared.meta.write()?.last_purged_log_id = last_log;
-                    Metadata::write(&shared.meta, &wal.base_path)?;
+                if persist_purged
+                    && let Err(err) = shared.write_meta(&wal.base_path, |meta| {
+                        meta.last_purged_log_id = last_log;
+                    })
+                {
+                    // nothing is deleted yet, and a frontier that is too high only leaves
+                    // extra files behind
+                    error!("Persisting the purge frontier failed - stopping writer: {err}");
+                    let _ = ack.send(Err(err));
+                    break;
                 }
 
                 buf.clear();
@@ -489,10 +563,15 @@ fn run(
 
                 // Blocking on purpose: clearing `is_dirty` while an msync is still in flight
                 // would make the interval ticker skip a WAL that never reached disk.
-                flush_blocking(&mut wal, &mut buf, &mut is_dirty, &shared.committed)?;
+                if let Err(err) =
+                    flush_blocking(&mut wal, &mut buf, &mut is_dirty, &shared.committed)
+                {
+                    error!("WAL flush before saving the vote failed - stopping writer: {err}");
+                    let _ = ack.send(Err(err));
+                    break;
+                }
 
-                shared.meta.write()?.vote = Some(value);
-                let res = Metadata::write(&shared.meta, &wal.base_path);
+                let res = shared.write_meta(&wal.base_path, |meta| meta.vote = Some(value));
 
                 if ack.send(res).is_err() {
                     error!("WAL writer ack channel closed after vote - stopping writer");
