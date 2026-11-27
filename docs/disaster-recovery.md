@@ -138,6 +138,23 @@ A single node that must come back alone starts as a one-node cluster: set `nodes
 with node id 1, restore, verify, then rebuild the cluster config. A node with any other id ignores a
 restore request in the sense that it does not apply the backup; it only clears its own state.
 
+## A snapshot is unreadable
+
+A node keeps its two newest SQLite snapshots. A node with an intact database (after a clean stop)
+starts even when the newest one is unreadable, and builds a new one.
+
+A node that rebuilds its database at startup (after an unclean stop with `auto-heal`) needs a
+snapshot plus every log entry after it. When the newest snapshot fails validation, it falls back to
+the older one only if its Raft log still holds every entry after that older snapshot. It logs a
+warning and renames the unusable file to `<id>.corrupt`. With the default Raft config, the log is
+purged right behind each new snapshot, so the older one is usually not covered, and the node
+refuses to start with an error that names every snapshot it rejected. It never starts with entries
+missing. Then:
+
+- In a cluster with healthy members: clear this node's data dir and start it, as in
+  [One node lost, cluster alive](#one-node-lost-cluster-alive).
+- A single node: restore a backup.
+
 ## Last resort: reset the Raft state
 
 > **CAUTION.** This is the most destructive switch Hiqlite has, and a healthy cluster never needs

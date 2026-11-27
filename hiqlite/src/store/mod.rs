@@ -94,6 +94,8 @@ pub(crate) async fn start_raft_db(
     .await?;
     let startup_replay_target =
         startup_replay_target(&mut log_store, node_config.nodes.len() == 1).await?;
+    // a database rebuilt from a snapshot needs the log from that snapshot onwards
+    let last_purged_log_id = log_store.get_log_state().await?.last_purged_log_id;
     let state_machine_store = StateMachineSqlite::new(
         &node_config.data_dir,
         &node_config.filename_db,
@@ -107,6 +109,7 @@ pub(crate) async fn start_raft_db(
         #[cfg(feature = "s3")]
         node_config.s3_config.clone(),
         do_reset_metadata,
+        last_purged_log_id,
         #[cfg(feature = "backup")]
         node_config.backup_keep_for_local,
         #[cfg(feature = "backup")]

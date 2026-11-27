@@ -658,40 +658,47 @@ pub async fn read_line_stdin() -> Result<String, Error> {
 
 #[cfg(any(feature = "sqlite", feature = "backup"))]
 pub async fn validate_db_backup_snapshot(path: String) -> Result<(), Error> {
-    use crate::store::state_machine::sqlite::state_machine::StateMachineData;
-
     tokio::task::spawn_blocking(move || {
         let conn = rusqlite::Connection::open(path)?;
-
-        // Metadata check: the backup must carry our state-machine metadata row.
-        let mut stmt = conn.prepare_cached("SELECT data FROM _metadata WHERE key = 'meta'")?;
-        let bytes = stmt.query_row((), |row| {
-            let bytes: Vec<u8> = row.get(0)?;
-            Ok(bytes)
-        })?;
-        deserialize_serde::<StateMachineData>(&bytes)?;
-
-        // Full SQLite integrity check: a corrupt-but-openable DB must not pass
-        // silently. `PRAGMA integrity_check` returns exactly one "ok" row when the
-        // database is healthy, and one row per problem otherwise.
-        let mut stmt = conn.prepare("PRAGMA integrity_check")?;
-        let mut problems: Vec<String> = Vec::new();
-        {
-            let rows = stmt.query_map(rusqlite::params![], |row| row.get::<_, String>(0))?;
-            for r in rows {
-                problems.push(r?);
-            }
-        }
-        if problems.len() != 1 || problems[0] != "ok" {
-            return Err(Error::Sqlite(
-                format!("Backup integrity check failed: {}", problems.join("; ")).into(),
-            ));
-        }
-
-        Ok::<(), Error>(())
+        validate_db_conn(&conn).map(|_| ())
     })
     .await??;
     Ok(())
+}
+
+/// The checks of `validate_db_backup_snapshot` on a database that is already open: it must carry
+/// our state-machine metadata row, and SQLite's `integrity_check` must find nothing wrong with it.
+/// Returns the decoded metadata.
+#[cfg(any(feature = "sqlite", feature = "backup"))]
+pub fn validate_db_conn(
+    conn: &rusqlite::Connection,
+) -> Result<crate::store::state_machine::sqlite::state_machine::StateMachineData, Error> {
+    // Metadata check: the file must carry our state-machine metadata row.
+    let mut stmt = conn.prepare_cached("SELECT data FROM _metadata WHERE key = 'meta'")?;
+    let bytes = stmt.query_row((), |row| {
+        let bytes: Vec<u8> = row.get(0)?;
+        Ok(bytes)
+    })?;
+    let metadata = deserialize_serde(&bytes)?;
+
+    // Full SQLite integrity check: a corrupt-but-openable DB must not pass
+    // silently. `PRAGMA integrity_check` returns exactly one "ok" row when the
+    // database is healthy, and one row per problem otherwise.
+    let mut stmt = conn.prepare("PRAGMA integrity_check")?;
+    let mut problems: Vec<String> = Vec::new();
+    {
+        let rows = stmt.query_map(rusqlite::params![], |row| row.get::<_, String>(0))?;
+        for r in rows {
+            problems.push(r?);
+        }
+    }
+    if problems.len() != 1 || problems[0] != "ok" {
+        return Err(Error::Sqlite(
+            format!("SQLite integrity check failed: {}", problems.join("; ")).into(),
+        ));
+    }
+
+    Ok(metadata)
 }
 
 #[cfg(all(test, feature = "cache"))]

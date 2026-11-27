@@ -76,16 +76,34 @@ impl RaftSnapshotBuilder<TypeConfigSqlite> for SQLiteSnapshotBuilder {
     }
 }
 
-// The error type is huge, but defined by the openraft trait.
-#[allow(clippy::result_large_err)]
+/// How many published snapshots the cleanup after a build keeps: the one just built and the one
+/// before it.
+///
+/// The older one is what a rebuild of the database falls back to when the newest one is not
+/// usable. That fallback only works while the log still holds every entry after the older
+/// snapshot, which `max_in_snapshot_log_to_keep` decides, so keeping more than one older snapshot
+/// would only cost disk space.
+const SNAPSHOTS_KEEP: usize = 2;
+
+/// Removes everything from the snapshots folder except the newest `SNAPSHOTS_KEEP` published
+/// snapshots, and always `keep_id`, the one just built.
 async fn snapshots_cleanup(
     path_snapshots: String,
     #[cfg(feature = "backup")] path_backups: String,
     keep_id: Uuid,
 ) -> Result<(), io::Error> {
-    let mut list = tokio::fs::read_dir(&path_snapshots).await?;
-
+    let mut keep = StateMachineSqlite::published_snapshots(&path_snapshots)
+        .await?
+        .into_iter()
+        .take(SNAPSHOTS_KEEP)
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>();
     let keep_id = keep_id.to_string();
+    if !keep.contains(&keep_id) {
+        keep.push(keep_id);
+    }
+
+    let mut list = tokio::fs::read_dir(&path_snapshots).await?;
     let mut deletes = Vec::new();
     loop {
         let entry = match list.next_entry().await {
@@ -107,7 +125,7 @@ async fn snapshots_cleanup(
             continue;
         }
 
-        if name != keep_id {
+        if !keep.iter().any(|k| k == name) {
             deletes.push(name.to_string());
         }
     }

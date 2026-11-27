@@ -2,6 +2,7 @@
 
 use crate::helpers::{
     atomic_file_switch, deserialize_serde, set_path_access, validate_db_backup_snapshot,
+    validate_db_conn,
 };
 use crate::migration::Migration;
 use crate::query::rows::RowsOwnedChecked;
@@ -168,6 +169,7 @@ impl StateMachineSqlite {
         log_slow_queries: bool,
         #[cfg(feature = "s3")] s3_config: Option<Arc<crate::s3::S3Config>>,
         do_reset_metadata: bool,
+        last_purged_log_id: Option<LogIdOf<TypeConfigSqlite>>,
         #[cfg(feature = "backup")] local_backup_keep_for: Duration,
         #[cfg(feature = "backup")] backup_file_prefix: &str,
     ) -> Result<StateMachineSqlite, io::Error> {
@@ -248,7 +250,11 @@ impl StateMachineSqlite {
             backup_status,
         };
 
-        if !db_exists && let Some(snapshot) = slf.read_current_snapshot().await? {
+        if !db_exists
+            && let Some(snapshot) =
+                Self::select_restore_snapshot(&slf.path_snapshots, last_purged_log_id.as_ref())
+                    .await?
+        {
             slf.update_state_machine_(snapshot.path).await?;
         }
 
@@ -623,12 +629,14 @@ impl StateMachineSqlite {
         Ok(())
     }
 
-    // The error type is huge, but defined by the openraft trait.
-    #[allow(clippy::result_large_err)]
-    async fn read_current_snapshot(&mut self) -> StorageResult<Option<StoredSnapshot>> {
-        let mut list = tokio::fs::read_dir(&self.path_snapshots).await?;
+    /// The published snapshots in `path_snapshots`, newest first.
+    ///
+    /// A published snapshot is named by its UUID, a v7 that sorts by creation time. Anything else
+    /// in the folder is a staging file or a leftover, and never a candidate.
+    pub(crate) async fn published_snapshots(path_snapshots: &str) -> io::Result<Vec<Uuid>> {
+        let mut list = fs::read_dir(path_snapshots).await?;
 
-        let mut snapshot_id: Option<Uuid> = None;
+        let mut ids = Vec::new();
         loop {
             let entry = match list.next_entry().await {
                 Ok(Some(entry)) => entry,
@@ -651,70 +659,152 @@ impl StateMachineSqlite {
                 continue;
             }
 
-            if let Some(curr) = &snapshot_id {
-                if &id > curr {
-                    snapshot_id = Some(id);
+            ids.push(id);
+        }
+
+        ids.sort_unstable_by(|a, b| b.cmp(a));
+        Ok(ids)
+    }
+
+    /// Reads the metadata of a snapshot file without changing it: no pragma is applied, the
+    /// connection is query-only, and a file that vanished is not created again. With
+    /// `check_integrity`, the file must also pass the validation a backup goes through before it
+    /// is restored.
+    ///
+    /// The open is read-write on purpose: a snapshot in WAL mode cannot be opened read-only when
+    /// its `-shm` file does not exist, which it does not for a published snapshot.
+    async fn read_snapshot_metadata(
+        path: String,
+        check_integrity: bool,
+    ) -> Result<StateMachineData, Error> {
+        task::spawn_blocking(move || {
+            let conn = rusqlite::Connection::open_with_flags(
+                &path,
+                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
+            conn.pragma_update(None, "query_only", true)?;
+
+            if check_integrity {
+                return validate_db_conn(&conn);
+            }
+
+            let bytes: Vec<u8> = conn
+                .query_row("SELECT data FROM _metadata WHERE key = 'meta'", (), |row| {
+                    row.get(0)
+                })
+                .map_err(|err| {
+                    Error::Sqlite(format!("Error reading metadata from '{path}': {err}").into())
+                })?;
+            Ok(deserialize_serde::<StateMachineData>(&bytes)?)
+        })
+        .await?
+    }
+
+    /// The newest snapshot whose metadata is readable, which is what this node offers its peers
+    /// and what openraft starts from.
+    ///
+    /// An unreadable one is skipped instead of failing the call: a peer that gets an older
+    /// snapshot is told its real log position by the snapshot's own metadata, while an error here
+    /// stops this node's Raft.
+    async fn read_current_snapshot(&mut self) -> StorageResult<Option<StoredSnapshot>> {
+        for id in Self::published_snapshots(&self.path_snapshots).await? {
+            let path = format!("{}/{id}", self.path_snapshots);
+            match Self::read_snapshot_metadata(path.clone(), false).await {
+                Ok(metadata) => return Ok(Some(StoredSnapshot::from_metadata(path, metadata))),
+                Err(err) => error!("Skipping unreadable snapshot {path}: {err}"),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Picks the snapshot a rebuild of the database restores from.
+    ///
+    /// Candidates are tried newest first, and each one must pass the full validation. Restoring
+    /// one sets this node back to its `last_applied_log_id`, and only the local log can carry it
+    /// forward from there. So the first valid candidate is only taken when the log store has not
+    /// purged past it, and when it has, this node is refused a start: the purged entries exist in
+    /// no file here, and an older candidate would only miss more of them. Without any snapshot,
+    /// the restore point is the empty database, under the same rule.
+    ///
+    /// No peer is assumed to hold the missing entries. A single node has none, and in a cluster
+    /// the leader may have purged them just the same.
+    ///
+    /// When the candidate taken is not the newest, the newer ones are renamed to
+    /// `{uuid}.corrupt`, so that neither `get_current_snapshot` nor a later restart selects them
+    /// again. The cleanup after the next snapshot build removes them.
+    async fn select_restore_snapshot(
+        path_snapshots: &str,
+        last_purged_log_id: Option<&LogIdOf<TypeConfigSqlite>>,
+    ) -> StorageResult<Option<StoredSnapshot>> {
+        let mut rejected: Vec<(String, Error)> = Vec::new();
+        let mut selected = None;
+
+        for id in Self::published_snapshots(path_snapshots).await? {
+            let path = format!("{path_snapshots}/{id}");
+            match Self::read_snapshot_metadata(path.clone(), true).await {
+                Ok(metadata) => {
+                    selected = Some(StoredSnapshot::from_metadata(path, metadata));
+                    break;
                 }
-            } else {
-                snapshot_id = Some(id);
+                Err(err) => {
+                    error!("Snapshot {path} is not usable for a restore: {err}");
+                    rejected.push((path, err));
+                }
             }
         }
 
-        if snapshot_id.is_none() {
-            return Ok(None);
+        let restore_point = selected.as_ref().and_then(|s| s.meta.last_log_id.as_ref());
+        if restore_point < last_purged_log_id {
+            let candidates = rejected
+                .iter()
+                .map(|(path, err)| format!("\n  - {path}: {err}"))
+                .collect::<String>();
+            let msg = format!(
+                "Cannot rebuild the database: the newest usable snapshot ({}) ends at log {:?}, \
+                but the log store has already purged up to {:?}, so the entries in between \
+                exist nowhere on this node. Rejected snapshots:{candidates}\n\
+                Recover by restoring a backup, or, in a cluster with healthy members, by removing \
+                this node's data directory and letting it join again.",
+                selected.as_ref().map_or("none", |s| s.path.as_str()),
+                restore_point,
+                last_purged_log_id,
+            );
+            error!("{msg}");
+            return Err(io::Error::other(msg));
         }
 
-        let id = snapshot_id.unwrap();
-        let path_snapshot = format!("{}/{}", self.path_snapshots, id);
-        let db_path = self.path_snapshots.clone();
-        let filename_db = id.to_string();
+        if !rejected.is_empty() {
+            for (path, _) in &rejected {
+                fs::rename(path, format!("{path}.corrupt")).await?;
+            }
+            warn!(
+                "Falling back to {} at log {:?}: {} newer snapshot(s) are not \
+                usable and were renamed to '<id>.corrupt'. The log store still holds every entry \
+                after it, so nothing is lost.",
+                selected
+                    .as_ref()
+                    .map_or("the empty database", |s| s.path.as_str()),
+                restore_point,
+                rejected.len(),
+            );
+        }
 
-        // open a DB connection to read out the metadata
-        let conn = Self::connect(db_path, filename_db, 2).await?;
+        Ok(selected)
+    }
+}
 
-        // let path_snapshot_clone = path_snapshot.clone();
-        let path_dbg = path_snapshot.clone();
-        let metadata = task::spawn_blocking(move || {
-            let mut stmt = conn
-                .prepare("SELECT data FROM _metadata WHERE key = 'meta'")
-                .map_err(|err| {
-                    Error::Sqlite(
-                        format!("Error preparing metadata read stmt in read from snapshot: {err}")
-                            .into(),
-                    )
-                })?;
-            let mut metadata = stmt
-                .query_row((), |row| {
-                    let meta_bytes: Vec<u8> = row.get(0)?;
-                    let metadata: StateMachineData =
-                        deserialize_serde(&meta_bytes).expect("Metadata to deserialize ok");
-                    Ok(metadata)
-                })
-                .map_err(|err| {
-                    Error::Sqlite(
-                        format!("Error reading metadata from Snapshot '{path_dbg}': {err}").into(),
-                    )
-                })?;
-
-            Ok::<StateMachineData, Error>(metadata)
-        })
-        .await?;
-
-        let metadata = metadata?;
-
+impl StoredSnapshot {
+    fn from_metadata(path: String, metadata: StateMachineData) -> Self {
         // openraft 0.10 has no `snapshot_id` in `SnapshotMeta` anymore; the file name is the
         // snapshot's identity on disk. `last_snapshot_id` stays in our metadata, but a snapshot
         // installed from a peer keeps the sender's id there, so it is advisory only.
-        let meta = SnapshotMetaOf::<TypeConfigSqlite> {
-            last_log_id: metadata.last_applied_log_id,
-            last_membership: metadata.last_membership,
-        };
-        let snapshot = StoredSnapshot {
-            meta,
-            path: path_snapshot,
-        };
-
-        Ok(Some(snapshot))
+        Self {
+            meta: SnapshotMetaOf::<TypeConfigSqlite> {
+                last_log_id: metadata.last_applied_log_id,
+                last_membership: metadata.last_membership,
+            },
+            path,
+        }
     }
 }
 
@@ -961,10 +1051,8 @@ impl RaftStateMachine<TypeConfigSqlite> for StateMachineSqlite {
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<SnapshotOf<TypeConfigSqlite, Self::SnapshotData>>, io::Error> {
-        // `read_current_snapshot` only ever tries to read the snapshot with the highest ID, which
-        // is against the trait contract by definition. However, we only ever store a single
-        // snapshot anyway, so there is no need to even look for other ones. All snapshots expect
-        // the latest one are being cleaned up pretty much directly.
+        // The newest snapshot with readable metadata. A build keeps the previous one next to it,
+        // so an unreadable newest file does not leave this node without a snapshot.
         match self.read_current_snapshot().await? {
             None => Ok(None),
             Some(snap) => {
@@ -1081,6 +1169,172 @@ mod tests {
                 "{name} did not panic: {err}"
             );
         }
+    }
+
+    fn log_id(index: u64) -> LogIdOf<TypeConfigSqlite> {
+        LogIdOf::<TypeConfigSqlite> {
+            leader_id: openraft::impls::leader_id_adv::LeaderId {
+                term: 1,
+                node_id: 1,
+            },
+            index,
+        }
+    }
+
+    fn snapshots_dir(case: &str) -> String {
+        let dir = std::env::temp_dir().join(format!(
+            "hiqlite_snapshot_selection_{case}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.to_str().unwrap().to_string()
+    }
+
+    /// Publishes a valid snapshot at `index` the way the writer does: a database with our
+    /// metadata row, written under a fresh v7 UUID.
+    fn publish(dir: &str, index: u64) -> Uuid {
+        let id = Uuid::now_v7();
+        let conn = rusqlite::Connection::open(format!("{dir}/{id}")).unwrap();
+        conn.execute("CREATE TABLE _metadata (key TEXT PRIMARY KEY, data BLOB)", ())
+            .unwrap();
+        let meta = StateMachineData {
+            last_applied_log_id: Some(log_id(index)),
+            ..Default::default()
+        };
+        conn.execute(
+            "INSERT INTO _metadata (key, data) VALUES ('meta', $1)",
+            [crate::helpers::serialize_serde(&meta)],
+        )
+        .unwrap();
+        id
+    }
+
+    /// The first page carries the SQLite header: overwriting it is what a torn write or bit-rot
+    /// leaves behind.
+    fn corrupt(dir: &str, id: Uuid) {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(format!("{dir}/{id}"))
+            .unwrap();
+        f.write_all(&[0xAB; 512]).unwrap();
+    }
+
+    fn select(
+        dir: &str,
+        last_purged: Option<u64>,
+    ) -> StorageResult<Option<StoredSnapshot>> {
+        let last_purged = last_purged.map(log_id);
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(StateMachineSqlite::select_restore_snapshot(
+                dir,
+                last_purged.as_ref(),
+            ))
+    }
+
+    fn files(dir: &str) -> Vec<String> {
+        let mut names = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn restore_selects_newest_valid_snapshot() {
+        let dir = snapshots_dir("newest");
+        publish(&dir, 100);
+        let newest = publish(&dir, 200);
+
+        let snap = select(&dir, Some(199)).unwrap().unwrap();
+        assert_eq!(snap.path, format!("{dir}/{newest}"));
+        assert_eq!(snap.meta.last_log_id, Some(log_id(200)));
+    }
+
+    #[test]
+    fn restore_falls_back_when_the_log_covers_the_older_snapshot() {
+        let dir = snapshots_dir("fallback");
+        let older = publish(&dir, 100);
+        let newest = publish(&dir, 200);
+        corrupt(&dir, newest);
+
+        // purged up to exactly the older snapshot: every entry after it is still in the log
+        let snap = select(&dir, Some(100)).unwrap().unwrap();
+        assert_eq!(snap.path, format!("{dir}/{older}"));
+        assert_eq!(snap.meta.last_log_id, Some(log_id(100)));
+        // the unusable one is out of the way for every later selection
+        assert_eq!(files(&dir), vec![older.to_string(), format!("{newest}.corrupt")]);
+    }
+
+    #[test]
+    fn restore_refuses_a_fallback_past_the_purged_log() {
+        let dir = snapshots_dir("refuse");
+        let older = publish(&dir, 100);
+        let newest = publish(&dir, 200);
+        corrupt(&dir, newest);
+
+        let err = select(&dir, Some(101)).unwrap_err().to_string();
+        assert!(err.contains("purged"), "{err}");
+        assert!(err.contains(&newest.to_string()), "names the rejected one: {err}");
+        // nothing is renamed, the files stay for a manual recovery
+        assert_eq!(files(&dir), vec![older.to_string(), newest.to_string()]);
+    }
+
+    #[test]
+    fn restore_refuses_when_no_snapshot_is_usable_and_the_log_was_purged() {
+        let dir = snapshots_dir("none_usable");
+        let only = publish(&dir, 100);
+        corrupt(&dir, only);
+
+        let err = select(&dir, Some(50)).unwrap_err().to_string();
+        assert!(err.contains("purged"), "{err}");
+    }
+
+    #[test]
+    fn restore_without_purged_log_replays_from_the_start() {
+        // nothing purged: the full log rebuilds the database, with or without a snapshot
+        let dir = snapshots_dir("no_purge");
+        assert!(select(&dir, None).unwrap().is_none());
+
+        let only = publish(&dir, 100);
+        corrupt(&dir, only);
+        assert!(select(&dir, None).unwrap().is_none());
+        assert_eq!(files(&dir), vec![format!("{only}.corrupt")]);
+    }
+
+    #[test]
+    fn restore_rejects_a_snapshot_failing_the_integrity_check() {
+        let dir = snapshots_dir("integrity");
+        let older = publish(&dir, 100);
+        let newest = publish(&dir, 200);
+        // a readable header and metadata, but a page that no longer decodes
+        {
+            let conn = rusqlite::Connection::open(format!("{dir}/{newest}")).unwrap();
+            conn.execute("CREATE TABLE t (a TEXT)", ()).unwrap();
+            conn.execute("CREATE INDEX t_a ON t (a)", ()).unwrap();
+            for i in 0..2000 {
+                conn.execute("INSERT INTO t VALUES ($1)", [format!("row-{i:0>200}")])
+                    .unwrap();
+            }
+        }
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(format!("{dir}/{newest}"))
+                .unwrap();
+            let len = f.metadata().unwrap().len();
+            f.seek(SeekFrom::Start(len / 2)).unwrap();
+            f.write_all(&[0xAB; 8192]).unwrap();
+        }
+
+        let snap = select(&dir, Some(100)).unwrap().unwrap();
+        assert_eq!(snap.path, format!("{dir}/{older}"));
     }
 }
 
