@@ -607,6 +607,8 @@ impl NetworkStreaming {
             for (_, ack) in in_flight.drain() {
                 let _ = ack.send(Err(Error::Connect("Raft WebSocket stream ended".into())));
             }
+            // replace the map so the allocation a large drain leaves behind is released
+            in_flight = FxHashMap::default();
 
             // Give the writer enough time to possibly send out the close request.
             // Since we need to re-connect, there is no need to rush anyway.
