@@ -133,6 +133,15 @@ impl BackupSource {
             .into(),
         ))
     }
+
+    /// The source in the form of the `HQL_BACKUP_RESTORE` env var.
+    fn as_request(&self) -> String {
+        match self {
+            #[cfg(feature = "s3")]
+            Self::S3(obj) => format!("s3:{obj}"),
+            Self::File(path) => format!("file:{path}"),
+        }
+    }
 }
 
 /// The full file name of a backup: `{prefix}_{node_id}_{ts}.sqlite`.
@@ -341,16 +350,17 @@ pub(crate) async fn backup_local_cleanup(
 }
 
 /// What `restore_backup_start` did with a restore request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RestoreStart {
-    /// No restore was asked for.
+    /// No restore was asked for, or the requested backup has been restored already.
     None,
-    /// Node 1 applied the backup. `restore_backup_finish` must run once the Raft is up.
-    Applied,
-    /// Any other node moved its state aside with `backup_restore_keep_previous` and joins the
-    /// restored cluster empty. The state that was moved aside is removed by
-    /// `discard_pre_restore_state` once this node is a member of that cluster.
-    Rejoin,
+    /// Node 1 applied a backup: the one of the request, or the one of an earlier restore that was
+    /// interrupted. `restore_backup_finish` must run once the Raft is up.
+    Applied(Option<BackupSource>),
+    /// Any other node cleared its state, or moved it aside with `backup_restore_keep_previous`,
+    /// and joins the restored cluster empty. `discard_pre_restore_state` records the restore and
+    /// removes the state that was moved aside once this node is a member of that cluster.
+    Rejoin(BackupSource),
 }
 
 /// Restore the backup that was given to `start_node_from_backup`, or the one named by the
@@ -358,7 +368,8 @@ pub(crate) enum RestoreStart {
 ///
 /// Every node of the cluster must be started with the same restore source: node 1 applies the
 /// backup, all other nodes wipe their own state (or move it aside with
-/// `backup_restore_keep_previous`) and join the new cluster clean.
+/// `backup_restore_keep_previous`) and join the new cluster clean. Once that is done, the source
+/// is recorded with `RestoredMarker`, and a later start with the same source does nothing.
 ///
 /// Nothing is touched while another live process holds the state machine lock of this
 /// `data_dir`.
@@ -370,31 +381,92 @@ pub(crate) async fn restore_backup_start(
         Some(src) => Some(src),
         None => BackupSource::from_env()?,
     };
+    let data_dir = &node_config.data_dir;
+
     let Some(src) = src else {
+        if !fs::try_exists(path_pending_restore(data_dir)).await? {
+            return Ok(RestoreStart::None);
+        }
+        warn!("Found a validated backup that has not been applied yet - finishing the restore");
+        let mut lock = RestoreLock::acquire(data_dir).await?;
+        apply_pending_restore(node_config, &mut lock).await?;
+        if node_config.node_id == 1 {
+            return Ok(RestoreStart::Applied(None));
+        }
         return Ok(RestoreStart::None);
     };
     info!("Found backup restore request {:?}", src);
 
-    if node_config.node_id == 1 {
-        restore_backup(node_config, src).await?;
-        return Ok(RestoreStart::Applied);
+    if RestoredMarker::matches(data_dir, &src).await? {
+        info!(
+            "Backup {src:?} has been restored on this node already - ignoring the restore request. \
+            Remove it, or remove {} to restore the same backup again.",
+            RestoredMarker::path(data_dir)
+        );
+        let aside = path_pre_restore(data_dir);
+        if fs::try_exists(&aside).await? {
+            info!("Removing the previous state in {aside}, it was kept after the restore");
+            fs::remove_dir_all(&aside).await?;
+        }
+        return Ok(RestoreStart::None);
     }
 
-    let mut lock = RestoreLock::acquire(&node_config.data_dir).await?;
-    let start = if node_config.backup_restore_keep_previous {
+    if node_config.node_id == 1 {
+        restore_backup(node_config, src.clone()).await?;
+        return Ok(RestoreStart::Applied(Some(src)));
+    }
+
+    let mut lock = RestoreLock::acquire(data_dir).await?;
+    RestoredMarker::remove(data_dir).await?;
+    if node_config.backup_restore_keep_previous {
         // Node 1 has not even looked at the backup yet, and it may still fail to apply it. The
         // state is only moved aside, and removed once the restored cluster has taken this node in.
         warn!("Moving existing state aside and starting restore cluster join");
-        move_state_aside(&node_config.data_dir).await?;
-        RestoreStart::Rejoin
+        move_state_aside(data_dir).await?;
     } else {
         warn!("Cleaning up existing files and start restore cluster join");
-        cleanup_restore_data_dirs(&node_config.data_dir).await?;
-        RestoreStart::None
-    };
+        cleanup_restore_data_dirs(data_dir).await?;
+    }
     lock.state_replaced();
 
-    Ok(start)
+    Ok(RestoreStart::Rejoin(src))
+}
+
+/// The record of the last finished restore of a node: the restore source, in the form of the
+/// `HQL_BACKUP_RESTORE` env var. It lets a node that is started again with the same restore
+/// request skip it, instead of applying the backup again and losing everything written since.
+struct RestoredMarker;
+
+impl RestoredMarker {
+    fn path(data_dir: &str) -> String {
+        format!(
+            "{}/restored_backup",
+            StateMachineSqlite::path_base(data_dir)
+        )
+    }
+
+    async fn matches(data_dir: &str, src: &BackupSource) -> Result<bool, Error> {
+        match fs::read_to_string(Self::path(data_dir)).await {
+            Ok(restored) => Ok(restored == src.as_request()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    async fn write(data_dir: &str, src: &BackupSource) -> Result<(), Error> {
+        let path = Self::path(data_dir);
+        let tmp = format!("{path}.tmp");
+        fs::write(&tmp, src.as_request()).await?;
+        atomic_file_switch(tmp, path).await
+    }
+
+    async fn remove(data_dir: &str) -> Result<(), Error> {
+        match fs::remove_file(Self::path(data_dir)).await {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err.into()),
+        }
+    }
 }
 
 /// The state machine lock of a `data_dir`, held while a restore changes its state.
@@ -526,7 +598,11 @@ async fn move_state_aside(data_dir: &str) -> Result<(), Error> {
 /// that cluster holds everything this node needs, and the old state is never read again.
 ///
 /// If the Raft stops before that, the state stays where it is.
-pub(crate) async fn discard_pre_restore_state(state: Arc<AppState>, data_dir: String) {
+pub(crate) async fn discard_pre_restore_state(
+    state: Arc<AppState>,
+    data_dir: String,
+    src: BackupSource,
+) {
     let aside = path_pre_restore(&data_dir);
     let mut rx = state.raft_db.raft.metrics();
     loop {
@@ -549,6 +625,11 @@ pub(crate) async fn discard_pre_restore_state(state: Arc<AppState>, data_dir: St
         }
     }
 
+    // The marker goes first: a start in between skips the restore and removes what is left aside.
+    if let Err(err) = RestoredMarker::write(&data_dir, &src).await {
+        error!("Cannot record the finished restore of {src:?}: {err}");
+        return;
+    }
     match fs::remove_dir_all(&aside).await {
         Ok(()) => info!("Joined the restored cluster - removed the previous state in {aside}"),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -606,6 +687,11 @@ async fn stage_local_backup(source: String, directory: &str) -> Result<String, E
 ///
 /// You only need this if you apply a backup in another way than `start_node_from_backup` (or the
 /// `HQL_BACKUP_RESTORE` env var), which both do it for you at startup.
+///
+/// The backup is fetched and validated next to the current state, which stays untouched until
+/// the validated copy is durable under its pending name. From then on, an interrupted restore is
+/// finished by the next start, with or without a restore request, so a crash at any point leaves
+/// either the previous state or the backup, never neither.
 pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Result<(), Error> {
     info!("Starting database restore from backup {:?}", src);
     let mut lock = RestoreLock::acquire(&node_config.data_dir).await?;
@@ -619,7 +705,6 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
         ));
     }
 
-    let path_db = StateMachineSqlite::path_db(&node_config.data_dir);
     let path_backups = StateMachineSqlite::path_backups(&node_config.data_dir);
 
     fs::create_dir_all(&path_backups).await?;
@@ -633,8 +718,11 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
                     "No `S3Config` given, cannot restore backup".to_string(),
                 ));
             };
-            let path_backup = format!("{path_backups}/{BACKUP_DB_NAME}");
-            s3_config.pull(&s3_obj, &path_backup).await?;
+            let path_backup = format!("{path_backups}/restore-{}.tmp", uuid::Uuid::now_v7());
+            if let Err(err) = s3_config.pull(&s3_obj, &path_backup).await {
+                let _ = fs::remove_file(&path_backup).await;
+                return Err(err);
+            }
             path_backup
         }
         BackupSource::File(path_src) => stage_local_backup(path_src, &path_backups).await?,
@@ -650,12 +738,37 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     }
     debug!("Database backup validation passed (metadata + integrity check)");
 
+    // The state is about to change, a record of an earlier restore no longer describes it.
+    RestoredMarker::remove(&node_config.data_dir).await?;
+    atomic_file_switch(&path_backup, path_pending_restore(&node_config.data_dir)).await?;
+
+    apply_pending_restore(node_config, &mut lock).await
+}
+
+/// Where a validated backup waits until it replaced the database. While this file exists, a
+/// restore has been started and not finished yet.
+fn path_pending_restore(data_dir: &str) -> String {
+    format!(
+        "{}/{BACKUP_DB_NAME}",
+        StateMachineSqlite::path_backups(data_dir)
+    )
+}
+
+/// Replace the current state with the validated backup waiting in `path_pending_restore`.
+///
+/// Every step can be repeated: the pending backup only disappears with the final rename onto the
+/// database path, and until then the next start runs this again.
+async fn apply_pending_restore(
+    node_config: &NodeConfig,
+    lock: &mut RestoreLock,
+) -> Result<(), Error> {
+    let path_pending = path_pending_restore(&node_config.data_dir);
+    let path_db = StateMachineSqlite::path_db(&node_config.data_dir);
+
     debug!("Removing old data");
-    // Removing old dirs even before the backup is in its final place. Important to never end up
-    // in an inconsistent state with a partly applied backups and maybe still existing old WAL data.
-    // You apply the backup for a reason -> the current data is broken anyway. If anything fails
-    // between here and getting the backup into place, you start fresh anyway. The staged backup
-    // in `state_machine/backups` has been validated already and is intentionally kept.
+    // Old dirs are removed before the backup is in its final place, so a partly applied backup
+    // can never meet still existing old WAL data. The pending backup in `state_machine/backups`
+    // is kept until the very last step.
     cleanup_restore_data_dirs(&node_config.data_dir).await?;
     lock.state_replaced();
 
@@ -665,10 +778,15 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     let path_db_full = format!("{}/{}", path_db, node_config.filename_db);
     info!(
         "Given backup check ok - moving into its final place: {} -> {}",
-        path_backup, path_db_full
+        path_pending, path_db_full
     );
-    atomic_file_switch(path_backup, &path_db_full).await?;
+    atomic_file_switch(&path_pending, &path_db_full).await?;
     set_path_access(&path_db_full, 0o700).await?;
+    #[cfg(unix)]
+    fs::File::open(StateMachineSqlite::path_backups(&node_config.data_dir))
+        .await?
+        .sync_all()
+        .await?;
 
     Ok(())
 }
@@ -680,9 +798,41 @@ pub(crate) async fn validate_backup_db(path_db: String) -> Result<(), Error> {
     validate_db_backup_snapshot(path_db).await
 }
 
+/// How long `restore_backup_finish` may take in total. It covers the snapshot of the whole
+/// restored database, so it is generous.
+const RESTORE_FINISH_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Finish a restore on node 1 once its Raft is up: it takes a snapshot of the restored database
+/// and purges the logs below it, so the log of the restored cluster never starts fresh. Then the
+/// source of the restore, if a request named one, is recorded with `RestoredMarker`.
+///
+/// Gives up with an error after `RESTORE_FINISH_TIMEOUT`. The restore is not recorded then, and
+/// the next start with the same request applies the backup again.
 #[tracing::instrument(level = "debug", skip_all)]
-#[cfg(feature = "backup")]
-pub async fn restore_backup_finish(state: &Arc<AppState>) {
+pub(crate) async fn restore_backup_finish(
+    state: &Arc<AppState>,
+    data_dir: &str,
+    src: Option<&BackupSource>,
+) -> Result<(), Error> {
+    time::timeout(
+        RESTORE_FINISH_TIMEOUT,
+        snapshot_and_purge_after_restore(state),
+    )
+    .await
+    .map_err(|_| {
+        Error::Timeout(format!(
+            "Backup restore did not finish within {RESTORE_FINISH_TIMEOUT:?}"
+        ))
+    })??;
+
+    if let Some(src) = src {
+        RestoredMarker::write(data_dir, src).await?;
+    }
+    info!("restore_backup_finish task successful");
+    Ok(())
+}
+
+async fn snapshot_and_purge_after_restore(state: &Arc<AppState>) -> Result<(), Error> {
     loop {
         match state.raft_db.raft.is_initialized().await {
             Ok(res) => {
@@ -734,12 +884,13 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
     }
 
     debug!("Taking snapshot now");
-    if let Err(err) = state.raft_db.raft.trigger().snapshot().await {
-        // e.g. the raft is shutting down: do not panic the task, just bail out - the
-        // wait-for-snapshot loop below would never finish anyway
-        error!("Error triggering snapshot: {err}");
-        return;
-    }
+    state
+        .raft_db
+        .raft
+        .trigger()
+        .snapshot()
+        .await
+        .map_err(|err| Error::Error(format!("Error triggering snapshot: {err}").into()))?;
 
     // wait until snapshot has been built
     while state
@@ -756,15 +907,14 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
 
     debug!("Purging logs");
     while let Err(err) = state.raft_db.raft.trigger().purge_log(last_log).await {
-        // It's very important to retry until success. If we had an upper limit and exit early,
-        // the only thing we could do is actually panic. This is important because the first
-        // WAL logs entry MUST NOT start fresh. Otherwise, it would screw up the backup logic.
-        // -> retry until success, which will usually succeed instantly
+        // It's very important to retry until success: the first WAL logs entry MUST NOT start
+        // fresh, otherwise it would screw up the backup logic. This usually succeeds instantly,
+        // and the time it may take is bounded by `RESTORE_FINISH_TIMEOUT`.
         error!("Error during logs purge: {}", err);
         time::sleep(Duration::from_millis(100)).await;
     }
 
-    info!("restore_backup_finish task successful");
+    Ok(())
 }
 
 /// What this node knows about its backups, for `GET /backup` and `/metrics`.

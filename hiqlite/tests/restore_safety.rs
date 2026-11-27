@@ -4,6 +4,8 @@
 //!   With `backup_restore_keep_previous`, if node 1 then fails to apply it, the state of the other
 //!   nodes must still be there. Without it, the state is deleted.
 //! - A restore started against the `data_dir` of a live node must refuse to touch it.
+//! - A restore that was interrupted is finished by the next start, and one that finished is not
+//!   applied again by a start with the same request.
 
 #![cfg(all(feature = "sqlite", feature = "backup"))]
 
@@ -46,6 +48,47 @@ fn config(node_id: u64, nodes: u64, dir: &str, port_api: u16) -> NodeConfig {
         c
     };
     c
+}
+
+/// Takes a backup on `client` and returns a copy of it outside the `data_dir`.
+async fn backup_of(client: &hiqlite::Client, dir: &str) -> String {
+    client.backup().await.unwrap();
+    let backups = format!("{dir}/state_machine/backups");
+    for _ in 0..100 {
+        let backup = std::fs::read_dir(&backups)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|ext| ext == "sqlite"));
+        if let Some(backup) = backup {
+            let copy = format!("{dir}.backup.sqlite");
+            std::fs::copy(backup, &copy).unwrap();
+            return copy;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the backup has not been written");
+}
+
+async fn create_and_insert(client: &hiqlite::Client, id: i64) {
+    client
+        .execute(
+            "CREATE TABLE IF NOT EXISTS rows (id INTEGER PRIMARY KEY)",
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    client
+        .execute("INSERT INTO rows (id) VALUES ($1)", vec![id.into()])
+        .await
+        .unwrap();
+}
+
+async fn count(client: &hiqlite::Client) -> Result<i64, hiqlite::Error> {
+    let mut row = client
+        .query_raw_one("SELECT COUNT(*) AS c FROM rows", Vec::new())
+        .await?;
+    Ok(row.get::<i64>("c"))
 }
 
 /// The state a node had before the restore, planted by hand: the restore must only move it, never
@@ -161,22 +204,8 @@ async fn a_restore_never_touches_the_data_dir_of_a_live_node() {
         .unwrap();
 
     // a valid backup of this very node, so node 1 would have no reason to stop on its own
-    client.backup().await.unwrap();
-    let backups = format!("{dir}/state_machine/backups");
-    let mut backup = None;
-    for _ in 0..100 {
-        backup = std::fs::read_dir(&backups)
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .find(|p| p.extension().is_some_and(|ext| ext == "sqlite"));
-        if backup.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    let backup = backup.expect("the backup has been written");
-    let source = BackupSource::File(backup.to_str().unwrap().to_string());
+    let backup = backup_of(&client, &dir).await;
+    let source = BackupSource::File(backup);
 
     let db = format!("{dir}/state_machine/db/hiqlite.db");
     let logs = format!("{dir}/logs");
@@ -201,5 +230,79 @@ async fn a_restore_never_touches_the_data_dir_of_a_live_node() {
         .await
         .unwrap();
     assert_eq!(row.get::<i64>("c"), 1);
+    client.shutdown().await.unwrap();
+}
+
+/// The restore request stays set after the restore, e.g. in the env of a pod. A restart must not
+/// apply the backup again and drop everything written since.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_finished_restore_is_not_applied_again_by_the_next_start() {
+    let dir = fresh("restore_once");
+    let port = 37301;
+
+    let client = hiqlite::start_node(config(1, 1, &dir, port)).await.unwrap();
+    client.wait_until_healthy_db().await;
+    create_and_insert(&client, 1).await;
+    let source = BackupSource::File(backup_of(&client, &dir).await);
+    client.shutdown().await.unwrap();
+
+    let client = hiqlite::start_node_from_backup(config(1, 1, &dir, port), source.clone())
+        .await
+        .unwrap();
+    client.wait_until_healthy_db().await;
+    assert_eq!(count(&client).await.unwrap(), 1);
+    create_and_insert(&client, 2).await;
+    client.shutdown().await.unwrap();
+
+    let client = hiqlite::start_node_from_backup(config(1, 1, &dir, port), source)
+        .await
+        .unwrap();
+    client.wait_until_healthy_db().await;
+    assert_eq!(
+        count(&client).await.unwrap(),
+        2,
+        "the second start must not restore the backup again"
+    );
+    client.shutdown().await.unwrap();
+}
+
+/// A restore that crashed after it removed the old state, but before the backup was in place,
+/// must not leave an empty node behind. The next start finishes it, even without a request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interrupted_restore_is_finished_by_the_next_start() {
+    let dir = fresh("restore_interrupted");
+    let port = 37321;
+
+    let client = hiqlite::start_node(config(1, 1, &dir, port)).await.unwrap();
+    client.wait_until_healthy_db().await;
+    create_and_insert(&client, 1).await;
+    let backup = backup_of(&client, &dir).await;
+    create_and_insert(&client, 2).await;
+    client.shutdown().await.unwrap();
+
+    // where the restore crashed: the validated backup waits under its pending name, and the old
+    // state is gone
+    std::fs::copy(
+        &backup,
+        format!("{dir}/state_machine/backups/restore.sqlite"),
+    )
+    .unwrap();
+    for path in [
+        "state_machine/db",
+        "state_machine/snapshots",
+        "logs",
+        "logs_cache",
+    ] {
+        let _ = std::fs::remove_dir_all(format!("{dir}/{path}"));
+    }
+
+    let client = hiqlite::start_node(config(1, 1, &dir, port)).await.unwrap();
+    client.wait_until_healthy_db().await;
+    assert_eq!(
+        count(&client).await.unwrap(),
+        1,
+        "the backup has been applied"
+    );
+    assert!(!std::fs::exists(format!("{dir}/state_machine/backups/restore.sqlite")).unwrap());
     client.shutdown().await.unwrap();
 }

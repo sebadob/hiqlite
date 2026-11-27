@@ -70,8 +70,10 @@ snapshots and logs take.
 7. Start the other nodes with the variable still set. Each one clears the state it knows and joins
    node 1.
 8. Once every node reports ready and `GET /cluster/membership` is complete, remove
-   `HQL_BACKUP_RESTORE` from every node. No restart is needed: it is only read at startup. If it
-   stays, the next restart restores again and wipes what you just built.
+   `HQL_BACKUP_RESTORE` from every node. No restart is needed: it is only read at startup. A node
+   that finished a restore records its source in `state_machine/restored_backup`, so a restart
+   with the same value still set logs that and does nothing. To apply the same backup once more,
+   delete that file first.
 9. Confirm the shape on each node: `Client::cluster_membership`, and `GET /cluster/membership`.
 
 The restored cluster continues from a new log position above the restored database. You do not have
@@ -126,6 +128,12 @@ Check in this order:
    cluster, and a node that keeps them cannot join the restored one.
 6. Are S3 credentials valid, and is `s3_path_style` right for your provider?
 7. Is the data dir writable, and does it contain stale state you meant to clear?
+8. Did node 1 give up with a timeout? Finishing the restore (snapshot and log purge) is bounded to
+   10 minutes. The restore is not recorded then, and the next start applies it again.
+
+A restore that was interrupted after the backup had been validated, e.g. by a crash or a killed
+pod, is finished by the next start of that node, with or without the variable: the validated backup
+waits as `state_machine/backups/restore.sqlite` until it replaced the database.
 
 `HQL_BACKUP_SKIP_VALIDATION=true` skips the validation of the restored database. Use it when you
 know the file is good and the validator is the thing that is wrong, and understand that you are
