@@ -129,8 +129,6 @@ Check in this order:
    cluster, and a node that keeps them cannot join the restored one.
 6. Are S3 credentials valid, and is `s3_path_style` right for your provider?
 7. Is the data dir writable, and does it contain stale state you meant to clear?
-8. Did node 1 give up with a timeout? Finishing the restore (snapshot and log purge) is bounded to
-   10 minutes. The restore is not recorded then, and the next start applies it again.
 
 A restore that was interrupted after the backup had been validated, e.g. by a crash or a killed
 pod, is finished by the next start of that node, with or without the variable: the validated backup

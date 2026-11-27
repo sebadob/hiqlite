@@ -820,41 +820,16 @@ pub(crate) async fn validate_backup_db(path_db: String) -> Result<(), Error> {
     validate_db_backup_snapshot(path_db).await
 }
 
-/// How long `restore_backup_finish` may take in total. It covers the snapshot of the whole
-/// restored database, so it is generous.
-const RESTORE_FINISH_TIMEOUT: Duration = Duration::from_secs(600);
-
 /// Finish a restore on node 1 once its Raft is up: it takes a snapshot of the restored database
 /// and purges the logs below it, so the log of the restored cluster never starts fresh. Then the
 /// source of the restore, if a request named one, is recorded with `RestoredMarker`.
-///
-/// Gives up with an error after `RESTORE_FINISH_TIMEOUT`. The restore is not recorded then, and
-/// the next start with the same request applies the backup again.
 #[tracing::instrument(level = "debug", skip_all)]
-pub(crate) async fn restore_backup_finish(
+#[cfg(feature = "backup")]
+pub async fn restore_backup_finish(
     state: &Arc<AppState>,
     data_dir: &str,
     src: Option<&BackupSource>,
-) -> Result<(), Error> {
-    time::timeout(
-        RESTORE_FINISH_TIMEOUT,
-        snapshot_and_purge_after_restore(state),
-    )
-    .await
-    .map_err(|_| {
-        Error::Timeout(format!(
-            "Backup restore did not finish within {RESTORE_FINISH_TIMEOUT:?}"
-        ))
-    })??;
-
-    if let Some(src) = src {
-        RestoredMarker::write(data_dir, src).await?;
-    }
-    info!("restore_backup_finish task successful");
-    Ok(())
-}
-
-async fn snapshot_and_purge_after_restore(state: &Arc<AppState>) -> Result<(), Error> {
+) {
     loop {
         match state.raft_db.raft.is_initialized().await {
             Ok(res) => {
@@ -906,13 +881,12 @@ async fn snapshot_and_purge_after_restore(state: &Arc<AppState>) -> Result<(), E
     }
 
     debug!("Taking snapshot now");
-    state
-        .raft_db
-        .raft
-        .trigger()
-        .snapshot()
-        .await
-        .map_err(|err| Error::Error(format!("Error triggering snapshot: {err}").into()))?;
+    if let Err(err) = state.raft_db.raft.trigger().snapshot().await {
+        // e.g. the raft is shutting down: do not panic the task, just bail out - the
+        // wait-for-snapshot loop below would never finish anyway
+        error!("Error triggering snapshot: {err}");
+        return;
+    }
 
     // wait until snapshot has been built
     while state
@@ -929,14 +903,21 @@ async fn snapshot_and_purge_after_restore(state: &Arc<AppState>) -> Result<(), E
 
     debug!("Purging logs");
     while let Err(err) = state.raft_db.raft.trigger().purge_log(last_log).await {
-        // It's very important to retry until success: the first WAL logs entry MUST NOT start
-        // fresh, otherwise it would screw up the backup logic. This usually succeeds instantly,
-        // and the time it may take is bounded by `RESTORE_FINISH_TIMEOUT`.
+        // It's very important to retry until success. If we had an upper limit and exit early,
+        // the only thing we could do is actually panic. This is important because the first
+        // WAL logs entry MUST NOT start fresh. Otherwise, it would screw up the backup logic.
+        // -> retry until success, which will usually succeed instantly
         error!("Error during logs purge: {}", err);
         time::sleep(Duration::from_millis(100)).await;
     }
 
-    Ok(())
+    if let Some(src) = src
+        && let Err(err) = RestoredMarker::write(data_dir, src).await
+    {
+        error!("Cannot record the finished restore of {src:?}: {err}");
+    }
+
+    info!("restore_backup_finish task successful");
 }
 
 /// What this node knows about its backups, for `GET /backup` and `/metrics`.

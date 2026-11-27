@@ -156,7 +156,7 @@ where
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
     if let backup::RestoreStart::Applied(src) = &restore {
-        backup::restore_backup_finish(&state, &node_config.data_dir, src.as_ref()).await?;
+        backup::restore_backup_finish(&state, &node_config.data_dir, src.as_ref()).await;
     }
 
     let (tx_shutdown, rx_shutdown) = tokio::sync::watch::channel(None);
