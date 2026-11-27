@@ -755,10 +755,11 @@ impl StateMachineSqlite {
 
         let restore_point = selected.as_ref().and_then(|s| s.meta.last_log_id.as_ref());
         if restore_point < last_purged_log_id {
-            let candidates = rejected
-                .iter()
-                .map(|(path, err)| format!("\n  - {path}: {err}"))
-                .collect::<String>();
+            let mut candidates = String::new();
+            for (path, err) in &rejected {
+                // writing into a `String` cannot fail
+                let _ = fmt::Write::write_fmt(&mut candidates, format_args!("\n  - {path}: {err}"));
+            }
             let msg = format!(
                 "Cannot rebuild the database: the newest usable snapshot ({}) ends at log {:?}, \
                 but the log store has already purged up to {:?}, so the entries in between \
@@ -1196,8 +1197,11 @@ mod tests {
     fn publish(dir: &str, index: u64) -> Uuid {
         let id = Uuid::now_v7();
         let conn = rusqlite::Connection::open(format!("{dir}/{id}")).unwrap();
-        conn.execute("CREATE TABLE _metadata (key TEXT PRIMARY KEY, data BLOB)", ())
-            .unwrap();
+        conn.execute(
+            "CREATE TABLE _metadata (key TEXT PRIMARY KEY, data BLOB)",
+            (),
+        )
+        .unwrap();
         let meta = StateMachineData {
             last_applied_log_id: Some(log_id(index)),
             ..Default::default()
@@ -1221,10 +1225,7 @@ mod tests {
         f.write_all(&[0xAB; 512]).unwrap();
     }
 
-    fn select(
-        dir: &str,
-        last_purged: Option<u64>,
-    ) -> StorageResult<Option<StoredSnapshot>> {
+    fn select(dir: &str, last_purged: Option<u64>) -> StorageResult<Option<StoredSnapshot>> {
         let last_purged = last_purged.map(log_id);
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1268,7 +1269,10 @@ mod tests {
         assert_eq!(snap.path, format!("{dir}/{older}"));
         assert_eq!(snap.meta.last_log_id, Some(log_id(100)));
         // the unusable one is out of the way for every later selection
-        assert_eq!(files(&dir), vec![older.to_string(), format!("{newest}.corrupt")]);
+        assert_eq!(
+            files(&dir),
+            vec![older.to_string(), format!("{newest}.corrupt")]
+        );
     }
 
     #[test]
@@ -1280,7 +1284,10 @@ mod tests {
 
         let err = select(&dir, Some(101)).unwrap_err().to_string();
         assert!(err.contains("purged"), "{err}");
-        assert!(err.contains(&newest.to_string()), "names the rejected one: {err}");
+        assert!(
+            err.contains(&newest.to_string()),
+            "names the rejected one: {err}"
+        );
         // nothing is renamed, the files stay for a manual recovery
         assert_eq!(files(&dir), vec![older.to_string(), newest.to_string()]);
     }
