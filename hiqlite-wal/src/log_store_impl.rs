@@ -537,15 +537,21 @@ mod tests {
         LogStore::<TestConfig>::start(base, LogSync::Immediate, wal_size).await
     }
 
-    fn entry_bytes(index: u64) -> (u64, Vec<u8>) {
-        let entry = EntryOf::<TestConfig>::new_normal(log_id(index), format!("payload-{index}"));
+    fn entry_bytes(index: u64, payload: String) -> (u64, Vec<u8>) {
+        let entry = EntryOf::<TestConfig>::new_normal(log_id(index), payload);
         (index, serialize(&entry).unwrap())
+    }
+
+    /// Two of these never fit into one 64 kB WAL file.
+    fn big_payload() -> String {
+        "x".repeat(40 * 1024)
     }
 
     /// Hands the writer an append and one of its entries, but not the end marker. The entry
     /// channel is a rendezvous, so once this returns the writer is busy with that batch.
     async fn open_batch(
         store: &LogStore<TestConfig>,
+        first: (u64, Vec<u8>),
     ) -> (
         flume::Sender<Option<(u64, Vec<u8>)>>,
         oneshot::Receiver<Result<(), Error>>,
@@ -562,7 +568,7 @@ mod tests {
             .send_async(writer::Action::Append { rx, callback, ack })
             .await
             .unwrap();
-        entries.send_async(Some(entry_bytes(1))).await.unwrap();
+        entries.send_async(Some(first)).await.unwrap();
         (entries, ack_rx, cb_rx)
     }
 
@@ -582,7 +588,8 @@ mod tests {
     fn a_truncated_append_is_an_error_and_stops_the_writer() -> Result<(), Error> {
         block_on(async {
             let mut store = start_store("truncated_append", 64 * 1024).await?;
-            let (entries, ack, callback) = open_batch(&store).await;
+            let (entries, ack, callback) =
+                open_batch(&store, entry_bytes(1, "payload-1".into())).await;
             drop(entries);
 
             let res = timeout(PROMPTLY, ack).await.unwrap().unwrap();
@@ -613,7 +620,8 @@ mod tests {
         block_on(async {
             let mut store = start_store("queued_behind_stop_append", 64 * 1024).await?;
             let writer = store.writer.clone();
-            let (entries, _ack, _callback) = open_batch(&store).await;
+            let (entries, _ack, _callback) =
+                open_batch(&store, entry_bytes(1, big_payload())).await;
             let queued = tokio::spawn(async move {
                 let entries = (2..=4).map(|i| Entry::new_normal(log_id(i), format!("p-{i}")));
                 let res = store.append(entries, IOFlushed::noop()).await;
@@ -621,7 +629,11 @@ mod tests {
                 (res, vote)
             });
             wait_until_queued(&writer).await;
-            drop(entries);
+            // the next entry needs a new WAL file, which cannot be created
+            fs::remove_dir_all("test_data/queued_behind_stop_append")?;
+            let _ = entries
+                .send_async(Some(entry_bytes(2, big_payload())))
+                .await;
 
             let (res, vote) = timeout(PROMPTLY, queued)
                 .await
@@ -633,11 +645,15 @@ mod tests {
 
             let store = start_store("queued_behind_stop_shutdown", 64 * 1024).await?;
             let writer = store.writer.clone();
-            let (entries, _ack, _callback) = open_batch(&store).await;
+            let (entries, _ack, _callback) =
+                open_batch(&store, entry_bytes(1, big_payload())).await;
             let shutdown = store.shutdown_handle();
             let queued = tokio::spawn(async move { shutdown.shutdown().await });
             wait_until_queued(&writer).await;
-            drop(entries);
+            fs::remove_dir_all("test_data/queued_behind_stop_shutdown")?;
+            let _ = entries
+                .send_async(Some(entry_bytes(2, big_payload())))
+                .await;
 
             let res = timeout(PROMPTLY, queued)
                 .await
@@ -657,7 +673,7 @@ mod tests {
     fn a_failed_roll_over_fails_the_append() -> Result<(), Error> {
         block_on(async {
             let mut store = start_store("failed_roll_over", 64 * 1024).await?;
-            let big = |i: u64| Entry::new_normal(log_id(i), "x".repeat(40 * 1024));
+            let big = |i: u64| Entry::new_normal(log_id(i), big_payload());
             store
                 .append([big(1)], IOFlushed::noop())
                 .await
