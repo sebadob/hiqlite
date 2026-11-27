@@ -315,7 +315,7 @@ struct InFlightHash {
 }
 
 impl InFlightHash {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             expected: 0,
             targets: rustc_hash::FxHashMap::default(),
@@ -430,11 +430,9 @@ pub(crate) trait AppendWire: Copy + 'static {
 
     /// Wraps an `AppendEntries` request and the place its answer goes back to into the message for
     /// the socket.
-    #[inline]
     fn request(ack: AckTarget, req: AppendEntriesRequest<Self::Config>) -> RaftRequest;
 
     /// Wraps the answer channel of a replication stream and the log range of one of its requests.
-    #[inline]
     fn stream_ack(
         sender: flume::Sender<StreamAnswer<Self::Config>>,
         prev_log_id: Option<LogIdOf<Self::Config>>,
@@ -442,7 +440,6 @@ pub(crate) trait AppendWire: Copy + 'static {
     ) -> AckTarget;
 
     /// Takes the `AppendEntries` answer out of a response payload, `None` for any other payload.
-    #[inline]
     fn response(payload: RaftStreamResponsePayload) -> Option<AppendAnswer<Self::Config>>;
 }
 
