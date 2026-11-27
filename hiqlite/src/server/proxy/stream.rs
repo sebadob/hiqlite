@@ -157,8 +157,8 @@ pub async fn handle_socket(
                             if client
                                 .was_leader_update_error(
                                     &err,
-                                    client.inner.leader_lookup_db,
-                                    client.inner.leader_db,
+                                    &client.inner.leader_db,
+                                    &client.inner.leader_lookup_db,
                                     &client.inner.tx_client_db,
                                 )
                                 .await
@@ -185,8 +185,8 @@ pub async fn handle_socket(
                             if client
                                 .was_leader_update_error(
                                     &err,
-                                    client.inner.leader_lookup_db,
-                                    client.inner.leader_db,
+                                    &client.inner.leader_db,
+                                    &client.inner.leader_lookup_db,
                                     &client.inner.tx_client_db,
                                 )
                                 .await
@@ -222,8 +222,8 @@ pub async fn handle_socket(
                             if client
                                 .was_leader_update_error(
                                     &err,
-                                    client.inner.leader_lookup_db,
-                                    client.inner.leader_db,
+                                    &client.inner.leader_db,
+                                    &client.inner.leader_lookup_db,
                                     &client.inner.tx_client_db,
                                 )
                                 .await
