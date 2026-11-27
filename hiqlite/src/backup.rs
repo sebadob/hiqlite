@@ -433,7 +433,7 @@ pub(crate) async fn restore_backup_start(
 }
 
 /// The record of the last finished restore of a node: the restore source, in the form of the
-/// `HQL_BACKUP_RESTORE` env var. It lets a node that is started again with the same restore
+/// `HQL_BACKUP_RESTORE` env var, see `RestoredMarker::identity`. It lets a node that is started again with the same restore
 /// request skip it, instead of applying the backup again and losing everything written since.
 struct RestoredMarker;
 
@@ -445,9 +445,31 @@ impl RestoredMarker {
         )
     }
 
+    /// What identifies a restore: the source, and for a local file also its size and
+    /// modification time, so a new backup copied over the same path is applied. An S3 object
+    /// name carries its timestamp already.
+    async fn identity(src: &BackupSource) -> String {
+        let request = src.as_request();
+        match src {
+            #[cfg(feature = "s3")]
+            BackupSource::S3(_) => request,
+            BackupSource::File(path) => match fs::metadata(path).await {
+                Ok(meta) => {
+                    let modified = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .unwrap_or_default();
+                    format!("{request}\n{} {}", meta.len(), modified.as_nanos())
+                }
+                Err(_) => request,
+            },
+        }
+    }
+
     async fn matches(data_dir: &str, src: &BackupSource) -> Result<bool, Error> {
         match fs::read_to_string(Self::path(data_dir)).await {
-            Ok(restored) => Ok(restored == src.as_request()),
+            Ok(restored) => Ok(restored == Self::identity(src).await),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(err) => Err(err.into()),
         }
@@ -456,7 +478,7 @@ impl RestoredMarker {
     async fn write(data_dir: &str, src: &BackupSource) -> Result<(), Error> {
         let path = Self::path(data_dir);
         let tmp = format!("{path}.tmp");
-        fs::write(&tmp, src.as_request()).await?;
+        fs::write(&tmp, Self::identity(src).await).await?;
         atomic_file_switch(tmp, path).await
     }
 

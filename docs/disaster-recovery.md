@@ -71,9 +71,10 @@ snapshots and logs take.
    node 1.
 8. Once every node reports ready and `GET /cluster/membership` is complete, remove
    `HQL_BACKUP_RESTORE` from every node. No restart is needed: it is only read at startup. A node
-   that finished a restore records its source in `state_machine/restored_backup`, so a restart
-   with the same value still set logs that and does nothing. To apply the same backup once more,
-   delete that file first.
+   that finished a restore records its source in `state_machine/restored_backup` (for a `file:`
+   source also the file's size and modification time), so a restart with the same value still
+   set logs that and does nothing. To apply the same unchanged backup once more, delete that file
+   first.
 9. Confirm the shape on each node: `Client::cluster_membership`, and `GET /cluster/membership`.
 
 The restored cluster continues from a new log position above the restored database. You do not have
