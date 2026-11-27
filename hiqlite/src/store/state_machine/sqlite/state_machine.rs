@@ -325,6 +325,35 @@ impl StateMachineSqlite {
         )
     }
 
+    /// Opens the state machine lock file, creating it if needed, and takes its advisory lock
+    /// without blocking. While another live process holds the lock, this is an error: that
+    /// process owns everything under the `data_dir`.
+    pub(crate) fn try_lock_file(path_lock_file: &str) -> Result<std::fs::File, Error> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path_lock_file)
+            .map_err(|err| {
+                Error::Sqlite(format!("Cannot open lock file {path_lock_file}: {err}").into())
+            })?;
+
+        match file.try_lock() {
+            Ok(()) => Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => Err(Error::Sqlite(
+                format!(
+                    "State machine lock file {path_lock_file} is held by another live process - \
+                     refusing to start on top of it"
+                )
+                .into(),
+            )),
+            Err(std::fs::TryLockError::Error(err)) => Err(Error::Sqlite(
+                format!("Error locking state machine lock file {path_lock_file}: {err}").into(),
+            )),
+        }
+    }
+
     /// Checks the state-machine lock file and returns it already holding the advisory
     /// lock, so the caller can hand it to the writer thread (which releases it on shutdown).
     ///
@@ -347,26 +376,7 @@ impl StateMachineSqlite {
         // presence means the previous run did not shut down cleanly.
         let existed = std::fs::metadata(path_lock_file).is_ok();
 
-        // Open (creating if needed) and try to take the advisory lock non-blocking. If another
-        // live process already holds it, `try_lock` reports `WouldBlock`.
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path_lock_file)
-            .unwrap_or_else(|err| panic!("Cannot open lock file {path_lock_file}: {err}"));
-
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(std::fs::TryLockError::WouldBlock) => panic!(
-                "State machine lock file {path_lock_file} is held by another live process - \
-                 refusing to start on top of it"
-            ),
-            Err(std::fs::TryLockError::Error(err)) => {
-                panic!("Error locking state machine lock file {path_lock_file}: {err}")
-            }
-        }
+        let file = Self::try_lock_file(path_lock_file).unwrap_or_else(|err| panic!("{err}"));
 
         if existed {
             #[cfg(feature = "auto-heal")]

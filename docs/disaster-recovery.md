@@ -27,13 +27,19 @@ You need a backup. If you have none, you have a data-loss event: stop, decide wh
 recreate, and start a fresh cluster. See `backups.md` for the drill that prevents this.
 
 Restore applies on node 1. Every other node needs the restore variable set as well, and what it does
-there is different: it wipes the state it knows - the database and its WAL sidecars, the snapshots,
-both log directories, the cache data - and joins the new cluster empty. Nodes that start with their
+there is different: it moves the state it knows - the database and its WAL sidecars, the snapshots,
+both log directories, the cache data - into `{data_dir}/pre_restore` and joins the new cluster
+empty. It does that before node 1 has applied anything, so the copy stays until the node is a member
+of the restored cluster and has received its state; only then it is removed. If the restore on
+node 1 fails, the previous state of every other node is still in its `pre_restore` directory, with
+the layout of a `data_dir`. A node restarted with the variable before it joined keeps that first
+copy and only clears what it built while waiting. Nodes that start with their
 old files carry the log and the snapshots of the dead cluster, and those never line up with a
 restored node 1. That mismatch is the hour you do not want to spend.
 
 1. Confirm every node is stopped. A restore against a running cluster is the one way to make this
-   worse.
+   worse. A restore that finds the state machine lock of its `data_dir` held by a live process
+   refuses to start and touches nothing.
 2. Pick the newest backup. `Client::backup_list_s3` gives you names and timestamps; the newest
    object is usually what you want, and it is the newest one the last leader made. However, you
    probably do not have access to the client if you are in this situation. Just check the file names
@@ -50,8 +56,8 @@ restored node 1. That mismatch is the hour you do not want to spend.
     export HQL_BACKUP_RESTORE="file:/root/backup.sqlite"
     ```
 
-    Only node 1 reads the value. On the other nodes the variable does one thing: it clears the state
-    they know. A `file:` path has to exist on node 1 only.
+    Only node 1 reads the value. On the other nodes the variable does one thing: it moves the state
+    they know aside. A `file:` path has to exist on node 1 only.
 
 4. Check the encryption keys before you start. The key that encrypted the object must be in
    `enc_keys`, and `enc_key_active` must be one of the entries. A backup you cannot decrypt is not
@@ -60,8 +66,8 @@ restored node 1. That mismatch is the hour you do not want to spend.
    restore while it leads: it takes a snapshot, rolls the log, and only then serves its API. Give
    it the time.
 6. Verify the data: row counts, and a change you know happened after the backup time.
-7. Start the other nodes with the variable still set. Each one clears the state it knows and joins
-   node 1.
+7. Start the other nodes with the variable still set. Each one moves the state it knows aside and
+   joins node 1.
 8. Once every node reports ready and `GET /cluster/membership` is complete, remove
    `HQL_BACKUP_RESTORE` from every node. No restart is needed: it is only read at startup. If it
    stays, the next restart restores again and wipes what you just built.
@@ -86,9 +92,9 @@ The restore is the same. What bites you is the config:
 - S3 credentials must be able to read the bucket.
 - `HQL_BACKUP_RESTORE` must be set on every node you start, with the same value.
 
-New volumes need no manual wiping: a node that starts with the restore variable clears the state
-it knows by itself. Start node 1 alone, verify the data, and only then bring the peers up. They join
-the leader node 1 has formed; a peer that starts before node 1 has nothing to join.
+New volumes need no manual wiping: a node that starts with the restore variable moves the state
+it knows aside by itself. Start node 1 alone, verify the data, and only then bring the peers up.
+They join the leader node 1 has formed; a peer that starts before node 1 has nothing to join.
 
 ## No S3 left
 
@@ -136,7 +142,7 @@ fix the config. Restart the nodes with the fixed list.
 
 A single node that must come back alone starts as a one-node cluster: set `nodes` to that node only,
 with node id 1, restore, verify, then rebuild the cluster config. A node with any other id ignores a
-restore request in the sense that it does not apply the backup; it only clears its own state.
+restore request in the sense that it does not apply the backup; it only moves its own state aside.
 
 ## Last resort: reset the Raft state
 

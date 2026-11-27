@@ -1,13 +1,14 @@
 use crate::backup::BACKUP_PATH_FILE;
 use crate::execute_query::TestData;
 use crate::start::{TlsCombo, build_config};
-use crate::{Cache, backup, log};
+use crate::{Cache, TEST_DATA_DIR, backup, log};
 use hiqlite::macros::params;
 use hiqlite::{
     BackupSource, Client, Error, start_node_with_cache, start_node_with_cache_from_backup,
 };
 use std::env;
-use tokio::task;
+use std::time::Duration;
+use tokio::{fs, task, time};
 
 /// How the nodes are told which backup to restore: through the `HQL_BACKUP_RESTORE` env var, or
 /// through the explicit source of `start_node_with_cache_from_backup`.
@@ -129,4 +130,19 @@ pub async fn test_db_is_healthy_after_restore(client: &Client) -> Result<(), Err
     }
 
     Ok(())
+}
+
+/// The followers moved their state aside before they joined the restored cluster. Once they are
+/// members of it, that state is removed again.
+pub async fn test_pre_restore_state_discarded() {
+    log("Check that the followers removed the state they moved aside");
+    for node_id in [2, 3] {
+        let aside = format!("{TEST_DATA_DIR}/node_{node_id}/pre_restore");
+        let mut tries = 0;
+        while fs::try_exists(&aside).await.unwrap() {
+            tries += 1;
+            assert!(tries < 100, "{aside} must be removed once the node joined");
+            time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 }

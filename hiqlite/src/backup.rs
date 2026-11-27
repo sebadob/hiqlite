@@ -340,84 +340,224 @@ pub(crate) async fn backup_local_cleanup(
     Ok(())
 }
 
+/// What `restore_backup_start` did with a restore request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RestoreStart {
+    /// No restore was asked for.
+    None,
+    /// Node 1 applied the backup. `restore_backup_finish` must run once the Raft is up.
+    Applied,
+    /// Any other node moved its state aside and joins the restored cluster empty. The state that
+    /// was moved aside is removed by `discard_pre_restore_state` once this node is a member of
+    /// that cluster.
+    Rejoin,
+}
+
 /// Restore the backup that was given to `start_node_from_backup`, or the one named by the
 /// `HQL_BACKUP_RESTORE` env var when no explicit source was given.
-/// Returns `Ok(true)` when the backup has been applied, which needs the node ID `1`.
 ///
 /// Every node of the cluster must be started with the same restore source: node 1 applies the
-/// backup, all other nodes wipe their own state and join the new cluster clean.
+/// backup, all other nodes move their own state aside and join the new cluster clean.
+///
+/// Nothing is touched while another live process holds the state machine lock of this
+/// `data_dir`.
 pub(crate) async fn restore_backup_start(
     node_config: &NodeConfig,
     explicit: Option<BackupSource>,
-) -> Result<bool, Error> {
+) -> Result<RestoreStart, Error> {
     let src = match explicit {
         Some(src) => Some(src),
         None => BackupSource::from_env()?,
     };
+    let Some(src) = src else {
+        return Ok(RestoreStart::None);
+    };
+    info!("Found backup restore request {:?}", src);
 
-    if let Some(src) = src {
-        info!("Found backup restore request {:?}", src);
-
-        if node_config.node_id == 1 {
-            restore_backup(node_config, src).await?;
-            return Ok(true);
-        }
-        warn!("Cleaning up existing files and start restore cluster join");
-        cleanup_restore_data_dirs(&node_config.data_dir).await?;
+    if node_config.node_id == 1 {
+        restore_backup(node_config, src).await?;
+        return Ok(RestoreStart::Applied);
     }
 
-    Ok(false)
+    let mut lock = RestoreLock::acquire(&node_config.data_dir)?;
+    // Node 1 has not even looked at the backup yet, and it may still fail to apply it. Deleting
+    // the state here would cost the cluster this node's copy for nothing, so it is only moved
+    // aside, and removed once the restored cluster has taken this node in.
+    warn!("Moving existing state aside and starting restore cluster join");
+    move_state_aside(&node_config.data_dir).await?;
+    lock.state_replaced();
+
+    Ok(RestoreStart::Rejoin)
 }
 
-/// Delete all state under `data_dir` that must not survive a backup restore: the SQLite DB
-/// (including its WAL sidecars), raft snapshots, lock file, both raft WALs and the cache data
-/// (+ its WAL, only present with the `cache` feature). Only these known paths are removed -
-/// never `data_dir` itself, which may be a direct container mount that cannot be deleted, and
-/// never anything unknown (e.g. the staged backup in `state_machine/backups`). Missing paths
-/// are fine; any other error is propagated, so a failed cleanup can never silently leave stale
-/// state behind.
-async fn cleanup_restore_data_dirs(data_dir: &str) -> Result<(), Error> {
-    let sqlite_paths = [
+/// The state machine lock of a `data_dir`, held while a restore changes its state.
+///
+/// It is the same lock file and the same advisory lock the state machine itself holds while it
+/// runs, so a restore never touches the state of a live node. The lock file doubles as a crash
+/// marker: a restore that created it removes it again, and one that found it removes it only once
+/// the state it belongs to has been replaced.
+struct RestoreLock {
+    path: String,
+    remove_on_drop: bool,
+    _file: std::fs::File,
+}
+
+impl RestoreLock {
+    fn acquire(data_dir: &str) -> Result<Self, Error> {
+        std::fs::create_dir_all(StateMachineSqlite::path_base(data_dir))?;
+        let path = StateMachineSqlite::path_lock_file(data_dir);
+        let existed = std::fs::exists(&path)?;
+        let file = StateMachineSqlite::try_lock_file(&path)?;
+        Ok(Self {
+            path,
+            remove_on_drop: !existed,
+            _file: file,
+        })
+    }
+
+    /// The state the crash marker belongs to is gone, the marker goes with it on release.
+    fn state_replaced(&mut self) {
+        self.remove_on_drop = true;
+    }
+}
+
+impl Drop for RestoreLock {
+    fn drop(&mut self) {
+        if self.remove_on_drop
+            && let Err(err) = std::fs::remove_file(&self.path)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            error!("Cannot remove SQLite crash marker {}: {err}", self.path);
+        }
+    }
+}
+
+/// Every state directory under `data_dir` that must not survive a backup restore: the SQLite DB
+/// (including its WAL sidecars), raft snapshots, the raft WAL and the cache data + its WAL (only
+/// with the `cache` feature).
+fn restore_state_dirs(data_dir: &str) -> Vec<String> {
+    vec![
         StateMachineSqlite::path_db(data_dir),
         StateMachineSqlite::path_snapshots(data_dir),
         logs::logs_dir_db(data_dir),
-    ];
-    #[cfg(feature = "cache")]
-    let cache_paths = [
+        #[cfg(feature = "cache")]
         StateMachineMemory::path_sm(data_dir),
+        #[cfg(feature = "cache")]
         logs::logs_dir_cache(data_dir),
-    ];
+    ]
+}
 
-    for path in &sqlite_paths {
-        match fs::remove_dir_all(path).await {
+/// Where a node other than 1 keeps the state it had before it joined a restored cluster. The
+/// directory has the layout of a `data_dir` itself.
+pub(crate) fn path_pre_restore(data_dir: &str) -> String {
+    format!("{data_dir}/pre_restore")
+}
+
+/// Move the state that must not survive a restore into `path_pre_restore`.
+///
+/// The state is first collected in a temporary directory, which is renamed into place as the last
+/// step, so an interrupted move is picked up again by the next start instead of being mistaken for
+/// a finished one. When a finished one already exists, the restore it was made for has not been
+/// confirmed yet: it still holds the state from before that restore, and the current state is
+/// only what the node built while it tried to join. That one is cleared, the older one is kept.
+async fn move_state_aside(data_dir: &str) -> Result<(), Error> {
+    let aside = path_pre_restore(data_dir);
+    if fs::try_exists(&aside).await? {
+        warn!(
+            "{aside} still holds the state from before an earlier restore - keeping it and \
+            clearing the current state instead"
+        );
+        return cleanup_restore_data_dirs(data_dir).await;
+    }
+
+    let staging = format!("{aside}.tmp");
+    let crash_marker = StateMachineSqlite::path_lock_file(data_dir);
+    let sources = restore_state_dirs(data_dir);
+    let targets = restore_state_dirs(&staging);
+    for (src, target) in sources.iter().zip(targets.iter()) {
+        if !fs::try_exists(src).await? {
+            continue;
+        }
+        if let Some(parent) = Path::new(target).parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::rename(src, target).await.map_err(|err| {
+            Error::Sqlite(format!("Cannot move {src} aside to {target}: {err}").into())
+        })?;
+    }
+    // A crash marker belongs to the state it was found with. It stays where it is until the
+    // restore lock is released, so the state that was moved aside gets a copy of it.
+    if fs::try_exists(&crash_marker).await? {
+        let marker = StateMachineSqlite::path_lock_file(&staging);
+        if let Some(parent) = Path::new(&marker).parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&marker, b"").await?;
+    }
+    if !fs::try_exists(&staging).await? {
+        info!("No existing state found to move aside");
+        return Ok(());
+    }
+
+    fs::rename(&staging, &aside).await?;
+    #[cfg(unix)]
+    fs::File::open(data_dir).await?.sync_all().await?;
+    warn!(
+        "The previous state of this node has been moved to {aside}. It is removed as soon as \
+        this node is a member of the restored cluster."
+    );
+
+    Ok(())
+}
+
+/// Remove the state that was moved aside by `move_state_aside`, as soon as this node is a member
+/// of the cluster it joined and has applied the state replicated from its leader. From then on,
+/// that cluster holds everything this node needs, and the old state is never read again.
+///
+/// If the Raft stops before that, the state stays where it is.
+pub(crate) async fn discard_pre_restore_state(state: Arc<AppState>, data_dir: String) {
+    let aside = path_pre_restore(&data_dir);
+    let mut rx = state.raft_db.raft.metrics();
+    loop {
+        let joined = {
+            let metrics = rx.borrow_watched();
+            metrics.current_leader.is_some()
+                && metrics.last_applied.is_some()
+                && metrics
+                    .membership_config
+                    .membership()
+                    .get_node(&state.id)
+                    .is_some()
+        };
+        if joined {
+            break;
+        }
+        if rx.changed().await.is_err() {
+            warn!("Raft stopped before the restored cluster took this node in - keeping {aside}");
+            return;
+        }
+    }
+
+    match fs::remove_dir_all(&aside).await {
+        Ok(()) => info!("Joined the restored cluster - removed the previous state in {aside}"),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => error!("Cannot remove the previous state in {aside}: {err}"),
+    }
+}
+
+/// Delete all state under `data_dir` that must not survive a backup restore, see
+/// `restore_state_dirs`. Only these known paths are removed - never `data_dir` itself, which may
+/// be a direct container mount that cannot be deleted, and never anything unknown (e.g. the staged
+/// backup in `state_machine/backups`). Missing paths are fine; any other error is propagated, so a
+/// failed cleanup can never silently leave stale state behind. The crash marker is removed by the
+/// `RestoreLock` that guards the cleanup.
+async fn cleanup_restore_data_dirs(data_dir: &str) -> Result<(), Error> {
+    for path in restore_state_dirs(data_dir) {
+        match fs::remove_dir_all(&path).await {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
                 return Err(Error::Sqlite(
-                    format!("Cannot remove old data dir {path}: {err}").into(),
-                ));
-            }
-        }
-    }
-
-    let lock = StateMachineSqlite::path_lock_file(data_dir);
-    match fs::remove_file(&lock).await {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => {
-            return Err(Error::Sqlite(
-                format!("Cannot remove old SQLite crash marker {lock}: {err}").into(),
-            ));
-        }
-    }
-
-    #[cfg(feature = "cache")]
-    for path in &cache_paths {
-        match fs::remove_dir_all(path).await {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                return Err(Error::Cache(
                     format!("Cannot remove old data dir {path}: {err}").into(),
                 ));
             }
@@ -457,6 +597,7 @@ async fn stage_local_backup(source: String, directory: &str) -> Result<String, E
 /// `HQL_BACKUP_RESTORE` env var), which both do it for you at startup.
 pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Result<(), Error> {
     info!("Starting database restore from backup {:?}", src);
+    let mut lock = RestoreLock::acquire(&node_config.data_dir)?;
 
     #[cfg(feature = "s3")]
     if let BackupSource::S3(_) = &src
@@ -505,6 +646,7 @@ pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Resu
     // between here and getting the backup into place, you start fresh anyway. The staged backup
     // in `state_machine/backups` has been validated already and is intentionally kept.
     cleanup_restore_data_dirs(&node_config.data_dir).await?;
+    lock.state_replaced();
 
     fs::create_dir_all(&path_db).await?;
     set_path_access(&path_db, 0o700).await?;
@@ -1011,7 +1153,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_cleanup_removes_a_crash_marker() {
+    async fn a_restore_removes_a_crash_marker_once_the_state_is_replaced() {
         let dir = "test_data/restore_cleanup_crash_marker";
         let path = super::StateMachineSqlite::path_lock_file(dir);
         let path = std::path::Path::new(&path);
@@ -1020,8 +1162,18 @@ mod tests {
             .unwrap();
         super::fs::write(path, b"").await.unwrap();
 
-        super::cleanup_restore_data_dirs(dir).await.unwrap();
+        // a restore that fails before it replaced anything keeps the marker of the old state
+        drop(super::RestoreLock::acquire(dir).unwrap());
+        assert!(super::fs::try_exists(path).await.unwrap());
 
+        let mut lock = super::RestoreLock::acquire(dir).unwrap();
+        super::cleanup_restore_data_dirs(dir).await.unwrap();
+        lock.state_replaced();
+        drop(lock);
+        assert!(!super::fs::try_exists(path).await.unwrap());
+
+        // a restore that created the lock file never leaves it behind
+        drop(super::RestoreLock::acquire(dir).unwrap());
         assert!(!super::fs::try_exists(path).await.unwrap());
     }
 

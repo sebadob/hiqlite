@@ -125,7 +125,7 @@ A backup you have never restored is a rumour.
 2. Restore it onto a scratch node: a machine or a container, no peers, `nodes` containing only that
    node with node id 1, `HQL_BACKUP_RESTORE` set to `s3:<object>`, and the encryption keys of that
    era in `enc_keys`. Only node 1 applies a restore, so a scratch node with any other id does
-   nothing but wipe its own data dir.
+   nothing but move its own state aside and wait for a node 1 to join.
 3. Let it start alone, then query it: row counts of your important tables, and something that
    changed after the backup time.
 4. Confirm, delete the scratch data, remove the env var, and write down the date you did this.
@@ -152,8 +152,8 @@ their own backups: each instance gets its own `data_dir`, its own `backup_file_p
 source, and none of them can read the other's env var.
 
 Everything else about a restore is identical to the env var path: give every node of the cluster the
-same source, node 1 applies the backup, the other nodes wipe their state and join the restored
-cluster. Start them with it; removing it later is just starting normally again.
+same source, node 1 applies the backup, the other nodes move their state aside and join the
+restored cluster. Start them with it; removing it later is just starting normally again.
 
 ## Failure modes
 
