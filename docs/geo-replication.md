@@ -473,8 +473,8 @@ total outage.
 
 Wipe it, start it with `learner_only` (`HQL_LEARNER_ONLY=true`), let it sync, promote it to a voter,
 and put its node line - marker included - into every node's list. With
-`raft_config.allow_log_reversion = Some(true)` (the v0.17 default) a node whose volume was wiped
-re-syncs under the same leader by itself.
+`raft_config.allow_log_reversion = Some(true)` (the v0.17 default, for both Raft groups) a node
+whose volume was wiped re-syncs under the same leader by itself.
 
 ### Kubernetes
 
