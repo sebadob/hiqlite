@@ -653,6 +653,13 @@ yet, but a good starting point.
 - `wait_for_cluster_sync()`'s single-instance fast path only looked at the node list, which a local
   client never has, so it never fired for an embedded single node. A local client now takes the
   member count from its own Raft membership, like `shutdown_execute` does.
+- The dashboard query picked the read or the write path from the first word of the SQL. A
+  `WITH ... SELECT`, a `VALUES (...)` or a `SELECT` behind a comment went through the Raft and
+  failed there, while a `PRAGMA` that sets a value, such as `PRAGMA query_only = 0`, changed a read
+  connection that serves the next queries of the node. SQLite now classifies the prepared statement
+  itself: only a statement that modifies the database goes through the Raft. A `PRAGMA` that sets a
+  value, transaction control, `ATTACH`, `DETACH` and multiple statements are rejected with a
+  `400 Bad Request`. Read connections are opened read-only, so a write never bypassed the Raft.
 
 ## v0.16.0
 
