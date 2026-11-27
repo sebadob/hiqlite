@@ -1,15 +1,12 @@
 use crate::helpers::{deserialize_serde, serialize_serde};
 use crate::network::handshake::HandshakeSecret;
-use crate::network::raft_client::RAFT_STREAM_DEPTH;
 use crate::network::{AppStateExt, Error};
 use axum::response::IntoResponse;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
 use openraft::errors::{Fatal, RaftError, StreamingError, Unreachable};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 use tokio::task;
-use tokio::task::JoinHandle;
 use tracing::{debug, error, warn};
 
 use crate::network::{WireSnapshotMeta, WireVote};
@@ -177,7 +174,7 @@ async fn handle_socket(
         return Ok(());
     }
 
-    let (tx_write, rx_write) = flume::bounded::<WsWriteMsg>(*RAFT_STREAM_DEPTH);
+    let (tx_write, rx_write) = flume::bounded::<WsWriteMsg>(1);
     let (rx, mut write) = ws.split(tokio::io::split);
     // IMPORTANT: the reader is NOT CANCEL SAFE in v0.8!
     let mut read = FragmentCollectorRead::new(rx);
@@ -216,49 +213,29 @@ async fn handle_socket(
         let _ = write.write_frame(Frame::close(1000, b"go away")).await;
     });
 
-    // Appends are the requests that carry real work, and a leader with a window sends a run of
-    // them without waiting. Handled one at a time, the follower would answer each one before it
-    // looked at the next, and the leader's window would only add queueing, so each append runs in a
-    // task of its own and the answers go out in the order the requests arrived: the queue below is
-    // that order, and a finished append is only awaited once everything in front of it has answered.
-    let mut appends: VecDeque<(usize, JoinHandle<AppendOutcome>)> = VecDeque::new();
-
-    loop {
-        // One read of the socket, and the answer of an append that finished while we were waiting
-        // for the next request. The read is polled beside the answers so a finished append is
-        // answered without a request having to arrive first, and it is cancelled on the arm that
-        // wins, which is why its handler is hoisted: a handler borrowed from outside the select
-        // survives the cancellation, and a handler built inside it would not.
-        let mut handler = |frame| obligated_frame_handler(frame, &tx_write);
-
-        let frame = tokio::select! {
-            biased;
-
-            res = read.read_frame(&mut handler) => {
-                match res {
-                    Ok(frame) => frame,
-                    Err(err) => {
-                        debug!("Raft server WebSocket stream closed: {}", err);
-                        break;
-                    }
+    while let Ok(frame) = read
+        .read_frame(&mut |frame| {
+            // The library generates the obligated frame (Pong for Ping, Close echo) and
+            // expects us to send it back on the socket - forward it to the writer task.
+            let tx_write = tx_write.clone();
+            async move {
+                if let Err(err) = tx_write
+                    .send_async(WsWriteMsg::ObligatedSend {
+                        opcode: frame.opcode,
+                        payload: frame.payload.to_vec(),
+                    })
+                    .await
+                {
+                    error!(
+                        "Error forwarding obligated WebSocket frame to writer (OpCode {:?}): {}",
+                        frame.opcode, err
+                    );
                 }
+                Ok::<(), Error>(())
             }
-
-            // The oldest append that has an answer ready. Its answer goes out here, in wire
-            // order, while the reader is otherwise waiting on the socket.
-            (request_id, outcome) = take_next_append(&mut appends),
-                if appends.front().is_some_and(|(_, handle)| handle.is_finished()) =>
-            {
-                match outcome {
-                    AppendOutcome::Stopped => break,
-                    AppendOutcome::Answer(payload) => {
-                        send_answer(request_id, payload, &tx_write).await;
-                    }
-                }
-                continue;
-            }
-        };
-
+        })
+        .await
+    {
         let req = match frame.opcode {
             OpCode::Close => {
                 debug!("received Close frame in server stream");
@@ -280,45 +257,36 @@ async fn handle_socket(
             }
         };
 
-        // The answer of this request, and for an append the task that produces it.
-        let mut answer = None;
-
-        match req {
+        // Note: This was wrapped inside a `tokio::task` before just in case we would be able
+        // to achieve higher throughput. After in depth testing, at least with openraft 0.9, it
+        // has no benefit at all to do the extra work. Instead, it is actually a tiny performance
+        // penalty if we spawn a task each time - requests are coming in in-order anyway.
+        let (request_id, payload) = match req {
             #[cfg(feature = "sqlite")]
             RaftStreamRequest::AppendDB((request_id, req)) => {
-                let state = state.clone();
-                appends.push_back((
-                    request_id,
-                    task::spawn(async move {
-                        let res = state
-                            .raft_db
-                            .raft
-                            .append_entries(req)
-                            .await
-                            .map(AppendEntriesResponse::from);
-                        if let Err(RaftError::Fatal(Fatal::Stopped)) = &res {
-                            debug!("Raft DB stopped - exiting");
-                            state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
-                            return AppendOutcome::Stopped;
-                        }
-                        AppendOutcome::Answer(RaftStreamResponsePayload::AppendDB(res))
-                    }),
-                ));
-                if drain_appends(&mut appends, &tx_write).await {
+                let res = state
+                    .raft_db
+                    .raft
+                    .append_entries(req)
+                    .await
+                    .map(AppendEntriesResponse::from);
+                if let Err(RaftError::Fatal(Fatal::Stopped)) = &res {
+                    debug!("Raft DB stopped - exiting");
+                    state.raft_db.is_raft_stopped.store(true, Ordering::Relaxed);
                     break;
                 }
-                continue;
+                (request_id, RaftStreamResponsePayload::AppendDB(res))
             }
             #[cfg(feature = "sqlite")]
             RaftStreamRequest::VoteDB((request_id, req)) => {
                 let res = state.raft_db.raft.vote(req).await;
-                answer = Some((request_id, RaftStreamResponsePayload::VoteDB(res)));
+                (request_id, RaftStreamResponsePayload::VoteDB(res))
             }
             #[cfg(feature = "sqlite")]
             RaftStreamRequest::SnapshotDB(req) => {
                 let request_id = req.request_id;
                 let res = snapshot_chunk_db(&state, req).await;
-                answer = Some((request_id, RaftStreamResponsePayload::SnapshotDB(res)));
+                (request_id, RaftStreamResponsePayload::SnapshotDB(res))
             }
             #[cfg(feature = "sqlite")]
             RaftStreamRequest::TransferLeaderDB((request_id, req)) => {
@@ -328,47 +296,37 @@ async fn handle_socket(
                     .handle_transfer_leader(req)
                     .await
                     .map_err(RaftError::Fatal);
-                answer = Some((request_id, RaftStreamResponsePayload::TransferLeaderDB(res)));
+                (request_id, RaftStreamResponsePayload::TransferLeaderDB(res))
             }
 
             #[cfg(feature = "cache")]
             RaftStreamRequest::AppendCache((request_id, req)) => {
-                let state = state.clone();
-                appends.push_back((
-                    request_id,
-                    task::spawn(async move {
-                        let res = state
-                            .raft_cache
-                            .raft
-                            .append_entries(req)
-                            .await
-                            .map(AppendEntriesResponse::from);
-                        if let Err(RaftError::Fatal(Fatal::Stopped)) = &res {
-                            debug!("Raft Cache stopped - exiting");
-                            state
-                                .raft_cache
-                                .is_raft_stopped
-                                .store(true, Ordering::Relaxed);
-                            return AppendOutcome::Stopped;
-                        }
-                        AppendOutcome::Answer(RaftStreamResponsePayload::AppendCache(res))
-                    }),
-                ));
-                if drain_appends(&mut appends, &tx_write).await {
+                let res = state
+                    .raft_cache
+                    .raft
+                    .append_entries(req)
+                    .await
+                    .map(AppendEntriesResponse::from);
+                if let Err(RaftError::Fatal(Fatal::Stopped)) = &res {
+                    debug!("Raft Cache stopped - exiting");
+                    state
+                        .raft_cache
+                        .is_raft_stopped
+                        .store(true, Ordering::Relaxed);
                     break;
                 }
-                continue;
+                (request_id, RaftStreamResponsePayload::AppendCache(res))
             }
             #[cfg(feature = "cache")]
             RaftStreamRequest::VoteCache((request_id, req)) => {
                 let res = state.raft_cache.raft.vote(req).await;
-                answer = Some((request_id, RaftStreamResponsePayload::VoteCache(res)));
+                (request_id, RaftStreamResponsePayload::VoteCache(res))
             }
             #[cfg(feature = "cache")]
             RaftStreamRequest::SnapshotCache(req) => {
                 let request_id = req.request_id;
                 let res = snapshot_chunk_cache(&state, req).await;
-                answer = Some((request_id, RaftStreamResponsePayload::SnapshotCache(res)));
+                (request_id, RaftStreamResponsePayload::SnapshotCache(res))
             }
             #[cfg(feature = "cache")]
             RaftStreamRequest::TransferLeaderCache((request_id, req)) => {
@@ -378,114 +336,33 @@ async fn handle_socket(
                     .handle_transfer_leader(req)
                     .await
                     .map_err(RaftError::Fatal);
-                answer = Some((
+                (
                     request_id,
                     RaftStreamResponsePayload::TransferLeaderCache(res),
-                ));
+                )
             }
-        }
+        };
 
-        // A request that is not an append is answered on the spot, and the appends in front of it
-        // have to be answered first: the leader routes answers by the order they arrive on the
-        // socket, so this connection answers in wire order and nothing else.
-        if drain_appends(&mut appends, &tx_write).await {
-            break;
-        }
-
-        if let Some((request_id, payload)) = answer {
-            send_answer(request_id, payload, &tx_write).await;
-        }
-    }
-
-    let _ = tx_write.send_async(WsWriteMsg::Break).await;
-
-    Ok(())
-}
-
-/// What an append task answers, or that the Raft behind it stopped.
-enum AppendOutcome {
-    Answer(RaftStreamResponsePayload),
-    Stopped,
-}
-
-/// The reader's handler for the frames the library answers itself (Pong for Ping, Close echo):
-/// forward them to the writer task. A plain function, because the read that uses it is polled
-/// beside the append answers and its handler has to outlive every poll.
-fn obligated_frame_handler<'a>(
-    frame: Frame<'a>,
-    tx_write: &flume::Sender<WsWriteMsg>,
-) -> impl Future<Output = Result<(), Error>> + 'a {
-    // The library generates the obligated frame (Pong for Ping, Close echo) and
-    // expects us to send it back on the socket - forward it to the writer task.
-    let tx_write = tx_write.clone();
-    async move {
         if let Err(err) = tx_write
-            .send_async(WsWriteMsg::ObligatedSend {
-                opcode: frame.opcode,
-                payload: frame.payload.to_vec(),
-            })
+            .send_async(WsWriteMsg::Payload(serialize_serde(&RaftStreamResponse {
+                request_id,
+                payload,
+            })))
             .await
         {
             error!(
-                "Error forwarding obligated WebSocket frame to writer (OpCode {:?}): {}",
-                frame.opcode, err
+                "Error forwarding raft response to WebSocket writer: {}",
+                err
             );
         }
-        Ok(())
     }
-}
 
-/// Answers the appends that have finished, oldest first, and returns when the oldest one still
-/// running has not. A finished `JoinHandle` resolves without waiting, so this never parks the
-/// reader away from the socket. `true` means the Raft behind this connection is gone.
-async fn drain_appends(
-    appends: &mut VecDeque<(usize, JoinHandle<AppendOutcome>)>,
-    tx_write: &flume::Sender<WsWriteMsg>,
-) -> bool {
-    while appends
-        .front()
-        .is_some_and(|(_, handle)| handle.is_finished())
-    {
-        let (request_id, outcome) = take_next_append(appends).await;
-        match outcome {
-            AppendOutcome::Stopped => return true,
-            AppendOutcome::Answer(payload) => send_answer(request_id, payload, tx_write).await,
-        }
-    }
-    false
-}
+    // try to close the writer if it should still be running
+    let _ = tx_write.send_async(WsWriteMsg::Break).await;
 
-/// Takes the answer of the oldest append off the queue, which is the one whose answer is next in
-/// wire order. `Stopped` means the Raft behind this connection is gone, and the answers of
-/// everything still queued can never be given.
-async fn take_next_append(
-    appends: &mut VecDeque<(usize, JoinHandle<AppendOutcome>)>,
-) -> (usize, AppendOutcome) {
-    let (request_id, handle) = appends.pop_front().expect("the caller checked the queue");
-    match handle.await {
-        Err(err) => {
-            error!("Raft append task failed: {err}");
-            (request_id, AppendOutcome::Stopped)
-        }
-        Ok(outcome) => (request_id, outcome),
-    }
-}
+    debug!("handle_socket exiting");
 
-/// Puts one answer on the socket, in the order the reader hands it over.
-async fn send_answer(
-    request_id: usize,
-    payload: RaftStreamResponsePayload,
-    tx_write: &flume::Sender<WsWriteMsg>,
-) {
-    if let Err(err) = tx_write
-        .send_async(WsWriteMsg::Payload(serialize_serde(&RaftStreamResponse {
-            request_id,
-            payload,
-        })))
-        .await
-    {
-        error!("Error forwarding raft response to WebSocket writer: {err}");
-    }
+    Ok(())
 }
 
 /// openraft hands the network the snapshot data instead of a payload, so the chunk assembly is

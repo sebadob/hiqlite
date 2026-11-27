@@ -9,26 +9,22 @@ use crate::network::{WireSnapshotMeta, WireVote, web_socket_connect};
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocketWrite};
 use futures_util::Stream;
 use futures_util::StreamExt;
-use futures_util::stream::{self, poll_fn};
+use futures_util::stream;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use openraft::errors::RPCError;
-use openraft::errors::Timeout;
 use openraft::errors::Unreachable;
-use std::collections::VecDeque;
+use std::collections::BTreeMap;
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::task::Context;
-use std::task::Poll;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::ReadHalf;
 use tokio::io::WriteHalf;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::{select, task, time};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "cache")]
 use crate::store::state_machine::memory::TypeConfigCache;
@@ -49,8 +45,6 @@ use openraft::errors::ReplicationClosed;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::errors::StreamingError;
 #[cfg(any(feature = "cache", feature = "sqlite"))]
-use openraft::network::RPCTypes;
-#[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::network::{RPCOption, RaftNetworkFactory, RaftNetworkV2};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::raft::{
@@ -58,151 +52,14 @@ use openraft::raft::{
     TransferLeaderRequest, TransferLeaderResponse, VoteRequest, VoteResponse,
 };
 #[cfg(any(feature = "cache", feature = "sqlite"))]
-use openraft::type_config::alias::{LogIdOf, SnapshotOf, VoteOf};
+use openraft::type_config::alias::LogIdOf;
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+use openraft::type_config::alias::{SnapshotOf, VoteOf};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::{OptionalSend, RaftTypeConfig};
 
-/// Instrumentation of the pipelined append transport, compiled in only with the `stream-stats`
-/// feature. Enabled at run time with `HQL_RAFT_STREAM_STATS=1`, which makes every poll of a session
-/// record what it did, so a stall is measured instead of guessed at.
-#[cfg(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite")))]
-pub(crate) static STREAM_STATS: std::sync::LazyLock<Option<StreamStats>> =
-    std::sync::LazyLock::new(|| {
-        if std::env::var("HQL_RAFT_STREAM_STATS").ok().as_deref() == Some("1") {
-            Some(StreamStats::default())
-        } else {
-            None
-        }
-    });
-
-/// One counter per decision point of a pipelined session, and per shape of an answer.
-#[cfg(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite")))]
-#[derive(Debug, Default)]
-pub(crate) struct StreamStats {
-    /// Requests the generator took out of openraft's stream.
-    generated: AtomicU64,
-    /// Times the generator was polled and had nothing to hand over.
-    generator_pending: AtomicU64,
-    /// Times the fill loop stopped because the window was full.
-    window_full: AtomicU64,
-    /// Times the fill loop stopped because the channel had nothing.
-    channel_empty: AtomicU64,
-    /// Requests handed to the connection.
-    sent: AtomicU64,
-    /// Times the front of the window had no answer yet.
-    front_pending: AtomicU64,
-    /// Answers yielded to openraft.
-    answered: AtomicU64,
-    /// Answers that acknowledged the whole request.
-    ack_full: AtomicU64,
-    /// Answers that acknowledged only part of a request.
-    ack_partial: AtomicU64,
-    /// Answers that reported a log conflict.
-    ack_conflict: AtomicU64,
-    /// Answers naming a request other than the one at the front of the window.
-    out_of_order: AtomicU64,
-    /// Entry-less requests the session did not send, because a request already on the socket
-    /// carries the same commit.
-    dropped_empty: AtomicU64,
-}
-
-#[cfg(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite")))]
-impl StreamStats {
-    fn add(counter: &AtomicU64) {
-        counter.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// The shape of one append answer. A partial acknowledgement is the event that invalidates
-    /// every request pipelined behind the one it answers, so it has to be countable.
-    fn record_ack<C>(&self, res: &AppendEntriesResponse<C>)
-    where
-        C: RaftTypeConfig,
-    {
-        match res {
-            AppendEntriesResponse::Success => Self::add(&self.ack_full),
-            AppendEntriesResponse::PartialSuccess(_) => Self::add(&self.ack_partial),
-            AppendEntriesResponse::Conflict => Self::add(&self.ack_conflict),
-            AppendEntriesResponse::HigherVote(_) => {}
-        }
-    }
-
-    /// The counters of a run, for a benchmark to print next to its throughput.
-    pub(crate) fn report() -> String {
-        let Some(stats) = STREAM_STATS.as_ref() else {
-            return "Raft stream stats are off (HQL_RAFT_STREAM_STATS=1 enables them)".to_string();
-        };
-        let g = stats.generated.load(Ordering::Relaxed);
-        let de = stats.dropped_empty.load(Ordering::Relaxed);
-        let gp = stats.generator_pending.load(Ordering::Relaxed);
-        let wf = stats.window_full.load(Ordering::Relaxed);
-        let ce = stats.channel_empty.load(Ordering::Relaxed);
-        let sent = stats.sent.load(Ordering::Relaxed);
-        let fp = stats.front_pending.load(Ordering::Relaxed);
-        let a = stats.answered.load(Ordering::Relaxed);
-        let full = stats.ack_full.load(Ordering::Relaxed);
-        let partial = stats.ack_partial.load(Ordering::Relaxed);
-        let conflict = stats.ack_conflict.load(Ordering::Relaxed);
-        let ooo = stats.out_of_order.load(Ordering::Relaxed);
-        format!(
-            "Raft stream stats: generated {g}, generator pending polls {gp}, window full {wf}, \
-channel empty {ce}, sent {sent}, dropped empty {de}, front pending polls {fp}, answered {a}, \
-full acks {full}, partial acks {partial}, conflicts {conflict}, out of order {ooo}"
-        )
-    }
-}
-
 #[cfg(any(feature = "cache", feature = "sqlite"))]
-const SNAPSHOT_CHUNK_SIZE_FALLBACK: usize = 3 * 1024 * 1024;
-
-/// `AppendEntries` RPCs a single replication stream keeps on the socket at the same time.
-///
-/// 1 is one request, its answer, then the next. Above 1 the leader sends the next request while the
-/// previous one is still being answered, so the round trip stops being paid per batch. The follower
-/// applies appends one at a time, in the order they arrive, so the depth is purely the leader's
-/// window: it is how many requests are on the socket and how many answers are on their way back.
-///
-/// A window above 1 only pays on a link whose round trip is the cost. A follower that acknowledges
-/// part of a request invalidates every request the leader already pipelined behind it, and the
-/// leader re-replicates them, which on a link with no distance costs several times what the
-/// overlap can save. Raise it on a link with distance and measure it there.
-///
-/// The depth used when `HQL_RAFT_STREAM_DEPTH` is unset, unparsable, or out of range.
-#[cfg(any(feature = "cache", feature = "sqlite"))]
-const DEFAULT_RAFT_STREAM_DEPTH: usize = 8;
-
-/// The highest depth the transport accepts, which bounds how many appends a single connection
-/// keeps unacknowledged at once.
-#[cfg(any(feature = "cache", feature = "sqlite"))]
-const MAX_RAFT_STREAM_DEPTH: usize = 64;
-
-/// TEMPORARY, for the depth sweep only: the value is read once from `HQL_RAFT_STREAM_DEPTH`,
-/// clamped into the safe range, so a benchmark run does not rebuild the crate per value. Revert
-/// this to a plain `const` before merging.
-#[cfg(any(feature = "cache", feature = "sqlite"))]
-pub(crate) static RAFT_STREAM_DEPTH: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
-    let env = "HQL_RAFT_STREAM_DEPTH";
-    let depth = std::env::var(env)
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_RAFT_STREAM_DEPTH);
-    if depth != DEFAULT_RAFT_STREAM_DEPTH {
-        info!("Raft stream depth set to {depth} by {env}");
-    }
-    depth.clamp(1, MAX_RAFT_STREAM_DEPTH)
-});
-
-/// Multiplier on openraft's `soft_ttl()` for the answer deadline of one pipelined append.
-///
-/// openraft hands a replication stream its heartbeat interval as the soft TTL, and a follower
-/// that has a snapshot install in front of its queue needs far more than one heartbeat to answer
-/// the requests queued behind it.
-#[cfg(any(feature = "cache", feature = "sqlite"))]
-const RAFT_STREAM_TTL_FACTOR: u32 = 8;
-
-/// Lower bound for that deadline, matching the default `install_snapshot_timeout` a snapshot in
-/// front of the queue can take.
-#[cfg(any(feature = "cache", feature = "sqlite"))]
-const RAFT_STREAM_TTL_FLOOR: Duration = Duration::from_secs(10);
+const SNAPSHOT_CHUNK_SIZE_FALLBACK: usize = 4 * 1024 * 1024;
 
 /// The answer of one group's `AppendEntries` RPC, as it travels back over the wire.
 type AppendAnswer<C> = Result<AppendEntriesResponse<C>, RaftError<C>>;
@@ -210,25 +67,173 @@ type AppendAnswer<C> = Result<AppendEntriesResponse<C>, RaftError<C>>;
 /// The way back to a caller that is waiting for one request's answer, handed over with the request.
 type Ack = oneshot::Sender<Result<RaftStreamResponsePayload, Error>>;
 
-/// The items a pipelined answer stream yields: an answer, or the end of the stream.
-type AppendAnswers<C> = Option<Result<AppendResult<C>, RPCError<C>>>;
-
-/// One append inside a pipeline window: the log id range its answer has to be reported against, and
-/// the receiver that answer arrives on.
-struct PendingAppend<C>
-where
-    C: RaftTypeConfig<NodeId = NodeId>,
-{
-    prev_log_id: Option<LogIdOf<C>>,
-    last_log_id: Option<LogIdOf<C>>,
-    rx: oneshot::Receiver<Result<RaftStreamResponsePayload, Error>>,
-}
-
 /// The boxed answer stream openraft's `stream_append` expects from a transport.
 type AppendStream<'s, C> = BoxStream<'s, Result<AppendResult<C>, RPCError<C>>>;
 
 /// What opening that stream answers: the stream itself, or the reason it never opened.
 type OpenAppendStream<'s, C> = Result<AppendStream<'s, C>, RPCError<C>>;
+
+/// One answer of a replication stream, and whether it acknowledges the whole request it answers.
+type StreamAnswerOf<C> = (Result<AppendResult<C>, RPCError<C>>, bool);
+
+/// The answer of one request of a replication stream, together with the log range the request
+/// carried. The range travels with the answer because openraft's acknowledgement is the range's end,
+/// and the stream pairs nothing: the connection hands the answers over in request order.
+pub(crate) struct StreamAnswer<C: RaftTypeConfig> {
+    payload: Result<RaftStreamResponsePayload, Error>,
+    prev_log_id: Option<LogIdOf<C>>,
+    last_log_id: Option<LogIdOf<C>>,
+}
+
+/// The answer channel of one replication stream, plus the log range of the request it belongs to.
+pub(crate) struct StreamAck<C: RaftTypeConfig> {
+    sender: flume::Sender<StreamAnswer<C>>,
+    prev_log_id: Option<LogIdOf<C>>,
+    last_log_id: Option<LogIdOf<C>>,
+}
+
+impl<C: RaftTypeConfig> StreamAck<C> {
+    /// Hand over the answer of the request this ack belongs to.
+    #[inline]
+    fn answer(self, payload: Result<RaftStreamResponsePayload, Error>) -> bool {
+        self.sender
+            .send(StreamAnswer {
+                payload,
+                prev_log_id: self.prev_log_id,
+                last_log_id: self.last_log_id,
+            })
+            .is_ok()
+    }
+}
+
+/// Where the answer of one request goes back to.
+pub(crate) enum AckTarget {
+    /// A single RPC caller waiting for exactly this answer.
+    Call(Ack),
+    /// The replication stream that sent this `AppendEntries` to the DB group.
+    #[cfg(feature = "sqlite")]
+    AppendDb(StreamAck<TypeConfigSqlite>),
+    /// The replication stream that sent this `AppendEntries` to the cache group.
+    #[cfg(feature = "cache")]
+    AppendCache(StreamAck<TypeConfigCache>),
+}
+
+impl std::fmt::Debug for AckTarget {
+    /// The target is a channel, not data, and it travels inside `RaftRequest`, which the send path
+    /// logs - naming the target is all a log line can use there.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Call(_) => f.write_str("ack caller"),
+            #[cfg(feature = "sqlite")]
+            Self::AppendDb(_) => f.write_str("ack append stream"),
+            #[cfg(feature = "cache")]
+            Self::AppendCache(_) => f.write_str("ack append stream"),
+        }
+    }
+}
+
+impl AckTarget {
+    /// Hand one answer to its owner. `false` when that owner is gone, which is the normal end of a
+    /// replication stream: openraft stops consuming answers the moment its session ends.
+    #[inline]
+    fn deliver(self, payload: RaftStreamResponsePayload) -> bool {
+        match self {
+            AckTarget::Call(ack) => ack.send(Ok(payload)).is_ok(),
+            #[cfg(feature = "sqlite")]
+            AckTarget::AppendDb(ack) => ack.answer(Ok(payload)),
+            #[cfg(feature = "cache")]
+            AckTarget::AppendCache(ack) => ack.answer(Ok(payload)),
+        }
+    }
+
+    /// Fail the request because the connection it was sent on is gone. A replication stream gets
+    /// the failure as an answer, which is how its stream learns that the connection ended.
+    fn fail(self, err: Error) {
+        match self {
+            AckTarget::Call(ack) => {
+                let _ = ack.send(Err(err));
+            }
+            #[cfg(feature = "sqlite")]
+            AckTarget::AppendDb(ack) => {
+                let _ = ack.answer(Err(err));
+            }
+            #[cfg(feature = "cache")]
+            AckTarget::AppendCache(ack) => {
+                let _ = ack.answer(Err(err));
+            }
+        }
+    }
+}
+
+/// Every request the connection has sent and that is not answered yet, keyed by the id the server
+/// echoes back in its answer.
+///
+/// The server answers a connection in the order it received its requests, so answers normally
+/// arrive in send order. Keeping the ids makes that an assumption and not a requirement: an answer
+/// naming a later request waits until the request the connection expects next is answered, and
+/// everything that queued up behind it is delivered with it.
+struct InFlight {
+    /// The id of the oldest request that is not delivered yet.
+    expected: usize,
+    /// Sent, not answered.
+    targets: BTreeMap<usize, AckTarget>,
+    /// Answered, not delivered.
+    ready: BTreeMap<usize, RaftStreamResponsePayload>,
+}
+
+impl InFlight {
+    const fn new() -> Self {
+        Self {
+            expected: 0,
+            targets: BTreeMap::new(),
+            ready: BTreeMap::new(),
+        }
+    }
+
+    /// Register a request that goes onto the socket. The id is the connection's own send counter, so
+    /// a queue that has just emptied starts expecting this one.
+    #[inline]
+    fn push(&mut self, id: usize, target: AckTarget) {
+        if self.targets.is_empty() {
+            self.expected = id;
+        }
+        self.targets.insert(id, target);
+    }
+
+    /// Deliver one answer, together with everything that had queued up behind it. `false` for an id
+    /// the connection never sent: that answer belongs to no caller, and delivering it would
+    /// acknowledge a request nobody is waiting for.
+    #[inline]
+    fn answer(&mut self, id: usize, payload: RaftStreamResponsePayload) -> bool {
+        if !self.targets.contains_key(&id) {
+            return false;
+        }
+        self.ready.insert(id, payload);
+
+        while let Some(payload) = self.ready.remove(&self.expected) {
+            let target = self
+                .targets
+                .remove(&self.expected)
+                .expect("an answer in the reorder buffer always has the target it was sent with");
+            self.expected += 1;
+            if !target.deliver(payload) {
+                error!("sending back stream response from raft server");
+            }
+        }
+
+        true
+    }
+
+    /// Fail everything the connection sent on a socket that is gone. A response for those requests
+    /// can never arrive on the next connection: the server answers every request on the connection
+    /// it received it on.
+    fn fail_all(&mut self, err: &str) {
+        for (_, target) in std::mem::take(&mut self.targets) {
+            target.fail(Error::Connect(err.into()));
+        }
+        self.ready.clear();
+    }
+}
 
 /// The wire pair of one Raft group's `AppendEntries` RPC: how to wrap the request for the socket,
 /// and how to take the answer back out of a response payload.
@@ -236,34 +241,54 @@ type OpenAppendStream<'s, C> = Result<AppendStream<'s, C>, RPCError<C>>;
 /// The two travel together so the request type of one group can never be paired with the answer
 /// type of the other.
 #[cfg(any(feature = "cache", feature = "sqlite"))]
-trait AppendWire: Copy + 'static {
+pub(crate) trait AppendWire: Copy + 'static {
     type Config: RaftTypeConfig<NodeId = NodeId>;
 
-    /// Wraps an `AppendEntries` request and its ack into the message for the socket.
-    fn request(
-        ack: oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-        req: AppendEntriesRequest<Self::Config>,
-    ) -> RaftRequest;
+    /// Wraps an `AppendEntries` request and the place its answer goes back to into the message for
+    /// the socket.
+    #[inline]
+    fn request(ack: AckTarget, req: AppendEntriesRequest<Self::Config>) -> RaftRequest;
+
+    /// Wraps the answer channel of a replication stream and the log range of one of its requests.
+    #[inline]
+    fn stream_ack(
+        sender: flume::Sender<StreamAnswer<Self::Config>>,
+        prev_log_id: Option<LogIdOf<Self::Config>>,
+        last_log_id: Option<LogIdOf<Self::Config>>,
+    ) -> AckTarget;
 
     /// Takes the `AppendEntries` answer out of a response payload, `None` for any other payload.
+    #[inline]
     fn response(payload: RaftStreamResponsePayload) -> Option<AppendAnswer<Self::Config>>;
 }
 
 #[cfg(feature = "sqlite")]
 #[derive(Clone, Copy)]
-struct AppendDb;
+pub(crate) struct AppendDb;
 
 #[cfg(feature = "sqlite")]
 impl AppendWire for AppendDb {
     type Config = TypeConfigSqlite;
 
-    fn request(
-        ack: oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-        req: AppendEntriesRequest<Self::Config>,
-    ) -> RaftRequest {
+    #[inline]
+    fn request(ack: AckTarget, req: AppendEntriesRequest<Self::Config>) -> RaftRequest {
         RaftRequest::AppendDB((ack, req))
     }
 
+    #[inline]
+    fn stream_ack(
+        sender: flume::Sender<StreamAnswer<Self::Config>>,
+        prev_log_id: Option<LogIdOf<Self::Config>>,
+        last_log_id: Option<LogIdOf<Self::Config>>,
+    ) -> AckTarget {
+        AckTarget::AppendDb(StreamAck {
+            sender,
+            prev_log_id,
+            last_log_id,
+        })
+    }
+
+    #[inline]
     fn response(payload: RaftStreamResponsePayload) -> Option<AppendAnswer<Self::Config>> {
         match payload {
             RaftStreamResponsePayload::AppendDB(res) => Some(res),
@@ -274,24 +299,65 @@ impl AppendWire for AppendDb {
 
 #[cfg(feature = "cache")]
 #[derive(Clone, Copy)]
-struct AppendCache;
+pub(crate) struct AppendCache;
 
 #[cfg(feature = "cache")]
 impl AppendWire for AppendCache {
     type Config = TypeConfigCache;
 
-    fn request(
-        ack: oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-        req: AppendEntriesRequest<Self::Config>,
-    ) -> RaftRequest {
+    #[inline]
+    fn request(ack: AckTarget, req: AppendEntriesRequest<Self::Config>) -> RaftRequest {
         RaftRequest::AppendCache((ack, req))
     }
 
+    #[inline]
+    fn stream_ack(
+        sender: flume::Sender<StreamAnswer<Self::Config>>,
+        prev_log_id: Option<LogIdOf<Self::Config>>,
+        last_log_id: Option<LogIdOf<Self::Config>>,
+    ) -> AckTarget {
+        AckTarget::AppendCache(StreamAck {
+            sender,
+            prev_log_id,
+            last_log_id,
+        })
+    }
+
+    #[inline]
     fn response(payload: RaftStreamResponsePayload) -> Option<AppendAnswer<Self::Config>> {
         match payload {
             RaftStreamResponsePayload::AppendCache(res) => Some(res),
             _ => None,
         }
+    }
+}
+
+/// The size a Raft request may reach before the transport warns about it, in bytes.
+///
+/// openraft bounds a replication request by the number of entries it packs, never by their size, so
+/// a request is as big as the entries the leader had queued: a transaction is a single entry of
+/// whatever size the application gives it. A request of this size travels the network as one
+/// message, the follower collects and decodes it as one message, and everything else that connection
+/// carries queues up behind it. Measured on a three-node cluster on one machine: 28 MB replicates
+/// fine, 57 MB stalls its connection until the write times out, and the budget is a quarter of that
+/// stable value because the limit depends on the machine and the network. Splitting a request is the
+/// application's call, so this is the loud marker that one got away too big.
+pub(crate) const WARN_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+
+/// Warns when a serialized Raft request is over `WARN_REQUEST_BYTES`. The writer has the bytes in
+/// hand already, so this measures the request exactly as it goes onto the socket, at no cost.
+#[inline]
+fn warn_if_request_is_huge(bytes: usize) {
+    if bytes > WARN_REQUEST_BYTES {
+        warn!(
+            r"
+    Raft request is {} bytes, over the {} byte budget: it travels the network as a single
+    message, the follower has to collect and decode it as a single message, and everything
+    else on this connection queues up behind it. Split the payload in the application.
+    This may work, but it can trigger Raft issues on slower networks.
+            ",
+            bytes, WARN_REQUEST_BYTES,
+        );
     }
 }
 
@@ -303,88 +369,7 @@ type SnapshotRequestFn = fn(
     ),
 ) -> RaftRequest;
 
-/// The state of one pipelined `stream_append` session: the requests openraft has handed over, the
-/// ones that are on the socket, and their answers in the order the requests went out.
-///
-/// The queue is the whole reorder. Its front is always the request openraft is waiting for, and
-/// the receiver it carries is the answer slot of exactly that request, so a session needs no
-/// registry of what it has sent.
-struct AppendPipeline<S, W>
-where
-    W: AppendWire,
-{
-    /// openraft's request stream. A window of one takes requests straight out of it, one per poll,
-    /// which is the shape openraft's own sequential transport has: no queue in between, nothing
-    /// handed over a channel. A wider window moves the stream into the generator below, because
-    /// generation has to run beside the answers, and that needs a place to put what it generates.
-    input: Option<Pin<Box<S>>>,
-    /// The generation of a window wider than one, as a stream so it can be polled on every poll of
-    /// the session. It owns the request stream, which is what makes generating and answering safe
-    /// to poll in the same poll: a pending generation is never dropped, and a finished one is never
-    /// polled again.
-    generator: Option<Pin<Box<dyn Stream<Item = ()> + Send>>>,
-    /// The requests generation has produced and the session has not sent yet. Its capacity is the
-    /// window, so a leader that generates faster than the follower answers stops generating rather
-    /// than queueing without end.
-    rx_req: Option<flume::Receiver<AppendEntriesRequest<W::Config>>>,
-    /// The requests taken off the channel on this poll. Living in the state means a poll allocates
-    /// nothing, which matters because a poll is more frequent than a request.
-    drained: Vec<AppendEntriesRequest<W::Config>>,
-    /// Set when the input has handed over everything it will, which the closed channel says.
-    input_exhausted: bool,
-    /// Set when the generator has finished, because a finished stream must never be polled again.
-    generator_done: bool,
-    sender: flume::Sender<RaftRequest>,
-    ids: (NodeId, NodeId),
-    /// How long the front of the window may wait for its answer.
-    ttl: Duration,
-    /// The deadline of the current front, reset when the next request becomes the front.
-    timer: Pin<Box<time::Sleep>>,
-    depth: usize,
-    /// The requests on the socket in send order.
-    pending: VecDeque<PendingAppend<W::Config>>,
-    /// Set once the session is over, by a failed answer or by a drained session, so the stream ends
-    /// instead of being polled on.
-    done: bool,
-}
-
 /// The shape of one append answer, for the counters only.
-#[cfg(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite")))]
-fn record_ack_of_payload(payload: &RaftStreamResponsePayload) {
-    if let Some(stats) = STREAM_STATS.as_ref() {
-        match payload {
-            RaftStreamResponsePayload::AppendDB(Ok(res)) => stats.record_ack(res),
-            #[cfg(feature = "cache")]
-            RaftStreamResponsePayload::AppendCache(Ok(res)) => stats.record_ack(res),
-            _ => {}
-        }
-    }
-}
-
-/// One counter of the pipelined transport. With the `stream-stats` feature compiled out, this is
-/// nothing at all, so a normal build pays no load, no branch and no atomic for it.
-#[cfg(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite")))]
-macro_rules! stream_stats {
-    // A statement: a call on a function of this module.
-    ($name:ident($($arg:expr),* $(,)?)) => {
-        $name($($arg),*);
-    };
-    // A counter: a closure picking one field out of `StreamStats`.
-    ($counter:expr) => {
-        if let Some(stats) = STREAM_STATS.as_ref() {
-            let counter: for<'a> fn(&'a StreamStats) -> &'a AtomicU64 = $counter;
-            StreamStats::add(counter(stats));
-        }
-    };
-}
-
-#[cfg(not(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite"))))]
-macro_rules! stream_stats {
-    ($($t:tt)*) => {
-        const {}
-    };
-}
-
 pub struct NetworkStreaming {
     pub node_id: NodeId,
     pub tls_config: Option<Arc<rustls::ClientConfig>>,
@@ -422,11 +407,9 @@ impl RaftNetworkFactory<TypeConfigCache> for NetworkStreaming {
         )));
 
         NetworkConnectionStreaming {
-            local_id: self.node_id,
             node: node.clone(),
             sender,
             task: Some(task),
-            stream_depth: *RAFT_STREAM_DEPTH,
         }
     }
 }
@@ -455,24 +438,17 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
         )));
 
         NetworkConnectionStreaming {
-            local_id: self.node_id,
             node: node.clone(),
             sender,
             task: Some(task),
-            stream_depth: *RAFT_STREAM_DEPTH,
         }
     }
 }
 
 #[derive(Debug)]
-enum RaftRequest {
+pub(crate) enum RaftRequest {
     #[cfg(feature = "sqlite")]
-    AppendDB(
-        (
-            oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-            AppendEntriesRequest<TypeConfigSqlite>,
-        ),
-    ),
+    AppendDB((AckTarget, AppendEntriesRequest<TypeConfigSqlite>)),
     #[cfg(feature = "sqlite")]
     VoteDB(
         (
@@ -496,12 +472,7 @@ enum RaftRequest {
     ),
 
     #[cfg(feature = "cache")]
-    AppendCache(
-        (
-            oneshot::Sender<Result<RaftStreamResponsePayload, Error>>,
-            AppendEntriesRequest<TypeConfigCache>,
-        ),
-    ),
+    AppendCache((AckTarget, AppendEntriesRequest<TypeConfigCache>)),
     #[cfg(feature = "cache")]
     VoteCache(
         (
@@ -577,12 +548,10 @@ impl NetworkStreaming {
         is_startup_finished: Arc<AtomicBool>,
     ) {
         let mut request_id = 0usize;
-        // Every request this socket has sent and not answered yet, in send order. The server answers
-        // a connection in the order it received its requests, so the front of this queue is always
-        // the owner of the next answer, and the pipelined appends are simply its longest part.
-        // Everything in it is failed on the reconnect path, so it is empty again before a new
-        // connection starts.
-        let mut in_flight: VecDeque<(usize, Ack)> = VecDeque::new();
+        // Every request this socket has sent and not answered yet, keyed by the id the server echoes
+        // back in its answer. Everything in it is failed on the reconnect path, so it is empty again
+        // before a new connection starts.
+        let mut in_flight = InFlight::new();
         let mut shutdown = false;
 
         'outer: loop {
@@ -619,27 +588,31 @@ impl NetworkStreaming {
                         time::sleep(Duration::from_millis(heartbeat_interval)).await;
 
                         // Nothing reaches the socket while we are not connected, so every queued
-                        // request has to be failed here. A pipelined stream queues up to
-                        // `RAFT_STREAM_DEPTH` appends at once, and the channel is unbounded, so
-                        // this has to drain fully rather than take a fixed number of items.
+                        // request has to be failed here. A pipelined stream queues its whole payload
+                        // at once, and the channel is unbounded, so this has to drain fully rather
+                        // than take a fixed number of items.
                         while let Ok(req) = rx.try_recv() {
-                            let ack = match req {
+                            let target = match req {
                                 #[cfg(feature = "sqlite")]
-                                RaftRequest::AppendDB((ack, _)) => Some(ack),
+                                RaftRequest::AppendDB((target, _)) => Some(target),
                                 #[cfg(feature = "sqlite")]
-                                RaftRequest::VoteDB((ack, _)) => Some(ack),
+                                RaftRequest::VoteDB((ack, _)) => Some(AckTarget::Call(ack)),
                                 #[cfg(feature = "sqlite")]
-                                RaftRequest::SnapshotDB((ack, _)) => Some(ack),
+                                RaftRequest::SnapshotDB((ack, _)) => Some(AckTarget::Call(ack)),
                                 #[cfg(feature = "sqlite")]
-                                RaftRequest::TransferLeaderDB((ack, _)) => Some(ack),
+                                RaftRequest::TransferLeaderDB((ack, _)) => {
+                                    Some(AckTarget::Call(ack))
+                                }
                                 #[cfg(feature = "cache")]
-                                RaftRequest::AppendCache((ack, _)) => Some(ack),
+                                RaftRequest::AppendCache((target, _)) => Some(target),
                                 #[cfg(feature = "cache")]
-                                RaftRequest::VoteCache((ack, _)) => Some(ack),
+                                RaftRequest::VoteCache((ack, _)) => Some(AckTarget::Call(ack)),
                                 #[cfg(feature = "cache")]
-                                RaftRequest::SnapshotCache((ack, _)) => Some(ack),
+                                RaftRequest::SnapshotCache((ack, _)) => Some(AckTarget::Call(ack)),
                                 #[cfg(feature = "cache")]
-                                RaftRequest::TransferLeaderCache((ack, _)) => Some(ack),
+                                RaftRequest::TransferLeaderCache((ack, _)) => {
+                                    Some(AckTarget::Call(ack))
+                                }
                                 RaftRequest::StreamResponse(_) => None,
                                 RaftRequest::ReaderExit => {
                                     continue;
@@ -649,8 +622,8 @@ impl NetworkStreaming {
                                 }
                             };
 
-                            if let Some(ack) = ack {
-                                let _ = ack.send(Err(Error::Connect(err.to_string())));
+                            if let Some(target) = target {
+                                target.fail(Error::Connect(err.to_string()));
                             }
                         }
 
@@ -659,15 +632,18 @@ impl NetworkStreaming {
                 }
             };
             debug_assert!(
-                in_flight.is_empty(),
+                in_flight.targets.is_empty(),
                 "raft in flight buffer should always be empty when restoring a connection: {}",
-                in_flight.len()
+                in_flight.targets.len()
             );
 
-            // Both channels carry a whole pipeline: `RAFT_STREAM_DEPTH` requests go out and their
-            // answers come back in bursts, so a capacity of 1 would serialise them all over again.
-            let (tx_write, rx_write) = flume::bounded(*RAFT_STREAM_DEPTH);
-            let (tx_read, rx_read) = flume::bounded(*RAFT_STREAM_DEPTH);
+            // The relay loop below is the single point both directions run through, and a pipelined
+            // stream hands it a whole payload at once. A capacity of 1 would make the relay wait for
+            // the socket writer before it routes the next request, and an answer arriving behind
+            // that wait would stall the stream that is waiting for it, so both carry the full
+            // pipeline. Their size is bounded by openraft's own replication buffers, not by here.
+            let (tx_write, rx_write) = flume::unbounded();
+            let (tx_read, rx_read) = flume::unbounded();
 
             // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
             let (read, write) = socket.split(tokio::io::split);
@@ -684,6 +660,7 @@ impl NetworkStreaming {
             // Frames the previous connection's reader had already queued belong to requests that
             // path failed when it broke the connection. Drop them rather than matching them
             // against this connection's ids.
+            // TODO this should not be necessary? We just created this channel, and the socket was closed anyway.
             while let Ok(req) = rx_read.try_recv() {
                 debug!("Dropping a frame of the previous raft connection: {req:?}");
             }
@@ -713,71 +690,54 @@ impl NetworkStreaming {
 
                 let stream_req = match req {
                     #[cfg(feature = "sqlite")]
-                    RaftRequest::AppendDB((ack, req)) => {
-                        Some((ack, RaftStreamRequest::AppendDB((request_id, req))))
+                    RaftRequest::AppendDB((target, req)) => {
+                        Some((target, RaftStreamRequest::AppendDB((request_id, req))))
                     }
                     #[cfg(feature = "sqlite")]
-                    RaftRequest::VoteDB((ack, req)) => {
-                        Some((ack, RaftStreamRequest::VoteDB((request_id, req))))
-                    }
+                    RaftRequest::VoteDB((ack, req)) => Some((
+                        AckTarget::Call(ack),
+                        RaftStreamRequest::VoteDB((request_id, req)),
+                    )),
                     #[cfg(feature = "sqlite")]
                     RaftRequest::SnapshotDB((ack, mut req)) => {
                         req.request_id = request_id;
-                        Some((ack, RaftStreamRequest::SnapshotDB(req)))
+                        Some((AckTarget::Call(ack), RaftStreamRequest::SnapshotDB(req)))
                     }
                     #[cfg(feature = "sqlite")]
-                    RaftRequest::TransferLeaderDB((ack, req)) => {
-                        Some((ack, RaftStreamRequest::TransferLeaderDB((request_id, req))))
-                    }
+                    RaftRequest::TransferLeaderDB((ack, req)) => Some((
+                        AckTarget::Call(ack),
+                        RaftStreamRequest::TransferLeaderDB((request_id, req)),
+                    )),
 
                     #[cfg(feature = "cache")]
-                    RaftRequest::AppendCache((ack, req)) => {
-                        Some((ack, RaftStreamRequest::AppendCache((request_id, req))))
+                    RaftRequest::AppendCache((target, req)) => {
+                        Some((target, RaftStreamRequest::AppendCache((request_id, req))))
                     }
                     #[cfg(feature = "cache")]
-                    RaftRequest::VoteCache((ack, req)) => {
-                        Some((ack, RaftStreamRequest::VoteCache((request_id, req))))
-                    }
+                    RaftRequest::VoteCache((ack, req)) => Some((
+                        AckTarget::Call(ack),
+                        RaftStreamRequest::VoteCache((request_id, req)),
+                    )),
                     #[cfg(feature = "cache")]
                     RaftRequest::SnapshotCache((ack, mut req)) => {
                         req.request_id = request_id;
-                        Some((ack, RaftStreamRequest::SnapshotCache(req)))
+                        Some((AckTarget::Call(ack), RaftStreamRequest::SnapshotCache(req)))
                     }
                     #[cfg(feature = "cache")]
                     RaftRequest::TransferLeaderCache((ack, req)) => Some((
-                        ack,
+                        AckTarget::Call(ack),
                         RaftStreamRequest::TransferLeaderCache((request_id, req)),
                     )),
 
                     RaftRequest::StreamResponse(resp) => {
-                        // The answer order is the request order, so the front of the queue is the
-                        // ack this response belongs to. An answer that names another request means
-                        // that order is broken, and delivering it would hand one caller the answer
-                        // of another: fail it and end the connection instead.
-                        match in_flight.pop_front() {
-                            None => {
-                                error!(
-                                    "client ack for RaftStreamResponse missing: {}",
-                                    resp.request_id
-                                );
-                            }
-                            Some((id, ack)) if id == resp.request_id => {
-                                if ack.send(Ok(resp.payload)).is_err() {
-                                    error!("sending back stream response from raft server");
-                                }
-                            }
-                            Some((id, ack)) => {
-                                stream_stats!(|s: &StreamStats| &s.out_of_order);
-                                let _ = ack.send(Err(Error::Connect(format!(
-                                    "Raft node {} answered out of request order: {} vs {}",
-                                    node.id, resp.request_id, id,
-                                ))));
-                                error!(
-                                    "Raft node {} answered out of request order: {} vs {}",
-                                    node.id, resp.request_id, id
-                                );
-                                break;
-                            }
+                        // The server echoes the id of the request it answered. Delivering in send
+                        // order is the reorder buffer's job, and an id the connection never sent
+                        // acknowledges a request nobody is waiting for.
+                        if !in_flight.answer(resp.request_id, resp.payload) {
+                            error!(
+                                "client ack for RaftStreamResponse missing: {}",
+                                resp.request_id
+                            );
                         }
                         None
                     }
@@ -795,17 +755,18 @@ impl NetworkStreaming {
                     }
                 };
 
-                if let Some((ack, payload)) = stream_req {
+                if let Some((target, payload)) = stream_req {
                     let bytes = serialize_serde(&payload);
+                    warn_if_request_is_huge(bytes.len());
 
                     if let Err(err) = tx_write.send_async(WritePayload::Payload(bytes)).await {
-                        let _ = ack.send(Err(Error::Connect(format!(
+                        target.fail(Error::Connect(format!(
                             "Error sending Write Request to WebSocket writer: {err}"
-                        ))));
+                        )));
                         break;
                     }
 
-                    in_flight.push_back((request_id, ack));
+                    in_flight.push(request_id, target);
                     request_id += 1;
                 }
             }
@@ -814,9 +775,7 @@ impl NetworkStreaming {
 
             // A response for a request sent on the dead socket can never arrive on the next one:
             // the server answers every request on the connection it received it on.
-            for (_, ack) in in_flight.drain(..) {
-                let _ = ack.send(Err(Error::Connect("Raft WebSocket stream ended".into())));
-            }
+            in_flight.fail_all("Raft WebSocket stream ended");
 
             // Give the writer enough time to possibly send out the close request.
             // Since we need to re-connect, there is no need to rush anyway.
@@ -904,14 +863,9 @@ impl NetworkStreaming {
 
 #[allow(clippy::type_complexity)]
 pub struct NetworkConnectionStreaming {
-    /// The id of the node this connection was built for, used in openraft's timeout errors.
-    local_id: NodeId,
     node: Node,
     sender: flume::Sender<RaftRequest>,
     task: Option<JoinHandle<()>>,
-    /// How many appends a `stream_append` session of this connection keeps in flight. Read from
-    /// `RAFT_STREAM_DEPTH` when the factory builds a connection.
-    stream_depth: usize,
 }
 
 impl Drop for NetworkConnectionStreaming {
@@ -948,6 +902,209 @@ impl NetworkConnectionStreaming {
 
         rx.await.map_err(|err| Error::Connect(err.to_string()))?
     }
+
+    /// One `AppendEntries` round trip on the connection: the request onto the socket, then its
+    /// answer. `append_entries` is exactly this.
+    async fn append_entries_wire<W>(
+        &mut self,
+        req: AppendEntriesRequest<W::Config>,
+    ) -> Result<AppendResult<W::Config>, RPCError<W::Config>>
+    where
+        W: AppendWire,
+    {
+        let prev_log_id = req.prev_log_id.clone();
+        // An append request without entries only asks for an ack, which is the request's
+        // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
+        let last_log_id = req
+            .entries
+            .last()
+            .map(|entry| entry.log_id())
+            .or_else(|| prev_log_id.clone());
+
+        let (ack, rx) = oneshot::channel();
+        let payload = self
+            .send(W::request(AckTarget::Call(ack), req), rx)
+            .await
+            .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?;
+
+        match W::response(payload) {
+            Some(res) => res
+                .map(|res| res.into_append_result(prev_log_id, last_log_id))
+                .map_err(|err| RPCError::Unreachable(Unreachable::new(&err))),
+            None => Err(RPCError::Unreachable(Unreachable::from_string(
+                "Raft append answer carries a different payload type",
+            ))),
+        }
+    }
+
+    /// openraft's request stream, pipelined onto the connection.
+    ///
+    /// Every request openraft produces goes onto the socket the next time the answer stream is
+    /// polled, and the answers of the session come back on their own channel in request order, each
+    /// carrying the log range of the request it answers. Nothing here is bounded: openraft feeds the
+    /// request stream from its replication buffers and rate limits the writes that fill them, and the
+    /// socket keeps the order of everything that travels over it.
+    fn append_stream<'s, S, W>(&self, input: S) -> BoxFuture<'s, OpenAppendStream<'s, W::Config>>
+    where
+        S: Stream<Item = AppendEntriesRequest<W::Config>> + OptionalSend + Unpin + 'static,
+        W: AppendWire,
+    {
+        let (tx, rx) = flume::unbounded();
+        let state = AppendSession {
+            input: Some(input),
+            sender: self.sender.clone(),
+            answers: SessionAnswers(rx),
+            open: Some(tx),
+            done: false,
+        };
+
+        Box::pin(async move {
+            Ok(Box::pin(stream::unfold(state, |mut state| async move {
+                if state.done {
+                    return None;
+                }
+
+                loop {
+                    select! {
+                        biased;
+
+                        req = AppendSession::next_request(&mut state.input), if state.input.is_some() => {
+                            if let Some(req) = req {
+                                let prev_log_id = req.prev_log_id.clone();
+                                // An append request without entries only asks for an ack, which is
+                                // the request's `prev_log_id` - openraft asserts the ack to be inside
+                                // the (empty) sent range.
+                                let last_log_id = req
+                                    .entries
+                                    .last()
+                                    .map(|entry| entry.log_id())
+                                    .or_else(|| prev_log_id.clone());
+                                let sender = state
+                                    .open
+                                    .clone()
+                                    .expect("the answers channel is open while the input is");
+                                let ack = W::stream_ack(sender, prev_log_id, last_log_id);
+
+                                if let Err(err) = state.sender.send(W::request(ack, req)) {
+                                    state.done = true;
+                                    return Some((
+                                        Err(RPCError::Unreachable(Unreachable::new(&err))),
+                                        state,
+                                    ));
+                                }
+                            } else {
+                                // openraft has nothing left to send. Dropping the sender half closes
+                                // the answers channel with the last answer, and the stream ends with
+                                // it; a session that stayed open there would sit in front of
+                                // everything that has to follow on the connection.
+                                state.input = None;
+                                state.open = None;
+                            }
+                        }
+
+                        answer = state.answers.next() => {
+                            match answer {
+                                // The answers channel closed: every answer of the session is
+                                // delivered and openraft has nothing left to send.
+                                Err(_) if state.input.is_none() => return None,
+                                Err(err) => {
+                                    state.done = true;
+                                    return Some((
+                                        Err(RPCError::Unreachable(Unreachable::new(&err))),
+                                        state,
+                                    ));
+                                }
+                                Ok(answer) => {
+                                    let (res, fully_acked) = Self::stream_answer::<W>(answer);
+                                    state.done = !fully_acked;
+                                    return Some((res, state));
+                                }
+                            }
+                        }
+                    }
+                }
+            })) as AppendStream<'s, W::Config>)
+        })
+    }
+
+    /// One answer of a replication stream as openraft wants it, and whether it acknowledges the
+    /// whole request it answers.
+    fn stream_answer<W>(answer: StreamAnswer<W::Config>) -> StreamAnswerOf<W::Config>
+    where
+        W: AppendWire,
+    {
+        let StreamAnswer {
+            payload,
+            prev_log_id,
+            last_log_id,
+        } = answer;
+
+        let res = match payload {
+            Err(err) => Err(RPCError::Unreachable(Unreachable::new(&err))),
+            Ok(payload) => match W::response(payload) {
+                Some(Ok(res)) => Ok(res.into_append_result(prev_log_id, last_log_id.clone())),
+                Some(Err(err)) => Err(RPCError::Unreachable(Unreachable::new(&err))),
+                None => Err(RPCError::Unreachable(Unreachable::from_string(
+                    "Raft append answer carries a different payload type",
+                ))),
+            },
+        };
+
+        // Only an acknowledgement of the whole request lets the stream go on. Everything behind the
+        // answer that is not one is dropped: the leader rebuilds this replication from the point the
+        // answer names.
+        let fully_acked = matches!(&res, Ok(Ok(acked)) if *acked == last_log_id);
+        (res, fully_acked)
+    }
+}
+
+/// The answers of one replication session, in request order.
+struct SessionAnswers<C: RaftTypeConfig>(flume::Receiver<StreamAnswer<C>>);
+
+impl<C: RaftTypeConfig> SessionAnswers<C> {
+    /// The next answer of the session. The borrow is of this field alone, which is what lets the
+    /// answer stream poll for the next request and for the next answer in the same `select!`.
+    async fn next(&mut self) -> Result<StreamAnswer<C>, flume::RecvError> {
+        self.0.recv_async().await
+    }
+}
+
+/// The state of one replication session's answer stream - see
+/// `NetworkConnectionStreaming::append_stream`.
+///
+/// Only an acknowledgement of the whole request lets the stream go on. Everything behind the answer
+/// that is not one is dropped: the leader rebuilds this replication from the point that answer
+/// names.
+struct AppendSession<S, C>
+where
+    C: RaftTypeConfig,
+{
+    /// openraft's request stream, `None` once it has answered `None`.
+    input: Option<S>,
+    /// The connection's request channel.
+    sender: flume::Sender<RaftRequest>,
+    /// The answers of this session, in request order.
+    answers: SessionAnswers<C>,
+    /// The sender half of that channel, kept only to drop it once the input is exhausted.
+    open: Option<flume::Sender<StreamAnswer<C>>>,
+    /// Set by the answer that ends the session.
+    done: bool,
+}
+
+impl<S, C> AppendSession<S, C>
+where
+    C: RaftTypeConfig,
+    S: Stream<Item = AppendEntriesRequest<C>> + Unpin,
+{
+    /// The next request openraft has produced, `None` once its stream is exhausted. The borrow is of
+    /// the input field alone, which is what lets the answer stream poll for the next request and for
+    /// the next answer in the same `select!`.
+    async fn next_request(input: &mut Option<S>) -> Option<AppendEntriesRequest<C>> {
+        match input.as_mut() {
+            None => None,
+            Some(input) => input.next().await,
+        }
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -960,36 +1117,19 @@ impl RaftNetworkV2<TypeConfigSqlite> for NetworkConnectionStreaming {
         req: AppendEntriesRequest<TypeConfigSqlite>,
         _option: RPCOption,
     ) -> Result<AppendResult<TypeConfigSqlite>, RPCError<TypeConfigSqlite>> {
-        let prev_log_id = req.prev_log_id;
-        let last_log_id = req.entries.last().map(|entry| entry.log_id);
-
-        let (ack, rx) = oneshot::channel();
-        match AppendDb::response(
-            self.send(RaftRequest::AppendDB((ack, req)), rx)
-                .await
-                .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?,
-        ) {
-            // An append request without entries only asks for an ack, which is the request's
-            // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
-            Some(res) => res
-                .map(|res| res.into_append_result(prev_log_id, last_log_id.or(prev_log_id)))
-                .map_err(|err| RPCError::Unreachable(Unreachable::new(&err))),
-            None => Err(RPCError::Unreachable(Unreachable::from_string(
-                "Raft append answer carries a different payload type",
-            ))),
-        }
+        self.append_entries_wire::<AppendDb>(req).await
     }
 
     /// Pipelined instead of openraft's sequential default - see `append_stream`.
     fn stream_append<S>(
         &mut self,
         input: S,
-        option: RPCOption,
+        _option: RPCOption,
     ) -> BoxFuture<'_, OpenAppendStream<'_, TypeConfigSqlite>>
     where
         S: Stream<Item = AppendEntriesRequest<TypeConfigSqlite>> + OptionalSend + Unpin + 'static,
     {
-        self.append_stream::<AppendDb, S>(input, &option)
+        self.append_stream::<S, AppendDb>(input)
     }
 
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
@@ -1071,36 +1211,19 @@ impl RaftNetworkV2<TypeConfigCache> for NetworkConnectionStreaming {
         rpc: AppendEntriesRequest<TypeConfigCache>,
         _option: RPCOption,
     ) -> Result<AppendResult<TypeConfigCache>, RPCError<TypeConfigCache>> {
-        let prev_log_id = rpc.prev_log_id;
-        let last_log_id = rpc.entries.last().map(|entry| entry.log_id);
-
-        let (ack, rx) = oneshot::channel();
-        match AppendCache::response(
-            self.send(RaftRequest::AppendCache((ack, rpc)), rx)
-                .await
-                .map_err(|err| RPCError::Unreachable(Unreachable::new(&err)))?,
-        ) {
-            // An append request without entries only asks for an ack, which is the request's
-            // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
-            Some(res) => res
-                .map(|res| res.into_append_result(prev_log_id, last_log_id.or(prev_log_id)))
-                .map_err(|err| RPCError::Unreachable(Unreachable::new(&err))),
-            None => Err(RPCError::Unreachable(Unreachable::from_string(
-                "Raft append answer carries a different payload type",
-            ))),
-        }
+        self.append_entries_wire::<AppendCache>(rpc).await
     }
 
     /// Pipelined instead of openraft's sequential default - see `append_stream`.
     fn stream_append<S>(
         &mut self,
         input: S,
-        option: RPCOption,
+        _option: RPCOption,
     ) -> BoxFuture<'_, OpenAppendStream<'_, TypeConfigCache>>
     where
         S: Stream<Item = AppendEntriesRequest<TypeConfigCache>> + OptionalSend + Unpin + 'static,
     {
-        self.append_stream::<AppendCache, S>(input, &option)
+        self.append_stream::<S, AppendCache>(input)
     }
 
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
@@ -1225,276 +1348,6 @@ impl NetworkConnectionStreaming {
             }
         }
     }
-
-    /// The pipelined transport behind `RaftNetworkV2::stream_append`.
-    ///
-    /// Up to `RAFT_STREAM_DEPTH` requests are on the socket at the same time and their answers are
-    /// yielded in request order, which is the reorder openraft asks of a pipelined transport.
-    ///
-    /// Termination follows openraft's own sequential default. A full acknowledgement is what lets the
-    /// stream go on, and openraft stops at the first answer that is not one - a conflict, a higher
-    /// vote, an RPC error - so nothing queued behind it is ever asked for. When the input ends, the
-    /// window drains and the answer stream ends.
-    fn append_stream<'s, W, S>(
-        &self,
-        input: S,
-        option: &RPCOption,
-    ) -> BoxFuture<'s, OpenAppendStream<'s, W::Config>>
-    where
-        W: AppendWire,
-        S: Stream<Item = AppendEntriesRequest<W::Config>> + OptionalSend + Unpin + 'static,
-    {
-        let ttl = Self::response_ttl(option);
-        let depth = self.stream_depth;
-
-        // A window of one has nothing to overlap: one request goes out, its answer comes back, the
-        // next goes out. Taking requests straight out of openraft's stream is then the whole path,
-        // with no queue in between, which is what openraft's own sequential transport costs.
-        //
-        // A wider window needs generation to run beside the answers. openraft produces a request by
-        // reading its log, so its stream is ready only when there is something to send. A session
-        // that waited for the next request would hold back the answers of everything it already
-        // sent, and a session that polled it once per answer would never fill its window, because
-        // one poll yields at most one request. Generation therefore moves into a stream of its own
-        // that owns the request stream and feeds a channel bounded by the window. Owning the stream
-        // is what makes it safe to poll in the same poll as the answers: a pending generation is
-        // never dropped, and a finished one is never polled again.
-        let (input, generator, rx_req) = if depth == 1 {
-            (Some(Box::pin(input)), None, None)
-        } else {
-            let (tx_req, rx_req) = flume::bounded(depth);
-            // The sender is moved into the loop below, so the channel is closed by the `drop` at its
-            // end and by nothing else: a session dropped mid-stream closes it the same way.
-            let generator: Pin<Box<dyn Stream<Item = ()> + Send>> = Box::pin(stream::unfold(
-                (input, tx_req),
-                move |(mut input, tx_req)| async move {
-                    while let Some(req) = input.next().await {
-                        if tx_req.send_async(req).await.is_err() {
-                            break;
-                        }
-                    }
-                    // Closing the channel is what tells the session that nothing more is coming.
-                    drop(tx_req);
-                    None
-                },
-            ));
-            (None, Some(generator), Some(rx_req))
-        };
-
-        let mut pipeline = AppendPipeline {
-            input,
-            generator,
-            rx_req,
-            drained: Vec::with_capacity(depth),
-            input_exhausted: false,
-            generator_done: false,
-            sender: self.sender.clone(),
-            ids: (self.local_id, self.node.id),
-            ttl,
-            timer: Box::pin(time::sleep(ttl)),
-            depth,
-            pending: VecDeque::new(),
-            done: false,
-        };
-
-        Box::pin(async move {
-            let answers = poll_fn(move |cx| Self::poll_append::<_, W>(&mut pipeline, cx));
-            Ok(Box::pin(answers) as BoxStream<'s, _>)
-        })
-    }
-
-    /// One poll of a pipelined session: drive generation, send what it produced, and hand out the
-    /// answer at the front of the window. Nothing here waits.
-    ///
-    /// Each request goes out with the receiver of its own answer and that receiver is the pairing, so
-    /// a request is never registered anywhere else. The queue is filled in send order and drained from
-    /// the front, which is the request order openraft wants, and the server answers a connection in
-    /// wire order, so the front receiver always belongs to the front request.
-    fn poll_append<S, W>(
-        st: &mut AppendPipeline<S, W>,
-        cx: &mut Context<'_>,
-    ) -> Poll<AppendAnswers<W::Config>>
-    where
-        W: AppendWire,
-        S: Stream<Item = AppendEntriesRequest<W::Config>> + Unpin,
-    {
-        if st.done {
-            return Poll::Ready(None);
-        }
-
-        // Generation first, so a request it produced on this tick can go out on this tick. Its end
-        // is not the end of the session: the window still has to drain, so the fill below drains to
-        // `Disconnected` and only then closes the session.
-        if !st.generator_done
-            && let Some(generator) = st.generator.as_mut()
-            && generator.as_mut().poll_next(cx).is_ready()
-        {
-            st.generator_done = true;
-        }
-        if st.generator.is_some() && !st.generator_done {
-            stream_stats!(|s: &StreamStats| &s.generator_pending);
-        }
-
-        // Take everything that fits the window, in one go. Draining the whole channel per poll is
-        // what lets the coalescing below see a run of requests together, which is how they arrive
-        // when the leader is busy.
-        let mut drained = std::mem::take(&mut st.drained);
-        drained.clear();
-        if let Some(input) = st.input.as_mut() {
-            // The window of one: one request per poll, taken straight from openraft's stream.
-            if st.pending.is_empty() && !st.input_exhausted {
-                match input.as_mut().poll_next(cx) {
-                    Poll::Ready(Some(req)) => {
-                        stream_stats!(|s: &StreamStats| &s.generated);
-                        drained.push(req);
-                    }
-                    Poll::Ready(None) => st.input_exhausted = true,
-                    Poll::Pending => {}
-                }
-            }
-        } else if let Some(rx_req) = st.rx_req.as_ref() {
-            while !st.input_exhausted && st.pending.len() + drained.len() < st.depth {
-                match rx_req.try_recv() {
-                    Ok(req) => {
-                        stream_stats!(|s: &StreamStats| &s.generated);
-                        drained.push(req);
-                    }
-                    Err(flume::TryRecvError::Empty) => {
-                        stream_stats!(|s: &StreamStats| &s.channel_empty);
-                        break;
-                    }
-                    Err(flume::TryRecvError::Disconnected) => st.input_exhausted = true,
-                }
-            }
-        }
-
-        // A request with no entries carries only the leader's commit. Generation reads the commit
-        // when it builds a request, so any request built after it carries a commit at least as new,
-        // and a request with entries in this batch takes that commit to the follower for free. An
-        // entry-less request with such a request behind it is dropped. The last entry-less request
-        // of a run always goes out: nothing after it promises its commit, and a follower applies log
-        // entries only up to the commit it has been told about.
-        let last_with_entries = drained.iter().rposition(|req| !req.entries.is_empty());
-        for (index, req) in drained.drain(..).enumerate() {
-            if req.entries.is_empty() && last_with_entries.is_some_and(|last| last > index) {
-                stream_stats!(|s: &StreamStats| &s.dropped_empty);
-                continue;
-            }
-
-            let prev_log_id = req.prev_log_id.clone();
-            // An append request without entries only asks for an ack, which is the request's
-            // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
-            let last_log_id = req
-                .entries
-                .last()
-                .map(|entry| entry.log_id())
-                .or(prev_log_id.clone());
-
-            // The request channel is bounded by the window, so this send is what keeps the window
-            // full: it never waits for an answer, and only the writer task can block.
-            let (ack, rx) = oneshot::channel();
-            if st.sender.send(W::request(ack, req)).is_err() {
-                st.done = true;
-                return Poll::Ready(Some(Err(RPCError::Unreachable(Unreachable::from_string(
-                    "Raft stream sender closed",
-                )))));
-            }
-            st.pending.push_back(PendingAppend {
-                prev_log_id,
-                last_log_id,
-                rx,
-            });
-            stream_stats!(|s: &StreamStats| &s.sent);
-        }
-        st.drained = drained;
-
-        if !st.input_exhausted && st.pending.len() >= st.depth {
-            stream_stats!(|s: &StreamStats| &s.window_full);
-        }
-
-        let front_ready = {
-            let Some(front) = st.pending.front_mut() else {
-                // An empty window is the end of the session only once nothing more is coming. A
-                // leader with an idle log has a generator that is ready for nothing, and the session
-                // simply waits for its next request.
-                if st.input_exhausted {
-                    st.done = true;
-                    return Poll::Ready(None);
-                }
-                return Poll::Pending;
-            };
-            Pin::new(&mut front.rx).poll(cx)
-        };
-
-        match front_ready {
-            Poll::Pending => {
-                stream_stats!(|s: &StreamStats| &s.front_pending);
-                // Only the front of the window can say anything about the connection: it is the
-                // oldest request on the socket, and an answer that never arrives there means nothing
-                // queued behind it can be trusted either, so the session ends with it.
-                if st.timer.as_mut().poll(cx).is_ready() {
-                    st.done = true;
-                    return Poll::Ready(Some(Err(RPCError::Timeout(Timeout {
-                        action: RPCTypes::AppendEntries,
-                        id: st.ids.0,
-                        target: st.ids.1,
-                        timeout: st.ttl,
-                    }))));
-                }
-                Poll::Pending
-            }
-            // The ack is dropped by `ws_handler` when the connection ends, which is the same
-            // "we do not know what happened to this request" case a connect failure is.
-            Poll::Ready(Err(_)) => {
-                st.done = true;
-                Poll::Ready(Some(Err(RPCError::Unreachable(Unreachable::from_string(
-                    "Raft stream answer dropped",
-                )))))
-            }
-            Poll::Ready(Ok(Err(err))) => {
-                st.done = true;
-                Poll::Ready(Some(Err(RPCError::Unreachable(Unreachable::new(&err)))))
-            }
-            Poll::Ready(Ok(Ok(payload))) => {
-                stream_stats!(|s: &StreamStats| &s.answered);
-                stream_stats!(record_ack_of_payload(&payload));
-                let Some(front) = st.pending.pop_front() else {
-                    st.done = true;
-                    return Poll::Ready(None);
-                };
-
-                let answer = match W::response(payload) {
-                    None => Err(RPCError::Unreachable(Unreachable::from_string(
-                        "Raft stream answer carries a different payload type",
-                    ))),
-                    Some(res) => res
-                        .map(move |res| {
-                            res.into_append_result(front.prev_log_id, front.last_log_id)
-                        })
-                        .map_err(|err| RPCError::Unreachable(Unreachable::new(&err))),
-                };
-                if answer.is_err() {
-                    st.done = true;
-                }
-
-                // The request that becomes the front starts its own deadline here.
-                st.timer
-                    .as_mut()
-                    .reset(tokio::time::Instant::now() + st.ttl);
-
-                Poll::Ready(Some(answer))
-            }
-        }
-    }
-
-    /// The answer deadline openraft asks for with `RPCOption`, kept inside the bounds a pipelined
-    /// stream can actually respect.
-    fn response_ttl(option: &RPCOption) -> Duration {
-        option
-            .soft_ttl()
-            .saturating_mul(RAFT_STREAM_TTL_FACTOR)
-            .max(RAFT_STREAM_TTL_FLOOR)
-    }
 }
 
 #[cfg(all(test, feature = "sqlite"))]
@@ -1514,8 +1367,7 @@ mod tests {
     }
 
     /// One append request carrying a single entry, which is what a replication stream produces for
-    /// a write. An entry-less request is a commit carrier, and the session drops those while the
-    /// window is busy, so a fixture that wants its requests on the socket has to carry entries.
+    /// a write.
     fn append_with_entry(index: u64) -> AppendEntriesRequest<TypeConfigSqlite> {
         AppendEntriesRequest::<TypeConfigSqlite> {
             vote: VoteOf::<TypeConfigSqlite>::from(Vote::new_committed(1, 1)),
@@ -1535,222 +1387,178 @@ mod tests {
     use futures_util::StreamExt;
     use futures_util::stream;
     use openraft::Vote;
+    use openraft::entry::RaftEntry;
     use openraft::impls::leader_id_adv::LeaderId;
     use openraft::log_id::LogId;
     use openraft::type_config::alias::LogIdOf;
     use openraft::type_config::alias::VoteOf;
 
-    /// A leader with an idle log has a request stream that is ready for nothing, and the answers of
-    /// the requests that are already on the socket must be delivered through that. A session that
-    /// waits for the next request holds its own acknowledgements back, and with them the commit
-    /// progress of the leader it runs on.
+    /// A replication stream is pipelined: every request openraft produces goes onto the socket
+    /// while the answers of the ones before it are still outstanding. A stream that waited for an
+    /// answer before it sent the next request would run at one round trip per append, which is what
+    /// the throughput of a whole cluster is decided by.
     #[tokio::test]
-    async fn append_stream_answers_while_the_request_stream_has_nothing_to_send() {
+    async fn append_stream_sends_every_request_before_it_answers_any() {
         let (tx, rx) = flume::unbounded();
         let conn = NetworkConnectionStreaming {
-            local_id: 1,
-            node: Node {
-                id: 2,
-                addr_api: "127.0.0.1:8102".to_string(),
-                addr_raft: "127.0.0.1:8202".to_string(),
-            },
+            node: Node::from("2 127.0.0.1:5100 127.0.0.1:5200"),
             sender: tx,
             task: None,
-            stream_depth: 4,
         };
-
-        let requests = vec![append_with_entry(1)];
-
-        let mut answers = Box::pin(
-            conn.append_stream::<AppendDb, _>(
-                // One request, then a stream that is ready for nothing and never ends.
-                Box::pin(stream::unfold(
-                    Some(requests.into_iter()),
-                    |requests| async move {
-                        match requests {
-                            Some(mut requests) => Some((requests.next()?, None)),
-                            None => std::future::pending().await,
-                        }
-                    },
-                )),
-                &RPCOption::new(Duration::from_millis(500)),
-            )
-            .await
-            .unwrap(),
-        );
-
-        let answering = tokio::spawn(async move {
-            match time::timeout(Duration::from_millis(500), rx.recv_async()).await {
-                Ok(Ok(RaftRequest::AppendDB((ack, _)))) => ack
-                    .send(Ok(RaftStreamResponsePayload::AppendDB(Ok(
-                        AppendEntriesResponse::Success,
-                    ))))
-                    .expect("the answer was not taken"),
-                other => panic!("unexpected request on the socket: {other:?}"),
-            }
-        });
-
-        let answer = time::timeout(Duration::from_millis(500), answers.next())
-            .await
-            .expect("the stream stalled behind a request stream with nothing to send")
-            .expect("the stream ended too early")
-            .expect("the stream yielded an RPC error");
-        assert!(answer.is_ok());
-        answering.await.expect("the answering task panicked");
-    }
-
-    /// A pipelined session must end after its input is exhausted and its window has drained, and it
-    /// must not touch the input stream again once that stream has answered `None`.
-    #[tokio::test]
-    async fn append_stream_ends_after_the_input_and_the_window_are_drained() {
-        let (tx, rx) = flume::unbounded();
-        let conn = NetworkConnectionStreaming {
-            local_id: 1,
-            node: Node {
-                id: 2,
-                addr_api: "127.0.0.1:8102".to_string(),
-                addr_raft: "127.0.0.1:8202".to_string(),
-            },
-            sender: tx,
-            task: None,
-            stream_depth: 4,
-        };
-
-        // Fewer requests than the window holds, so the fill runs into the end of the input.
-        let requests: Vec<_> = (1..=2u64).map(append_with_entry).collect();
-
-        let mut answers = Box::pin(
-            conn.append_stream::<AppendDb, _>(
-                // openraft builds its request stream with `unfold`, which panics on a poll after it
-                // ended, so the test input has to be one too.
-                Box::pin(stream::unfold(
-                    Some(requests.into_iter()),
-                    |requests| async move {
-                        let mut requests = requests?;
-                        let req = requests.next()?;
-                        Some((req, Some(requests)))
-                    },
-                )),
-                &RPCOption::new(Duration::from_millis(500)),
-            )
-            .await
-            .unwrap(),
-        );
-
-        // The pipeline only sends when it is polled, so the answering runs beside it.
-        let answering = tokio::spawn(async move {
-            let mut acks = Vec::new();
-            for _ in 0..2 {
-                match time::timeout(Duration::from_millis(500), rx.recv_async()).await {
-                    Ok(Ok(RaftRequest::AppendDB((ack, _)))) => acks.push(ack),
-                    other => panic!("unexpected request on the socket: {other:?}"),
-                }
-            }
-            for ack in acks {
-                ack.send(Ok(RaftStreamResponsePayload::AppendDB(Ok(
-                    AppendEntriesResponse::Success,
-                ))))
-                .expect("the answer was not taken");
-            }
-        });
-
-        for _ in 0..2 {
-            let answer = time::timeout(Duration::from_millis(500), answers.next())
-                .await
-                .expect("the stream stalled")
-                .expect("the stream ended too early")
-                .expect("the stream yielded an RPC error");
-            assert!(answer.is_ok());
-        }
-
-        assert!(
-            time::timeout(Duration::from_millis(500), answers.next())
-                .await
-                .expect("the stream stalled")
-                .is_none(),
-            "the stream did not end after its input and its window were drained"
-        );
-        answering.await.expect("the answering task panicked");
-    }
-
-    /// The proof of the pipeline: every request of a stream has to reach the socket before any of
-    /// them is answered, and answers that come back out of order have to be yielded in request
-    /// order again.
-    #[tokio::test]
-    async fn append_stream_sends_the_whole_pipeline_and_answers_in_order() {
-        let (tx, rx) = flume::unbounded();
-        let conn = NetworkConnectionStreaming {
-            local_id: 1,
-            node: Node {
-                id: 2,
-                addr_api: "127.0.0.1:8102".to_string(),
-                addr_raft: "127.0.0.1:8202".to_string(),
-            },
-            sender: tx,
-            task: None,
-            stream_depth: 4,
-        };
-
         let requests: Vec<_> = (1..=3u64).map(append_with_entry).collect();
         // The progress an answer reports is the last entry of its request, which is what the
         // transport hands back to openraft as the acknowledged range.
         let expected: Vec<_> = requests
             .iter()
-            .map(|req| Some(req.entries.last().expect("a fixture entry").log_id()))
+            .map(|req| {
+                Ok(Ok(Some(
+                    req.entries.last().expect("a fixture entry").log_id(),
+                )))
+            })
             .collect();
 
-        let mut answers = Box::pin(
-            conn.append_stream::<AppendDb, _>(
-                stream::iter(requests),
-                &RPCOption::new(Duration::from_millis(500)),
-            )
-            .await
-            .unwrap(),
-        );
+        let answers = tokio::spawn(async move {
+            let mut answers = Box::pin(
+                conn.append_stream::<_, AppendDb>(stream::iter(requests))
+                    .await
+                    .expect("the append stream opened"),
+            );
+            let mut got = Vec::new();
+            while let Some(res) = answers.next().await {
+                got.push(res);
+            }
+            got
+        });
 
-        // Nothing is answered yet, so the first poll must not resolve. By the time it gives up,
-        // all three requests have to sit on the socket already.
-        let first = time::timeout(Duration::from_millis(50), answers.next()).await;
-        assert!(
-            first.is_err(),
-            "an answer arrived before the pipeline was sent"
-        );
-
+        // The socket side of the test: take the requests, keep the answers back until all of them
+        // are on the socket.
         let mut acks = Vec::new();
         for _ in 0..3 {
-            match rx.try_recv().expect("a request never reached the socket") {
-                RaftRequest::AppendDB((ack, _)) => acks.push(ack),
-                other => panic!("unexpected request on the socket: {other:?}"),
-            }
+            let req = time::timeout(Duration::from_millis(500), rx.recv_async())
+                .await
+                .expect("a request never reached the socket")
+                .expect("the request channel is closed");
+            let RaftRequest::AppendDB((AckTarget::AppendDb(ack), _)) = req else {
+                panic!("unexpected request on the socket: {req:?}")
+            };
+            acks.push(ack);
         }
         assert!(
             rx.try_recv().is_err(),
             "the stream sent more requests than its input had"
         );
 
-        // Answer them out of order; the stream has to put them back.
-        let third = acks.pop().unwrap();
-        let second = acks.pop().unwrap();
-        let first_ack = acks.pop().unwrap();
-        for ack in [third, first_ack, second] {
-            ack.send(Ok(RaftStreamResponsePayload::AppendDB(Ok(
-                AppendEntriesResponse::Success,
-            ))))
-            .expect("the answer was not taken");
+        for ack in acks {
+            assert!(
+                ack.answer(Ok(RaftStreamResponsePayload::AppendDB(Ok(
+                    AppendEntriesResponse::Success,
+                )))),
+                "the answer was not taken"
+            );
         }
 
-        let mut got = Vec::new();
-        for _ in 0..3 {
-            let answer = time::timeout(Duration::from_millis(500), answers.next())
-                .await
-                .expect("the stream stalled")
-                .expect("the stream ended too early")
-                .expect("the stream yielded an RPC error");
-            match answer {
-                Ok(matching) => got.push(matching),
-                Err(err) => panic!("the stream reported an append error: {err}"),
-            }
-        }
+        let got = time::timeout(Duration::from_millis(500), answers)
+            .await
+            .expect("the stream stalled")
+            .expect("the answering task panicked");
         assert_eq!(got, expected);
+    }
+
+    /// An answer that is not the whole request ends the session: everything behind it is dropped
+    /// and the leader rebuilds the replication from the point that answer names.
+    #[tokio::test]
+    async fn append_stream_stops_after_an_answer_that_is_not_the_whole_request() {
+        let (tx, rx) = flume::unbounded();
+        let conn = NetworkConnectionStreaming {
+            node: Node::from("2 127.0.0.1:5100 127.0.0.1:5200"),
+            sender: tx,
+            task: None,
+        };
+        let requests: Vec<_> = (1..=3u64).map(append_with_entry).collect();
+
+        // The stream only sends when it is polled, so it runs beside the test.
+        let answers = tokio::spawn(async move {
+            let mut answers = Box::pin(
+                conn.append_stream::<_, AppendDb>(stream::iter(requests))
+                    .await
+                    .expect("the append stream opened"),
+            );
+            let mut got = Vec::new();
+            while let Some(res) = answers.next().await {
+                got.push(res);
+            }
+            got
+        });
+
+        let first = time::timeout(Duration::from_millis(500), rx.recv_async())
+            .await
+            .expect("a request never reached the socket")
+            .expect("the request channel is closed");
+        let RaftRequest::AppendDB((AckTarget::AppendDb(ack), req)) = first else {
+            panic!("unexpected request on the socket: {first:?}")
+        };
+        // The follower took everything before the request's entries, which is inside its range but
+        // not its end.
+        let partial = req.prev_log_id.expect("a fixture prev log id");
+        assert!(
+            ack.answer(Ok(RaftStreamResponsePayload::AppendDB(Ok(
+                AppendEntriesResponse::PartialSuccess(Some(partial)),
+            )))),
+            "the answer was not taken"
+        );
+
+        let got = time::timeout(Duration::from_millis(500), answers)
+            .await
+            .expect("the stream stalled")
+            .expect("the answering task panicked");
+        assert_eq!(
+            got,
+            vec![Ok(Ok(Some(partial)))],
+            "the stream went on after an answer that was not the whole request"
+        );
+    }
+
+    /// The reorder buffer of a connection delivers answers in request order, whatever order the
+    /// server answered them in: an answer naming a later request waits until the request the
+    /// connection expects next is answered, and everything queued behind it goes with it.
+    #[tokio::test]
+    async fn in_flight_delivers_answers_in_request_order() {
+        let mut in_flight = InFlight::new();
+        let (ack_1, mut rx_1) = oneshot::channel();
+        let (ack_2, mut rx_2) = oneshot::channel();
+        let (ack_3, mut rx_3) = oneshot::channel();
+        in_flight.push(10, AckTarget::Call(ack_1));
+        in_flight.push(11, AckTarget::Call(ack_2));
+        in_flight.push(12, AckTarget::Call(ack_3));
+
+        let vote = |term| {
+            RaftStreamResponsePayload::VoteDB(Ok(VoteResponse::new(
+                Vote::new_committed(term, 1),
+                None,
+                true,
+            )))
+        };
+
+        // The server answered the two later requests first.
+        assert!(in_flight.answer(11, vote(2)));
+        assert!(
+            rx_1.try_recv().is_err(),
+            "the expected request was answered"
+        );
+        assert!(in_flight.answer(12, vote(3)));
+        assert!(
+            rx_2.try_recv().is_err(),
+            "an answer was delivered before the one it waits behind"
+        );
+
+        assert!(in_flight.answer(10, vote(1)));
+        assert!(rx_1.try_recv().is_ok());
+        assert!(rx_2.try_recv().is_ok());
+        assert!(rx_3.try_recv().is_ok());
+
+        assert!(
+            !in_flight.answer(99, vote(4)),
+            "an answer to a request that was never sent was delivered"
+        );
     }
 }

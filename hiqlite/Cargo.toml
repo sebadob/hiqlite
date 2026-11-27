@@ -50,11 +50,6 @@ required-features = ["sqlite"]
 [features]
 default = ["auto-heal", "aws_lc_rs", "backup", "sqlite", "toml"]
 
-# Counters of the pipelined append transport, read with `HQL_RAFT_STREAM_STATS=1`. Off by default:
-# a build without it compiles the counters away completely, so the transport path carries no atomic,
-# no branch and no env read for them.
-stream-stats = []
-
 # The rustls crypto backend. Exactly one of `ring` / `aws_lc_rs` must be selected whenever TLS is
 # compiled in, and `aws_lc_rs` is the default. `fips` is the aws-lc-rs FIPS build and implies
 # `aws_lc_rs`. Each forwards the backend to every TLS dependency so the unselected provider is never

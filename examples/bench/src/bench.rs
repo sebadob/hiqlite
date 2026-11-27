@@ -63,7 +63,7 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     // TEMPORARY for the pipeline benchmark: the transactional insert is a showcase of how fast a
     // transaction is, not a signal for replication depth, and it doubles the length of every run.
     // Re-activate this block and `cleanup` before pushing.
-    /*
+    //
     // We only want to run transactional inserts without rate-limiting. This impl is very naive, and
     // it can easily crash everything for very high row counts.
     if options.db_rps.is_none() {
@@ -79,11 +79,6 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
             retries_note(retries)
         ));
     }
-    */
-
-    // TEMPORARY for the depth sweep: the transport's own counters, so a run shows what it waited
-    // on and not only what it measured.
-    log(hiqlite::raft_stream_stats_report());
 
     select_timings(client.clone(), remote).await?;
 
@@ -125,6 +120,13 @@ fn is_leader_change(err: &Error) -> bool {
     msg.contains("ForwardToLeader") || msg.contains("NotLeader")
 }
 
+/// Max statements per transaction.
+///
+/// A transaction is a single Raft entry, and a replication request carries up to
+/// `max_payload_entries` entries, so the payload that travels is this count times the entry size
+/// times whatever the leader has queued. If this value is too big, the Raft can run into timeouts.
+const TXN_STATEMENTS: usize = 1000;
+
 async fn insert_concurrent(
     client: Client,
     options: &Options,
@@ -155,8 +157,10 @@ async fn insert_concurrent(
                     })
                     .collect();
 
-                for res in client.txn(mapped).await.unwrap() {
-                    assert_eq!(res.unwrap(), 1);
+                for chunk in mapped.chunks(TXN_STATEMENTS) {
+                    for res in client.txn(chunk.to_vec()).await.unwrap() {
+                        assert_eq!(res.unwrap(), 1);
+                    }
                 }
             })
         } else {
@@ -303,12 +307,10 @@ async fn get_timings(client: Client) -> Result<(), Error> {
 }
 
 // Only used by the commented-out transactional insert block above.
-/*
 async fn cleanup(client: &Client) -> Result<(), Error> {
     client.execute("DELETE FROM _bench", params!()).await?;
     Ok(())
 }
-*/
 
 fn prepare_data(options: &Options) -> Vec<Vec<Entity>> {
     let concurrency = options.concurrency;

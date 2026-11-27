@@ -407,11 +407,3 @@ where
 {
     start::start_node_inner::<C>(Box::new(node_config), Some(backup)).await
 }
-
-/// TEMPORARY, for the replication depth sweep: the counters of the pipelined append transport,
-/// as one line to print next to a throughput number. It says so when the counters are off.
-#[cfg(all(feature = "stream-stats", any(feature = "sqlite", feature = "cache")))]
-#[must_use]
-pub fn raft_stream_stats_report() -> String {
-    network::raft_client::StreamStats::report()
-}
