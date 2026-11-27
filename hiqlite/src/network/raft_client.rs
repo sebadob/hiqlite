@@ -62,10 +62,10 @@ use openraft::type_config::alias::{LogIdOf, SnapshotOf, VoteOf};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::{OptionalSend, RaftTypeConfig};
 
-/// TEMPORARY instrumentation of the pipelined append transport, for the depth sweep. Enabled with
-/// `HQL_RAFT_STREAM_STATS=1`, which makes every poll of a session record what it did, so a stall is
-/// measured instead of guessed at.
-#[cfg(any(feature = "cache", feature = "sqlite"))]
+/// Instrumentation of the pipelined append transport, compiled in only with the `stream-stats`
+/// feature. Enabled at run time with `HQL_RAFT_STREAM_STATS=1`, which makes every poll of a session
+/// record what it did, so a stall is measured instead of guessed at.
+#[cfg(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite")))]
 pub(crate) static STREAM_STATS: std::sync::LazyLock<Option<StreamStats>> =
     std::sync::LazyLock::new(|| {
         if std::env::var("HQL_RAFT_STREAM_STATS").ok().as_deref() == Some("1") {
@@ -76,7 +76,7 @@ pub(crate) static STREAM_STATS: std::sync::LazyLock<Option<StreamStats>> =
     });
 
 /// One counter per decision point of a pipelined session, and per shape of an answer.
-#[cfg(any(feature = "cache", feature = "sqlite"))]
+#[cfg(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite")))]
 #[derive(Debug, Default)]
 pub(crate) struct StreamStats {
     /// Requests the generator took out of openraft's stream.
@@ -106,7 +106,7 @@ pub(crate) struct StreamStats {
     dropped_empty: AtomicU64,
 }
 
-#[cfg(any(feature = "cache", feature = "sqlite"))]
+#[cfg(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite")))]
 impl StreamStats {
     fn add(counter: &AtomicU64) {
         counter.fetch_add(1, Ordering::Relaxed);
@@ -309,20 +309,28 @@ type SnapshotRequestFn = fn(
 /// The queue is the whole reorder. Its front is always the request openraft is waiting for, and
 /// the receiver it carries is the answer slot of exactly that request, so a session needs no
 /// registry of what it has sent.
-struct AppendPipeline<W>
+struct AppendPipeline<S, W>
 where
     W: AppendWire,
 {
-    /// Takes requests out of openraft's request stream and hands them to the pipeline, as a stream
-    /// so it can be polled on every poll of the session. It owns the request stream, which is what
-    /// makes generating and answering safe to poll in the same poll: a pending generation is never
-    /// dropped, and a finished one is never polled again.
-    generator: Pin<Box<dyn Stream<Item = ()> + Send>>,
+    /// openraft's request stream. A window of one takes requests straight out of it, one per poll,
+    /// which is the shape openraft's own sequential transport has: no queue in between, nothing
+    /// handed over a channel. A wider window moves the stream into the generator below, because
+    /// generation has to run beside the answers, and that needs a place to put what it generates.
+    input: Option<Pin<Box<S>>>,
+    /// The generation of a window wider than one, as a stream so it can be polled on every poll of
+    /// the session. It owns the request stream, which is what makes generating and answering safe
+    /// to poll in the same poll: a pending generation is never dropped, and a finished one is never
+    /// polled again.
+    generator: Option<Pin<Box<dyn Stream<Item = ()> + Send>>>,
     /// The requests generation has produced and the session has not sent yet. Its capacity is the
     /// window, so a leader that generates faster than the follower answers stops generating rather
     /// than queueing without end.
-    rx_req: flume::Receiver<AppendEntriesRequest<W::Config>>,
-    /// Set when the generator has handed over everything it will, which the closed channel says.
+    rx_req: Option<flume::Receiver<AppendEntriesRequest<W::Config>>>,
+    /// The requests taken off the channel on this poll. Living in the state means a poll allocates
+    /// nothing, which matters because a poll is more frequent than a request.
+    drained: Vec<AppendEntriesRequest<W::Config>>,
+    /// Set when the input has handed over everything it will, which the closed channel says.
     input_exhausted: bool,
     /// Set when the generator has finished, because a finished stream must never be polled again.
     generator_done: bool,
@@ -338,6 +346,43 @@ where
     /// Set once the session is over, by a failed answer or by a drained session, so the stream ends
     /// instead of being polled on.
     done: bool,
+}
+
+/// The shape of one append answer, for the counters only.
+#[cfg(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite")))]
+fn record_ack_of_payload(payload: &RaftStreamResponsePayload) {
+    if let Some(stats) = STREAM_STATS.as_ref() {
+        match payload {
+            RaftStreamResponsePayload::AppendDB(Ok(res)) => stats.record_ack(res),
+            #[cfg(feature = "cache")]
+            RaftStreamResponsePayload::AppendCache(Ok(res)) => stats.record_ack(res),
+            _ => {}
+        }
+    }
+}
+
+/// One counter of the pipelined transport. With the `stream-stats` feature compiled out, this is
+/// nothing at all, so a normal build pays no load, no branch and no atomic for it.
+#[cfg(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite")))]
+macro_rules! stream_stats {
+    // A statement: a call on a function of this module.
+    ($name:ident($($arg:expr),* $(,)?)) => {
+        $name($($arg),*);
+    };
+    // A counter: a closure picking one field out of `StreamStats`.
+    ($counter:expr) => {
+        if let Some(stats) = STREAM_STATS.as_ref() {
+            let counter: for<'a> fn(&'a StreamStats) -> &'a AtomicU64 = $counter;
+            StreamStats::add(counter(stats));
+        }
+    };
+}
+
+#[cfg(not(all(feature = "stream-stats", any(feature = "cache", feature = "sqlite"))))]
+macro_rules! stream_stats {
+    ($($t:tt)*) => {
+        const {}
+    };
 }
 
 pub struct NetworkStreaming {
@@ -722,9 +767,7 @@ impl NetworkStreaming {
                                 }
                             }
                             Some((id, ack)) => {
-                                if let Some(stats) = STREAM_STATS.as_ref() {
-                                    StreamStats::add(&stats.out_of_order);
-                                }
+                                stream_stats!(|s: &StreamStats| &s.out_of_order);
                                 let _ = ack.send(Err(Error::Connect(format!(
                                     "Raft node {} answered out of request order: {} vs {}",
                                     node.id, resp.request_id, id,
@@ -1203,34 +1246,46 @@ impl NetworkConnectionStreaming {
     {
         let ttl = Self::response_ttl(option);
         let depth = self.stream_depth;
-        let (tx_req, rx_req) = flume::bounded(depth);
 
-        // Generation runs beside the answers, in a stream of its own. openraft produces a request
-        // by reading its log, so its stream is ready only when there is something to send. A session
+        // A window of one has nothing to overlap: one request goes out, its answer comes back, the
+        // next goes out. Taking requests straight out of openraft's stream is then the whole path,
+        // with no queue in between, which is what openraft's own sequential transport costs.
+        //
+        // A wider window needs generation to run beside the answers. openraft produces a request by
+        // reading its log, so its stream is ready only when there is something to send. A session
         // that waited for the next request would hold back the answers of everything it already
-        // sent, and a session that polled it once per answer would never fill its window, because one
-        // poll yields at most one request. Owning the request stream here is what makes it safe to
-        // poll in the same poll as the answers: a pending generation is never dropped, and a finished
-        // one is never polled again.
-        // The sender is moved into the loop below, so the channel is closed by the `drop` at its
-        // end and by nothing else: a session that is dropped mid-stream closes it the same way.
-        let generator = Box::pin(stream::unfold(
-            (input, tx_req),
-            move |(mut input, tx_req)| async move {
-                while let Some(req) = input.next().await {
-                    if tx_req.send_async(req).await.is_err() {
-                        break;
+        // sent, and a session that polled it once per answer would never fill its window, because
+        // one poll yields at most one request. Generation therefore moves into a stream of its own
+        // that owns the request stream and feeds a channel bounded by the window. Owning the stream
+        // is what makes it safe to poll in the same poll as the answers: a pending generation is
+        // never dropped, and a finished one is never polled again.
+        let (input, generator, rx_req) = if depth == 1 {
+            (Some(Box::pin(input)), None, None)
+        } else {
+            let (tx_req, rx_req) = flume::bounded(depth);
+            // The sender is moved into the loop below, so the channel is closed by the `drop` at its
+            // end and by nothing else: a session dropped mid-stream closes it the same way.
+            let generator: Pin<Box<dyn Stream<Item = ()> + Send>> = Box::pin(stream::unfold(
+                (input, tx_req),
+                move |(mut input, tx_req)| async move {
+                    while let Some(req) = input.next().await {
+                        if tx_req.send_async(req).await.is_err() {
+                            break;
+                        }
                     }
-                }
-                // Closing the channel is what tells the session that nothing more is coming.
-                drop(tx_req);
-                None
-            },
-        ));
+                    // Closing the channel is what tells the session that nothing more is coming.
+                    drop(tx_req);
+                    None
+                },
+            ));
+            (None, Some(generator), Some(rx_req))
+        };
 
         let mut pipeline = AppendPipeline {
+            input,
             generator,
             rx_req,
+            drained: Vec::with_capacity(depth),
             input_exhausted: false,
             generator_done: false,
             sender: self.sender.clone(),
@@ -1243,7 +1298,7 @@ impl NetworkConnectionStreaming {
         };
 
         Box::pin(async move {
-            let answers = poll_fn(move |cx| Self::poll_append::<W>(&mut pipeline, cx));
+            let answers = poll_fn(move |cx| Self::poll_append::<_, W>(&mut pipeline, cx));
             Ok(Box::pin(answers) as BoxStream<'s, _>)
         })
     }
@@ -1255,49 +1310,61 @@ impl NetworkConnectionStreaming {
     /// a request is never registered anywhere else. The queue is filled in send order and drained from
     /// the front, which is the request order openraft wants, and the server answers a connection in
     /// wire order, so the front receiver always belongs to the front request.
-    fn poll_append<W>(
-        st: &mut AppendPipeline<W>,
+    fn poll_append<S, W>(
+        st: &mut AppendPipeline<S, W>,
         cx: &mut Context<'_>,
     ) -> Poll<AppendAnswers<W::Config>>
     where
         W: AppendWire,
+        S: Stream<Item = AppendEntriesRequest<W::Config>> + Unpin,
     {
         if st.done {
             return Poll::Ready(None);
         }
 
         // Generation first, so a request it produced on this tick can go out on this tick. Its end
-        // is not the end of the session: the window still has to drain, so the fill loop below
-        // drains to `Disconnected` and only then closes the session.
-        if !st.generator_done && st.generator.as_mut().poll_next(cx).is_ready() {
+        // is not the end of the session: the window still has to drain, so the fill below drains to
+        // `Disconnected` and only then closes the session.
+        if !st.generator_done
+            && let Some(generator) = st.generator.as_mut()
+            && generator.as_mut().poll_next(cx).is_ready()
+        {
             st.generator_done = true;
         }
-        // TEMPORARY instrumentation, a no-op unless HQL_RAFT_STREAM_STATS=1.
-        let stats = STREAM_STATS.as_ref();
-        let record = |counter: fn(&StreamStats) -> &AtomicU64| {
-            if let Some(stats) = stats {
-                StreamStats::add(counter(stats));
-            }
-        };
-        if !st.generator_done {
-            record(|s| &s.generator_pending);
+        if st.generator.is_some() && !st.generator_done {
+            stream_stats!(|s: &StreamStats| &s.generator_pending);
         }
 
-        // Take everything generation has produced that fits the window, in one go. Draining the
-        // whole channel per poll is what lets the coalescing below see a run of requests together,
-        // which is how they arrive when the leader is busy.
-        let mut drained = Vec::new();
-        while !st.input_exhausted && st.pending.len() + drained.len() < st.depth {
-            match st.rx_req.try_recv() {
-                Ok(req) => {
-                    record(|s| &s.generated);
-                    drained.push(req);
+        // Take everything that fits the window, in one go. Draining the whole channel per poll is
+        // what lets the coalescing below see a run of requests together, which is how they arrive
+        // when the leader is busy.
+        let mut drained = std::mem::take(&mut st.drained);
+        drained.clear();
+        if let Some(input) = st.input.as_mut() {
+            // The window of one: one request per poll, taken straight from openraft's stream.
+            if st.pending.is_empty() && !st.input_exhausted {
+                match input.as_mut().poll_next(cx) {
+                    Poll::Ready(Some(req)) => {
+                        stream_stats!(|s: &StreamStats| &s.generated);
+                        drained.push(req);
+                    }
+                    Poll::Ready(None) => st.input_exhausted = true,
+                    Poll::Pending => {}
                 }
-                Err(flume::TryRecvError::Empty) => {
-                    record(|s| &s.channel_empty);
-                    break;
+            }
+        } else if let Some(rx_req) = st.rx_req.as_ref() {
+            while !st.input_exhausted && st.pending.len() + drained.len() < st.depth {
+                match rx_req.try_recv() {
+                    Ok(req) => {
+                        stream_stats!(|s: &StreamStats| &s.generated);
+                        drained.push(req);
+                    }
+                    Err(flume::TryRecvError::Empty) => {
+                        stream_stats!(|s: &StreamStats| &s.channel_empty);
+                        break;
+                    }
+                    Err(flume::TryRecvError::Disconnected) => st.input_exhausted = true,
                 }
-                Err(flume::TryRecvError::Disconnected) => st.input_exhausted = true,
             }
         }
 
@@ -1308,9 +1375,9 @@ impl NetworkConnectionStreaming {
         // of a run always goes out: nothing after it promises its commit, and a follower applies log
         // entries only up to the commit it has been told about.
         let last_with_entries = drained.iter().rposition(|req| !req.entries.is_empty());
-        for (index, req) in drained.into_iter().enumerate() {
+        for (index, req) in drained.drain(..).enumerate() {
             if req.entries.is_empty() && last_with_entries.is_some_and(|last| last > index) {
-                record(|s| &s.dropped_empty);
+                stream_stats!(|s: &StreamStats| &s.dropped_empty);
                 continue;
             }
 
@@ -1337,11 +1404,12 @@ impl NetworkConnectionStreaming {
                 last_log_id,
                 rx,
             });
-            record(|s| &s.sent);
+            stream_stats!(|s: &StreamStats| &s.sent);
         }
+        st.drained = drained;
 
         if !st.input_exhausted && st.pending.len() >= st.depth {
-            record(|s| &s.window_full);
+            stream_stats!(|s: &StreamStats| &s.window_full);
         }
 
         let front_ready = {
@@ -1360,7 +1428,7 @@ impl NetworkConnectionStreaming {
 
         match front_ready {
             Poll::Pending => {
-                record(|s| &s.front_pending);
+                stream_stats!(|s: &StreamStats| &s.front_pending);
                 // Only the front of the window can say anything about the connection: it is the
                 // oldest request on the socket, and an answer that never arrives there means nothing
                 // queued behind it can be trusted either, so the session ends with it.
@@ -1388,15 +1456,8 @@ impl NetworkConnectionStreaming {
                 Poll::Ready(Some(Err(RPCError::Unreachable(Unreachable::new(&err)))))
             }
             Poll::Ready(Ok(Ok(payload))) => {
-                record(|s| &s.answered);
-                if let Some(stats) = stats {
-                    match &payload {
-                        RaftStreamResponsePayload::AppendDB(Ok(res)) => stats.record_ack(res),
-                        #[cfg(feature = "cache")]
-                        RaftStreamResponsePayload::AppendCache(Ok(res)) => stats.record_ack(res),
-                        _ => {}
-                    }
-                }
+                stream_stats!(|s: &StreamStats| &s.answered);
+                stream_stats!(record_ack_of_payload(&payload));
                 let Some(front) = st.pending.pop_front() else {
                     st.done = true;
                     return Poll::Ready(None);
