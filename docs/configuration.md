@@ -192,8 +192,9 @@ what the `election_disable` marker of a node line sets. See `geo-replication.md`
 ## TLS
 
 - `tls_auto_certificates` - generate self-signed certificates for Raft and API traffic. Clients
-  connect with verification off, which is the point: it is encrypted and authenticated traffic
-  without a PKI.
+  connect with verification off: the traffic is encrypted without a PKI, but no peer is
+  authenticated by its certificate, and plain HTTP API requests send `secret_api` over that
+  connection. See `security.md` before you rely on it.
 - `tls_raft_key`, `tls_raft_cert`, `tls_api_key`, `tls_api_cert` - your own certificates. Key and
   certificate must be given together.
 - `tls_raft_danger_tls_no_verify`, `tls_api_danger_tls_no_verify` - accept certificates you did
