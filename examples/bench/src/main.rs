@@ -85,9 +85,15 @@ pub struct Options {
     #[clap(long, default_value = "4")]
     pub client_threads: usize,
 
-    /// CPU lists to pin the node processes to, one per node, e.g. `0-7,8-15,16-23`. Linux only:
-    /// with this set, each node is started under `taskset -c`, which is the only real core pinning
-    /// available. Empty means no pinning, and the budgets above are the only lever.
+    /// Core lists to pin the node processes to, one per node, space separated, e.g.
+    /// `0-4,16-20 5-9,21-25 10-14,26-30`. Linux only: with this set, each node is started under
+    /// `taskset -c`, which is the only real core pinning available. Empty means no pinning, and
+    /// the budgets above are the only lever.
+    ///
+    /// Give each node whole physical cores. On a machine with hyperthreading, the siblings of a
+    /// core are usually `N` and `N + physical_cores`, and two nodes sharing one physical core
+    /// share its execution resources, which makes every per-node budget meaningless. Check the
+    /// siblings of a core with `cat /sys/devices/system/cpu/cpu0/topology/thread_siblings_list`.
     #[clap(long, default_value = "")]
     pub node_cpus: String,
 }
@@ -564,10 +570,11 @@ fn spawn_nodes(options: &Options) -> Result<Vec<Child>, Error> {
     Ok(children)
 }
 
-/// `--node-cpus` as a list, one entry per node.
+/// `--node-cpus` as a list, one entry per node. Entries are space separated because a single
+/// node's core list contains commas itself, e.g. `0-4,16-20 5-9,21-25`.
 fn cpu_lists(node_cpus: &str) -> Vec<String> {
     node_cpus
-        .split(',')
+        .split_whitespace()
         .map(|list| list.trim().to_string())
         .filter(|list| !list.is_empty())
         .collect()

@@ -35,8 +35,17 @@ machines. A node stays up until the process that spawned it terminates it.
   every node at least one core of its own.
 - `--client-threads` is the budget of the benchmark client. Keep it small: every thread here is a thread a node does
   not get.
-- `--node-cpus` pins the node processes, one core list per node, e.g. `--node-cpus 0-9,10-19,20-29`. Linux only, it
-  runs each node under `taskset -c`, and it is the only real core pinning there is.
+- `--node-cpus` pins the node processes, one core list per node, space separated, e.g.
+  `--node-cpus "0-4,16-20 5-9,21-25 10-14,26-30"`. Linux only, it runs each node under `taskset -c`, and it is the
+  only real core pinning there is.
+
+Pin whole physical cores to a node. On a machine with hyperthreading, the two threads of one core are usually
+numbered `N` and `N + physical_cores`, so on a 16 core box the siblings of core 0 are 0 and 16. A range like
+`0-9 10-19 20-29` looks clean and is not: it hands the second node the second hyperthread of cores 0 to 3, which the
+first node already owns. Two nodes on one physical core share its execution resources, and every per-node budget
+becomes meaningless. Give each node both siblings of a set of cores, and check a core with
+`cat /sys/devices/system/cpu/cpu0/topology/thread_siblings_list`. On a NUMA box, keep a node inside one NUMA node as
+well, with `numactl --cpunodebind=N --membind=N`.
 - Each node writes its own log to `data/node_<id>.log`, so a node that dies during startup is readable.
 
 Core advice: the efficiency cores of an Apple chip are around 3.5x slower than the performance cores, and macOS has no
@@ -52,7 +61,7 @@ whole sweep. The depth is read from `HQL_RAFT_STREAM_DEPTH`, which is a temporar
 ```
 ./sweep.sh                                   # 1000000 rows, concurrency 64, 1 rep, payloads 128 256 512
 ./sweep.sh 1000000 64 1 128 256 512         # the same, spelled out
-DEPTHS="1 8 32" NODE_CPUS="0-9,10-19,20-29" ./sweep.sh 1000000 64 2 128 256 512
+DEPTHS="1 8 32" NODE_CPUS="0-4,16-20 5-9,21-25 10-14,26-30" ./sweep.sh 1000000 64 2 128 256 512
 ```
 
 Everything else is an env knob: `DEPTHS` (default `1 32`), `NODE_THREADS` (8), `CLIENT_THREADS` (4), `NODE_CPUS`

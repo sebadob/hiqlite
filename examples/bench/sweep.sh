@@ -14,8 +14,10 @@
 #   DEPTHS         depths to compare, space separated   (default "1 32")
 #   NODE_THREADS   tokio threads per node process       (default 8)
 #   CLIENT_THREADS tokio threads for the client         (default 4)
-#   NODE_CPUS      core lists, one per node             (default "", Linux only)
-#                  e.g. NODE_CPUS="0-9,10-19,20-29" on a 32 core box
+#   NODE_CPUS      core lists, one per node, space separated  (default "", Linux only)
+#                  give each node whole physical cores, siblings included:
+#                  NODE_CPUS="0-4,16-20 5-9,21-25 10-14,26-30" on a 16 core / 32 thread box
+#                  siblings of a core: cat /sys/devices/system/cpu/cpu0/topology/thread_siblings_list
 #   BENCH_ARGS     extra bench flags                    (default "", e.g. "--cache-only")
 #   BENCH          binary to run                        (default target/release/bench)
 #
