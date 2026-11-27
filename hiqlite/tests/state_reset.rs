@@ -60,7 +60,9 @@ async fn node_joining_after_state_reset_receives_existing_data() {
     let both = || vec![node(1, PORT_1), node(2, PORT_2)];
 
     // a single node with some data
-    let client = hiqlite::start_node(config(1, single(), &dir_1)).await.unwrap();
+    let client = hiqlite::start_node(config(1, single(), &dir_1))
+        .await
+        .unwrap();
     client.wait_until_healthy_db().await;
     client
         .execute("CREATE TABLE rows (id INTEGER PRIMARY KEY)", Vec::new())
@@ -78,7 +80,9 @@ async fn node_joining_after_state_reset_receives_existing_data() {
     // Raft state reset: the data must survive
     // SAFETY: nothing else in this test binary reads or writes the env concurrently
     unsafe { env::set_var("HQL_DANGER_RAFT_STATE_RESET", "true") };
-    let client = hiqlite::start_node(config(1, single(), &dir_1)).await.unwrap();
+    let client = hiqlite::start_node(config(1, single(), &dir_1))
+        .await
+        .unwrap();
     // SAFETY: see above
     unsafe { env::remove_var("HQL_DANGER_RAFT_STATE_RESET") };
     client.wait_until_healthy_db().await;
@@ -87,9 +91,13 @@ async fn node_joining_after_state_reset_receives_existing_data() {
     drop(client);
 
     // grow to 2 nodes: the new one must end up with the same data
-    let client_1 = hiqlite::start_node(config(1, both(), &dir_1)).await.unwrap();
+    let client_1 = hiqlite::start_node(config(1, both(), &dir_1))
+        .await
+        .unwrap();
     client_1.wait_until_healthy_db().await;
-    let client_2 = hiqlite::start_node(config(2, both(), &dir_2)).await.unwrap();
+    let client_2 = hiqlite::start_node(config(2, both(), &dir_2))
+        .await
+        .unwrap();
     client_2
         .wait_for_cluster_sync_timeout(Duration::from_secs(60))
         .await
