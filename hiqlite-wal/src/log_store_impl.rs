@@ -274,10 +274,12 @@ where
     async fn save_vote(&mut self, vote: &VoteOf<T>) -> Result<(), io::Error> {
         debug!("Entering save_vote(): {:?}", vote);
 
-        let value = serialize(vote).map_err(|err| io::Error::from(error::Error::from(err)))?;
         let (ack, rx) = oneshot::channel();
-        self.send_to_writer(writer::Action::Vote { value, ack })
-            .await?;
+        self.send_to_writer(writer::Action::Vote {
+            value: serialize(vote).unwrap(),
+            ack,
+        })
+        .await?;
         self.writer_response(rx).await
     }
 
@@ -300,8 +302,7 @@ where
         // channel. The reason for that is in the ack, so a failed send must not hide it.
         let sent = response_or_stopped(&self.writer_closed, WRITER_STOPPED, async {
             for entry in entries {
-                let data =
-                    serialize(&entry).map_err(|err| io::Error::from(error::Error::from(err)))?;
+                let data = serialize(&entry).unwrap();
                 if tx
                     .send_async(Some((entry.log_id().index, data)))
                     .await
@@ -349,8 +350,7 @@ where
     async fn purge(&mut self, log_id: LogIdOf<T>) -> Result<(), io::Error> {
         debug!("purge(): [0, {:?}]", log_id);
 
-        let last_log =
-            Some(serialize(&log_id).map_err(|err| io::Error::from(error::Error::from(err)))?);
+        let last_log = Some(serialize(&log_id).unwrap());
         let (ack, rx) = oneshot::channel();
         self.send_to_writer(writer::Action::Remove {
             from: 0,

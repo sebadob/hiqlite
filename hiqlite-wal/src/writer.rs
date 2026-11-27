@@ -286,7 +286,7 @@ fn run(
                 // unknown number of entries. A later append could continue it with a gap or an
                 // overlap, so the writer stops after answering it.
                 let mut truncated = false;
-                let mut roll_over_failed = false;
+                let mut roll_over_err = None;
                 {
                     let mut active = wal.active();
 
@@ -345,8 +345,7 @@ fn run(
                             // header values, including `committed`, into the new file
                             publish_committed(&mut wal, &shared.committed);
                             if let Err(err) = wal.roll_over(wal_size, &mut buf) {
-                                res = Err(err);
-                                roll_over_failed = true;
+                                roll_over_err = Some(err);
                                 break;
                             }
                             {
@@ -370,17 +369,12 @@ fn run(
                     }
                 }
 
-                let mut res_cb = match &res {
-                    Ok(()) => Ok(()),
-                    Err(err) => Err(io::Error::other(err.to_string())),
-                };
-
-                if roll_over_failed {
+                if let Some(err) = roll_over_err {
                     // The WAL file set is left half rolled over, so not even the exit path may
                     // touch it any more.
-                    error!("Rolling over to a new WAL file failed - stopping writer: {res:?}");
-                    let _ = ack.send(res);
-                    callback(res_cb);
+                    error!("Rolling over to a new WAL file failed - stopping writer: {err}");
+                    callback(Err(io::Error::other(err.to_string())));
+                    let _ = ack.send(Err(err));
                     return Err(Error::Internal(
                         "rolling over to a new WAL file failed".into(),
                     ));
@@ -392,6 +386,10 @@ fn run(
                     lock.active().clone_from_no_mmap(wal.active());
                 }
 
+                let mut res_cb = match &res {
+                    Ok(()) => Ok(()),
+                    Err(err) => Err(io::Error::other(err.to_string())),
+                };
                 if truncated {
                     error!("Incomplete WAL append batch - stopping writer");
                     let _ = ack.send(res);
@@ -494,15 +492,7 @@ fn run(
 
                 // Persist the purge frontier before deleting (too low = hole into deleted files;
                 // too high = extra files). Revert it again if the deletion fails below.
-                let previous_purged = match shared.meta.read() {
-                    Ok(meta) => meta.last_purged_log_id.clone(),
-                    Err(err) => {
-                        let err = Error::from(err);
-                        error!("Reading the WAL metadata failed - stopping writer: {err}");
-                        let _ = ack.send(Err(err));
-                        break;
-                    }
-                };
+                let previous_purged = shared.meta.read()?.last_purged_log_id.clone();
                 let persist_purged = last_log.is_some();
                 if persist_purged
                     && let Err(err) = shared.write_meta(&wal.base_path, |meta| {
@@ -665,6 +655,54 @@ mod tests {
         let (ack_tx, ack_rx) = oneshot::channel();
         tx.send(Action::Shutdown(ack_tx)).unwrap();
         ack_rx.blocking_recv().unwrap();
+    }
+
+    /// Readers serve entries from the shared WAL file set, so the append callback, which tells
+    /// openraft the entries are stored, must only fire once the shared set holds them.
+    #[test]
+    fn append_callback_fires_after_the_shared_wal_is_updated() {
+        let base = "test_data/append_callback_order".to_string();
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        let lockfile = LockFile::create(&base).unwrap();
+        lockfile.lock().unwrap();
+        let meta = Arc::new(RwLock::new(Metadata::read_or_create(&base).unwrap()));
+        let (tx, _closed, wal) = spawn(
+            base.clone(),
+            lockfile,
+            LogSync::Immediate,
+            64 * 1024,
+            false,
+            meta,
+            Arc::new(RwLock::new(None)),
+        )
+        .unwrap();
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let (entry_tx, entry_rx) = flume::bounded(1);
+        let (cb_tx, cb_rx) = std::sync::mpsc::channel();
+        tx.send(Action::Append {
+            rx: entry_rx,
+            callback: Box::new(move |res| {
+                let id_until = wal.write().unwrap().active().id_until;
+                cb_tx.send((res.is_ok(), id_until)).unwrap();
+            }),
+            ack: ack_tx,
+        })
+        .unwrap();
+        entry_tx.send(Some((1, b"entry".to_vec()))).unwrap();
+        entry_tx.send(None).unwrap();
+        ack_rx.blocking_recv().unwrap().unwrap();
+
+        let (ok, id_until) = cb_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(ok);
+        assert_eq!(
+            id_until, 1,
+            "the callback fired before the shared WAL was updated"
+        );
     }
 
     #[cfg(not(feature = "oversized-entry-error"))]
