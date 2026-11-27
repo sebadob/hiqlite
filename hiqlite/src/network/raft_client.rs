@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
@@ -62,20 +62,113 @@ use openraft::type_config::alias::{LogIdOf, SnapshotOf, VoteOf};
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 use openraft::{OptionalSend, RaftTypeConfig};
 
+/// TEMPORARY instrumentation of the pipelined append transport, for the depth sweep. Enabled with
+/// `HQL_RAFT_STREAM_STATS=1`, which makes every poll of a session record what it did, so a stall is
+/// measured instead of guessed at.
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+pub(crate) static STREAM_STATS: std::sync::LazyLock<Option<StreamStats>> =
+    std::sync::LazyLock::new(|| {
+        if std::env::var("HQL_RAFT_STREAM_STATS").ok().as_deref() == Some("1") {
+            Some(StreamStats::default())
+        } else {
+            None
+        }
+    });
+
+/// One counter per decision point of a pipelined session, and per shape of an answer.
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+#[derive(Debug, Default)]
+pub(crate) struct StreamStats {
+    /// Requests the generator took out of openraft's stream.
+    generated: AtomicU64,
+    /// Times the generator was polled and had nothing to hand over.
+    generator_pending: AtomicU64,
+    /// Times the fill loop stopped because the window was full.
+    window_full: AtomicU64,
+    /// Times the fill loop stopped because the channel had nothing.
+    channel_empty: AtomicU64,
+    /// Requests handed to the connection.
+    sent: AtomicU64,
+    /// Times the front of the window had no answer yet.
+    front_pending: AtomicU64,
+    /// Answers yielded to openraft.
+    answered: AtomicU64,
+    /// Answers that acknowledged the whole request.
+    ack_full: AtomicU64,
+    /// Answers that acknowledged only part of a request.
+    ack_partial: AtomicU64,
+    /// Answers that reported a log conflict.
+    ack_conflict: AtomicU64,
+    /// Answers naming a request other than the one at the front of the window.
+    out_of_order: AtomicU64,
+    /// Entry-less requests the session did not send, because a request already on the socket
+    /// carries the same commit.
+    dropped_empty: AtomicU64,
+}
+
+#[cfg(any(feature = "cache", feature = "sqlite"))]
+impl StreamStats {
+    fn add(counter: &AtomicU64) {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The shape of one append answer. A partial acknowledgement is the event that invalidates
+    /// every request pipelined behind the one it answers, so it has to be countable.
+    fn record_ack<C>(&self, res: &AppendEntriesResponse<C>)
+    where
+        C: RaftTypeConfig,
+    {
+        match res {
+            AppendEntriesResponse::Success => Self::add(&self.ack_full),
+            AppendEntriesResponse::PartialSuccess(_) => Self::add(&self.ack_partial),
+            AppendEntriesResponse::Conflict => Self::add(&self.ack_conflict),
+            AppendEntriesResponse::HigherVote(_) => {}
+        }
+    }
+
+    /// The counters of a run, for a benchmark to print next to its throughput.
+    pub(crate) fn report() -> String {
+        let Some(stats) = STREAM_STATS.as_ref() else {
+            return "Raft stream stats are off (HQL_RAFT_STREAM_STATS=1 enables them)".to_string();
+        };
+        let g = stats.generated.load(Ordering::Relaxed);
+        let de = stats.dropped_empty.load(Ordering::Relaxed);
+        let gp = stats.generator_pending.load(Ordering::Relaxed);
+        let wf = stats.window_full.load(Ordering::Relaxed);
+        let ce = stats.channel_empty.load(Ordering::Relaxed);
+        let sent = stats.sent.load(Ordering::Relaxed);
+        let fp = stats.front_pending.load(Ordering::Relaxed);
+        let a = stats.answered.load(Ordering::Relaxed);
+        let full = stats.ack_full.load(Ordering::Relaxed);
+        let partial = stats.ack_partial.load(Ordering::Relaxed);
+        let conflict = stats.ack_conflict.load(Ordering::Relaxed);
+        let ooo = stats.out_of_order.load(Ordering::Relaxed);
+        format!(
+            "Raft stream stats: generated {g}, generator pending polls {gp}, window full {wf}, \
+channel empty {ce}, sent {sent}, dropped empty {de}, front pending polls {fp}, answered {a}, \
+full acks {full}, partial acks {partial}, conflicts {conflict}, out of order {ooo}"
+        )
+    }
+}
+
 #[cfg(any(feature = "cache", feature = "sqlite"))]
 const SNAPSHOT_CHUNK_SIZE_FALLBACK: usize = 3 * 1024 * 1024;
 
 /// `AppendEntries` RPCs a single replication stream keeps on the socket at the same time.
 ///
-/// 1 is openraft's own sequential behaviour: one request, its answer, then the next. Anything
-/// above 1 pipelines, meaning the leader sends the next request while the previous one is still
-/// being answered, so the round trip stops being paid per batch. The follower applies appends one
-/// at a time, in the order they arrive, so the depth is purely the leader's window: it is how many
-/// requests are on the socket, and how many answers are on their way back.
+/// 1 is one request, its answer, then the next. Above 1 the leader sends the next request while the
+/// previous one is still being answered, so the round trip stops being paid per batch. The follower
+/// applies appends one at a time, in the order they arrive, so the depth is purely the leader's
+/// window: it is how many requests are on the socket and how many answers are on their way back.
+///
+/// A window above 1 only pays on a link whose round trip is the cost. A follower that acknowledges
+/// part of a request invalidates every request the leader already pipelined behind it, and the
+/// leader re-replicates them, which on a link with no distance costs several times what the
+/// overlap can save. Raise it on a link with distance and measure it there.
 ///
 /// The depth used when `HQL_RAFT_STREAM_DEPTH` is unset, unparsable, or out of range.
 #[cfg(any(feature = "cache", feature = "sqlite"))]
-const DEFAULT_RAFT_STREAM_DEPTH: usize = 32;
+const DEFAULT_RAFT_STREAM_DEPTH: usize = 8;
 
 /// The highest depth the transport accepts, which bounds how many appends a single connection
 /// keeps unacknowledged at once.
@@ -231,6 +324,8 @@ where
     rx_req: flume::Receiver<AppendEntriesRequest<W::Config>>,
     /// Set when the generator has handed over everything it will, which the closed channel says.
     input_exhausted: bool,
+    /// Set when the generator has finished, because a finished stream must never be polled again.
+    generator_done: bool,
     sender: flume::Sender<RaftRequest>,
     ids: (NodeId, NodeId),
     /// How long the front of the window may wait for its answer.
@@ -286,6 +381,7 @@ impl RaftNetworkFactory<TypeConfigCache> for NetworkStreaming {
             node: node.clone(),
             sender,
             task: Some(task),
+            stream_depth: *RAFT_STREAM_DEPTH,
         }
     }
 }
@@ -318,6 +414,7 @@ impl RaftNetworkFactory<TypeConfigSqlite> for NetworkStreaming {
             node: node.clone(),
             sender,
             task: Some(task),
+            stream_depth: *RAFT_STREAM_DEPTH,
         }
     }
 }
@@ -609,7 +706,9 @@ impl NetworkStreaming {
 
                     RaftRequest::StreamResponse(resp) => {
                         // The answer order is the request order, so the front of the queue is the
-                        // ack this response belongs to.
+                        // ack this response belongs to. An answer that names another request means
+                        // that order is broken, and delivering it would hand one caller the answer
+                        // of another: fail it and end the connection instead.
                         match in_flight.pop_front() {
                             None => {
                                 error!(
@@ -617,15 +716,24 @@ impl NetworkStreaming {
                                     resp.request_id
                                 );
                             }
-                            Some((id, ack)) => {
-                                debug_assert_eq!(
-                                    id, resp.request_id,
-                                    "raft answers out of request order: {} vs {}",
-                                    id, resp.request_id
-                                );
+                            Some((id, ack)) if id == resp.request_id => {
                                 if ack.send(Ok(resp.payload)).is_err() {
                                     error!("sending back stream response from raft server");
                                 }
+                            }
+                            Some((id, ack)) => {
+                                if let Some(stats) = STREAM_STATS.as_ref() {
+                                    StreamStats::add(&stats.out_of_order);
+                                }
+                                let _ = ack.send(Err(Error::Connect(format!(
+                                    "Raft node {} answered out of request order: {} vs {}",
+                                    node.id, resp.request_id, id,
+                                ))));
+                                error!(
+                                    "Raft node {} answered out of request order: {} vs {}",
+                                    node.id, resp.request_id, id
+                                );
+                                break;
                             }
                         }
                         None
@@ -758,6 +866,9 @@ pub struct NetworkConnectionStreaming {
     node: Node,
     sender: flume::Sender<RaftRequest>,
     task: Option<JoinHandle<()>>,
+    /// How many appends a `stream_append` session of this connection keeps in flight. Read from
+    /// `RAFT_STREAM_DEPTH` when the factory builds a connection.
+    stream_depth: usize,
 }
 
 impl Drop for NetworkConnectionStreaming {
@@ -1091,7 +1202,7 @@ impl NetworkConnectionStreaming {
         S: Stream<Item = AppendEntriesRequest<W::Config>> + OptionalSend + Unpin + 'static,
     {
         let ttl = Self::response_ttl(option);
-        let depth = *RAFT_STREAM_DEPTH;
+        let depth = self.stream_depth;
         let (tx_req, rx_req) = flume::bounded(depth);
 
         // Generation runs beside the answers, in a stream of its own. openraft produces a request
@@ -1121,6 +1232,7 @@ impl NetworkConnectionStreaming {
             generator,
             rx_req,
             input_exhausted: false,
+            generator_done: false,
             sender: self.sender.clone(),
             ids: (self.local_id, self.node.id),
             ttl,
@@ -1157,40 +1269,79 @@ impl NetworkConnectionStreaming {
         // Generation first, so a request it produced on this tick can go out on this tick. Its end
         // is not the end of the session: the window still has to drain, so the fill loop below
         // drains to `Disconnected` and only then closes the session.
-        if !st.input_exhausted {
-            let _ = st.generator.as_mut().poll_next(cx);
+        if !st.generator_done && st.generator.as_mut().poll_next(cx).is_ready() {
+            st.generator_done = true;
+        }
+        // TEMPORARY instrumentation, a no-op unless HQL_RAFT_STREAM_STATS=1.
+        let stats = STREAM_STATS.as_ref();
+        let record = |counter: fn(&StreamStats) -> &AtomicU64| {
+            if let Some(stats) = stats {
+                StreamStats::add(counter(stats));
+            }
+        };
+        if !st.generator_done {
+            record(|s| &s.generator_pending);
         }
 
-        while !st.input_exhausted && st.pending.len() < st.depth {
+        // Take everything generation has produced that fits the window, in one go. Draining the
+        // whole channel per poll is what lets the coalescing below see a run of requests together,
+        // which is how they arrive when the leader is busy.
+        let mut drained = Vec::new();
+        while !st.input_exhausted && st.pending.len() + drained.len() < st.depth {
             match st.rx_req.try_recv() {
                 Ok(req) => {
-                    let prev_log_id = req.prev_log_id.clone();
-                    // An append request without entries only asks for an ack, which is the request's
-                    // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
-                    let last_log_id = req
-                        .entries
-                        .last()
-                        .map(|entry| entry.log_id())
-                        .or(prev_log_id.clone());
-
-                    // The request channel is unbounded, so this send is what keeps the window full:
-                    // it never waits for an answer, and only the writer task can block.
-                    let (ack, rx) = oneshot::channel();
-                    if st.sender.send(W::request(ack, req)).is_err() {
-                        st.done = true;
-                        return Poll::Ready(Some(Err(RPCError::Unreachable(
-                            Unreachable::from_string("Raft stream sender closed"),
-                        ))));
-                    }
-                    st.pending.push_back(PendingAppend {
-                        prev_log_id,
-                        last_log_id,
-                        rx,
-                    });
+                    record(|s| &s.generated);
+                    drained.push(req);
                 }
-                Err(flume::TryRecvError::Empty) => break,
+                Err(flume::TryRecvError::Empty) => {
+                    record(|s| &s.channel_empty);
+                    break;
+                }
                 Err(flume::TryRecvError::Disconnected) => st.input_exhausted = true,
             }
+        }
+
+        // A request with no entries carries only the leader's commit. Generation reads the commit
+        // when it builds a request, so any request built after it carries a commit at least as new,
+        // and a request with entries in this batch takes that commit to the follower for free. An
+        // entry-less request with such a request behind it is dropped. The last entry-less request
+        // of a run always goes out: nothing after it promises its commit, and a follower applies log
+        // entries only up to the commit it has been told about.
+        let last_with_entries = drained.iter().rposition(|req| !req.entries.is_empty());
+        for (index, req) in drained.into_iter().enumerate() {
+            if req.entries.is_empty() && last_with_entries.is_some_and(|last| last > index) {
+                record(|s| &s.dropped_empty);
+                continue;
+            }
+
+            let prev_log_id = req.prev_log_id.clone();
+            // An append request without entries only asks for an ack, which is the request's
+            // `prev_log_id` - openraft asserts the ack to be inside the (empty) sent range.
+            let last_log_id = req
+                .entries
+                .last()
+                .map(|entry| entry.log_id())
+                .or(prev_log_id.clone());
+
+            // The request channel is bounded by the window, so this send is what keeps the window
+            // full: it never waits for an answer, and only the writer task can block.
+            let (ack, rx) = oneshot::channel();
+            if st.sender.send(W::request(ack, req)).is_err() {
+                st.done = true;
+                return Poll::Ready(Some(Err(RPCError::Unreachable(Unreachable::from_string(
+                    "Raft stream sender closed",
+                )))));
+            }
+            st.pending.push_back(PendingAppend {
+                prev_log_id,
+                last_log_id,
+                rx,
+            });
+            record(|s| &s.sent);
+        }
+
+        if !st.input_exhausted && st.pending.len() >= st.depth {
+            record(|s| &s.window_full);
         }
 
         let front_ready = {
@@ -1209,6 +1360,7 @@ impl NetworkConnectionStreaming {
 
         match front_ready {
             Poll::Pending => {
+                record(|s| &s.front_pending);
                 // Only the front of the window can say anything about the connection: it is the
                 // oldest request on the socket, and an answer that never arrives there means nothing
                 // queued behind it can be trusted either, so the session ends with it.
@@ -1236,6 +1388,15 @@ impl NetworkConnectionStreaming {
                 Poll::Ready(Some(Err(RPCError::Unreachable(Unreachable::new(&err)))))
             }
             Poll::Ready(Ok(Ok(payload))) => {
+                record(|s| &s.answered);
+                if let Some(stats) = stats {
+                    match &payload {
+                        RaftStreamResponsePayload::AppendDB(Ok(res)) => stats.record_ack(res),
+                        #[cfg(feature = "cache")]
+                        RaftStreamResponsePayload::AppendCache(Ok(res)) => stats.record_ack(res),
+                        _ => {}
+                    }
+                }
                 let Some(front) = st.pending.pop_front() else {
                     st.done = true;
                     return Poll::Ready(None);
@@ -1277,6 +1438,37 @@ impl NetworkConnectionStreaming {
 
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
+    use openraft::type_config::alias::EntryOf;
+
+    use crate::store::state_machine::sqlite::state_machine::{Query, QueryWrite};
+
+    fn log_id_of(index: u64) -> LogIdOf<TypeConfigSqlite> {
+        LogIdOf::<TypeConfigSqlite>::from(LogId {
+            leader_id: LeaderId {
+                term: 1u64,
+                node_id: 1u64,
+            },
+            index,
+        })
+    }
+
+    /// One append request carrying a single entry, which is what a replication stream produces for
+    /// a write. An entry-less request is a commit carrier, and the session drops those while the
+    /// window is busy, so a fixture that wants its requests on the socket has to carry entries.
+    fn append_with_entry(index: u64) -> AppendEntriesRequest<TypeConfigSqlite> {
+        AppendEntriesRequest::<TypeConfigSqlite> {
+            vote: VoteOf::<TypeConfigSqlite>::from(Vote::new_committed(1, 1)),
+            prev_log_id: Some(log_id_of(index)),
+            leader_commit: None,
+            entries: vec![EntryOf::<TypeConfigSqlite>::new_normal(
+                log_id_of(index + 1),
+                QueryWrite::Execute(Query {
+                    sql: "INSERT INTO _bench (id, ts, name) VALUES ($1, $2, $3)".into(),
+                    params: Vec::new(),
+                }),
+            )],
+        }
+    }
     use super::*;
     use crate::store::state_machine::sqlite::TypeConfigSqlite;
     use futures_util::StreamExt;
@@ -1303,20 +1495,10 @@ mod tests {
             },
             sender: tx,
             task: None,
+            stream_depth: 4,
         };
 
-        let requests = vec![AppendEntriesRequest::<TypeConfigSqlite> {
-            vote: VoteOf::<TypeConfigSqlite>::from(Vote::new_committed(1, 1)),
-            prev_log_id: Some(LogIdOf::<TypeConfigSqlite>::from(LogId {
-                leader_id: LeaderId {
-                    term: 1u64,
-                    node_id: 1u64,
-                },
-                index: 1,
-            })),
-            leader_commit: None,
-            entries: vec![],
-        }];
+        let requests = vec![append_with_entry(1)];
 
         let mut answers = Box::pin(
             conn.append_stream::<AppendDb, _>(
@@ -1370,23 +1552,11 @@ mod tests {
             },
             sender: tx,
             task: None,
+            stream_depth: 4,
         };
 
         // Fewer requests than the window holds, so the fill runs into the end of the input.
-        let requests: Vec<_> = (1..=2u64)
-            .map(|index| AppendEntriesRequest::<TypeConfigSqlite> {
-                vote: VoteOf::<TypeConfigSqlite>::from(Vote::new_committed(1, 1)),
-                prev_log_id: Some(LogIdOf::<TypeConfigSqlite>::from(LogId {
-                    leader_id: LeaderId {
-                        term: 1u64,
-                        node_id: 1u64,
-                    },
-                    index,
-                })),
-                leader_commit: None,
-                entries: vec![],
-            })
-            .collect();
+        let requests: Vec<_> = (1..=2u64).map(append_with_entry).collect();
 
         let mut answers = Box::pin(
             conn.append_stream::<AppendDb, _>(
@@ -1457,23 +1627,16 @@ mod tests {
             },
             sender: tx,
             task: None,
+            stream_depth: 4,
         };
 
-        let requests: Vec<_> = (1..=3u64)
-            .map(|index| AppendEntriesRequest::<TypeConfigSqlite> {
-                vote: VoteOf::<TypeConfigSqlite>::from(Vote::new_committed(1, 1)),
-                prev_log_id: Some(LogIdOf::<TypeConfigSqlite>::from(LogId {
-                    leader_id: LeaderId {
-                        term: 1u64,
-                        node_id: 1u64,
-                    },
-                    index,
-                })),
-                leader_commit: None,
-                entries: vec![],
-            })
+        let requests: Vec<_> = (1..=3u64).map(append_with_entry).collect();
+        // The progress an answer reports is the last entry of its request, which is what the
+        // transport hands back to openraft as the acknowledged range.
+        let expected: Vec<_> = requests
+            .iter()
+            .map(|req| Some(req.entries.last().expect("a fixture entry").log_id()))
             .collect();
-        let expected: Vec<_> = requests.iter().map(|req| req.prev_log_id).collect();
 
         let mut answers = Box::pin(
             conn.append_stream::<AppendDb, _>(

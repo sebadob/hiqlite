@@ -330,9 +330,17 @@ impl Client {
             .ok_or_else(|| Error::Connect("Client has no http client".into()))?;
 
         #[cfg(feature = "sqlite")]
-        let (leader, tx) = (&self.inner.leader_db, &self.inner.tx_client_db);
+        let (leader, lookup, tx) = (
+            &self.inner.leader_db,
+            &self.inner.leader_lookup_db,
+            &self.inner.tx_client_db,
+        );
         #[cfg(not(feature = "sqlite"))]
-        let (leader, tx) = (&self.inner.leader_cache, &self.inner.tx_client_cache);
+        let (leader, lookup, tx) = (
+            &self.inner.leader_cache,
+            &self.inner.leader_lookup_cache,
+            &self.inner.tx_client_cache,
+        );
 
         for attempt in 0..3 {
             let addr = leader.read().await.1.clone();
@@ -350,7 +358,7 @@ impl Client {
             }
 
             let err = res.json::<Error>().await?;
-            if !self.was_leader_update_error(&err, leader, tx).await {
+            if !self.was_leader_update_error(&err, leader, lookup, tx).await {
                 return Err(err);
             }
             debug!("Node {addr} is not the leader any more - retrying, attempt {attempt}");

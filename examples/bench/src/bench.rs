@@ -4,6 +4,8 @@ use hiqlite::macros::params;
 use hiqlite::{Client, Error, Params, Row};
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::task;
 use tokio::time;
@@ -37,11 +39,12 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     // The in-memory cache is the Raft group with no disk in its way, so its numbers are the
     // cleanest signal for replication depth. Run it on its own to keep a run short.
     if options.cache_only {
-        let elapsed = put_cache(client.clone(), &options, data).await?;
+        let (elapsed, retries) = put_cache(client.clone(), &options, data).await?;
         let per_second = rows * 1000 / max(elapsed as usize, 1);
         log(format!(
             "{rows} single cache PUTs with concurrency {concurrency} took:\n{elapsed} ms \
-            -> {per_second} inserts / s"
+            -> {per_second} inserts / s{}",
+            retries_note(retries)
         ));
         return Ok(());
     }
@@ -49,11 +52,12 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     // make sure everything is clean
     client.execute("DELETE FROM _bench", params!()).await?;
 
-    let elapsed = insert_concurrent(client.clone(), &options, data.clone(), false).await?;
+    let (elapsed, retries) = insert_concurrent(client.clone(), &options, data.clone(), false).await?;
     let per_second = rows * 1000 / max(elapsed as usize, 1);
     log(format!(
         "{rows} single INSERTs with concurrency {concurrency} took:\n{elapsed} ms \
-        -> {per_second} inserts / s"
+        -> {per_second} inserts / s{}",
+        retries_note(retries)
     ));
 
     // TEMPORARY for the pipeline benchmark: the transactional insert is a showcase of how fast a
@@ -67,22 +71,28 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
         // queries at once, it is very fast, but the internal buffers will grow up to a size that can
         // hold these big messages.
         cleanup(&client).await?;
-        let elapsed = insert_concurrent(client.clone(), &options, data.clone(), true).await?;
+        let (elapsed, retries) = insert_concurrent(client.clone(), &options, data.clone(), true).await?;
         let per_second = rows * 1000 / max(elapsed as usize, 1);
         log(format!(
             "{rows} transactional / batched INSERTs with concurrency {concurrency} \
-            took:\n{elapsed} ms -> {per_second} inserts / s"
+            took:\n{elapsed} ms -> {per_second} inserts / s{}",
+            retries_note(retries)
         ));
     }
     */
 
+    // TEMPORARY for the depth sweep: the transport's own counters, so a run shows what it waited
+    // on and not only what it measured.
+    log(hiqlite::raft_stream_stats_report());
+
     select_timings(client.clone(), remote).await?;
 
-    let elapsed = put_cache(client.clone(), &options, data).await?;
+    let (elapsed, retries) = put_cache(client.clone(), &options, data).await?;
     let per_second = rows * 1000 / max(elapsed as usize, 1);
     log(format!(
         "{rows} single cache PUTs with concurrency {concurrency} took:\n{elapsed} ms \
-        -> {per_second} inserts / s"
+        -> {per_second} inserts / s{}",
+        retries_note(retries)
     ));
 
     get_timings(client.clone()).await?;
@@ -99,6 +109,17 @@ const LEADER_RETRY_DELAY: Duration = Duration::from_millis(200);
 /// `ForwardToLeader` is the shape of a write that hit a node which is not the leader, and of a node
 /// that does not know who the leader is yet. Matched on the message because this example does not
 /// depend on openraft directly.
+/// The retry count of a measured phase, appended to its throughput line. A retry is time spent
+/// inside the measured window, so a run that paid for leader changes is only comparable to another
+/// run when the number of them is visible.
+fn retries_note(retries: usize) -> String {
+    if retries == 0 {
+        String::new()
+    } else {
+        format!(" -> {retries} writes retried after a leader change")
+    }
+}
+
 fn is_leader_change(err: &Error) -> bool {
     let msg = err.to_string();
     msg.contains("ForwardToLeader") || msg.contains("NotLeader")
@@ -109,13 +130,18 @@ async fn insert_concurrent(
     options: &Options,
     sets: Vec<Vec<Entity>>,
     with_txn: bool,
-) -> Result<u128, Error> {
+) -> Result<(u128, usize), Error> {
     let concurrency = options.concurrency;
 
     let mut handles = Vec::with_capacity(concurrency);
     let start = Instant::now();
+    // A leader change is a normal event in a Raft cluster, and a retry is time spent inside the
+    // measured window. Counting them makes a run that spent its time retrying recognisable from the
+    // throughput line it prints.
+    let retries = Arc::new(AtomicUsize::new(0));
     for set in sets {
         let client = client.clone();
+        let retries = retries.clone();
 
         let handle = if with_txn {
             task::spawn(async move {
@@ -150,6 +176,7 @@ async fn insert_concurrent(
                                 break;
                             }
                             Err(err) if attempt < LEADER_RETRIES && is_leader_change(&err) => {
+                                retries.fetch_add(1, Ordering::Relaxed);
                                 time::sleep(LEADER_RETRY_DELAY).await;
                             }
                             Err(err) => panic!("{err}"),
@@ -166,7 +193,10 @@ async fn insert_concurrent(
         handle.await?;
     }
 
-    Ok(start.elapsed().as_millis())
+    Ok((
+        start.elapsed().as_millis(),
+        retries.load(Ordering::Relaxed),
+    ))
 }
 
 async fn select_timings(client: Client, remote: bool) -> Result<(), Error> {
@@ -219,13 +249,15 @@ async fn put_cache(
     client: Client,
     options: &Options,
     sets: Vec<Vec<Entity>>,
-) -> Result<u128, Error> {
+) -> Result<(u128, usize), Error> {
     let concurrency = options.concurrency;
 
     let mut handles = Vec::with_capacity(concurrency);
     let start = Instant::now();
+    let retries = Arc::new(AtomicUsize::new(0));
     for set in sets {
         let client = client.clone();
+        let retries = retries.clone();
 
         let handle = task::spawn(async move {
             for entity in set {
@@ -236,6 +268,7 @@ async fn put_cache(
                     {
                         Ok(()) => break,
                         Err(err) if attempt < LEADER_RETRIES && is_leader_change(&err) => {
+                            retries.fetch_add(1, Ordering::Relaxed);
                             time::sleep(LEADER_RETRY_DELAY).await;
                         }
                         Err(err) => panic!("{err}"),
@@ -250,7 +283,10 @@ async fn put_cache(
         handle.await?;
     }
 
-    Ok(start.elapsed().as_millis())
+    Ok((
+        start.elapsed().as_millis(),
+        retries.load(Ordering::Relaxed),
+    ))
 }
 
 async fn get_timings(client: Client) -> Result<(), Error> {

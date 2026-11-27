@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::{Error, NodeId};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
 use stream::ClientStreamReq;
 use tokio::sync::{RwLock, oneshot, watch};
 
@@ -47,8 +47,18 @@ pub(crate) struct DbClient {
     pub(crate) state: Option<Arc<AppState>>,
     #[cfg(feature = "cache")]
     pub(crate) leader_cache: Arc<RwLock<(NodeId, String)>>,
+    /// Claims the leader lookup of the cache group, for the same reason as the DB group's.
+    #[cfg(feature = "cache")]
+    pub(crate) leader_lookup_cache: AtomicBool,
     #[cfg(feature = "sqlite")]
     pub(crate) leader_db: Arc<RwLock<(NodeId, String)>>,
+    /// Claims the leader lookup of the DB group. A leader id changes rarely, so a burst of writes
+    /// that all land in the same leadership gap must not each run a lookup: the writer that claims
+    /// it runs the one lookup, and the others go straight back to the cached leader. Claiming is a
+    /// single atomic swap, so nothing in the write path blocks.
+    #[cfg(feature = "sqlite")]
+    pub(crate) leader_lookup_db: AtomicBool,
+
     /// This is always empty for local clients, and carries the actual nodes for remote clients.
     pub(crate) nodes: Vec<String>,
     pub(crate) client: Option<reqwest::Client>,

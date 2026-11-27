@@ -615,6 +615,7 @@ impl Client {
                     .was_leader_update_error(
                         &err,
                         &self.inner.leader_cache,
+                        &self.inner.leader_lookup_cache,
                         &self.inner.tx_client_cache,
                     )
                     .await

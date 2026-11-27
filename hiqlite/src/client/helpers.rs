@@ -10,7 +10,7 @@ use openraft::RaftTypeConfig;
 use openraft::type_config::async_runtime::watch::WatchReceiver;
 use std::clone::Clone;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{RwLock, oneshot};
 use tokio::time;
@@ -308,6 +308,7 @@ impl Client {
         &self,
         err: &Error,
         lock: &Arc<RwLock<(NodeId, String)>>,
+        lookup: &AtomicBool,
         tx: &flume::Sender<ClientStreamReq>,
     ) -> bool {
         let Some((leader_id, leader_node)) = err.is_forward_to_leader() else {
@@ -344,9 +345,21 @@ impl Client {
         // so the caller's retry does not go to the same node again. The lookup is bounded: when it
         // finds no leader within `LEADER_LOOKUP_TIMEOUT` there is none to find, and the caller
         // gets the original error instead of a write that blocks.
-        time::timeout(LEADER_LOOKUP_TIMEOUT, self.find_set_active_leader())
+        //
+        // One lookup per group at a time, claimed with a single atomic swap. The writer that wins
+        // the claim runs the lookup and publishes the leader; the writers behind it do not block
+        // and do not look anything up, they just retry against the cached leader the winner sets.
+        if lookup
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return true;
+        }
+        let found = time::timeout(LEADER_LOOKUP_TIMEOUT, self.find_set_active_leader())
             .await
-            .is_ok()
+            .is_ok();
+        lookup.store(false, Ordering::Release);
+        found
     }
 }
 
