@@ -155,8 +155,8 @@ where
     });
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
-    if restore == backup::RestoreStart::Applied {
-        backup::restore_backup_finish(&state).await;
+    if let backup::RestoreStart::Applied(src) = &restore {
+        backup::restore_backup_finish(&state, &node_config.data_dir, src.as_ref()).await;
     }
 
     let (tx_shutdown, rx_shutdown) = tokio::sync::watch::channel(None);
@@ -406,10 +406,11 @@ where
     #[cfg(feature = "sqlite")]
     member_db.await??;
     #[cfg(all(feature = "backup", feature = "sqlite"))]
-    if restore == backup::RestoreStart::Rejoin {
+    if let backup::RestoreStart::Rejoin(src) = restore {
         task::spawn(backup::discard_pre_restore_state(
             state.clone(),
             node_config.data_dir.to_string(),
+            src,
         ));
     }
     #[cfg(feature = "cache")]

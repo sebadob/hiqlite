@@ -23,7 +23,16 @@ pub async fn start_test_cluster_with_backup(
     combo: TlsCombo,
 ) -> Result<(Client, Client, Client), Error> {
     let source = if from_fs {
-        BackupSource::File(BACKUP_PATH_FILE.to_string())
+        match &restore {
+            Restore::EnvVar => BackupSource::File(BACKUP_PATH_FILE.to_string()),
+            Restore::Explicit => {
+                // A node records the source of a finished restore and skips a later request for
+                // the same, unchanged one, so restoring the same file again needs a fresh copy.
+                let path = BACKUP_PATH_FILE.replace(".sqlite", "_2.sqlite");
+                fs::copy(BACKUP_PATH_FILE, &path).await.unwrap();
+                BackupSource::File(path)
+            }
+        }
     } else {
         let path = backup::find_backup_file(1).await;
         let (_path, backup_name) = path.rsplit_once('/').unwrap();
