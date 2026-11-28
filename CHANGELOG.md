@@ -660,7 +660,9 @@ yet, but a good starting point.
   leader still had the original holder, and kept that diverged state after it caught up. Lock
   state now changes only by applying the Raft log: the leader expires a dead holder by writing its
   release through Raft, and a waiter always claims the lock through Raft before it gets it. A lock
-  that was waited for costs one more Raft write now.
+  that was waited for costs one more Raft write now. The leader's expiry carries the lease
+  generation it saw and is ignored when a heartbeat or claim renewed the lease in between, and a
+  claim after its own lease passed is queued again instead of granted.
 - A `lock()` call that was cancelled while it waited for its turn killed the lock handler of that
   node, after which every lock call on it failed or hung. A receiver that went away is ignored now;
   a grant it did not see expires with its lease.

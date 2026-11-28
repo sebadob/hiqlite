@@ -1112,7 +1112,8 @@ async fn handle_socket_concurrent(
                         | CacheRequest::Lock(_)
                         | CacheRequest::LockAwait(_)
                         | CacheRequest::LockRelease(_)
-                        | CacheRequest::LockAlive(_) => None,
+                        | CacheRequest::LockAlive(_)
+                        | CacheRequest::LockExpire(_) => None,
                     };
 
                     if let Some(cache_idx) = cache_idx

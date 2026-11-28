@@ -122,6 +122,9 @@ pub enum CacheRequest {
         #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
+    /// The leader expires a holder whose lease passed: `(key, ticket, lease generation)`.
+    #[allow(dead_code)] // only constructed with the `dlock` feature
+    LockExpire(#[bincode(with_serde)] (Cow<'static, str>, u64, u64)),
 }
 
 impl Display for CacheRequest {
@@ -905,7 +908,11 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                         #[cfg(feature = "dlock")]
                         {
                             self.tx_dlock
-                                .send(LockRequest::Release(LockReleasePayload { key, id }))
+                                .send(LockRequest::Release(LockReleasePayload {
+                                    key,
+                                    id,
+                                    generation: None,
+                                }))
                                 // this channel can never be closed - we have both sides
                                 .unwrap();
 
@@ -914,6 +921,23 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                         }
                         #[cfg(not(feature = "dlock"))]
                         unreachable!("LockRelease requires the `dlock` feature")
+                    }
+
+                    CacheRequest::LockExpire((key, id, generation)) => {
+                        #[cfg(feature = "dlock")]
+                        {
+                            self.tx_dlock
+                                .send(LockRequest::Release(LockReleasePayload {
+                                    key,
+                                    id,
+                                    generation: Some(generation),
+                                }))
+                                // this channel can never be closed - we have both sides
+                                .unwrap();
+                            CacheResponse::Lock(LockState::Released)
+                        }
+                        #[cfg(not(feature = "dlock"))]
+                        unreachable!("LockExpire requires the `dlock` feature")
                     }
 
                     CacheRequest::LockAlive((key, id)) => {
@@ -1327,6 +1351,7 @@ mod serialized_enum_order {
             }),
             16
         );
+        assert_eq!(idx(&CacheRequest::LockExpire((key(), 0, 0))), 17);
     }
 }
 
