@@ -32,8 +32,15 @@ both log directories, the cache data - and joins the new cluster empty. Nodes th
 old files carry the log and the snapshots of the dead cluster, and those never line up with a
 restored node 1. That mismatch is the hour you do not want to spend.
 
+Those nodes clear their state before node 1 has applied anything. If you want to keep it until the
+restore has worked, set `backup_restore_keep_previous = true`: each node then moves its state into
+`{data_dir}/pre_restore`, with the layout of a `data_dir`, and removes it once it is a member of the
+restored cluster. Until then, every node needs as much additional disk space as its database,
+snapshots and logs take.
+
 1. Confirm every node is stopped. A restore against a running cluster is the one way to make this
-   worse.
+   worse. A restore that finds the state machine lock of its `data_dir` held by a live process
+   refuses to start and touches nothing.
 2. Pick the newest backup. `Client::backup_list_s3` gives you names and timestamps; the newest
    object is usually what you want, and it is the newest one the last leader made. However, you
    probably do not have access to the client if you are in this situation. Just check the file names

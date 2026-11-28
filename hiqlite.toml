@@ -384,6 +384,21 @@ backup_cron = "0 30 2 * * * *"
 # overwritten by: HQL_BACKUP_FILE_PREFIX
 backup_file_prefix = "backup_node"
 
+# On a backup restore, every node other than 1 deletes its state before
+# it joins the restored cluster. With this set, it moves the state into
+# `{data_dir}/pre_restore` instead, and only removes it once it is a
+# member of the restored cluster. If node 1 fails to apply the backup,
+# the previous state of the other nodes is then still there.
+#
+# CAUTION: the old state stays on disk next to the state the node
+# receives from the restored cluster. This needs as much additional disk
+# space as the database, its snapshots and logs take, on every node,
+# until the node joined.
+#
+# default: false
+# overwritten by: HQL_BACKUP_RESTORE_KEEP_PREVIOUS
+#backup_restore_keep_previous = false
+
 # If you ever need to restore from a backup, the process is simple.
 # 1. Have the cluster shut down. This is probably the case anyway, if
 #    you need to restore from a backup.

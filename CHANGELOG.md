@@ -513,6 +513,17 @@ match is ever deleted - so several clusters can share one bucket, and files that
 backups in a shared directory or bucket are untouched. `Client::backup_file_local` validates the
 name against the same rule.
 
+#### `backup_restore_keep_previous` config var
+
+On a backup restore, every node other than 1 deletes its state before it joins the restored cluster,
+at a time when node 1 has not applied the backup yet. The new opt-in `backup_restore_keep_previous`
+(TOML key, `HQL_BACKUP_RESTORE_KEEP_PREVIOUS`, default `false`) moves that state into
+`{data_dir}/pre_restore` instead, and removes it once the node is a member of the restored cluster.
+Until then, every node needs as much additional disk space as its database, snapshots and logs take.
+
+A restore, on any node, now also refuses to touch a `data_dir` whose state machine lock is held by
+a live process.
+
 #### Shutdown Behavior
 
 A graceful shutdown on the leader hands leadership over before it leaves, so a shutdown doesn't cost

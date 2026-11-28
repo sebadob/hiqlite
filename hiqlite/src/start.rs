@@ -60,7 +60,7 @@ where
     dashboard::init()?;
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
-    let backup_applied = backup::restore_backup_start(&node_config, backup_source).await?;
+    let restore = backup::restore_backup_start(&node_config, backup_source).await?;
 
     let raft_config = Arc::new(
         node_config
@@ -155,7 +155,7 @@ where
     });
 
     #[cfg(all(feature = "backup", feature = "sqlite"))]
-    if backup_applied {
+    if restore == backup::RestoreStart::Applied {
         backup::restore_backup_finish(&state).await;
     }
 
@@ -405,6 +405,13 @@ where
 
     #[cfg(feature = "sqlite")]
     member_db.await??;
+    #[cfg(all(feature = "backup", feature = "sqlite"))]
+    if restore == backup::RestoreStart::Rejoin {
+        task::spawn(backup::discard_pre_restore_state(
+            state.clone(),
+            node_config.data_dir.to_string(),
+        ));
+    }
     #[cfg(feature = "cache")]
     member_cache.await??;
 

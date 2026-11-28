@@ -1,13 +1,14 @@
 use crate::backup::BACKUP_PATH_FILE;
 use crate::execute_query::TestData;
 use crate::start::{TlsCombo, build_config};
-use crate::{Cache, backup, log};
+use crate::{Cache, TEST_DATA_DIR, backup, log};
 use hiqlite::macros::params;
 use hiqlite::{
     BackupSource, Client, Error, start_node_with_cache, start_node_with_cache_from_backup,
 };
 use std::env;
-use tokio::task;
+use std::time::Duration;
+use tokio::{fs, task, time};
 
 /// How the nodes are told which backup to restore: through the `HQL_BACKUP_RESTORE` env var, or
 /// through the explicit source of `start_node_with_cache_from_backup`.
@@ -71,23 +72,30 @@ pub async fn start_test_cluster_with_backup(
         }
     }
 
+    // The env var path keeps the default, the explicit path moves the state of the followers aside.
+    let keep_previous = matches!(restore, Restore::Explicit);
+    let node_config = async |node_id| {
+        let mut config = build_config(node_id, combo).await;
+        config.backup_restore_keep_previous = keep_previous;
+        config
+    };
     let (handle_client_2, handle_client_3, handle_client_1) = match restore {
         Restore::EnvVar => (
-            task::spawn(start_node_with_cache::<Cache>(build_config(2, combo).await)),
-            task::spawn(start_node_with_cache::<Cache>(build_config(3, combo).await)),
-            task::spawn(start_node_with_cache::<Cache>(build_config(1, combo).await)),
+            task::spawn(start_node_with_cache::<Cache>(node_config(2).await)),
+            task::spawn(start_node_with_cache::<Cache>(node_config(3).await)),
+            task::spawn(start_node_with_cache::<Cache>(node_config(1).await)),
         ),
         Restore::Explicit => (
             task::spawn(start_node_with_cache_from_backup::<Cache>(
-                build_config(2, combo).await,
+                node_config(2).await,
                 source.clone(),
             )),
             task::spawn(start_node_with_cache_from_backup::<Cache>(
-                build_config(3, combo).await,
+                node_config(3).await,
                 source.clone(),
             )),
             task::spawn(start_node_with_cache_from_backup::<Cache>(
-                build_config(1, combo).await,
+                node_config(1).await,
                 source.clone(),
             )),
         ),
@@ -129,4 +137,19 @@ pub async fn test_db_is_healthy_after_restore(client: &Client) -> Result<(), Err
     }
 
     Ok(())
+}
+
+/// With `backup_restore_keep_previous`, the followers moved their state aside before they joined
+/// the restored cluster. Once they are members of it, that state is removed again.
+pub async fn test_pre_restore_state_discarded() {
+    log("Check that the followers removed the state they moved aside");
+    for node_id in [2, 3] {
+        let aside = format!("{TEST_DATA_DIR}/node_{node_id}/pre_restore");
+        let mut tries = 0;
+        while fs::try_exists(&aside).await.unwrap() {
+            tries += 1;
+            assert!(tries < 100, "{aside} must be removed once the node joined");
+            time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 }
