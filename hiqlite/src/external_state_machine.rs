@@ -1425,6 +1425,9 @@ where
     /// is touched. Older snapshots are rejected. Once the restore starts, it
     /// finishes even if the caller stops waiting.
     ///
+    /// A restore that does not land leaves the node without a read pool. The live database is
+    /// then the one from before the snapshot, and reads are not served from it.
+    ///
     /// # Errors
     ///
     /// Everything [`Self::validate_snapshot`] answers for the staged image,
@@ -1475,12 +1478,12 @@ where
                 .map_err(|_| ExternalError::WriterClosed)?;
             let restore = rx.await.map_err(|_| ExternalError::WriterStopped)?;
 
-            if !matches!(
-                restore,
-                Err(ExternalError::WriterClosed
-                    | ExternalError::WriterStopped
-                    | ExternalError::WriterPoisoned(_))
-            ) {
+            // The pool is rebuilt only over a database the restore really wrote. A restore that
+            // never ran - a rejected image, a marker that would not write - leaves the live
+            // database at the state it had before the snapshot, and a pool opened on it answers
+            // reads from rows the node never agreed to. That is the damage a rejected snapshot
+            // would leave behind, so the pool stays closed and every read says so.
+            if restore.is_ok() {
                 let (sender, _) = spawn_read_actors(
                     connect_read_conns_once(
                         &read_config.db_dir,
@@ -3355,6 +3358,81 @@ mod tests {
             target.install_snapshot(snapshot).await.unwrap_err(),
             ExternalError::StaleSnapshot
         ));
+        target.shutdown().await.unwrap();
+    }
+
+    /// A restore the writer rejects happens after the read pool is already closed. The live
+    /// database is then the one from before the snapshot, so the pool must not be rebuilt over
+    /// it: reads served from that database answer with rows the node never agreed to restore.
+    #[tokio::test]
+    async fn a_rejected_restore_leaves_no_read_pool_over_the_pre_restore_database() {
+        let source_dir = TestDir::new("rejected-restore-source");
+        let source = TestEngine::open(options(&source_dir)).await.unwrap();
+        source
+            .apply_committed(commit(1, "create-v1"), TestOperation::Create)
+            .await
+            .unwrap();
+        source
+            .apply_committed(
+                commit(2, "insert-v1"),
+                TestOperation::Insert {
+                    id: 1,
+                    value: "snapshot",
+                },
+            )
+            .await
+            .unwrap();
+        let snapshot = source.build_snapshot().await.unwrap();
+        source.shutdown().await.unwrap();
+
+        // The target has its own `items` table with its own rows, which is exactly what a pool
+        // left over the pre-restore database would hand back as the restored state.
+        let target_dir = TestDir::new("rejected-restore-target");
+        let target = TestEngine::open(options(&target_dir)).await.unwrap();
+        target
+            .apply_committed(commit(1, "create-v1"), TestOperation::Create)
+            .await
+            .unwrap();
+        target
+            .apply_committed(
+                commit(2, "insert-v1"),
+                TestOperation::Insert {
+                    id: 7,
+                    value: "local",
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(count_items(&target).await, 1);
+
+        // The target moves past the snapshot, so the writer rejects it in its own preflight,
+        // which is the point where the read pool is closed already.
+        target
+            .apply_committed(
+                commit(3, "insert-2-v1"),
+                TestOperation::Insert {
+                    id: 8,
+                    value: "local-2",
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            target.install_snapshot(snapshot).await.unwrap_err(),
+            ExternalError::StaleSnapshot
+        ));
+
+        let err = target
+            .read(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM items", [], |row| row.get::<_, i64>(0))
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ExternalError::Pool(_)),
+            "a rejected restore left a read pool over the pre-restore database: {err}"
+        );
+
         target.shutdown().await.unwrap();
     }
 
