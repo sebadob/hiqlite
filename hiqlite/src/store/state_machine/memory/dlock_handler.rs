@@ -1,8 +1,13 @@
+use crate::Client;
+use crate::store::state_machine::memory::TypeConfigCache;
+use crate::store::state_machine::memory::state_machine::{CacheRequest, StateMachineMemory};
 use bincode_next::{Decode, Encode};
 use chrono::Utc;
+use openraft::type_config::async_runtime::watch::WatchReceiver;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task;
@@ -21,9 +26,8 @@ pub const LOCK_VALID_SECONDS: i64 = 10;
 pub const LOCK_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
 #[cfg(not(debug_assertions))]
 pub const LOCK_ALIVE_INTERVAL: Duration = Duration::from_secs(3);
-/// How often the handler wakes itself up to promote queued tickets. Promotion is also triggered
-/// by every lock request and release for that key, so this only bounds how long a queue waits
-/// behind an expired (dead) holder when no further requests arrive for that key.
+/// How often the Raft leader checks for holders whose lease expired. This bounds how long a
+/// queue waits behind a dead holder to one lease window plus this interval.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 
 pub enum LockRequest {
@@ -34,6 +38,8 @@ pub enum LockRequest {
     Release(LockReleasePayload),
     Alive(LockAlivePayload),
     Await(LockAwaitPayload),
+    /// The holders whose lease expired by this node's clock, as `(key, ticket, generation)`.
+    Expired(oneshot::Sender<Vec<(String, u64, u64)>>),
     SnapshotBuild(oneshot::Sender<HashMap<String, LockQueue>>),
     SnapshotInstall((HashMap<String, LockQueue>, oneshot::Sender<()>)),
 }
@@ -47,6 +53,9 @@ pub struct LockRequestPayload {
 pub struct LockReleasePayload {
     pub key: Cow<'static, str>,
     pub id: u64,
+    /// Set when the leader expires the lease: the release only applies while the lease
+    /// generation is unchanged. A holder's own release has none and always applies.
+    pub generation: Option<u64>,
 }
 
 pub struct LockAwaitPayload {
@@ -68,15 +77,49 @@ pub enum LockState {
     Released,
 }
 
+impl LockState {
+    /// Answer a request. The receiver may be gone (a cancelled client future, or a waiter whose
+    /// client went away), which is harmless: an answer never grants anything by itself, every
+    /// grant is already part of the applied log, and an unclaimed grant expires with its lease.
+    fn send(self, ack: oneshot::Sender<LockState>, key: &str) {
+        if let Err(state) = ack.send(self) {
+            debug!("DLock: receiver for {key} / {state:?} dropped (client gone)");
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockQueue {
     current_ticket: Option<u64>,
     exp: i64,
+    /// Bumped by every grant, heartbeat and claim while applying the log, so it is the same on
+    /// every node. An expiry observed before one of those no longer matches and is ignored.
+    generation: u64,
     queue: VecDeque<u64>,
 }
 
+impl LockQueue {
+    fn granted(id: u64) -> Self {
+        let mut lock = Self {
+            current_ticket: None,
+            exp: 0,
+            generation: 0,
+            queue: VecDeque::default(),
+        };
+        lock.grant(id);
+        lock
+    }
+
+    /// Make `id` the holder (or keep it) with a fresh lease and a new lease generation.
+    fn grant(&mut self, id: u64) {
+        self.current_ticket = Some(id);
+        self.exp = Utc::now().timestamp() + LOCK_VALID_SECONDS;
+        self.generation += 1;
+    }
+}
+
 /// Local registry of in-flight `Await` calls per lock key. It is not part of the snapshot:
-/// waiters are ephemeral, and every registered entry is answered exactly once — with
+/// waiters are ephemeral, and every registered entry is answered exactly once - with
 /// `Locked(id)` when its ticket is promoted, or with `Released` when the key is fully removed
 /// or a snapshot is installed. A waiter's ticket is always in that key's queue while it is
 /// un-answered, so no waiter can block forever.
@@ -88,29 +131,77 @@ pub fn spawn() -> flume::Sender<LockRequest> {
     tx
 }
 
+/// Expire dead holders through the log. Only the Raft leader acts: every `SWEEP_INTERVAL` it
+/// asks its handler for the holders whose lease expired and writes a `LockExpire` with the
+/// observed lease generation for each one through Raft, which promotes the next waiter on every
+/// node at the same log position, unless a grant, heartbeat or claim moved the generation in
+/// between. The task exits once Raft has shut down.
+pub fn spawn_expiry(
+    raft: openraft::Raft<TypeConfigCache, Arc<StateMachineMemory>>,
+    node_id: u64,
+    tx_dlock: flume::Sender<LockRequest>,
+) {
+    task::spawn(async move {
+        let mut ticker =
+            tokio::time::interval_at(tokio::time::Instant::now() + SWEEP_INTERVAL, SWEEP_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            ticker.tick().await;
+
+            let (is_leader, is_running) = {
+                let metrics = raft.metrics();
+                let metrics = metrics.borrow_watched();
+                (
+                    metrics.current_leader == Some(node_id),
+                    metrics.running_state.is_ok(),
+                )
+            };
+            if !is_running {
+                break;
+            }
+            if !is_leader {
+                continue;
+            }
+
+            let (ack, rx) = oneshot::channel();
+            if tx_dlock.send(LockRequest::Expired(ack)).is_err() {
+                break;
+            }
+            let Ok(expired) = rx.await else {
+                break;
+            };
+
+            for (key, id, generation) in expired {
+                debug!("DLock: lease of {key} / {id} expired, releasing it");
+                let req = CacheRequest::LockExpire((key.clone().into(), id, generation));
+                if let Err(err) = Client::client_write_local(&raft, req).await {
+                    // The next tick retries, on whichever node is the leader by then.
+                    warn!("DLock: cannot release expired lock {key} / {id}: {err}");
+                    break;
+                }
+            }
+        }
+
+        debug!("DLock expiry task exiting");
+    });
+}
+
 async fn handler(rx: flume::Receiver<LockRequest>) {
-    // Lease timing (`exp`) intentionally uses this node's wall clock. All lock decisions are made
-    // by the Raft leader's handler, so they are always consistent with the leader's clock. The
-    // per-node `exp` copies in the state machine diverge by clock skew, but that is benign: Raft
-    // never verifies state machine equality, and the new leader evaluates leases with its own
-    // clock. A deterministic timestamp inside the raft entry would require changing the entry
-    // format, which would break log compatibility for rolling upgrades. Keep the clocks within
-    // ~1s of each other so a 10s lease survives failover comfortably.
+    // Every lock state transition - grant, queue, promotion, release - happens only while
+    // applying a Raft log entry. No node changes lock state on its own clock: a dead holder is
+    // expired by the leader writing a `LockExpire` through Raft (`spawn_expiry`), which only
+    // applies while the lease generation it saw is unchanged.
+    //
+    // `exp` is the only clock-based value. Each node keeps it with its own wall clock. It is read
+    // to find expired holders on the leader, and when a ticket claims a lock it already holds: a
+    // claim after the lease passed is queued instead, because the leader's expiry for it may
+    // already be in the log.
     let mut locks: HashMap<String, LockQueue> = HashMap::new();
     let mut waiters: Waiters = HashMap::new();
 
-    let mut ticker =
-        tokio::time::interval_at(tokio::time::Instant::now() + SWEEP_INTERVAL, SWEEP_INTERVAL);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    loop {
-        tokio::select! {
-            req = rx.recv_async() => match req {
-                Ok(req) => handle_request(req, &mut locks, &mut waiters),
-                Err(_) => break,
-            },
-            _ = ticker.tick() => sweep_expired(&mut locks, &mut waiters),
-        }
+    while let Ok(req) = rx.recv_async().await {
+        handle_request(req, &mut locks, &mut waiters);
     }
 
     debug!("DLock handler exiting");
@@ -123,67 +214,68 @@ fn handle_request(req: LockRequest, locks: &mut HashMap<String, LockQueue>, wait
         LockRequest::Release(p) => handle_release(locks, waiters, &p),
         LockRequest::Alive(p) => handle_alive(locks, p),
         LockRequest::Await(p) => handle_await(locks, waiters, p),
-        LockRequest::SnapshotBuild(ack) => ack.send(locks.clone()).unwrap(),
+        LockRequest::Expired(ack) => {
+            let now = Utc::now().timestamp();
+            let expired = locks
+                .iter()
+                .filter_map(|(key, lock)| match lock.current_ticket {
+                    Some(id) if lock.exp < now => Some((key.clone(), id, lock.generation)),
+                    _ => None,
+                })
+                .collect();
+            if ack.send(expired).is_err() {
+                debug!("DLock: receiver for expired locks dropped");
+            }
+        }
+        LockRequest::SnapshotBuild(ack) => {
+            if ack.send(locks.clone()).is_err() {
+                debug!("DLock: receiver for snapshot build dropped");
+            }
+        }
         LockRequest::SnapshotInstall((data, ack)) => {
             *locks = data;
             // Waiters from the pre-snapshot state are stale: wake them all so their clients
             // re-request against the installed state instead of hanging.
-            for (_, acks) in waiters.drain() {
+            for (key, acks) in waiters.drain() {
                 for (_, ack) in acks {
-                    let _ = ack.send(LockState::Released);
+                    LockState::Released.send(ack, &key);
                 }
             }
             debug!("DLock snapshot installed");
-            ack.send(()).unwrap();
+            if ack.send(()).is_err() {
+                debug!("DLock: receiver for snapshot install dropped");
+            }
         }
     }
 }
 
-/// Can this lock be handed out right now: no holder, or the holder's lease has expired (dead
-/// client).
-fn is_free(lock: &LockQueue, now: i64) -> bool {
-    lock.current_ticket.is_none() || lock.exp < now
-}
-
 /// Promote the front ticket of `lock`'s queue to holder. No-op if the lock is still held or the
-/// queue is empty.
+/// queue is empty. Only ever called while applying a log entry.
 ///
-/// The promoted ticket keeps its position in line — it is never skipped, re-queued, or dropped.
-/// Every waiter registered for it receives `Locked` directly on its pending `Await`, so no extra
-/// round trip is needed. If no waiter is registered yet (the client's `Await` may still be in
-/// flight, or the client is dead), the lock is reserved silently: the client can claim it via
-/// `Acquire`/`Await` within the lease window, and if it never shows up the lease expires and the
-/// next promotion moves on. That bounds how long a dead client can block its queue position to
-/// one lease window, without ever dropping tickets or waking clients that are not at the front.
+/// The promoted ticket keeps its position in line - it is never skipped, re-queued, or dropped.
+/// Every waiter registered for it receives `Locked` on its pending `Await`. If no waiter is
+/// registered yet (the client's `Await` may still be in flight, or the client is dead), the lock
+/// is reserved silently: the client can claim it via `Acquire` within the lease window, and if it
+/// never shows up the leader expires the lease and the next promotion moves on. That bounds how
+/// long a dead client can block its queue position to one lease window, without ever dropping
+/// tickets or waking clients that are not at the front.
 fn promote(lock: &mut LockQueue, waiters: &mut Waiters, key: &str) {
-    let now = Utc::now().timestamp();
-    if !is_free(lock, now) || lock.queue.is_empty() {
+    if lock.current_ticket.is_some() {
         return;
     }
-
-    let front = *lock.queue.front().unwrap();
-    lock.queue.pop_front();
-    lock.current_ticket = Some(front);
-    lock.exp = now + LOCK_VALID_SECONDS;
+    let Some(front) = lock.queue.pop_front() else {
+        return;
+    };
+    lock.grant(front);
 
     // Wake every waiter registered for the promoted ticket, not just the first one: a duplicate
     // registration (at-least-once delivery) must not hang forever. Waiters for other tickets are
     // kept, in order.
     if let Some(list) = waiters.get_mut(key) {
-        let mut granted: Vec<(u64, oneshot::Sender<LockState>)> = Vec::new();
-        let mut rest: Vec<(u64, oneshot::Sender<LockState>)> = Vec::new();
-        for entry in list.drain(..) {
-            if entry.0 == front {
-                granted.push(entry);
-            } else {
-                rest.push(entry);
-            }
-        }
-        list.extend(rest);
-        for (_, ack) in granted.drain(..) {
-            if ack.send(LockState::Locked(front)).is_err() {
-                debug!("DLock: await receiver for {key}/{front} dropped (client gone)");
-            }
+        let (granted, rest): (Vec<_>, Vec<_>) = list.drain(..).partition(|(id, _)| *id == front);
+        *list = rest;
+        for (_, ack) in granted {
+            LockState::Locked(front).send(ack, key);
         }
     }
 }
@@ -191,23 +283,6 @@ fn promote(lock: &mut LockQueue, waiters: &mut Waiters, key: &str) {
 fn promote_key(locks: &mut HashMap<String, LockQueue>, waiters: &mut Waiters, key: &str) {
     if let Some(lock) = locks.get_mut(key) {
         promote(lock, waiters, key);
-    }
-}
-
-/// Wake-up path for when no request arrives for a key: promote the front of every queue whose
-/// holder is gone (no holder, or expired lease). This bounds how long a dead client can hold its
-/// queue position to one lease window plus this interval, so waiters never block forever on
-/// silence.
-fn sweep_expired(locks: &mut HashMap<String, LockQueue>, waiters: &mut Waiters) {
-    let now = Utc::now().timestamp();
-    let keys: Vec<String> = locks
-        .iter()
-        .filter(|(_, lock)| is_free(lock, now) && !lock.queue.is_empty())
-        .map(|(key, _)| key.clone())
-        .collect();
-
-    for key in &keys {
-        promote_key(locks, waiters, key);
     }
 }
 
@@ -224,28 +299,20 @@ fn handle_lock(
     // queue.
     promote_key(locks, waiters, key);
 
-    let now = Utc::now().timestamp();
-    if let Some(lock) = locks.get_mut(key) {
-        if lock.current_ticket.is_none() || is_free(lock, now) {
+    let state = if let Some(lock) = locks.get_mut(key) {
+        if lock.current_ticket.is_none() {
             // The queue was empty: grant directly.
-            lock.current_ticket = Some(p.log_id);
-            lock.exp = now + LOCK_VALID_SECONDS;
-            p.ack.send(LockState::Locked(p.log_id)).unwrap();
+            lock.grant(p.log_id);
+            LockState::Locked(p.log_id)
         } else {
             lock.queue.push_back(p.log_id);
-            p.ack.send(LockState::Queued(p.log_id)).unwrap();
+            LockState::Queued(p.log_id)
         }
     } else {
-        locks.insert(
-            key.to_string(),
-            LockQueue {
-                current_ticket: Some(p.log_id),
-                exp: now + LOCK_VALID_SECONDS,
-                queue: VecDeque::default(),
-            },
-        );
-        p.ack.send(LockState::Locked(p.log_id)).unwrap();
-    }
+        locks.insert(key.to_string(), LockQueue::granted(p.log_id));
+        LockState::Locked(p.log_id)
+    };
+    state.send(p.ack, key);
 }
 
 fn handle_acquire(
@@ -255,42 +322,37 @@ fn handle_acquire(
 ) {
     let key = p.key.as_ref();
 
-    // The client re-claims a ticket it was told to wait for (or that it already holds). If the
+    // The client claims a ticket it was told to wait for (or that it already holds). If the
     // lock is free and clients are queued, the front waiter is promoted first.
     promote_key(locks, waiters, key);
 
-    let now = Utc::now().timestamp();
-    if let Some(lock) = locks.get_mut(key) {
-        if lock.current_ticket == Some(p.log_id) && lock.exp >= now {
-            // This ticket already holds the lock (granted directly, or reserved for us):
-            // claim it.
-            p.ack.send(LockState::Locked(p.log_id)).unwrap();
-        } else if lock.current_ticket.is_none() || is_free(lock, now) {
+    let state = if let Some(lock) = locks.get_mut(key) {
+        if lock.current_ticket == Some(p.log_id) && lock.exp >= Utc::now().timestamp() {
+            // This ticket already holds the lock (granted directly, or reserved for us) and its
+            // lease is still valid: claim it. The claim starts a fresh lease, the heartbeats keep
+            // it alive from here.
+            lock.grant(p.log_id);
+            LockState::Locked(p.log_id)
+        } else if lock.current_ticket.is_none() {
             // The lock is free and nobody ahead of us was promoted: grant directly.
-            lock.current_ticket = Some(p.log_id);
-            lock.exp = now + LOCK_VALID_SECONDS;
-            p.ack.send(LockState::Locked(p.log_id)).unwrap();
+            lock.grant(p.log_id);
+            LockState::Locked(p.log_id)
         } else {
-            // Behind another ticket (held, or just promoted): keep (or restore) our position
-            // at the back of the queue.
+            // Behind another ticket (held, or just promoted), or our own lease passed and the
+            // leader's expiry may already be in the log: keep (or restore) our position at the
+            // back of the queue.
             if !lock.queue.contains(&p.log_id) {
                 lock.queue.push_back(p.log_id);
             }
-            p.ack.send(LockState::Queued(p.log_id)).unwrap();
+            LockState::Queued(p.log_id)
         }
     } else {
         // The lock was fully removed while this request was in flight. Grant a fresh one so
         // the client never hangs.
-        locks.insert(
-            key.to_string(),
-            LockQueue {
-                current_ticket: Some(p.log_id),
-                exp: now + LOCK_VALID_SECONDS,
-                queue: VecDeque::default(),
-            },
-        );
-        p.ack.send(LockState::Locked(p.log_id)).unwrap();
-    }
+        locks.insert(key.to_string(), LockQueue::granted(p.log_id));
+        LockState::Locked(p.log_id)
+    };
+    state.send(p.ack, key);
 }
 
 fn handle_release(
@@ -302,10 +364,13 @@ fn handle_release(
     let mut full_remove = false;
 
     if let Some(lock) = locks.get_mut(key) {
-        if lock.current_ticket == Some(p.id) {
+        if lock.current_ticket == Some(p.id)
+            && p.generation
+                .is_none_or(|generation| generation == lock.generation)
+        {
             lock.current_ticket = None;
-            // Promote the front waiter now: it either gets `Locked` directly on its pending
-            // await, or reserves the lock. Nobody else is woken.
+            // Promote the front waiter now: it either gets `Locked` on its pending await, or
+            // reserves the lock. Nobody else is woken.
             promote(lock, waiters, key);
             // Only remove the key when nothing is left to hold it: no holder and no queue.
             // (After a promotion there is always a holder, even if the queue drained.)
@@ -313,13 +378,14 @@ fn handle_release(
                 full_remove = true;
             }
         } else {
-            // The lease expired and the lock was granted to another ticket, or this is a
-            // duplicate release. Releasing an already released / re-granted lock is safe to
-            // ignore. Panicking here would kill the whole dlock handler.
+            // The leader expired the lease and the lock was granted to another ticket, this is a
+            // duplicate release, or the holder renewed its lease after the leader saw it expire.
+            // Releasing an already released / re-granted / renewed lock is safe to ignore.
+            // Panicking here would kill the whole dlock handler.
             warn!(
-                "Ignoring release for lock {key} / {}: current holder is not this \
-                ticket (current_ticket: {:?})",
-                p.id, lock.current_ticket
+                "Ignoring release for lock {key} / {} (generation {:?}): current holder is \
+                ticket {:?} (generation {})",
+                p.id, p.generation, lock.current_ticket, lock.generation
             );
         }
     }
@@ -327,10 +393,10 @@ fn handle_release(
     if full_remove {
         // The queue is empty and no holder remains: drop the key entirely. Wake any waiters
         // still registered for the removed lock so their clients can re-request instead of
-        // hanging forever (defensive — a waiter's ticket should always be in the queue).
+        // hanging forever (defensive - a waiter's ticket should always be in the queue).
         if let Some(acks) = waiters.remove(key) {
             for (_, ack) in acks {
-                let _ = ack.send(LockState::Released);
+                LockState::Released.send(ack, key);
             }
         }
         locks.remove(key);
@@ -343,29 +409,28 @@ fn handle_release(
 ///
 /// The extension is unconditional on purpose: a node whose local copy already expired self-heals
 /// on the next heartbeat instead of being stuck with a stale lease. A late heartbeat from a dead
-/// client can add at most one extra lease window, and only if no waiter was promoted in between
-/// (a promotion changes `current_ticket`, making this a no-op anyway). Alive never touches the
-/// queue or waiters: it promotes nothing and wakes nothing.
+/// client can add at most one extra lease window, and only if the leader did not expire it in
+/// between (that release changes `current_ticket`, making this a no-op anyway). A heartbeat
+/// applied after the leader saw the lease expire, but before its release, bumps the generation,
+/// so that release is ignored. Alive never touches the queue or waiters: it promotes nothing and
+/// wakes nothing.
 fn handle_alive(locks: &mut HashMap<String, LockQueue>, p: LockAlivePayload) {
     let key = p.key.as_ref();
 
-    let alive = match locks.get_mut(key) {
+    let state = match locks.get_mut(key) {
         Some(lock) if lock.current_ticket == Some(p.id) => {
-            lock.exp = Utc::now().timestamp() + LOCK_VALID_SECONDS;
-            true
-        }
-        _ => false,
-    };
-
-    p.ack
-        .send(if alive {
+            lock.grant(p.id);
             LockState::Locked(p.id)
-        } else {
-            LockState::Released
-        })
-        .unwrap();
+        }
+        _ => LockState::Released,
+    };
+    state.send(p.ack, key);
 }
 
+/// Wait for a queued ticket's turn. `Await` is served by the node the client talks to, which may
+/// be a follower that lags behind the log, and it never changes lock state. Its answer is only a
+/// wake-up: the client claims the lock with an `Acquire` through Raft afterwards, and only that
+/// answer grants it.
 fn handle_await(
     locks: &mut HashMap<String, LockQueue>,
     waiters: &mut Waiters,
@@ -373,39 +438,25 @@ fn handle_await(
 ) {
     let key = p.key.as_ref();
 
-    // If the lock is free and clients are queued, the front waiter is promoted first (it gets
-    // `Locked` directly on its own pending await).
-    promote_key(locks, waiters, key);
-
-    let now = Utc::now().timestamp();
-    match locks.get_mut(key) {
-        Some(lock) => {
-            if lock.current_ticket == Some(p.id) && lock.exp >= now {
-                // The lock was reserved for us (or granted directly): claim it.
-                p.ack.send(LockState::Locked(p.id)).unwrap();
-            } else if is_free(lock, now) {
-                // Free with nobody queued (the front was promoted above): let the client
-                // re-request via Acquire, it will get a fresh grant.
-                p.ack.send(LockState::Released).unwrap();
-            } else if lock.queue.contains(&p.id) {
-                // Still waiting in line: register; we are woken with `Locked` when our ticket
-                // is promoted.
-                waiters
-                    .entry(key.to_string())
-                    .or_default()
-                    .push((p.id, p.ack));
-            } else {
-                // Our ticket left the queue (e.g. a reservation expired): let the client
-                // re-request via Acquire, it will be queued at the back again.
-                p.ack.send(LockState::Released).unwrap();
-            }
+    let state = match locks.get(key) {
+        Some(lock) if lock.queue.contains(&p.id) => {
+            // Still waiting in line (also after a claim past our own lease, while we still hold
+            // the lock until the leader's expiry is applied): register; we are woken with
+            // `Locked` when our ticket is promoted.
+            waiters
+                .entry(key.to_string())
+                .or_default()
+                .push((p.id, p.ack));
+            return;
         }
-        None => {
-            // The lock was released and fully removed while this await was in flight. Let the
-            // client re-request, it will get a fresh grant.
-            p.ack.send(LockState::Released).unwrap();
-        }
-    }
+        // The lock was promoted to us (or granted directly): go claim it.
+        Some(lock) if lock.current_ticket == Some(p.id) => LockState::Locked(p.id),
+        // Our ticket is neither holder nor queued (e.g. the leader expired our reservation), or
+        // the lock was released and fully removed while this await was in flight: let the
+        // client re-request via Acquire, it gets a fresh grant or is queued at the back again.
+        Some(_) | None => LockState::Released,
+    };
+    state.send(p.ack, key);
 }
 
 #[cfg(test)]
@@ -418,6 +469,14 @@ mod tests {
         tx.send(req).expect("handler to be running");
     }
 
+    /// Wait for an answer, failing instead of hanging when the handler never sends one.
+    async fn answer<T>(rx: oneshot::Receiver<T>) -> T {
+        tokio::time::timeout(Duration::from_secs(10), rx)
+            .await
+            .expect("handler to answer in time")
+            .expect("handler to be running")
+    }
+
     async fn lock(tx: &flume::Sender<LockRequest>, key: &str, log_id: u64) -> LockState {
         let (ack, rx) = oneshot::channel();
         send(
@@ -428,7 +487,7 @@ mod tests {
                 ack,
             }),
         );
-        rx.await.unwrap()
+        answer(rx).await
     }
 
     async fn acquire(tx: &flume::Sender<LockRequest>, key: &str, log_id: u64) -> LockState {
@@ -441,7 +500,7 @@ mod tests {
                 ack,
             }),
         );
-        rx.await.unwrap()
+        answer(rx).await
     }
 
     /// Like `await_lock`, but returns the pending receiver so a test can assert *when* (or
@@ -464,7 +523,7 @@ mod tests {
     }
 
     async fn await_lock(tx: &flume::Sender<LockRequest>, key: &str, id: u64) -> LockState {
-        await_pending(tx, key, id).await.unwrap()
+        answer(await_pending(tx, key, id)).await
     }
 
     fn release(tx: &flume::Sender<LockRequest>, key: &str, id: u64) {
@@ -473,6 +532,19 @@ mod tests {
             LockRequest::Release(LockReleasePayload {
                 key: Cow::Owned(key.to_string()),
                 id,
+                generation: None,
+            }),
+        );
+    }
+
+    /// The leader's expiry for a lease it saw expired with `generation`.
+    fn expire(tx: &flume::Sender<LockRequest>, (key, id, generation): (String, u64, u64)) {
+        send(
+            tx,
+            LockRequest::Release(LockReleasePayload {
+                key: Cow::Owned(key),
+                id,
+                generation: Some(generation),
             }),
         );
     }
@@ -491,13 +563,19 @@ mod tests {
     }
 
     async fn alive_lock(tx: &flume::Sender<LockRequest>, key: &str, id: u64) -> LockState {
-        alive(tx, key, id).await.unwrap()
+        answer(alive(tx, key, id)).await
+    }
+
+    async fn expired(tx: &flume::Sender<LockRequest>) -> Vec<(String, u64, u64)> {
+        let (ack, rx) = oneshot::channel();
+        send(tx, LockRequest::Expired(ack));
+        answer(rx).await
     }
 
     async fn snapshot_build(tx: &flume::Sender<LockRequest>) -> HashMap<String, LockQueue> {
         let (ack, rx) = oneshot::channel();
         send(tx, LockRequest::SnapshotBuild(ack));
-        rx.await.unwrap()
+        answer(rx).await
     }
 
     #[tokio::test]
@@ -574,7 +652,7 @@ mod tests {
         let pending = await_pending(&tx, "k", 2);
         release(&tx, "k", 1);
         // The front waiter is granted directly on its pending await: no extra round trip.
-        assert_eq!(pending.await.unwrap(), LockState::Locked(2));
+        assert_eq!(answer(pending).await, LockState::Locked(2));
         release(&tx, "k", 2);
     }
 
@@ -593,7 +671,7 @@ mod tests {
         // Ticket 3 must not be granted while ticket 2 holds the lock.
         let pending = await_pending(&tx, "k", 3);
         release(&tx, "k", 2);
-        assert_eq!(pending.await.unwrap(), LockState::Locked(3));
+        assert_eq!(answer(pending).await, LockState::Locked(3));
         release(&tx, "k", 3);
     }
 
@@ -608,7 +686,7 @@ mod tests {
         let mut w3 = await_pending(&tx, "k", 3);
         release(&tx, "k", 1);
         // Ticket 2's waiter is granted directly on its pending await.
-        assert_eq!(w2.await.unwrap(), LockState::Locked(2));
+        assert_eq!(answer(w2).await, LockState::Locked(2));
         // w2 being answered means the handler has finished processing the release; ticket 3's
         // waiter must still be pending — it stays queued behind ticket 2, not woken early.
         assert!(matches!(
@@ -616,7 +694,7 @@ mod tests {
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
         release(&tx, "k", 2);
-        assert_eq!(w3.await.unwrap(), LockState::Locked(3));
+        assert_eq!(answer(w3).await, LockState::Locked(3));
     }
 
     #[tokio::test]
@@ -639,8 +717,8 @@ mod tests {
         let a = await_pending(&tx, "k", 2);
         let b = await_pending(&tx, "k", 2);
         release(&tx, "k", 1);
-        assert_eq!(a.await.unwrap(), LockState::Locked(2));
-        assert_eq!(b.await.unwrap(), LockState::Locked(2));
+        assert_eq!(answer(a).await, LockState::Locked(2));
+        assert_eq!(answer(b).await, LockState::Locked(2));
         release(&tx, "k", 2);
     }
 
@@ -664,13 +742,68 @@ mod tests {
         assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
         assert_eq!(lock(&tx, "k", 2).await, LockState::Queued(2));
         // Ticket 1 never releases and never awaits: a dead holder. The queued ticket must keep
-        // its position (the old behavior evicted it) and be promoted once the lease expires.
+        // its position (the old behavior evicted it) and be promoted once the leader expires the
+        // lease through the log.
+        assert!(expired(&tx).await.is_empty());
         tokio::time::sleep(Duration::from_secs(LOCK_VALID_SECONDS as u64 + 2)).await;
+        // Time alone changes nothing: the holder stays until the release is applied.
+        assert_eq!(snapshot_build(&tx).await["k"].current_ticket, Some(1));
+        let expired = expired(&tx).await;
+        assert_eq!(expired, vec![("k".to_string(), 1, 1)]);
+        expire(&tx, expired[0].clone());
         let snap = snapshot_build(&tx).await;
         assert_eq!(snap["k"].current_ticket, Some(2));
         // Ticket 2 can claim its reservation.
         assert_eq!(acquire(&tx, "k", 2).await, LockState::Locked(2));
         release(&tx, "k", 2);
+    }
+
+    #[tokio::test]
+    async fn expire_after_heartbeat_is_ignored() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        assert_eq!(lock(&tx, "k", 2).await, LockState::Queued(2));
+        let mut pending = await_pending(&tx, "k", 2);
+        tokio::time::sleep(Duration::from_secs(LOCK_VALID_SECONDS as u64 + 2)).await;
+        // The leader sees the lease of ticket 1 expired, then a heartbeat for it commits before
+        // the expiry does: the holder keeps running, so the expiry must not drop it.
+        let expired = expired(&tx).await;
+        assert_eq!(expired.len(), 1);
+        assert_eq!(alive_lock(&tx, "k", 1).await, LockState::Locked(1));
+        expire(&tx, expired[0].clone());
+        assert_eq!(snapshot_build(&tx).await["k"].current_ticket, Some(1));
+        assert!(matches!(
+            pending.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn claim_after_lease_passed_is_queued() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        assert_eq!(lock(&tx, "k", 2).await, LockState::Queued(2));
+        assert_eq!(lock(&tx, "k", 3).await, LockState::Queued(3));
+        release(&tx, "k", 1); // ticket 2 is reserved silently
+        tokio::time::sleep(Duration::from_secs(LOCK_VALID_SECONDS as u64 + 2)).await;
+        // The leader sees the reservation of ticket 2 expired. Ticket 2's claim commits after its
+        // lease passed and before the expiry: it must not be granted, the expiry promotes ticket
+        // 3 next.
+        let expired = expired(&tx).await;
+        assert_eq!(expired, vec![("k".to_string(), 2, 2)]);
+        assert_eq!(acquire(&tx, "k", 2).await, LockState::Queued(2));
+        // Its client waits in line instead of being sent to claim again right away.
+        let mut pending = await_pending(&tx, "k", 2);
+        expire(&tx, expired[0].clone());
+        let snap = snapshot_build(&tx).await;
+        assert_eq!(snap["k"].current_ticket, Some(3));
+        assert_eq!(snap["k"].queue, VecDeque::from([2u64]));
+        assert!(matches!(
+            pending.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        release(&tx, "k", 3);
+        assert_eq!(answer(pending).await, LockState::Locked(2));
     }
 
     #[tokio::test]
@@ -682,9 +815,12 @@ mod tests {
         // await).
         let pending = await_pending(&tx, "k", 2);
         tokio::time::sleep(Duration::from_secs(LOCK_VALID_SECONDS as u64 + 2)).await;
-        // The sweep promoted ticket 2 and granted it directly on its pending await: no release
-        // from the dead holder was ever needed.
-        assert_eq!(pending.await.unwrap(), LockState::Locked(2));
+        // The leader finds the expired holder and writes its release through the log: no release
+        // from the dead holder itself is ever needed. Applying it wakes the waiter.
+        for entry in expired(&tx).await {
+            expire(&tx, entry);
+        }
+        assert_eq!(answer(pending).await, LockState::Locked(2));
         release(&tx, "k", 2);
     }
 
@@ -699,7 +835,7 @@ mod tests {
         let tx2 = spawn();
         let (ack, rx) = oneshot::channel();
         send(&tx2, LockRequest::SnapshotInstall((snap.clone(), ack)));
-        rx.await.unwrap();
+        answer(rx).await;
 
         // The installed handler sees the same queue.
         let snap2 = snapshot_build(&tx2).await;
@@ -711,8 +847,8 @@ mod tests {
         let pending = await_pending(&tx2, "k", 2);
         let (ack2, rx2) = oneshot::channel();
         send(&tx2, LockRequest::SnapshotInstall((snap, ack2)));
-        rx2.await.unwrap();
-        assert_eq!(pending.await.unwrap(), LockState::Released);
+        answer(rx2).await;
+        assert_eq!(answer(pending).await, LockState::Released);
 
         // The client re-requests and is queued again against the installed state.
         assert_eq!(acquire(&tx2, "k", 2).await, LockState::Queued(2));
@@ -726,9 +862,10 @@ mod tests {
         // Heartbeat just before the original lease would expire.
         tokio::time::sleep(Duration::from_secs(LOCK_VALID_SECONDS as u64 - 1)).await;
         assert_eq!(alive_lock(&tx, "k", 1).await, LockState::Locked(1));
-        // Past the original expiry: without the heartbeat the sweep would have promoted ticket
-        // 2 by now; with it, ticket 1 still holds.
+        // Past the original expiry: without the heartbeat the leader would expire ticket 1 by
+        // now; with it, ticket 1 still holds.
         tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(expired(&tx).await.is_empty());
         let snap = snapshot_build(&tx).await;
         assert_eq!(snap["k"].current_ticket, Some(1));
         release(&tx, "k", 1);
@@ -751,5 +888,66 @@ mod tests {
         assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
         release(&tx, "k", 1); // key fully removed
         assert_eq!(alive_lock(&tx, "k", 1).await, LockState::Released);
+    }
+
+    #[tokio::test]
+    async fn same_log_gives_same_state_regardless_of_apply_timing() {
+        // Two nodes apply the same log. The leader applies the holder's heartbeats in time, the
+        // follower lags behind and applies them only later. Lock state must only ever follow the
+        // log, so both end up with the same holder, and the follower must not grant the lock to a
+        // waiter on its own while the holder keeps its lease alive through the log.
+        let leader = spawn();
+        let follower = spawn();
+        for tx in [&leader, &follower] {
+            assert_eq!(lock(tx, "k", 1).await, LockState::Locked(1));
+            assert_eq!(lock(tx, "k", 2).await, LockState::Queued(2));
+        }
+        // An embedded client on the follower waits for ticket 2 on its local handler.
+        let mut pending = await_pending(&follower, "k", 2);
+
+        let heartbeats = LOCK_VALID_SECONDS.cast_unsigned() + 2;
+        for _ in 0..heartbeats {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            assert_eq!(alive_lock(&leader, "k", 1).await, LockState::Locked(1));
+        }
+        // The follower catches up and applies the same heartbeats.
+        for _ in 0..heartbeats {
+            let _ = alive_lock(&follower, "k", 1).await;
+        }
+
+        let snap_leader = snapshot_build(&leader).await;
+        let snap_follower = snapshot_build(&follower).await;
+        assert_eq!(snap_leader["k"].current_ticket, Some(1));
+        assert_eq!(
+            snap_follower["k"].current_ticket,
+            snap_leader["k"].current_ticket
+        );
+        assert_eq!(snap_follower["k"].queue, snap_leader["k"].queue);
+        assert!(matches!(
+            pending.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn dropped_await_receiver_does_not_kill_the_handler() {
+        let tx = spawn();
+        assert_eq!(lock(&tx, "k", 1).await, LockState::Locked(1));
+        // A cancelled `lock()` future drops its await receiver before the answer is sent.
+        // Ticket 99 is not queued, so the answer is sent immediately.
+        drop(await_pending(&tx, "k", 99));
+        // The holder is answered the same way, immediately, and is gone as well.
+        drop(await_pending(&tx, "k", 1));
+        // A registered waiter that goes away before its promotion.
+        assert_eq!(lock(&tx, "j", 1).await, LockState::Locked(1));
+        assert_eq!(lock(&tx, "j", 2).await, LockState::Queued(2));
+        drop(await_pending(&tx, "j", 2));
+        release(&tx, "j", 1);
+        // The undelivered grant is a silent reservation: it is claimable, or expires with its
+        // lease.
+        assert_eq!(snapshot_build(&tx).await["j"].current_ticket, Some(2));
+        // The handler keeps serving every later request.
+        assert_eq!(lock(&tx, "k", 2).await, LockState::Queued(2));
+        assert_eq!(alive_lock(&tx, "k", 1).await, LockState::Locked(1));
     }
 }

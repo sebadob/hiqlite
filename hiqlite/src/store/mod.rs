@@ -245,6 +245,13 @@ where
 
     init::init_pristine_node_1_cache(&raft, node_config).await?;
 
+    #[cfg(feature = "dlock")]
+    crate::store::state_machine::memory::dlock_handler::spawn_expiry(
+        raft.clone(),
+        node_config.node_id,
+        tx_dlock.clone(),
+    );
+
     Ok(StateRaftCache {
         raft,
         tx_caches,
