@@ -19,11 +19,10 @@ pub fn impl_cache_variants(input: DeriveInput) -> syn::Result<TokenStream> {
         ));
     };
 
-    let mut index_matches = Vec::new();
-    let mut variants_return = Vec::new();
+    let mut name_matches = Vec::new();
     let mut names = Vec::new();
 
-    for (idx, var) in data.variants.iter().enumerate() {
+    for var in &data.variants {
         if !var.fields.is_empty() {
             return Err(syn::Error::new(
                 var.ident.span(),
@@ -32,49 +31,40 @@ pub fn impl_cache_variants(input: DeriveInput) -> syn::Result<TokenStream> {
         }
         let id = &var.ident;
         let name = id.to_string();
-        index_matches.push(quote! {Self::#id => #idx,});
-        variants_return.push(quote! {(#idx, #name)});
+        name_matches.push(quote! {Self::#id => #name,});
         names.push(name);
     }
 
-    // The cluster identifies a cache by its variant name. The map from that name to the local
-    // index is a perfect hash, solved here at compile time, so a lookup is O(1) without a check.
-    let map = if names.is_empty() {
-        quote! { ::hiqlite::phf::Map::new() }
+    // The cluster identifies a cache by its variant name. The set of names is a perfect hash,
+    // solved here at compile time, so a node finds the handler of a name in O(1).
+    let (key, disps, idxs) = if names.is_empty() {
+        (0, Vec::new(), Vec::new())
     } else {
         let keys: Vec<&str> = names.iter().map(String::as_str).collect();
         let state = phf_generator::generate_hash(&keys);
-        let key = state.key;
-        let disps = state.disps.iter().map(|&(d1, d2)| quote! {(#d1, #d2)});
-        let entries = state.map.iter().map(|&idx| {
-            let name = &names[idx];
-            quote! {(#name, #idx)}
-        });
-        quote! {
-            ::hiqlite::phf::Map {
-                key: #key,
-                disps: &[#(#disps),*],
-                entries: &[#(#entries),*],
-            }
-        }
+        (state.key, state.disps, state.map)
     };
+    let disps = disps.iter().map(|&(d1, d2)| quote! {(#d1, #d2)});
 
     Ok(quote! {
         impl ::hiqlite::CacheVariants for #name {
             #[inline]
-            fn hiqlite_cache_index(&self) -> usize {
+            fn hiqlite_cache_name(&self) -> &'static str {
                 match self {
-                    #(#index_matches)*
+                    #(#name_matches)*
                 }
             }
 
-            fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
-                &[#(#variants_return),*]
-            }
-
-            fn hiqlite_cache_map() -> &'static ::hiqlite::phf::Map<&'static str, usize> {
-                static MAP: ::hiqlite::phf::Map<&'static str, usize> = #map;
-                &MAP
+            fn hiqlite_cache_names() -> &'static ::hiqlite::phf::OrderedSet<&'static str> {
+                static NAMES: ::hiqlite::phf::OrderedSet<&'static str> = ::hiqlite::phf::OrderedSet {
+                    map: ::hiqlite::phf::OrderedMap {
+                        key: #key,
+                        disps: &[#(#disps),*],
+                        idxs: &[#(#idxs),*],
+                        entries: &[#((#names, ())),*],
+                    },
+                };
+                &NAMES
             }
         }
     })
@@ -96,21 +86,22 @@ mod tests {
     }
 
     #[test]
-    fn flat_enum_generates_index_and_variants() {
+    fn flat_enum_generates_names() {
         let out = generate("enum E { A, B, C }");
         let compact = out.replace(' ', "");
-        assert!(compact.contains("hiqlite_cache_index"), "got: {out}");
-        assert!(compact.contains("(0usize,\"A\")"), "got: {out}");
-        assert!(compact.contains("(1usize,\"B\")"), "got: {out}");
-        assert!(compact.contains("(2usize,\"C\")"), "got: {out}");
-        assert!(compact.contains("::hiqlite::phf::Map{key:"), "got: {out}");
+        assert!(compact.contains("Self::A=>\"A\""), "got: {out}");
+        assert!(compact.contains("Self::C=>\"C\""), "got: {out}");
+        assert!(
+            compact.contains("entries:&[(\"A\",()),(\"B\",()),(\"C\",())]"),
+            "got: {out}"
+        );
     }
 
     #[test]
-    fn empty_enum_generates_an_empty_map() {
+    fn empty_enum_generates_an_empty_set() {
         let out = generate("enum E {}");
         let compact = out.replace(' ', "");
-        assert!(compact.contains("::hiqlite::phf::Map::new()"), "got: {out}");
+        assert!(compact.contains("entries:&[]"), "got: {out}");
     }
 
     #[test]

@@ -97,7 +97,7 @@ pub fn try_from_row(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// Derives `hiqlite::CacheVariants` for a flat enum (no variant values, no generics).
 ///
 /// The cluster identifies a cache by its variant name, so the variants may be reordered freely. The
-/// derive builds the name -> index map at compile time. See the `CacheVariants` trait docs.
+/// derive builds the set of names at compile time. See the `CacheVariants` trait docs.
 #[proc_macro_derive(CacheVariants)]
 pub fn cache_variants(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

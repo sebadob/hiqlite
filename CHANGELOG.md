@@ -131,8 +131,9 @@ openraft 0.9, starts and serves all its data, snapshots included.
 #### Caches Are Identified by Name
 
 The cache group's log entries and snapshots identify a cache by its `CacheVariants` variant name
-instead of its position in the enum. The derive builds the name -> index map at compile time as a
-perfect hash (`phf`), so a lookup stays O(1). This makes the enum misuse resistant:
+instead of its position in the enum. The derive builds the set of names at compile time as a perfect
+hash (`phf`), and each node finds a cache handler by its name in O(1). There is no index anymore, so
+the enum is misuse resistant:
 
 - Reordering variants, or inserting one in the middle, is safe now.
 - A node whose enum lacks a variant, during a rolling deploy that adds one, keeps that cache's
@@ -149,7 +150,9 @@ once, and every node starts with an empty cache. Your database is untouched. Wit
 `in-memory-snapshots` feature and `cache_storage_disk = true`, there is no `cache_index.meta`:
 delete `logs_cache` and `state_machine_cache` in the data dir by hand before the first start.
 
-A hand-written `CacheVariants` impl needs the new `hiqlite_cache_map()`.
+`CacheVariants` is now `hiqlite_cache_name()` and `hiqlite_cache_names()`; `hiqlite_cache_index()`,
+`hiqlite_cache_variants()` and the `cache_index.meta` helpers are gone. Only a hand-written impl
+needs a change.
 
 #### Errors
 

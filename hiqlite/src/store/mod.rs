@@ -222,7 +222,6 @@ where
     };
 
     let tx_caches = state_machine_store.tx_caches.clone();
-    let cache_map = state_machine_store.cache_map;
     let path_snapshots = format!(
         "{}/snapshots",
         StateMachineMemory::path_sm(&node_config.data_dir)
@@ -278,7 +277,6 @@ where
     Ok(StateRaftCache {
         raft,
         tx_caches,
-        cache_map,
         #[cfg(feature = "listen_notify")]
         tx_notify,
         #[cfg(feature = "listen_notify")]

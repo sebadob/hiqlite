@@ -153,6 +153,35 @@ pub enum CacheResponse {
     CounterValue(Option<i64>),
 }
 
+/// The cache handlers of this node, one per variant of its `CacheVariants` enum, found by the
+/// variant name. The names are a perfect hash set built at compile time, and the handlers sit in
+/// the order of that set, so a name finds its handler in O(1).
+#[derive(Debug, Clone)]
+pub struct Caches {
+    names: &'static phf::OrderedSet<&'static str>,
+    tx: Box<[flume::Sender<CacheRequestHandler>]>,
+}
+
+impl Caches {
+    fn spawn<C: CacheVariants>() -> Self {
+        let names = C::hiqlite_cache_names();
+        let tx = names
+            .iter()
+            .map(|name| kv_handler::spawn(Cow::Borrowed(*name)))
+            .collect();
+        Self { names, tx }
+    }
+
+    /// Returns the handler of the cache `name`, if this node's enum has it.
+    pub fn get(&self, name: &str) -> Option<&flume::Sender<CacheRequestHandler>> {
+        self.names.get_index(name).map(|idx| &self.tx[idx])
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&'static str, &flume::Sender<CacheRequestHandler>)> {
+        self.names.iter().copied().zip(self.tx.iter())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct StateMachineData {
     last_applied_log_id: Option<LogIdOf<TypeConfigCache>>,
@@ -178,8 +207,7 @@ pub struct StateMachineMemory {
     #[cfg(feature = "in-memory-snapshots")]
     snapshot_mem: RwLock<Option<MemSnapshot>>,
 
-    pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
-    pub(crate) cache_map: &'static phf::Map<&'static str, usize>,
+    pub(crate) tx_caches: Caches,
 
     #[cfg(feature = "listen_notify")]
     pub(crate) tx_notify: flume::Sender<NotifyRequest>,
@@ -283,13 +311,6 @@ impl StateMachineMemory {
                 .expect("Cannot set access rights for path_sm");
         }
 
-        // we will start a separate task for each given cache index
-        let variants = C::hiqlite_cache_variants();
-        let mut tx_caches = Vec::with_capacity(variants.len());
-        for (_, name) in variants {
-            tx_caches.push(kv_handler::spawn(Cow::Borrowed(name)));
-        }
-
         #[cfg(feature = "dlock")]
         let tx_dlock = dlock_handler::spawn();
 
@@ -303,8 +324,7 @@ impl StateMachineMemory {
             in_memory_only,
             #[cfg(feature = "in-memory-snapshots")]
             snapshot_mem: RwLock::new(None),
-            tx_caches,
-            cache_map: C::hiqlite_cache_map(),
+            tx_caches: Caches::spawn::<C>(),
             #[cfg(feature = "listen_notify")]
             tx_notify,
             #[cfg(feature = "listen_notify")]
@@ -360,14 +380,14 @@ impl StateMachineMemory {
         // SnapshotBuild returns both. Expiries live inside the entries and are rebuilt by the
         // handler on install.
         let named = self
-            .cache_map
-            .entries()
-            .map(|(name, idx)| ((*name).to_string(), &self.tx_caches[*idx]));
+            .tx_caches
+            .iter()
+            .map(|(name, tx)| (name.to_string(), tx));
         let unknown = data
             .caches_unknown
             .iter()
             .map(|(name, tx)| (name.clone(), tx));
-        let mut caches = Vec::with_capacity(self.tx_caches.len() + data.caches_unknown.len());
+        let mut caches = Vec::with_capacity(self.tx_caches.tx.len() + data.caches_unknown.len());
         for (name, tx) in named.chain(unknown) {
             let (ack, rx) = oneshot::channel();
             tx.send(CacheRequestHandler::SnapshotBuild { reply: ack })
@@ -482,8 +502,8 @@ impl StateMachineMemory {
         data: &'a mut StateMachineData,
         name: &str,
     ) -> &'a flume::Sender<CacheRequestHandler> {
-        if let Some(idx) = self.cache_map.get(name) {
-            return &self.tx_caches[*idx];
+        if let Some(tx) = self.tx_caches.get(name) {
+            return tx;
         }
         data.caches_unknown
             .entry(name.to_string())
@@ -508,9 +528,9 @@ impl StateMachineMemory {
         // A snapshot replaces the whole state, so a local cache it does not carry ends up empty.
         let mut kvs: BTreeMap<String, CacheSnapshot> = kvs.into_iter().collect();
         let local: Vec<String> = self
-            .cache_map
-            .keys()
-            .map(|name| (*name).to_string())
+            .tx_caches
+            .iter()
+            .map(|(name, _)| name.to_string())
             .chain(data.caches_unknown.keys().cloned())
             .collect();
         for name in local {
@@ -782,7 +802,7 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                     }
 
                     CacheRequest::ClearAll => {
-                        for tx in self.tx_caches.iter().chain(data.caches_unknown.values()) {
+                        for tx in self.tx_caches.tx.iter().chain(data.caches_unknown.values()) {
                             tx.send(CacheRequestHandler::Clear)
                                 .expect("cache handler to always be running");
                             #[cfg(feature = "counters")]
@@ -1077,17 +1097,13 @@ mod tests {
     }
 
     impl CacheVariants for TestCache {
-        fn hiqlite_cache_index(&self) -> usize {
-            0
+        fn hiqlite_cache_name(&self) -> &'static str {
+            "One"
         }
 
-        fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
-            &[(0, "One")]
-        }
-
-        fn hiqlite_cache_map() -> &'static phf::Map<&'static str, usize> {
-            static MAP: phf::Map<&'static str, usize> = phf::phf_map! { "One" => 0 };
-            &MAP
+        fn hiqlite_cache_names() -> &'static phf::OrderedSet<&'static str> {
+            static NAMES: phf::OrderedSet<&'static str> = phf::phf_ordered_set! { "One" };
+            &NAMES
         }
     }
 
@@ -1285,36 +1301,32 @@ mod cache_names {
 
     /// A hand-written `CacheVariants` enum, the way the derive builds it.
     macro_rules! cache_enum {
-        ($name:ident { $($variant:ident = $key:literal => $idx:literal),* }) => {
+        ($name:ident { $($variant:ident = $key:literal),* }) => {
             #[derive(Debug)]
             enum $name {
                 $($variant),*
             }
 
             impl CacheVariants for $name {
-                fn hiqlite_cache_index(&self) -> usize {
+                fn hiqlite_cache_name(&self) -> &'static str {
                     match self {
-                        $(Self::$variant => $idx),*
+                        $(Self::$variant => $key),*
                     }
                 }
 
-                fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
-                    &[$(($idx, $key)),*]
-                }
-
-                fn hiqlite_cache_map() -> &'static phf::Map<&'static str, usize> {
-                    static MAP: phf::Map<&'static str, usize> = phf::phf_map! {
-                        $($key => $idx),*
+                fn hiqlite_cache_names() -> &'static phf::OrderedSet<&'static str> {
+                    static NAMES: phf::OrderedSet<&'static str> = phf::phf_ordered_set! {
+                        $($key),*
                     };
-                    &MAP
+                    &NAMES
                 }
             }
         };
     }
 
-    cache_enum!(Old { App = "App" => 0 });
-    cache_enum!(New { App = "App" => 0, Sessions = "Sessions" => 1, Tokens = "Tokens" => 2 });
-    cache_enum!(Reordered { Tokens = "Tokens" => 0, App = "App" => 1, Sessions = "Sessions" => 2 });
+    cache_enum!(Old { App = "App" });
+    cache_enum!(New { App = "App", Sessions = "Sessions", Tokens = "Tokens" });
+    cache_enum!(Reordered { Tokens = "Tokens", App = "App", Sessions = "Sessions" });
 
     async fn start<C: Debug + CacheVariants>(name: &str) -> Arc<StateMachineMemory> {
         let base_dir = std::env::temp_dir().join(name);
@@ -1356,7 +1368,9 @@ mod cache_names {
         key: &str,
     ) -> Option<Vec<u8>> {
         let (reply, rx) = oneshot::channel();
-        sm.tx_caches[cache.hiqlite_cache_index()]
+        sm.tx_caches
+            .get(cache.hiqlite_cache_name())
+            .unwrap()
             .send(CacheRequestHandler::Get {
                 key: key.to_string(),
                 reply,
@@ -1378,10 +1392,10 @@ mod cache_names {
     }
 
     #[test]
-    fn derived_map_finds_every_variant() {
-        assert_eq!(New::hiqlite_cache_map().get("Tokens"), Some(&2));
+    fn names_find_every_variant() {
+        assert!(New::hiqlite_cache_names().contains("Tokens"));
         assert_eq!(New::Sessions.hiqlite_cache_name(), "Sessions");
-        assert_eq!(Old::hiqlite_cache_map().get("Tokens"), None);
+        assert!(!Old::hiqlite_cache_names().contains("Tokens"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

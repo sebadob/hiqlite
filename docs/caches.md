@@ -18,8 +18,8 @@ let client = hiqlite::start_node_with_cache::<Cache>(config).await?;
 ```
 
 Each variant is one cache, and the variant name identifies it in the cluster. The name is what the
-cache group's log entries and snapshots carry, and each node maps it to its own position in the
-enum. The derive builds that map at compile time, a perfect hash, so a lookup stays O(1).
+cache group's log entries and snapshots carry, and each node finds its cache handler by it. The
+derive builds the set of names at compile time, a perfect hash, so a lookup stays O(1).
 
 Implement `CacheVariants` by hand only when a derive is impossible.
 

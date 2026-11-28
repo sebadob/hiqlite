@@ -1114,7 +1114,7 @@ async fn handle_socket_concurrent(
                     };
 
                     if let Some(cache) = cache
-                        && !state.raft_cache.cache_map.contains_key(cache.as_ref())
+                        && state.raft_cache.tx_caches.get(cache).is_none()
                     {
                         ApiStreamResponse {
                             request_id,
@@ -1146,10 +1146,9 @@ async fn handle_socket_concurrent(
                     };
 
                     // Reads are only served for the caches of this node's own enum.
-                    if let Some(idx) = state.raft_cache.cache_map.get(cache.as_ref()) {
+                    if let Some(tx) = state.raft_cache.tx_caches.get(&cache) {
                         let (ack, rx) = tokio::sync::oneshot::channel();
-                        state.raft_cache.tx_caches[*idx]
-                            .send(CacheRequestHandler::Get { key, reply: ack })
+                        tx.send(CacheRequestHandler::Get { key, reply: ack })
                             .expect("cache handler to always be running");
                         let value = rx
                             .await

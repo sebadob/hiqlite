@@ -140,7 +140,7 @@ impl Client {
             state
                 .raft_cache
                 .tx_caches
-                .get(cache.hiqlite_cache_index())
+                .get(cache.hiqlite_cache_name())
                 .unwrap()
                 .send(CacheRequestHandler::Get {
                     key: key.into(),
@@ -191,7 +191,7 @@ impl Client {
             state
                 .raft_cache
                 .tx_caches
-                .get(cache.hiqlite_cache_index())
+                .get(cache.hiqlite_cache_name())
                 .unwrap()
                 .send(CacheRequestHandler::SnapshotBuildCacheOnly { reply: ack })
                 .expect("cache handler to always be running");
@@ -481,7 +481,7 @@ impl Client {
             state
                 .raft_cache
                 .tx_caches
-                .get(cache.hiqlite_cache_index())
+                .get(cache.hiqlite_cache_name())
                 .unwrap()
                 .send(CacheRequestHandler::CounterGet {
                     key: key.into().to_string(),

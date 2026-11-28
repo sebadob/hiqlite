@@ -223,25 +223,16 @@ pub use phf;
 /// The caches of a node, usually an enum with `#[derive(CacheVariants)]`.
 ///
 /// The cluster identifies a cache by its variant name: the raft log and the snapshots carry the
-/// name, and each node maps it to its own index. Reordering the variants is therefore safe. A
+/// name, and each node finds the cache by it. Reordering the variants is therefore safe. A
 /// renamed variant is a new, empty cache, and the entries of the old name stay in the cluster until
 /// they expire or a `clear_cache_all()`.
 #[cfg(any(feature = "sqlite", feature = "cache"))]
 pub trait CacheVariants {
-    /// Returns the Enum Variants index, strictly matching the output of `hiqlite_cache_variants()`.
-    fn hiqlite_cache_index(&self) -> usize;
-
-    /// Returns the Enum Variants as `(idx, name)` in strictly ascending order, starting at `0`.
-    fn hiqlite_cache_variants() -> &'static [(usize, &'static str)];
-
-    /// Returns the map from each variant name to its index in `hiqlite_cache_variants()`.
-    fn hiqlite_cache_map() -> &'static phf::Map<&'static str, usize>;
-
     /// Returns the variant name, which identifies the cache in the cluster.
-    #[must_use]
-    fn hiqlite_cache_name(&self) -> &'static str {
-        Self::hiqlite_cache_variants()[self.hiqlite_cache_index()].1
-    }
+    fn hiqlite_cache_name(&self) -> &'static str;
+
+    /// Returns every variant name, as a perfect hash set built at compile time.
+    fn hiqlite_cache_names() -> &'static phf::OrderedSet<&'static str>;
 }
 
 /// A Raft / Hiqlite node
@@ -280,17 +271,20 @@ mod empty {
     pub enum Empty {}
 
     impl CacheVariants for Empty {
-        fn hiqlite_cache_index(&self) -> usize {
+        fn hiqlite_cache_name(&self) -> &'static str {
             unreachable!()
         }
 
-        fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
-            &[]
-        }
-
-        fn hiqlite_cache_map() -> &'static phf::Map<&'static str, usize> {
-            static MAP: phf::Map<&'static str, usize> = phf::Map::new();
-            &MAP
+        fn hiqlite_cache_names() -> &'static phf::OrderedSet<&'static str> {
+            static NAMES: phf::OrderedSet<&'static str> = phf::OrderedSet {
+                map: phf::OrderedMap {
+                    key: 0,
+                    disps: &[],
+                    idxs: &[],
+                    entries: &[],
+                },
+            };
+            &NAMES
         }
     }
 }
