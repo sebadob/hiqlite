@@ -1,6 +1,7 @@
 //! Loads a data dir that was written by the last release on openraft 0.9 (hiqlite 0.16) and makes
-//! sure everything is still there: the SQLite data, the cache data, and the snapshots that both
-//! groups had taken.
+//! sure the SQLite data and its snapshot are still there. The cache data of that release identifies
+//! a cache by its index, which this release cannot read, so the node drops it once on startup and
+//! the cache group starts empty.
 //!
 //! The fixture lives in `tests/data_09/` and was produced by the pre-migration code (a single node,
 //! default config, plus a fast snapshot policy so the fixture contains a snapshot per group). The
@@ -82,48 +83,41 @@ async fn loads_an_openraft_09_data_dir() {
         .unwrap();
     assert_eq!(rows, vec![Row09 { a: 1 }, Row09 { a: 2 }, Row09 { a: 3 }]);
 
-    // the cache value was written after the snapshot, so it comes from the logs - and a state
-    // machine applies its logs in the background after startup, which can take a moment
-    let value = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let value: Option<String> = client.get(Cache::Fixture, "fixture-key").await.unwrap();
-            if let Some(value) = value {
-                return value;
-            }
-            time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(value, "fixture-value");
+    // the snapshot the old version left behind must have been picked up; its name is a UUIDv7
+    let dir = format!("{FIXTURE_RUN_DIR}/state_machine/snapshots");
+    assert!(
+        count_files(&dir) >= 1,
+        "no snapshot file was picked up in {dir}"
+    );
 
-    // both groups must have picked up the snapshot files the old version left behind; their names
-    // are a UUIDv7 (SQLite) and `{timestamp}-{term}-{node}-{index}` (cache)
-    for dir in [
-        format!("{FIXTURE_RUN_DIR}/state_machine/snapshots"),
-        format!("{FIXTURE_RUN_DIR}/state_machine_cache/snapshots"),
-    ] {
-        let n = count_files(&dir);
-        assert!(n >= 1, "no snapshot file was picked up in {dir}");
-    }
+    // the WAL segment the old version wrote must still be the one in use
+    let dir = format!("{FIXTURE_RUN_DIR}/logs");
+    assert!(
+        Path::new(&format!("{dir}/0000000000000001.wal")).exists(),
+        "the 0.9 WAL segment is gone from {dir}"
+    );
 
-    // the WAL segments the old version wrote must still be the ones in use
-    for dir in [
-        format!("{FIXTURE_RUN_DIR}/logs"),
-        format!("{FIXTURE_RUN_DIR}/logs_cache"),
-    ] {
-        let mut files = std::fs::read_dir(&dir)
-            .unwrap_or_else(|err| panic!("no wal dir at {dir}: {err}"))
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect::<Vec<_>>();
-        files.sort();
-        println!("{dir}: {files:?}");
-        assert!(
-            files.contains(&"0000000000000001.wal".to_string()),
-            "the 0.9 WAL segment is gone from {dir}"
-        );
-    }
+    // the index-based cache data was dropped once: the marker is gone, and so is the value, while
+    // the cache group itself is up and takes writes again
+    assert!(
+        !Path::new(&format!(
+            "{FIXTURE_RUN_DIR}/state_machine_cache/cache_index.meta"
+        ))
+        .exists()
+    );
+    let value: Option<String> = client.get(Cache::Fixture, "fixture-key").await.unwrap();
+    assert_eq!(value, None);
+    client
+        .put(
+            Cache::Fixture,
+            "fixture-key",
+            &"new-value".to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    let value: Option<String> = client.get(Cache::Fixture, "fixture-key").await.unwrap();
+    assert_eq!(value.as_deref(), Some("new-value"));
 
     // give a possible new snapshot a moment to land before we shut down
     time::sleep(Duration::from_secs(2)).await;

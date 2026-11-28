@@ -128,6 +128,32 @@ roll-over.
 The upgrade itself is safe: the `data_09` fixture, a real data dir written by the last release on
 openraft 0.9, starts and serves all its data, snapshots included.
 
+#### Caches Are Identified by Name
+
+The cache group's log entries and snapshots identify a cache by its `CacheVariants` variant name
+instead of its position in the enum. The derive builds the set of names at compile time as a perfect
+hash (`phf`), and each node finds a cache handler by its name in O(1). There is no index anymore, so
+the enum is misuse resistant:
+
+- Reordering variants, or inserting one in the middle, is safe now.
+- A node whose enum lacks a variant, during a rolling deploy that adds one, keeps that cache's
+  entries without a variant and carries them in its snapshots, instead of panicking in `apply()`.
+  A leader on the old enum refuses writes to the new cache with an `unknown cache` error.
+- Installing a snapshot empties a local cache the snapshot does not carry.
+
+`cache_index.meta` and its startup check are gone, and so is `HQL_CACHE_META_RESET`. A rename is a
+new, empty cache, and the old name's entries stay until they expire or a `clear_cache_all()`.
+
+The cache log and snapshot format changed, so the existing cache data cannot be read anymore. On
+the first start, a node that finds a `cache_index.meta` drops its cache log and cache snapshots
+once, and every node starts with an empty cache. Your database is untouched. With the
+`in-memory-snapshots` feature and `cache_storage_disk = true`, there is no `cache_index.meta`:
+delete `logs_cache` and `state_machine_cache` in the data dir by hand before the first start.
+
+`CacheVariants` is now `hiqlite_cache_name()` and `hiqlite_cache_names()`; `hiqlite_cache_index()`,
+`hiqlite_cache_variants()` and the `cache_index.meta` helpers are gone. Only a hand-written impl
+needs a change.
+
 #### Errors
 
 Source breaking: the `Error` enum's openraft variants are split per group (`RaftErrorDb` /

@@ -111,12 +111,6 @@ does it: a file at `/run/secrets/hiqlite.toml`, a Kubernetes secret, a systemd c
   saturation warning is unaffected, because it never names a statement. Default: true.
 - `prepared_statement_cache_capacity` - how many prepared statements a connection keeps.
 - `cache_storage_disk` - disk-backed caches (default) versus in-memory caches. See `caches.md`.
-- `HQL_CACHE_META_RESET=true` - deletes the stored cache-index fingerprint and writes it from the
-  enum you start with, which is what a renamed cache variant needs. Only that fingerprint is
-  deleted: database, Raft logs, and cache content are untouched. Every node keeps its own
-  fingerprint, so set it on every node for that start. Env only, then unset. A variant removal
-  needs more than this - every node has to clear all caches at startup.
-  every node has to clear all caches at startup. See `caches.md`.
 
 ## Logging
 
@@ -234,16 +228,15 @@ other message on that connection queues up behind it. The node logs a warning wh
 
 ## Danger switches
 
-These exist for rare, specific, single-node edge cases. They are not fixes for a cache index, a
-stale node, or a leader that will not settle.
+These exist for rare, specific, single-node edge cases. They are not fixes for a stale node, or a
+leader that will not settle.
 
 - `HQL_DANGER_RAFT_STATE_RESET=true` - **CAUTION: only for a single node whose Raft log volume is
-  corrupt and which has no healthy peer to re-sync from.** It deletes the Raft logs, the snapshots
-  of both groups, and the cache-index fingerprint. It keeps your database file, and your cache
-  content is gone. The way better alternative in a cluster is always to let the node re-sync: start
-  it as a learner, let it catch up, promote it. Used on a node of a live cluster, this can leave you
-  with an inconsistent cluster. It is env only, and it is named `DANGER` for a reason. See
-  `disaster-recovery.md`.
+  corrupt and which has no healthy peer to re-sync from.** It deletes the Raft logs and the snapshots
+  of both groups. It keeps your database file, and your cache content is gone. The way better
+  alternative in a cluster is always to let the node re-sync: start it as a learner, let it catch
+  up, promote it. Used on a node of a live cluster, this can leave you with an inconsistent cluster.
+  It is env only, and it is named `DANGER` for a reason. See `disaster-recovery.md`.
 - `HQL_DISABLE_COLD_RESTART_GUARD=true` - skips the version check that refuses a node from joining
   a cluster with older members. A testing switch. See `upgrades.md`.
 
