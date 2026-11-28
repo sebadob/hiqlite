@@ -32,8 +32,15 @@ both log directories, the cache data - and joins the new cluster empty. Nodes th
 old files carry the log and the snapshots of the dead cluster, and those never line up with a
 restored node 1. That mismatch is the hour you do not want to spend.
 
+Those nodes clear their state before node 1 has applied anything. If you want to keep it until the
+restore has worked, set `backup_restore_keep_previous = true`: each node then moves its state into
+`{data_dir}/pre_restore`, with the layout of a `data_dir`, and removes it once it is a member of the
+restored cluster. Until then, every node needs as much additional disk space as its database,
+snapshots and logs take.
+
 1. Confirm every node is stopped. A restore against a running cluster is the one way to make this
-   worse.
+   worse. A restore that finds the state machine lock of its `data_dir` held by a live process
+   refuses to start and touches nothing.
 2. Pick the newest backup. `Client::backup_list_s3` gives you names and timestamps; the newest
    object is usually what you want, and it is the newest one the last leader made. However, you
    probably do not have access to the client if you are in this situation. Just check the file names
@@ -146,8 +153,8 @@ restore request in the sense that it does not apply the backup; it only clears i
 > for a single node whose Raft log volume is corrupt and which has no healthy peer left to re-sync
 > from.
 
-`HQL_DANGER_RAFT_STATE_RESET=true` deletes the Raft logs, the snapshots of both groups, and the
-cache-index fingerprint, and keeps your database. Local backups stay. The cache content is gone.
+`HQL_DANGER_RAFT_STATE_RESET=true` deletes the Raft logs and the snapshots of both groups, and keeps
+your database. Local backups stay. The cache content is gone.
 
 **CAUTION:** This will lead to data losses if not everything from the WAL file was applied to the DB
 **AND** you did a clean shutdown! Be VERY careful with this setting. If the node was force-killed,
@@ -155,9 +162,7 @@ it will always delete the DB and rebuilt it from snapshot + WAL files to guarant
 you, at the same time, set `HQL_BACKUP_SKIP_VALIDATION`, you will end up with all data lost on that
 node.
 
-**A cache index problem never needs this.** A renamed variant is a metadata reset:
-`HQL_CACHE_META_RESET=true` on every node, for a single start. A removed variant is that reset plus
-a full cache clear on every node. Both are in `caches.md`, and neither touches your Raft state.
+**A changed `CacheVariants` enum never needs this.** See `caches.md`.
 
 ## Actions that can lose acknowledged writes
 

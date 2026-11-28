@@ -158,6 +158,7 @@ pub async fn handle_socket(
                                 .was_leader_update_error(
                                     &err,
                                     &client.inner.leader_db,
+                                    &client.inner.leader_lookup_db,
                                     &client.inner.tx_client_db,
                                 )
                                 .await
@@ -185,6 +186,7 @@ pub async fn handle_socket(
                                 .was_leader_update_error(
                                     &err,
                                     &client.inner.leader_db,
+                                    &client.inner.leader_lookup_db,
                                     &client.inner.tx_client_db,
                                 )
                                 .await
@@ -221,6 +223,7 @@ pub async fn handle_socket(
                                 .was_leader_update_error(
                                     &err,
                                     &client.inner.leader_db,
+                                    &client.inner.leader_lookup_db,
                                     &client.inner.tx_client_db,
                                 )
                                 .await
@@ -314,7 +317,12 @@ async fn query(
         Ok(res) => Ok(res),
         Err(err) => {
             if client
-                .was_leader_update_error(&err, &client.inner.leader_db, &client.inner.tx_client_db)
+                .was_leader_update_error(
+                    &err,
+                    &client.inner.leader_db,
+                    &client.inner.leader_lookup_db,
+                    &client.inner.tx_client_db,
+                )
                 .await
             {
                 client.query_remote_req(query, read_policy).await

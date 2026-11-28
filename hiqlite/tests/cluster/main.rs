@@ -212,6 +212,7 @@ async fn exec_tests() -> Result<(), Error> {
 
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
     log("Cluster is healthy again");
+    backup_restore::test_pre_restore_state_discarded().await;
     // END: test S3 backup restore
 
     // BEGIN: test local file backup restore
@@ -248,6 +249,7 @@ async fn exec_tests() -> Result<(), Error> {
 
     start::wait_for_healthy_cluster(&client_1, &client_2, &client_3).await?;
     log("Cluster is healthy again");
+    backup_restore::test_pre_restore_state_discarded().await;
     // ENV: test local file backup restore
 
     cache::insert_test_value_cache(&client_1).await?;

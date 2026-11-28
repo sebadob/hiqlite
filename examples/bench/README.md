@@ -9,14 +9,69 @@ in that case.
 
 All inserted data is prepared and kept in memory before the actual `INSERT`s start to influence the tests as little as
 possible. For the same reason, statement logging is disabled as well.  
-When data is inserted into a local cluster, it is being done from the leader node, which removes one additional network
-round-trip for each insert. A way to decide between leader and follower may be implemented in the future to actually see
-the difference.
+A `cluster` run writes through the embedded client of node 1, which is the shape Hiqlite is deployed in: the client
+lives inside the node process, and its writes go straight into that node's own Raft.
 
 We activate the `jemalloc` feature, which is quite a bit faster than glibc `malloc`. For cache performance, remember
-that we use them in the disk-backed version and not purely in-memory. Disk-backed provides a lot more consistency and
-can even rebuild the whole in-memory cache from the WAL + Snapshot on disk, which means even a restart does not make you
-lose cached data. A pure in-memory version will be a lot faster though.
+that this example runs the Cache fully in-memory, Snapshots included: it builds with the `in-memory-snapshots` feature,
+so the Cache group never touches a disk and its numbers measure replication, not storage. Disk-backed caches provide a
+lot more consistency and can even rebuild the whole in-memory cache from the WAL + Snapshot on disk, which means even a
+restart does not make you lose cached data. A pure in-memory version is a lot faster though.
+
+## The Shape Of A Run
+
+`cluster` runs node 1 and the benchmark client in the parent process and spawns nodes 2 and 3 as separate OS
+processes. That is the shape a real deployment has, and it is the shape whose replication numbers mean something. A
+remote client pays a network round trip for every write, and that cost buries the replication cost a run is supposed
+to measure.
+
+```
+cargo run --release -- cluster -c 64 -r 1000000
+```
+
+Each follower is started as `bench node --id N`, and you can run that yourself to assemble a cluster by hand across
+machines. A node stays up until the process that spawned it terminates it. The run starts only once both groups have
+a leader, because a group without one answers every write with `ForwardToLeader`, and a fresh cluster elects its DB
+group and its Cache group at different moments.
+
+- `--node-threads` is the tokio worker budget of every node process, node 1 and its client included. A node is
+  CPU-bound on its apply path, so give every node at least one core of its own.
+- `--node-cpus` pins the node processes, one core list per node in node id order, space separated, e.g.
+  `--node-cpus "0-4,16-20 5-9,21-25 10-14,26-30"`. The first entry pins node 1 together with the client, the rest pin
+  the spawned followers. Linux only: node 1 is pinned with `sched_setaffinity`, the followers are started under
+  `taskset -c`. This is the only real core pinning there is.
+
+Pin whole physical cores to a node. On a machine with hyperthreading, the two threads of one core are usually
+numbered `N` and `N + physical_cores`, so on a 16 core box the siblings of core 0 are 0 and 16. A range like
+`0-9 10-19 20-29` looks clean and is not: it hands the second node the second hyperthread of cores 0 to 3, which the
+first node already owns. Two nodes on one physical core share its execution resources, and every per-node budget
+becomes meaningless. Give each node both siblings of a set of cores, and check a core with
+`cat /sys/devices/system/cpu/cpu0/topology/thread_siblings_list`. On a NUMA box, keep a node inside one NUMA node as
+well, with `numactl --cpunodebind=N --membind=N`.
+- Each node writes its own log to `data/node_<id>.log`, so a node that dies during startup is readable.
+
+Core advice: the efficiency cores of an Apple chip are around 3.5x slower than the performance cores, and macOS has no
+thread affinity. There, size the budgets to the number of performance cores and run nothing else. A QoS clamp is not
+the lever: `taskpolicy -c maintenance` throttles a process onto the efficiency cores, it does not pin it to the
+performance cores. On Linux, pin with `--node-cpus` and the budgets are yours to pick.
+
+## Sweeping Raft Depth
+
+`sweep.sh` runs the same binary over a grid of replication depths and `max_payload_entries`, so one build covers the
+whole sweep. The depth is read from `HQL_RAFT_STREAM_DEPTH`, which is a temporary knob for exactly this measurement.
+
+```
+./sweep.sh                                   # 1000000 rows, concurrency 64, 1 rep, payloads 128 256 512
+./sweep.sh 1000000 64 1 128 256 512         # the same, spelled out
+DEPTHS="1 8 32" NODE_CPUS="0-4,16-20 5-9,21-25 10-14,26-30" ./sweep.sh 1000000 64 2 128 256 512
+```
+
+Everything else is an env knob: `DEPTHS` (default `1 32`), `NODE_THREADS` (8), `NODE_CPUS` (unset), `BENCH_ARGS`
+(extra bench flags, e.g. `--cache-only`), `BENCH` (the binary), `CELL_TIMEOUT` (1800 s per cell). Output lands in
+`sweep/<timestamp>/sweep.log` with every cell and its exit code, and `sweep/<timestamp>/table.txt` with the per-payload
+averages. A cell that fails is recorded and the sweep continues.
+
+Nothing else should run while a sweep runs. A cell is only comparable when its nodes own their cores.
 
 ## Running Benchmarks
 

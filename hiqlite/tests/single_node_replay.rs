@@ -27,14 +27,13 @@ enum Cache {
 }
 
 impl CacheVariants for Cache {
-    fn hiqlite_cache_index(&self) -> usize {
-        match self {
-            Cache::One => 0,
-        }
+    fn hiqlite_cache_name(&self) -> &'static str {
+        "One"
     }
 
-    fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
-        &[(0, "One")]
+    fn hiqlite_cache_names() -> &'static hiqlite::phf::OrderedSet<&'static str> {
+        static NAMES: hiqlite::phf::OrderedSet<&'static str> = phf::phf_ordered_set! { "One" };
+        &NAMES
     }
 }
 

@@ -37,7 +37,8 @@ use std::io::Cursor;
 
 type Entry = EntryOf<TypeConfigCache>;
 
-type SnapshotKVs = Vec<CacheSnapshot>;
+/// Each cache by its variant name.
+type SnapshotKVs = Vec<(String, CacheSnapshot)>;
 type SnapshotLocks = Vec<u8>;
 type SnapshotDataContent = (SnapshotMetaOf<TypeConfigCache>, SnapshotKVs, SnapshotLocks);
 /// The latest snapshot kept in memory (`meta` + serialized bytes) for memory-only mode.
@@ -51,39 +52,46 @@ type MemSnapshot = (SnapshotMetaOf<TypeConfigCache>, Vec<u8>);
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub enum CacheRequest {
     Get {
-        cache_idx: usize,
+        #[bincode(with_serde)]
+        cache: Cow<'static, str>,
         key: String,
     },
     Put {
-        cache_idx: usize,
+        #[bincode(with_serde)]
+        cache: Cow<'static, str>,
         #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: Vec<u8>,
         expires: Option<i64>,
     },
     GetRemove {
-        cache_idx: usize,
+        #[bincode(with_serde)]
+        cache: Cow<'static, str>,
         #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
     Replace {
-        cache_idx: usize,
+        #[bincode(with_serde)]
+        cache: Cow<'static, str>,
         #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: Vec<u8>,
         expires: Option<i64>,
     },
     Delete {
-        cache_idx: usize,
+        #[bincode(with_serde)]
+        cache: Cow<'static, str>,
         #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
     Clear {
-        cache_idx: usize,
+        #[bincode(with_serde)]
+        cache: Cow<'static, str>,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     ClearCounters {
-        cache_idx: usize,
+        #[bincode(with_serde)]
+        cache: Cow<'static, str>,
     },
     ClearAll,
     #[allow(dead_code)] // only constructed with the `listen_notify` feature
@@ -98,27 +106,31 @@ pub enum CacheRequest {
     LockRelease(#[bincode(with_serde)] (Cow<'static, str>, u64)),
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterGet {
-        cache_idx: usize,
+        #[bincode(with_serde)]
+        cache: Cow<'static, str>,
         #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterSet {
-        cache_idx: usize,
+        #[bincode(with_serde)]
+        cache: Cow<'static, str>,
         #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: i64,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterAdd {
-        cache_idx: usize,
+        #[bincode(with_serde)]
+        cache: Cow<'static, str>,
         #[bincode(with_serde)]
         key: Cow<'static, str>,
         value: i64,
     },
     #[allow(dead_code)] // only constructed with the `counters` feature
     CounterDel {
-        cache_idx: usize,
+        #[bincode(with_serde)]
+        cache: Cow<'static, str>,
         #[bincode(with_serde)]
         key: Cow<'static, str>,
     },
@@ -141,10 +153,41 @@ pub enum CacheResponse {
     CounterValue(Option<i64>),
 }
 
+/// The cache handlers of this node, one per variant of its `CacheVariants` enum, found by the
+/// variant name. The names are a perfect hash set built at compile time, and the handlers sit in
+/// the order of that set, so a name finds its handler in O(1).
+#[derive(Debug, Clone)]
+pub struct Caches {
+    names: &'static phf::OrderedSet<&'static str>,
+    tx: Box<[flume::Sender<CacheRequestHandler>]>,
+}
+
+impl Caches {
+    fn spawn<C: CacheVariants>() -> Self {
+        let names = C::hiqlite_cache_names();
+        let tx = names
+            .iter()
+            .map(|name| kv_handler::spawn(Cow::Borrowed(*name)))
+            .collect();
+        Self { names, tx }
+    }
+
+    /// Returns the handler of the cache `name`, if this node's enum has it.
+    pub fn get(&self, name: &str) -> Option<&flume::Sender<CacheRequestHandler>> {
+        self.names.get_index(name).map(|idx| &self.tx[idx])
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&'static str, &flume::Sender<CacheRequestHandler>)> {
+        self.names.iter().copied().zip(self.tx.iter())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct StateMachineData {
     last_applied_log_id: Option<LogIdOf<TypeConfigCache>>,
     last_membership: StoredMembershipOf<TypeConfigCache>,
+    /// The caches the log names that the local `CacheVariants` enum does not have.
+    caches_unknown: BTreeMap<String, flume::Sender<CacheRequestHandler>>,
 }
 
 /// This is a full in-memory state machine acting as a cache.
@@ -164,7 +207,7 @@ pub struct StateMachineMemory {
     #[cfg(feature = "in-memory-snapshots")]
     snapshot_mem: RwLock<Option<MemSnapshot>>,
 
-    pub(crate) tx_caches: Vec<flume::Sender<CacheRequestHandler>>,
+    pub(crate) tx_caches: Caches,
 
     #[cfg(feature = "listen_notify")]
     pub(crate) tx_notify: flume::Sender<NotifyRequest>,
@@ -268,103 +311,6 @@ impl StateMachineMemory {
                 .expect("Cannot set access rights for path_sm");
         }
 
-        // we will start a separate task for each given cache index
-        let variants = C::hiqlite_cache_variants();
-
-        // Validate the cache indices at setup time so `apply()` can rely on `.get(idx)`
-        // never failing: the indices must be exactly 0..len (no gaps, no duplicates),
-        // otherwise a request for a missing index would panic the state machine deep
-        // inside raft apply.
-        {
-            let mut seen = vec![false; variants.len()];
-            for &(idx, _) in variants {
-                if idx >= variants.len() || seen[idx] {
-                    panic!(
-                        "cache variant index {} is out of range or duplicated \
-                         (expected exactly 0..{})",
-                        idx,
-                        variants.len()
-                    );
-                }
-                seen[idx] = true;
-            }
-        }
-
-        // Cross-restart cache-index compatibility check. The cache index is encoded
-        // positionally in persisted snapshots and in Raft log entries, so a re-order,
-        // insert-in-between, removal or rename of the enum would silently install data
-        // into the wrong cache. We persist the current enum's normalized form to
-        // `cache_index.meta` and compare it against any existing file on every startup:
-        // only a pure expansion at the end is allowed.
-        #[cfg(not(feature = "in-memory-snapshots"))]
-        {
-            let path_meta = format!("{path_sm}/cache_index.meta");
-
-            // `HQL_CACHE_META_RESET=true` deletes the stored fingerprint and re-initializes it
-            // from the current enum. That is the way out of the startup refusal after a rename.
-            // Removing a variant needs more: the app must clear all of its caches at startup,
-            // because the persisted entries of the removed index are still in there.
-            let meta_reset = std::env::var("HQL_CACHE_META_RESET")
-                .as_deref()
-                .unwrap_or("false")
-                .parse::<bool>()
-                .expect("Cannot parse HQL_CACHE_META_RESET as bool");
-
-            let stored = if meta_reset {
-                warn!("Resetting the cache index metadata at {path_meta}");
-                let _ = fs::remove_file(&path_meta).await;
-                String::default()
-            } else {
-                match fs::read_to_string(&path_meta).await {
-                    Ok(stored) => {
-                        if !C::hiqlite_cache_compatible_with(&stored) {
-                            return Err(Error::Cache(
-                                format!(
-                                    "cache index enum is incompatible with previously persisted \
-                                     data ({}):\n--- stored ---\n{}--- current ---\n{}",
-                                    path_meta,
-                                    stored,
-                                    C::hiqlite_cache_variants_normalized()
-                                )
-                                .into(),
-                            ));
-                        }
-                        stored
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::default(),
-                    Err(err) => {
-                        return Err(Error::Cache(
-                            format!("cannot read cache index metadata {path_meta}: {err}").into(),
-                        ));
-                    }
-                }
-            };
-
-            // (Re)write the normalized form atomically so the file always reflects the
-            // current enum and a torn write can never leave a half-written fingerprint.
-            // A missing file is always (re)written, even when the fingerprint itself is
-            // empty: an enum with zero variants (the `hiqlite` server binary) produces the
-            // same normalized form as a fresh startup, so it must create the file too.
-            let normalized = C::hiqlite_cache_variants_normalized();
-            if !fs::try_exists(&path_meta).await? || stored.as_bytes() != normalized.as_bytes() {
-                let path_temp = format!("{path_meta}~");
-                {
-                    let mut file = fs::File::create(&path_temp).await.map_err(|err| {
-                        Error::Cache(format!("cannot create {path_temp}: {err}").into())
-                    })?;
-                    file.write_all(normalized.as_bytes()).await.map_err(|err| {
-                        Error::Cache(format!("cannot write {path_temp}: {err}").into())
-                    })?;
-                }
-                atomic_file_switch(path_temp, path_meta).await?;
-            }
-        }
-
-        let mut tx_caches = Vec::with_capacity(variants.len());
-        for (_, name) in variants {
-            tx_caches.push(kv_handler::spawn(name));
-        }
-
         #[cfg(feature = "dlock")]
         let tx_dlock = dlock_handler::spawn();
 
@@ -378,7 +324,7 @@ impl StateMachineMemory {
             in_memory_only,
             #[cfg(feature = "in-memory-snapshots")]
             snapshot_mem: RwLock::new(None),
-            tx_caches,
+            tx_caches: Caches::spawn::<C>(),
             #[cfg(feature = "listen_notify")]
             tx_notify,
             #[cfg(feature = "listen_notify")]
@@ -433,15 +379,24 @@ impl StateMachineMemory {
         // One roundtrip per cache: the handler owns values and counters together, so a single
         // SnapshotBuild returns both. Expiries live inside the entries and are rebuilt by the
         // handler on install.
-        let mut caches = Vec::with_capacity(self.tx_caches.len());
-        for tx in &self.tx_caches {
+        let named = self
+            .tx_caches
+            .iter()
+            .map(|(name, tx)| (name.to_string(), tx));
+        let unknown = data
+            .caches_unknown
+            .iter()
+            .map(|(name, tx)| (name.clone(), tx));
+        let mut caches = Vec::with_capacity(self.tx_caches.tx.len() + data.caches_unknown.len());
+        for (name, tx) in named.chain(unknown) {
             let (ack, rx) = oneshot::channel();
             tx.send(CacheRequestHandler::SnapshotBuild { reply: ack })
                 .expect("cache handler to always be running");
-            caches.push(
+            caches.push((
+                name,
                 rx.await
                     .expect("to always receive an answer from cache handler"),
-            );
+            ));
         }
 
         #[cfg(feature = "dlock")]
@@ -539,6 +494,28 @@ impl StateMachineMemory {
         Ok(())
     }
 
+    /// Returns the handler of the cache `name`. A name the local enum does not have comes from a
+    /// node with a newer enum, during a rolling deploy. Its entries go into a cache without a
+    /// variant, which the snapshots carry as well, so this node keeps the same state as the others.
+    fn cache<'a>(
+        &'a self,
+        data: &'a mut StateMachineData,
+        name: &str,
+    ) -> &'a flume::Sender<CacheRequestHandler> {
+        if let Some(tx) = self.tx_caches.get(name) {
+            return tx;
+        }
+        data.caches_unknown
+            .entry(name.to_string())
+            .or_insert_with(|| {
+                warn!(
+                    "Cache {name} is not part of this node's CacheVariants enum, keeping its \
+                     entries without a variant"
+                );
+                kv_handler::spawn(Cow::Owned(name.to_string()))
+            })
+    }
+
     async fn update_state_machine(&self, content: SnapshotDataContent) {
         let (meta, kvs, locks) = content;
 
@@ -548,11 +525,20 @@ impl StateMachineMemory {
         // One install per cache: values + counters travel together, mirroring the single
         // roundtrip used in `build_snapshot_data`. Expiries live inside the entries and are
         // rebuilt by the handler on install.
-        for (idx, snapshot) in kvs.into_iter().enumerate() {
+        // A snapshot replaces the whole state, so a local cache it does not carry ends up empty.
+        let mut kvs: BTreeMap<String, CacheSnapshot> = kvs.into_iter().collect();
+        let local: Vec<String> = self
+            .tx_caches
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .chain(data.caches_unknown.keys().cloned())
+            .collect();
+        for name in local {
+            kvs.entry(name).or_default();
+        }
+        for (name, snapshot) in kvs {
             let (ack, rx) = oneshot::channel();
-            self.tx_caches
-                .get(idx)
-                .unwrap()
+            self.cache(&mut data, &name)
                 .send(CacheRequestHandler::SnapshotInstall { snapshot, ack })
                 .expect("cache handler to always be running");
             rx.await
@@ -710,20 +696,12 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
     {
         let mut data = self.data.write().await;
 
-        // Note: We do not need to have a bounds-check on `cache_index` here:
-        // - when the request is coming over the network, we have a check in `network/api.rs`
-        // - when the request is direct without the network, it can only come from the same
-        //   `CacheVariants` enum that this handler is running on, because all client functions are
-        //   sealed and the user never provides the Integer manually.
-
         let mut last_applied_log_id = None;
         while let Some(item) = entries.next().await {
             let (entry, responder) = item?;
             last_applied_log_id = Some(entry.log_id);
 
-            // we are using sync sends -> unbounded channels. Every `cache_idx` below is
-            // validated at setup time (see `new()`) and again at the API boundary
-            // (`network/api.rs`), so `.get(idx).unwrap()` cannot fail on valid requests.
+            // we are using sync sends -> unbounded channels
             let resp_value = match entry.payload {
                 EntryPayload::Blank => CacheResponse::Empty,
 
@@ -736,7 +714,7 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                     }
 
                     CacheRequest::Put {
-                        cache_idx,
+                        cache,
                         key,
                         value,
                         expires,
@@ -744,9 +722,7 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                         // The per-cache handler owns values and expiries together, so the expiry
                         // registration/drop and the value change happen atomically inside one
                         // task: a stale expiry can never remove the freshly put value.
-                        self.tx_caches
-                            .get(cache_idx)
-                            .unwrap()
+                        self.cache(&mut data, &cache)
                             .send(CacheRequestHandler::Put {
                                 key: key.to_string(),
                                 value,
@@ -757,11 +733,9 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                         CacheResponse::Ok
                     }
 
-                    CacheRequest::GetRemove { cache_idx, key } => {
+                    CacheRequest::GetRemove { cache, key } => {
                         let (ack, rx) = oneshot::channel();
-                        self.tx_caches
-                            .get(cache_idx)
-                            .unwrap()
+                        self.cache(&mut data, &cache)
                             .send(CacheRequestHandler::GetRemove {
                                 key: key.to_string(),
                                 reply: ack,
@@ -775,7 +749,7 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                     }
 
                     CacheRequest::Replace {
-                        cache_idx,
+                        cache,
                         key,
                         value,
                         expires,
@@ -784,9 +758,7 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                         // inside the per-cache handler, so a stale expiry can never remove the
                         // freshly replaced value.
                         let (ack, rx) = oneshot::channel();
-                        self.tx_caches
-                            .get(cache_idx)
-                            .unwrap()
+                        self.cache(&mut data, &cache)
                             .send(CacheRequestHandler::Replace {
                                 key: key.to_string(),
                                 value,
@@ -798,10 +770,8 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                         CacheResponse::Value(rx.await.expect("cache handler to always answer"))
                     }
 
-                    CacheRequest::Delete { cache_idx, key } => {
-                        self.tx_caches
-                            .get(cache_idx)
-                            .unwrap()
+                    CacheRequest::Delete { cache, key } => {
+                        self.cache(&mut data, &cache)
                             .send(CacheRequestHandler::Delete {
                                 key: key.to_string(),
                             })
@@ -810,22 +780,18 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                         CacheResponse::Ok
                     }
 
-                    CacheRequest::Clear { cache_idx } => {
-                        self.tx_caches
-                            .get(cache_idx)
-                            .unwrap()
+                    CacheRequest::Clear { cache } => {
+                        self.cache(&mut data, &cache)
                             .send(CacheRequestHandler::Clear)
                             .expect("cache handler to always be running");
 
                         CacheResponse::Ok
                     }
 
-                    CacheRequest::ClearCounters { cache_idx } => {
+                    CacheRequest::ClearCounters { cache } => {
                         #[cfg(feature = "counters")]
                         {
-                            self.tx_caches
-                                .get(cache_idx)
-                                .unwrap()
+                            self.cache(&mut data, &cache)
                                 .send(CacheRequestHandler::ClearCounters)
                                 .expect("cache handler to always be running");
 
@@ -836,7 +802,7 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                     }
 
                     CacheRequest::ClearAll => {
-                        for tx in &self.tx_caches {
+                        for tx in self.tx_caches.tx.iter().chain(data.caches_unknown.values()) {
                             tx.send(CacheRequestHandler::Clear)
                                 .expect("cache handler to always be running");
                             #[cfg(feature = "counters")]
@@ -940,16 +906,10 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                         unreachable!("a CacheRequest::Get should never come through the Raft")
                     }
 
-                    CacheRequest::CounterSet {
-                        cache_idx,
-                        key,
-                        value,
-                    } => {
+                    CacheRequest::CounterSet { cache, key, value } => {
                         #[cfg(feature = "counters")]
                         {
-                            self.tx_caches
-                                .get(cache_idx)
-                                .unwrap()
+                            self.cache(&mut data, &cache)
                                 .send(CacheRequestHandler::CounterSet {
                                     key: key.to_string(),
                                     value,
@@ -962,18 +922,12 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                         unreachable!("CounterSet requires the `counters` feature")
                     }
 
-                    CacheRequest::CounterAdd {
-                        cache_idx,
-                        key,
-                        value,
-                    } => {
+                    CacheRequest::CounterAdd { cache, key, value } => {
                         #[cfg(feature = "counters")]
                         {
                             let (ack, rx) = oneshot::channel();
 
-                            self.tx_caches
-                                .get(cache_idx)
-                                .unwrap()
+                            self.cache(&mut data, &cache)
                                 .send(CacheRequestHandler::CounterAdd {
                                     key: key.to_string(),
                                     delta: value,
@@ -988,12 +942,10 @@ impl RaftStateMachine<TypeConfigCache> for Arc<StateMachineMemory> {
                         unreachable!("CounterAdd requires the `counters` feature")
                     }
 
-                    CacheRequest::CounterDel { cache_idx, key } => {
+                    CacheRequest::CounterDel { cache, key } => {
                         #[cfg(feature = "counters")]
                         {
-                            self.tx_caches
-                                .get(cache_idx)
-                                .unwrap()
+                            self.cache(&mut data, &cache)
                                 .send(CacheRequestHandler::CounterDel {
                                     key: key.to_string(),
                                 })
@@ -1145,12 +1097,13 @@ mod tests {
     }
 
     impl CacheVariants for TestCache {
-        fn hiqlite_cache_index(&self) -> usize {
-            0
+        fn hiqlite_cache_name(&self) -> &'static str {
+            "One"
         }
 
-        fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
-            &[(0, "One")]
+        fn hiqlite_cache_names() -> &'static phf::OrderedSet<&'static str> {
+            static NAMES: phf::OrderedSet<&'static str> = phf::phf_ordered_set! { "One" };
+            &NAMES
         }
     }
 
@@ -1252,14 +1205,14 @@ mod serialized_enum_order {
 
         assert_eq!(
             idx(&CacheRequest::Get {
-                cache_idx: 0,
+                cache: "App".into(),
                 key: String::new()
             }),
             0
         );
         assert_eq!(
             idx(&CacheRequest::Put {
-                cache_idx: 0,
+                cache: "App".into(),
                 key: key(),
                 value: vec![],
                 expires: None
@@ -1268,14 +1221,14 @@ mod serialized_enum_order {
         );
         assert_eq!(
             idx(&CacheRequest::GetRemove {
-                cache_idx: 0,
+                cache: "App".into(),
                 key: key()
             }),
             2
         );
         assert_eq!(
             idx(&CacheRequest::Replace {
-                cache_idx: 0,
+                cache: "App".into(),
                 key: key(),
                 value: vec![],
                 expires: None
@@ -1284,13 +1237,23 @@ mod serialized_enum_order {
         );
         assert_eq!(
             idx(&CacheRequest::Delete {
-                cache_idx: 0,
+                cache: "App".into(),
                 key: key()
             }),
             4
         );
-        assert_eq!(idx(&CacheRequest::Clear { cache_idx: 0 }), 5);
-        assert_eq!(idx(&CacheRequest::ClearCounters { cache_idx: 0 }), 6);
+        assert_eq!(
+            idx(&CacheRequest::Clear {
+                cache: "App".into()
+            }),
+            5
+        );
+        assert_eq!(
+            idx(&CacheRequest::ClearCounters {
+                cache: "App".into()
+            }),
+            6
+        );
         assert_eq!(idx(&CacheRequest::ClearAll), 7);
         assert_eq!(idx(&CacheRequest::Notify((0, vec![]))), 8);
         assert_eq!(idx(&CacheRequest::Lock((key(), None))), 9);
@@ -1299,14 +1262,14 @@ mod serialized_enum_order {
         assert_eq!(idx(&CacheRequest::LockRelease((key(), 0))), 12);
         assert_eq!(
             idx(&CacheRequest::CounterGet {
-                cache_idx: 0,
+                cache: "App".into(),
                 key: key()
             }),
             13
         );
         assert_eq!(
             idx(&CacheRequest::CounterSet {
-                cache_idx: 0,
+                cache: "App".into(),
                 key: key(),
                 value: 0
             }),
@@ -1314,7 +1277,7 @@ mod serialized_enum_order {
         );
         assert_eq!(
             idx(&CacheRequest::CounterAdd {
-                cache_idx: 0,
+                cache: "App".into(),
                 key: key(),
                 value: 0
             }),
@@ -1322,7 +1285,7 @@ mod serialized_enum_order {
         );
         assert_eq!(
             idx(&CacheRequest::CounterDel {
-                cache_idx: 0,
+                cache: "App".into(),
                 key: key()
             }),
             16
@@ -1331,165 +1294,229 @@ mod serialized_enum_order {
 }
 
 #[cfg(test)]
-mod cache_index_compatibility {
-    use crate::CacheVariants;
+mod cache_names {
+    use super::*;
+    use openraft::entry::RaftEntry;
+    use openraft::impls::leader_id_adv::LeaderId;
 
-    /// A fixed "current" enum used to exercise the compatibility check against a variety of
-    /// previously-persisted (stored) index maps. Only the associated functions are used, so
-    /// `hiqlite_cache_index` is never called at runtime here.
-    #[derive(Debug)]
-    enum Cur {
-        App,
-        AuthCodes,
-        Users,
-        MagicLinks,
-    }
-
-    impl CacheVariants for Cur {
-        fn hiqlite_cache_index(&self) -> usize {
-            match self {
-                Self::App => 0,
-                Self::AuthCodes => 1,
-                Self::Users => 2,
-                Self::MagicLinks => 3,
+    /// A hand-written `CacheVariants` enum, the way the derive builds it.
+    macro_rules! cache_enum {
+        ($name:ident { $($variant:ident = $key:literal),* }) => {
+            #[derive(Debug)]
+            enum $name {
+                $($variant),*
             }
-        }
 
-        fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
-            &[
-                (0, "App"),
-                (1, "AuthCodes"),
-                (2, "Users"),
-                (3, "MagicLinks"),
-            ]
-        }
+            impl CacheVariants for $name {
+                fn hiqlite_cache_name(&self) -> &'static str {
+                    match self {
+                        $(Self::$variant => $key),*
+                    }
+                }
+
+                fn hiqlite_cache_names() -> &'static phf::OrderedSet<&'static str> {
+                    static NAMES: phf::OrderedSet<&'static str> = phf::phf_ordered_set! {
+                        $($key),*
+                    };
+                    &NAMES
+                }
+            }
+        };
     }
 
-    #[test]
-    fn normalized_form_is_stable_and_self_compatible() {
-        let normalized = Cur::hiqlite_cache_variants_normalized();
-        assert_eq!(normalized, "0 App\n1 AuthCodes\n2 Users\n3 MagicLinks\n");
-        // the on-disk fingerprint is always compatible with itself
-        assert!(Cur::hiqlite_cache_compatible_with(&normalized));
-    }
+    cache_enum!(Old { App = "App" });
+    cache_enum!(New { App = "App", Sessions = "Sessions", Tokens = "Tokens" });
+    cache_enum!(Reordered { Tokens = "Tokens", App = "App", Sessions = "Sessions" });
 
-    #[test]
-    fn expansion_at_the_end_is_allowed() {
-        // data was written when only the first three variants existed; `MagicLinks` was
-        // added at the end later -> every stored index still maps to the same name.
-        assert!(Cur::hiqlite_cache_compatible_with(
-            "0 App\n1 AuthCodes\n2 Users\n"
-        ));
-    }
-
-    #[test]
-    fn reorder_is_incompatible() {
-        // `Users` moved to index 1, pushing `AuthCodes` down -> data at index 1 would be
-        // installed into the wrong cache.
-        assert!(!Cur::hiqlite_cache_compatible_with(
-            "0 App\n1 Users\n2 AuthCodes\n3 MagicLinks\n"
-        ));
-    }
-
-    #[test]
-    fn insert_in_between_is_incompatible() {
-        // an older enum where `Users` sat at index 1 (no `AuthCodes` yet) -> inserting a
-        // variant in the middle shifts every following index.
-        assert!(!Cur::hiqlite_cache_compatible_with(
-            "0 App\n1 Users\n2 MagicLinks\n"
-        ));
-    }
-
-    #[test]
-    fn removal_or_rename_is_incompatible() {
-        // a stored index that no longer exists (out of range for the current enum) ...
-        assert!(!Cur::hiqlite_cache_compatible_with("0 App\n4 Sessions\n"));
-        // ... or the same index now carrying a different variant name.
-        assert!(!Cur::hiqlite_cache_compatible_with(
-            "0 App\n1 Tokens\n2 Users\n3 MagicLinks\n"
-        ));
-    }
-
-    #[test]
-    fn malformed_stored_lines_are_incompatible() {
-        // no space -> cannot split into index + name
-        assert!(!Cur::hiqlite_cache_compatible_with("App\n"));
-        // non-numeric index
-        assert!(!Cur::hiqlite_cache_compatible_with("x App\n"));
-    }
-
-    /// A disk-backed state machine must refuse to start when the persisted fingerprint no
-    /// longer matches the current enum (a rename here). This is the startup safeguard that
-    /// catches re-order / insert-in-between / removal / rename of the `CacheVariants` enum
-    /// across restarts; a pure expansion at the end is still accepted.
-    #[cfg(not(feature = "in-memory-snapshots"))]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn startup_rejects_incompatible_cache_index() {
-        let base_dir = std::env::temp_dir().join("hiqlite_cache_index_compat_test");
+    async fn start<C: Debug + CacheVariants>(name: &str) -> Arc<StateMachineMemory> {
+        let base_dir = std::env::temp_dir().join(name);
         let _ = std::fs::remove_dir_all(&base_dir);
-        let base = base_dir.to_str().unwrap();
-
-        // `Cur` has `App` at index 0, so a stored fingerprint claiming index 0 to be
-        // something else is a rename -> incompatible.
-        std::fs::create_dir_all(format!("{base}/state_machine_cache")).unwrap();
-        std::fs::write(
-            format!("{base}/state_machine_cache/cache_index.meta"),
-            "0 SomethingElse\n",
+        Arc::new(
+            StateMachineMemory::new::<C>(base_dir.to_str().unwrap(), false)
+                .await
+                .unwrap(),
         )
-        .unwrap();
-
-        let res = super::StateMachineMemory::new::<Cur>(base, false).await;
-        assert!(
-            matches!(res, Err(crate::Error::Cache(_))),
-            "expected an incompatible cache index to be rejected at startup, got {res:?}"
-        );
-
-        let _ = std::fs::remove_dir_all(&base_dir);
     }
 
-    /// The fingerprint file is the "cache index enum compatibility" marker that every startup
-    /// compares against. A zero-variant enum - the `Empty` type of the `hiqlite` server binary -
-    /// normalizes to the same string as a fresh startup, so it must still write the file,
-    /// otherwise a startup with such an enum would never create the marker at all.
-    #[cfg(not(feature = "in-memory-snapshots"))]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn empty_enum_still_writes_fingerprint_file() {
-        #[derive(Debug)]
-        enum NoVariants {}
-
-        impl CacheVariants for NoVariants {
-            fn hiqlite_cache_index(&self) -> usize {
-                unreachable!()
-            }
-
-            fn hiqlite_cache_variants() -> &'static [(usize, &'static str)] {
-                &[]
-            }
+    fn put(cache: &'static str, key: &'static str, value: &[u8]) -> CacheRequest {
+        CacheRequest::Put {
+            cache: cache.into(),
+            key: key.into(),
+            value: value.to_vec(),
+            expires: None,
         }
+    }
 
-        let base_dir = std::env::temp_dir().join("hiqlite_cache_index_empty_enum_test");
-        let _ = std::fs::remove_dir_all(&base_dir);
-        let base = base_dir.to_str().unwrap();
-        let path_meta = format!("{base}/state_machine_cache/cache_index.meta");
+    /// Applies `reqs` as one batch with the log indexes `first..`.
+    async fn apply(sm: &mut Arc<StateMachineMemory>, first: u64, reqs: Vec<CacheRequest>) {
+        let entries = reqs.into_iter().zip(first..).map(|(req, index)| {
+            let log_id = LogIdOf::<TypeConfigCache> {
+                leader_id: LeaderId {
+                    term: 1,
+                    node_id: 1,
+                },
+                index,
+            };
+            Ok((Entry::new_normal(log_id, req), None))
+        });
+        sm.apply(futures_util::stream::iter(entries)).await.unwrap();
+    }
 
-        super::StateMachineMemory::new::<NoVariants>(base, false)
-            .await
-            .expect("state machine to start");
-        assert!(
-            std::path::Path::new(&path_meta).try_exists().unwrap(),
-            "a zero-variant enum must write the fingerprint file"
-        );
-        assert_eq!(std::fs::read_to_string(&path_meta).unwrap(), "");
+    async fn get<C: CacheVariants>(
+        sm: &StateMachineMemory,
+        cache: C,
+        key: &str,
+    ) -> Option<Vec<u8>> {
+        let (reply, rx) = oneshot::channel();
+        sm.tx_caches
+            .get(cache.hiqlite_cache_name())
+            .unwrap()
+            .send(CacheRequestHandler::Get {
+                key: key.to_string(),
+                reply,
+            })
+            .unwrap();
+        rx.await.unwrap()
+    }
 
-        // a pure expansion at the end must update the fingerprint and stay compatible
-        super::StateMachineMemory::new::<Cur>(base, false)
-            .await
-            .expect("expanding a zero-variant enum to start");
+    async fn snapshot(sm: &StateMachineMemory) -> (SnapshotMetaOf<TypeConfigCache>, Vec<u8>) {
+        sm.build_snapshot_data().await.unwrap()
+    }
+
+    fn snapshot_caches(bytes: &[u8]) -> BTreeMap<String, CacheSnapshot> {
+        deserialize_serde::<SnapshotDataContent>(bytes)
+            .unwrap()
+            .1
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn names_find_every_variant() {
+        assert!(New::hiqlite_cache_names().contains("Tokens"));
+        assert_eq!(New::Sessions.hiqlite_cache_name(), "Sessions");
+        assert!(!Old::hiqlite_cache_names().contains("Tokens"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_keeps_entries_of_a_cache_this_node_does_not_name() {
+        let mut old = start::<Old>("hiqlite_cache_names_apply").await;
+        apply(
+            &mut old,
+            1,
+            vec![
+                put("App", "a", b"0"),
+                put("Tokens", "t", b"2"),
+                put("Tokens", "gone", b"x"),
+            ],
+        )
+        .await;
+        apply(
+            &mut old,
+            4,
+            vec![CacheRequest::Delete {
+                cache: "Tokens".into(),
+                key: "gone".into(),
+            }],
+        )
+        .await;
         assert_eq!(
-            std::fs::read_to_string(&path_meta).unwrap(),
-            "0 App\n1 AuthCodes\n2 Users\n3 MagicLinks\n"
+            get(&old, Old::App, "a").await.as_deref(),
+            Some(b"0".as_slice())
         );
 
-        let _ = std::fs::remove_dir_all(&base_dir);
+        let (meta, bytes) = snapshot(&old).await;
+        assert_eq!(meta.last_log_id.unwrap().index, 4);
+        let caches = snapshot_caches(&bytes);
+        assert_eq!(caches.keys().collect::<Vec<_>>(), vec!["App", "Tokens"]);
+        assert_eq!(caches["Tokens"].0.keys().collect::<Vec<_>>(), vec!["t"]);
+
+        // A node with the newer enum installs that snapshot and finds the value under its
+        // variant.
+        let new = start::<New>("hiqlite_cache_names_apply_new").await;
+        new.apply_snapshot_bytes(&meta, &bytes).await.unwrap();
+        assert_eq!(
+            get(&new, New::Tokens, "t").await.as_deref(),
+            Some(b"2".as_slice())
+        );
+        assert_eq!(
+            get(&new, New::App, "a").await.as_deref(),
+            Some(b"0".as_slice())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_with_unknown_caches_installs_and_is_handed_on() {
+        let mut new = start::<New>("hiqlite_cache_names_install_new").await;
+        apply(
+            &mut new,
+            1,
+            vec![put("App", "a", b"0"), put("Sessions", "s", b"1")],
+        )
+        .await;
+        let (meta, bytes) = snapshot(&new).await;
+
+        let mut old = start::<Old>("hiqlite_cache_names_install_old").await;
+        old.apply_snapshot_bytes(&meta, &bytes).await.unwrap();
+        assert_eq!(
+            get(&old, Old::App, "a").await.as_deref(),
+            Some(b"0".as_slice())
+        );
+        let (_, rebuilt) = snapshot(&old).await;
+        assert_eq!(snapshot_caches(&rebuilt), snapshot_caches(&bytes));
+
+        // `ClearAll` empties the unknown caches too.
+        apply(&mut old, 3, vec![CacheRequest::ClearAll]).await;
+        let (_, cleared) = snapshot(&old).await;
+        assert!(
+            snapshot_caches(&cleared)
+                .values()
+                .all(|(v, c)| v.is_empty() && c.is_empty())
+        );
+    }
+
+    /// The variant order is local to a node: a snapshot of a node with a different order lands
+    /// every cache under the same name.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reordered_enum_installs_by_name() {
+        let mut new = start::<New>("hiqlite_cache_names_reorder_new").await;
+        apply(
+            &mut new,
+            1,
+            vec![put("App", "a", b"0"), put("Tokens", "t", b"2")],
+        )
+        .await;
+        let (meta, bytes) = snapshot(&new).await;
+
+        let reordered = start::<Reordered>("hiqlite_cache_names_reorder").await;
+        reordered.apply_snapshot_bytes(&meta, &bytes).await.unwrap();
+        assert_eq!(
+            get(&reordered, Reordered::App, "a").await.as_deref(),
+            Some(b"0".as_slice())
+        );
+        assert_eq!(
+            get(&reordered, Reordered::Tokens, "t").await.as_deref(),
+            Some(b"2".as_slice())
+        );
+        assert_eq!(get(&reordered, Reordered::Sessions, "a").await, None);
+    }
+
+    /// Installing a snapshot replaces the whole state: a cache the snapshot does not carry is
+    /// empty afterwards.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_with_fewer_caches_empties_the_missing_ones() {
+        let old = start::<Old>("hiqlite_cache_names_fewer_old").await;
+        let (meta, bytes) = snapshot(&old).await;
+
+        let mut new = start::<New>("hiqlite_cache_names_fewer_new").await;
+        apply(
+            &mut new,
+            1,
+            vec![put("App", "a", b"0"), put("Tokens", "t", b"2")],
+        )
+        .await;
+        new.apply_snapshot_bytes(&meta, &bytes).await.unwrap();
+        assert_eq!(get(&new, New::App, "a").await, None);
+        assert_eq!(get(&new, New::Tokens, "t").await, None);
     }
 }

@@ -315,6 +315,14 @@ impl NodeConfig {
         .unwrap_or(false);
 
         #[cfg(feature = "backup")]
+        let backup_restore_keep_previous = t_bool(
+            &mut map,
+            t_name,
+            "backup_restore_keep_previous",
+            "HQL_BACKUP_RESTORE_KEEP_PREVIOUS",
+        )?
+        .unwrap_or(false);
+        #[cfg(feature = "backup")]
         let (backup_config, backup_keep_for_local, backup_file_prefix) = {
             let backup_cron =
                 if let Some(v) = t_str(&mut map, t_name, "backup_cron", "HQL_BACKUP_CRON")? {
@@ -498,6 +506,8 @@ impl NodeConfig {
             backup_keep_for_local,
             #[cfg(feature = "backup")]
             backup_file_prefix,
+            #[cfg(feature = "backup")]
+            backup_restore_keep_previous,
             #[cfg(feature = "s3")]
             s3_config,
             #[cfg(feature = "dashboard")]
@@ -532,6 +542,7 @@ fn check_empty(table: &toml::Table, tbl_name: &str) -> Result<(), Error> {
                 "backup_keep_for",
                 "backup_keep_for_local",
                 "backup_file_prefix",
+                "backup_restore_keep_previous",
                 "cache_storage_disk",
                 "s3_url",
                 "s3_bucket",

@@ -10,7 +10,7 @@ use openraft::RaftTypeConfig;
 use openraft::type_config::async_runtime::watch::WatchReceiver;
 use std::clone::Clone;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{RwLock, oneshot};
 use tokio::time;
@@ -29,6 +29,11 @@ const STREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// take a while. A timed-out write must be treated as at-least-once: the operation may still have
 /// been applied server-side.
 pub(crate) const LOCAL_CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Budget for looking the current leader up after a node answered that it is not the leader and
+/// does not know who is. That answer means an election is running, and an election is short, so a
+/// lookup that needs much longer than this has no leader to find.
+const LEADER_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Waits for a response channel to resolve, surfacing a stall or a dead handler as an error
 /// instead of hanging or panicking the calling task.
@@ -144,6 +149,7 @@ impl Client {
 
     #[cfg(feature = "cache")]
     async fn remote_metrics_loop_cache(&self) -> RaftMetrics<TypeConfigCache> {
+        let mut logged = false;
         loop {
             for addr in &self.inner.nodes {
                 {
@@ -156,7 +162,15 @@ impl Client {
                         return metrics;
                     }
                     Err(err) => {
-                        error!("Error looking up Cache metrics: {}", err);
+                        // A cluster that is still starting up answers on none of its nodes, and
+                        // this loop is the leader lookup of a long-lived client, so a miss is an
+                        // expected state. Say it once, then keep the retry quiet.
+                        if logged {
+                            debug!("Error looking up Cache metrics: {}", err);
+                        } else {
+                            warn!("Error looking up Cache metrics: {}", err);
+                            logged = true;
+                        }
                     }
                 }
             }
@@ -166,6 +180,7 @@ impl Client {
 
     #[cfg(feature = "sqlite")]
     async fn remote_metrics_loop_db(&self) -> RaftMetrics<TypeConfigSqlite> {
+        let mut logged = false;
         loop {
             for addr in &self.inner.nodes {
                 {
@@ -178,7 +193,14 @@ impl Client {
                         return metrics;
                     }
                     Err(err) => {
-                        error!("Error looking up DB metrics: {}", err);
+                        // Same as the Cache loop: a miss here is the cluster not being up yet,
+                        // and the loop retries, so it is reported once and then kept quiet.
+                        if logged {
+                            debug!("Error looking up DB metrics: {}", err);
+                        } else {
+                            warn!("Error looking up DB metrics: {}", err);
+                            logged = true;
+                        }
                     }
                 }
             }
@@ -286,16 +308,16 @@ impl Client {
         &self,
         err: &Error,
         lock: &Arc<RwLock<(NodeId, String)>>,
+        lookup: &AtomicBool,
         tx: &flume::Sender<ClientStreamReq>,
     ) -> bool {
-        let mut was_leader_error = false;
+        let Some((leader_id, leader_node)) = err.is_forward_to_leader() else {
+            return false;
+        };
 
-        if let Some((id, node)) = err.is_forward_to_leader()
-            && let Some(leader_id) = id
-            && let Some(node) = node
-        {
-            was_leader_error = true;
-
+        // The node we wrote to names the leader: point the cached leader straight at it and tell
+        // the stream manager to follow it.
+        if let (Some(leader_id), Some(node)) = (leader_id, leader_node.as_ref()) {
             let api_addr = node.addr_api.clone();
             {
                 let mut lock = lock.write().await;
@@ -306,16 +328,38 @@ impl Client {
                 }
             }
 
-            if was_leader_error
-                && let Err(err) = tx
-                    .send_async(ClientStreamReq::LeaderChange((id, Some(node.clone()))))
-                    .await
+            if let Err(err) = tx
+                .send_async(ClientStreamReq::LeaderChange((
+                    Some(leader_id),
+                    Some(node.clone()),
+                )))
+                .await
             {
                 error!("Error sending LeaderChange to Client API WebSocket Manager: {err:?}");
             }
+            return true;
         }
 
-        was_leader_error
+        // The node we wrote to is inside an election and does not know its leader yet, which is
+        // the shape of every write that lands in the leadership gap. Look the leader up ourselves
+        // so the caller's retry does not go to the same node again. The lookup is bounded: when it
+        // finds no leader within `LEADER_LOOKUP_TIMEOUT` there is none to find, and the caller
+        // gets the original error instead of a write that blocks.
+        //
+        // One lookup per group at a time, claimed with a single atomic swap. The writer that wins
+        // the claim runs the lookup and publishes the leader; the writers behind it do not block
+        // and do not look anything up, they just retry against the cached leader the winner sets.
+        if lookup
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return true;
+        }
+        let found = time::timeout(LEADER_LOOKUP_TIMEOUT, self.find_set_active_leader())
+            .await
+            .is_ok();
+        lookup.store(false, Ordering::Release);
+        found
     }
 }
 

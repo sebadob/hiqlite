@@ -128,6 +128,32 @@ roll-over.
 The upgrade itself is safe: the `data_09` fixture, a real data dir written by the last release on
 openraft 0.9, starts and serves all its data, snapshots included.
 
+#### Caches Are Identified by Name
+
+The cache group's log entries and snapshots identify a cache by its `CacheVariants` variant name
+instead of its position in the enum. The derive builds the set of names at compile time as a perfect
+hash (`phf`), and each node finds a cache handler by its name in O(1). There is no index anymore, so
+the enum is misuse resistant:
+
+- Reordering variants, or inserting one in the middle, is safe now.
+- A node whose enum lacks a variant, during a rolling deploy that adds one, keeps that cache's
+  entries without a variant and carries them in its snapshots, instead of panicking in `apply()`.
+  A leader on the old enum refuses writes to the new cache with an `unknown cache` error.
+- Installing a snapshot empties a local cache the snapshot does not carry.
+
+`cache_index.meta` and its startup check are gone, and so is `HQL_CACHE_META_RESET`. A rename is a
+new, empty cache, and the old name's entries stay until they expire or a `clear_cache_all()`.
+
+The cache log and snapshot format changed, so the existing cache data cannot be read anymore. On
+the first start, a node that finds a `cache_index.meta` drops its cache log and cache snapshots
+once, and every node starts with an empty cache. Your database is untouched. With the
+`in-memory-snapshots` feature and `cache_storage_disk = true`, there is no `cache_index.meta`:
+delete `logs_cache` and `state_machine_cache` in the data dir by hand before the first start.
+
+`CacheVariants` is now `hiqlite_cache_name()` and `hiqlite_cache_names()`; `hiqlite_cache_index()`,
+`hiqlite_cache_variants()` and the `cache_index.meta` helpers are gone. Only a hand-written impl
+needs a change.
+
 #### Errors
 
 Source breaking: the `Error` enum's openraft variants are split per group (`RaftErrorDb` /
@@ -174,6 +200,31 @@ Migration:
   The name `RowOwned` belongs to the readable row from now on, never to its bare values.
 
 ### Changes
+
+#### Pipelined Raft Replication
+
+A leader no longer waits for a follower's answer before it sends the next append. Appends to a
+follower travel as a pipeline, and the follower answers them in the order it received them, so a
+write's round trip is covered by the writes behind it instead of by nothing.
+
+- Writes on a link with distance get their throughput back. The round trip to a far voter is no
+  longer paid once per write, and a write that arrives while its leader is already replicating does
+  not queue behind that round trip. This is the change that makes the far-node shape of
+  `geo-replication.md` faster, and it is measurable on a plain LAN as well.
+- Nothing to configure. Replication behaviour is unchanged for a single writer that waits for its
+  own ack, and for every read.
+- Snapshot installs, votes and leadership transfers are untouched: they keep travelling one at a
+  time, in order, on the same connection as the appends.
+- A follower that cannot answer closes its connection, and the leader re-syncs to it like it
+  already did on a dead append. No write is acknowledged by a pipeline that stopped answering.
+- An append is as big as the log entries the leader has queued, and the limit on them counts entries
+  and never bytes. An append that is big travels as one message, is collected and decoded as one
+  message on the follower, and every other message on that connection queues up behind it. A node
+  logs a warning when an append goes over 8 MB. Keep transactions small enough to stay out of that
+  log.
+
+The round trip this mechanism hides is the one to a distant voter. Measurements of the pipelined
+transport against the previous one, on a machine built for running them, are still to come.
 
 #### Local Read Threads
 
@@ -488,6 +539,17 @@ match is ever deleted - so several clusters can share one bucket, and files that
 backups in a shared directory or bucket are untouched. `Client::backup_file_local` validates the
 name against the same rule.
 
+#### `backup_restore_keep_previous` config var
+
+On a backup restore, every node other than 1 deletes its state before it joins the restored cluster,
+at a time when node 1 has not applied the backup yet. The new opt-in `backup_restore_keep_previous`
+(TOML key, `HQL_BACKUP_RESTORE_KEEP_PREVIOUS`, default `false`) moves that state into
+`{data_dir}/pre_restore` instead, and removes it once the node is a member of the restored cluster.
+Until then, every node needs as much additional disk space as its database, snapshots and logs take.
+
+A restore, on any node, now also refuses to touch a `data_dir` whose state machine lock is held by
+a live process.
+
 #### Shutdown Behavior
 
 A graceful shutdown on the leader hands leadership over before it leaves, so a shutdown doesn't cost
@@ -653,6 +715,13 @@ yet, but a good starting point.
 - `wait_for_cluster_sync()`'s single-instance fast path only looked at the node list, which a local
   client never has, so it never fired for an embedded single node. A local client now takes the
   member count from its own Raft membership, like `shutdown_execute` does.
+- The dashboard query picked the read or the write path from the first word of the SQL. A
+  `WITH ... SELECT`, a `VALUES (...)` or a `SELECT` behind a comment went through the Raft and
+  failed there, while a `PRAGMA` that sets a value, such as `PRAGMA query_only = 0`, changed a read
+  connection that serves the next queries of the node. SQLite now classifies the prepared statement
+  itself: only a statement that modifies the database goes through the Raft. A `PRAGMA` that sets a
+  value, transaction control, `ATTACH`, `DETACH` and multiple statements are rejected with a
+  `400 Bad Request`. Read connections are opened read-only, so a write never bypassed the Raft.
 
 ## v0.16.0
 

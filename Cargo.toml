@@ -93,6 +93,8 @@ openraft = { version = "0.10.1", default-features = false, features = [
   "serde",
   "tokio-rt",
 ] }
+phf = { version = "0.14", default-features = false }
+phf_generator = "0.14"
 rcgen = { version = "0.14.10", default-features = false, features = ["pem"] }
 reqwest = { version = "0.13.4", default-features = false, features = [
   "charset",

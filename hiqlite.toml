@@ -198,29 +198,6 @@ wal_size = 2097152
 # overwritten by: HQL_CACHE_STORAGE_DISK
 cache_storage_disk = true
 
-# Re-initializes the cache index metadata of your `CacheVariants`
-# enum. Set `HQL_CACHE_META_RESET=true` for a single start: the
-# stored fingerprint is deleted and written from the current enum,
-# which is what a renamed variant needs. Only that fingerprint is
-# deleted - the database, the Raft logs, and your cache content
-# are untouched.
-#
-# Every node keeps its own fingerprint, so set it on every node of
-# the cluster for that single start.
-#
-# A removed variant needs more than this: every node must clear all
-# of its caches at startup, because the entries of the removed index
-# are still persisted. Swapping the names of two variants counts as
-# a removal too.
-#
-# !!!
-# This value can only be set via ENV VAR, and only for that single
-# start. Remove it immediately after.
-# !!!
-#
-# default: false
-#HQL_CACHE_META_RESET=true
-
 # Sets the limit when the Raft will trigger the creation of a new
 # state machine snapshot and purge all logs that are included in
 # the snapshot.
@@ -383,6 +360,21 @@ backup_cron = "0 30 2 * * * *"
 # default: "backup_node"
 # overwritten by: HQL_BACKUP_FILE_PREFIX
 backup_file_prefix = "backup_node"
+
+# On a backup restore, every node other than 1 deletes its state before
+# it joins the restored cluster. With this set, it moves the state into
+# `{data_dir}/pre_restore` instead, and only removes it once it is a
+# member of the restored cluster. If node 1 fails to apply the backup,
+# the previous state of the other nodes is then still there.
+#
+# CAUTION: the old state stays on disk next to the state the node
+# receives from the restored cluster. This needs as much additional disk
+# space as the database, its snapshots and logs take, on every node,
+# until the node joined.
+#
+# default: false
+# overwritten by: HQL_BACKUP_RESTORE_KEEP_PREVIOUS
+#backup_restore_keep_previous = false
 
 # If you ever need to restore from a backup, the process is simple.
 # 1. Have the cluster shut down. This is probably the case anyway, if

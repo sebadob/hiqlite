@@ -111,12 +111,6 @@ does it: a file at `/run/secrets/hiqlite.toml`, a Kubernetes secret, a systemd c
   saturation warning is unaffected, because it never names a statement. Default: true.
 - `prepared_statement_cache_capacity` - how many prepared statements a connection keeps.
 - `cache_storage_disk` - disk-backed caches (default) versus in-memory caches. See `caches.md`.
-- `HQL_CACHE_META_RESET=true` - deletes the stored cache-index fingerprint and writes it from the
-  enum you start with, which is what a renamed cache variant needs. Only that fingerprint is
-  deleted: database, Raft logs, and cache content are untouched. Every node keeps its own
-  fingerprint, so set it on every node for that start. Env only, then unset. A variant removal
-  needs more than this - every node has to clear all caches at startup.
-  every node has to clear all caches at startup. See `caches.md`.
 
 ## Logging
 
@@ -148,6 +142,10 @@ does it: a file at `/run/secrets/hiqlite.toml`, a Kubernetes secret, a systemd c
   your own prefix are ever listed, cleaned up, and deleted. Set one per application when clusters
   share a bucket. See `backups.md`.
 - `backup_keep_for` - retention of the encrypted copies on S3. S3 side only.
+- `backup_restore_keep_previous` - `false` by default. On a restore, every node other than 1
+  moves its state into `{data_dir}/pre_restore` instead of deleting it, and removes it once it is a
+  member of the restored cluster. Opt-in, because until then every node needs as much additional
+  disk space as its database, snapshots and logs take. See `disaster-recovery.md`.
 - `s3_url`, `s3_bucket`, `s3_region`, `s3_key`, `s3_secret`, `s3_path_style` - all of these need
   the `s3` feature; without it backups stay on the local disk.
 - `HQL_BACKUP_RESTORE` - env only, read at startup only. `s3:<object>` or `file:<path>`. Node 1
@@ -189,6 +187,17 @@ Two of these are not timing, and they are easy to mix up. `enable_tick = false` 
 sending only. The switch that keeps a node from nominating itself is `enable_elect`, and that is
 what the `election_disable` marker of a node line sets. See `geo-replication.md`.
 
+`max_payload_entries` (128) is how many log entries one append to a follower carries. Replication
+pipelines those appends, so a smaller batch is not a smaller amount of work in flight: it is more
+appends, sent side by side, and a follower answers them as they arrive. The batch is the dial to
+turn when a write's round trip is the cost you are chasing, which is the case on a far node and on
+a hot write path. Measure it on your own link before you move it.
+
+The limit counts entries and never bytes, so an append is as big as the entries the leader had
+queued, and a transaction is a single entry of whatever size you give it. An append that is big
+enough travels as one message, is collected and decoded as one message on the follower, and every
+other message on that connection queues up behind it. The node logs a warning when an append goes over 8 MB. Keep your transactions small enough to stay out of that log.
+
 ## TLS
 
 - `tls_auto_certificates` - generate self-signed certificates for Raft and API traffic. Clients
@@ -219,16 +228,15 @@ what the `election_disable` marker of a node line sets. See `geo-replication.md`
 
 ## Danger switches
 
-These exist for rare, specific, single-node edge cases. They are not fixes for a cache index, a
-stale node, or a leader that will not settle.
+These exist for rare, specific, single-node edge cases. They are not fixes for a stale node, or a
+leader that will not settle.
 
 - `HQL_DANGER_RAFT_STATE_RESET=true` - **CAUTION: only for a single node whose Raft log volume is
-  corrupt and which has no healthy peer to re-sync from.** It deletes the Raft logs, the snapshots
-  of both groups, and the cache-index fingerprint. It keeps your database file, and your cache
-  content is gone. The way better alternative in a cluster is always to let the node re-sync: start
-  it as a learner, let it catch up, promote it. Used on a node of a live cluster, this can leave you
-  with an inconsistent cluster. It is env only, and it is named `DANGER` for a reason. See
-  `disaster-recovery.md`.
+  corrupt and which has no healthy peer to re-sync from.** It deletes the Raft logs and the snapshots
+  of both groups. It keeps your database file, and your cache content is gone. The way better
+  alternative in a cluster is always to let the node re-sync: start it as a learner, let it catch
+  up, promote it. Used on a node of a live cluster, this can leave you with an inconsistent cluster.
+  It is env only, and it is named `DANGER` for a reason. See `disaster-recovery.md`.
 - `HQL_DISABLE_COLD_RESTART_GUARD=true` - skips the version check that refuses a node from joining
   a cluster with older members. A testing switch. See `upgrades.md`.
 

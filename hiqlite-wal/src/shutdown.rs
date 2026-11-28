@@ -1,5 +1,7 @@
 use crate::error::Error;
+use crate::log_store_impl::{WRITER_STOPPED, response_or_stopped};
 use crate::{reader, writer};
+use std::io;
 use std::sync::Arc;
 use tokio::sync::{OnceCell, oneshot, watch};
 use tracing::{debug, info};
@@ -9,6 +11,7 @@ use tracing::{debug, info};
 #[derive(Debug, Clone)]
 pub struct ShutdownHandle {
     tx_write: flume::Sender<writer::Action>,
+    writer_closed: flume::Receiver<()>,
     readers: Arc<reader::Readers>,
     finished: Arc<OnceCell<watch::Receiver<ShutdownResult>>>,
 }
@@ -18,10 +21,12 @@ type ShutdownResult = Option<Result<(), Error>>;
 impl ShutdownHandle {
     pub(crate) fn new(
         tx_write: flume::Sender<writer::Action>,
+        writer_closed: flume::Receiver<()>,
         readers: Arc<reader::Readers>,
     ) -> Self {
         Self {
             tx_write,
+            writer_closed,
             readers,
             finished: Arc::new(OnceCell::new()),
         }
@@ -41,8 +46,9 @@ impl ShutdownHandle {
                 let (done, finished) = watch::channel(None);
                 let readers = self.readers.clone();
                 let writer = self.tx_write.clone();
+                let writer_closed = self.writer_closed.clone();
                 tokio::spawn(async move {
-                    let _ = done.send_replace(Some(shutdown(readers, writer).await));
+                    let _ = done.send_replace(Some(shutdown(readers, writer, writer_closed).await));
                 });
                 finished
             })
@@ -65,6 +71,7 @@ impl ShutdownHandle {
 async fn shutdown(
     readers: Arc<reader::Readers>,
     writer: flume::Sender<writer::Action>,
+    writer_closed: flume::Receiver<()>,
 ) -> Result<(), Error> {
     debug!("Shutting down WAL readers");
     readers.shutdown().await;
@@ -72,7 +79,11 @@ async fn shutdown(
     let (tx_ack, ack) = oneshot::channel();
     debug!("Sending Action::Shutdown to WAL writer");
     writer.send_async(writer::Action::Shutdown(tx_ack)).await?;
-    ack.await?;
+    // A shutdown queued behind a writer that already stopped is never answered.
+    response_or_stopped(&writer_closed, WRITER_STOPPED, async {
+        ack.await.map_err(io::Error::other)
+    })
+    .await?;
     info!("WAL writer Shutdown complete");
 
     Ok(())
