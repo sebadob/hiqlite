@@ -154,8 +154,14 @@ where
         s3_config: node_config.s3_config.clone(),
     });
 
+    // A Raft state reset starts a new log at ID 1 on top of the existing DB, exactly like a
+    // backup restore. Without a snapshot and a purge of the first log ID, a node that joins later
+    // would replay the log from ID 1 and never receive the existing data. A single node 1 is
+    // always its own leader here, which `restore_backup_finish` needs.
     #[cfg(all(feature = "backup", feature = "sqlite"))]
-    if restore == backup::RestoreStart::Applied {
+    if restore == backup::RestoreStart::Applied
+        || (_do_reset_metadata && node_config.node_id == 1 && node_config.nodes.len() == 1)
+    {
         backup::restore_backup_finish(&state).await;
     }
 
