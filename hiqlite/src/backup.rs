@@ -5,17 +5,15 @@ use crate::helpers::{
     atomic_file_switch, set_path_access, sync_file_data, validate_db_backup_snapshot,
 };
 use crate::store::logs;
-use crate::store::state_machine::sqlite::state_machine::{QueryWrite, StateMachineSqlite};
+use crate::store::state_machine::sqlite::state_machine::StateMachineSqlite;
 use crate::{Client, Error, NodeConfig, NodeId};
 use chrono::Utc;
-use openraft::type_config::async_runtime::watch::WatchReceiver;
 use std::env;
 use std::ops::Sub;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::Instant;
 use tokio::{fs, task, time};
 use tracing::{debug, error, info, warn};
 
@@ -554,61 +552,10 @@ pub async fn restore_backup_finish(state: &Arc<AppState>) {
         "It should never happen that node 1 is not the raft leader during backup restore"
     );
 
-    let reqs = 10;
-    for _ in 0..reqs {
-        let start = Instant::now();
-        match state.raft_db.raft.client_write(QueryWrite::RTT).await {
-            Ok(_) => {
-                info!("Raft RTT: {} micros", start.elapsed().as_micros());
-            }
-            Err(err) => {
-                error!("Raft RTT request error: {}", err);
-            }
-        }
-    }
-
-    let last_log;
-    loop {
-        let metrics = state.raft_db.raft.metrics().borrow_watched().clone();
-        if let Some(last_applied) = metrics.last_applied
-            && last_applied.index >= reqs
-        {
-            debug!("Found high enough last_applied log id");
-            last_log = last_applied.index;
-            break;
-        }
-        time::sleep(Duration::from_millis(50)).await;
-    }
-
-    debug!("Taking snapshot now");
-    if let Err(err) = state.raft_db.raft.trigger().snapshot().await {
-        // e.g. the raft is shutting down: do not panic the task, just bail out - the
-        // wait-for-snapshot loop below would never finish anyway
+    if let Err(err) = state.raft_db.snapshot_purge_logs().await {
+        // e.g. the raft is shutting down: do not panic the task, just bail out
         error!("Error triggering snapshot: {err}");
         return;
-    }
-
-    // wait until snapshot has been built
-    while state
-        .raft_db
-        .raft
-        .metrics()
-        .borrow_watched()
-        .snapshot
-        .is_none()
-    {
-        info!("Waiting for snapshot build to finish");
-        time::sleep(Duration::from_millis(100)).await;
-    }
-
-    debug!("Purging logs");
-    while let Err(err) = state.raft_db.raft.trigger().purge_log(last_log).await {
-        // It's very important to retry until success. If we had an upper limit and exit early,
-        // the only thing we could do is actually panic. This is important because the first
-        // WAL logs entry MUST NOT start fresh. Otherwise, it would screw up the backup logic.
-        // -> retry until success, which will usually succeed instantly
-        error!("Error during logs purge: {}", err);
-        time::sleep(Duration::from_millis(100)).await;
     }
 
     info!("restore_backup_finish task successful");

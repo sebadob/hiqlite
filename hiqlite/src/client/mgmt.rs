@@ -56,6 +56,35 @@ impl Client {
         }
     }
 
+    /// Build a snapshot of the database Raft and purge the logs it covers, so that the log does
+    /// not start at ID 1 anymore.
+    ///
+    /// A node that joins later then always receives this snapshot instead of replaying the log
+    /// from ID 1. Hiqlite does this on its own after a backup restore and after a Raft state
+    /// reset on a single node. It writes a few logs first, so it must run on the current leader,
+    /// and only an embedded client can do that. The purge is retried until it succeeds.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for a remote client that has no local node, [`Error::LeaderChange`]
+    /// when this node is not the leader of the database Raft, and [`Error::RaftErrorFatalDb`]
+    /// when the Raft is shutting down or has a storage error.
+    #[cfg(feature = "sqlite")]
+    pub async fn snapshot_db(&self) -> Result<(), Error> {
+        let Some(state) = &self.inner.state else {
+            return Err(Error::Config(
+                "A remote client cannot build a snapshot, use an embedded client".into(),
+            ));
+        };
+        let leader = state.raft_db.raft.metrics().borrow_watched().current_leader;
+        if leader != Some(state.id) {
+            return Err(Error::LeaderChange(
+                format!("This node is not the DB leader, the current leader is {leader:?}").into(),
+            ));
+        }
+        state.raft_db.snapshot_purge_logs().await
+    }
+
     /// Get cluster metrics for the cache Raft.
     ///
     /// # Errors

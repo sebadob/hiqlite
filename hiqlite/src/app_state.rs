@@ -178,6 +178,79 @@ impl StateRaftDB {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
+
+    /// Writes a few logs, builds a snapshot and purges the logs it covers, so that the log never
+    /// starts at ID 1 again afterward. Then a node that joins later always receives the snapshot
+    /// instead of replaying the log from ID 1, and the WAL log ID can roll over.
+    ///
+    /// This node must be the leader, otherwise the logs are not written and this waits forever.
+    /// The purge is retried until it succeeds, because the log must not keep its first ID.
+    pub(crate) async fn snapshot_purge_logs(&self) -> Result<(), crate::Error> {
+        use crate::store::state_machine::sqlite::state_machine::QueryWrite;
+        use openraft::type_config::async_runtime::watch::WatchReceiver;
+        use tokio::time::{self, Instant};
+        use tracing::{debug, error, info};
+
+        let last_applied = || {
+            self.raft
+                .metrics()
+                .borrow_watched()
+                .last_applied
+                .map_or(0, |id| id.index)
+        };
+
+        let reqs = 10;
+        let target = last_applied() + reqs;
+        for _ in 0..reqs {
+            let start = Instant::now();
+            match self.raft.client_write(QueryWrite::RTT).await {
+                Ok(_) => {
+                    info!("Raft RTT: {} micros", start.elapsed().as_micros());
+                }
+                Err(err) => {
+                    error!("Raft RTT request error: {}", err);
+                }
+            }
+        }
+
+        let last_log;
+        loop {
+            let index = last_applied();
+            if index >= target {
+                debug!("Found high enough last_applied log id");
+                last_log = index;
+                break;
+            }
+            time::sleep(Duration::from_millis(50)).await;
+        }
+
+        debug!("Taking snapshot now");
+        self.raft.trigger().snapshot().await?;
+
+        // wait until the snapshot covers `last_log`
+        while self
+            .raft
+            .metrics()
+            .borrow_watched()
+            .snapshot
+            .is_none_or(|id| id.index < last_log)
+        {
+            info!("Waiting for snapshot build to finish");
+            time::sleep(Duration::from_millis(100)).await;
+        }
+
+        debug!("Purging logs");
+        while let Err(err) = self.raft.trigger().purge_log(last_log).await {
+            // It's very important to retry until success. If we had an upper limit and exit early,
+            // the only thing we could do is actually panic. This is important because the first
+            // WAL logs entry MUST NOT start fresh. Otherwise, it would screw up the backup logic.
+            // -> retry until success, which will usually succeed instantly
+            error!("Error during logs purge: {}", err);
+            time::sleep(Duration::from_millis(100)).await;
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(feature = "cache")]
