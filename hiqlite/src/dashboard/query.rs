@@ -146,7 +146,7 @@ fn dashboard_query_on_conn(
 ) -> Result<Option<RowsOwned>, Error> {
     // SQLite applies most `PRAGMA` assignments while it prepares them, so this check must run
     // before the statement is prepared.
-    reject_pragma_assignment(sql)?;
+    reject_pragma_assignment(conn, sql)?;
 
     let mut stmt = match conn.prepare(sql) {
         Ok(stmt) => stmt,
@@ -308,21 +308,6 @@ fn find_forbidden_non_det_fn(sql: &str) -> Option<&'static str> {
     None
 }
 
-/// The pragmas whose argument names the object they report on: their call form only reads.
-/// For every other pragma, `PRAGMA name(value)` is the same assignment as `PRAGMA name = value`.
-const PRAGMAS_WITH_LOOKUP_ARG: &[&str] = &[
-    "foreign_key_check",
-    "foreign_key_list",
-    "index_info",
-    "index_list",
-    "index_xinfo",
-    "integrity_check",
-    "quick_check",
-    "table_info",
-    "table_list",
-    "table_xinfo",
-];
-
 /// Rejects a manual dashboard query with a `PRAGMA` that sets a value, in any of its statements.
 ///
 /// SQLite applies most pragma assignments while it prepares the statement, before a single step,
@@ -330,7 +315,7 @@ const PRAGMAS_WITH_LOOKUP_ARG: &[&str] = &[
 /// which `rusqlite` prepares to detect it. On a read connection, the assignment would change a
 /// connection that serves the next queries of this node, its `query_only` guard included. Through
 /// the Raft, it would change the writer of every node. A dashboard pragma only ever reads.
-fn reject_pragma_assignment(sql: &str) -> Result<(), Error> {
+fn reject_pragma_assignment(conn: &rusqlite::Connection, sql: &str) -> Result<(), Error> {
     for start in statement_starts(sql) {
         let (mut keyword, mut rest) = take_word(&sql[start..]);
         if keyword.eq_ignore_ascii_case("explain") {
@@ -341,7 +326,7 @@ fn reject_pragma_assignment(sql: &str) -> Result<(), Error> {
             }
         }
 
-        if keyword.eq_ignore_ascii_case("pragma") && !is_pragma_query(rest) {
+        if keyword.eq_ignore_ascii_case("pragma") && !is_pragma_query(conn, rest)? {
             return Err(Error::BadRequest(
                 "the dashboard only executes a `PRAGMA` that reads its value, never one that \
                 sets it"
@@ -352,24 +337,33 @@ fn reject_pragma_assignment(sql: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// If the rest of a `PRAGMA` statement, after the keyword, only reads the value of the pragma.
-fn is_pragma_query(rest: &str) -> bool {
+/// If the rest of a `PRAGMA` statement, after the keyword, only reads.
+///
+/// Without a value, a pragma reports its current one. With a value, as `name = value` or
+/// `name(value)`, SQLite itself tells if the pragma is a query: only then, like `table_info(t)`,
+/// its table-valued function `pragma_name` takes the value as the hidden `arg` column.
+fn is_pragma_query(conn: &rusqlite::Connection, rest: &str) -> Result<bool, Error> {
     let Some((mut name, mut rest)) = take_name(rest) else {
-        return false;
+        return Ok(false);
     };
     if let Some(after_dot) = skip_trivia(rest).strip_prefix('.') {
         let Some((n, r)) = take_name(after_dot) else {
-            return false;
+            return Ok(false);
         };
         (name, rest) = (n, r);
     }
 
     match skip_trivia(rest).as_bytes().first() {
-        None | Some(b';') => true,
-        Some(b'(') => PRAGMAS_WITH_LOOKUP_ARG
-            .iter()
-            .any(|lookup| lookup.eq_ignore_ascii_case(name)),
-        Some(_) => false,
+        None | Some(b';') => Ok(true),
+        Some(b'(' | b'=') => {
+            let args: i64 = conn.query_row(
+                "SELECT count(*) FROM pragma_table_xinfo(?1) WHERE name = 'arg' AND hidden = 1",
+                [format!("pragma_{name}")],
+                |row| row.get(0),
+            )?;
+            Ok(args > 0)
+        }
+        Some(_) => Ok(false),
     }
 }
 
@@ -515,7 +509,9 @@ mod tests {
         let writer = rusqlite::Connection::open(&db).unwrap();
         writer.pragma_update(None, "journal_mode", "WAL").unwrap();
         writer
-            .execute_batch("CREATE TABLE t (a INTEGER); INSERT INTO t VALUES (1);")
+            .execute_batch(
+                "CREATE TABLE t (a INTEGER UNIQUE REFERENCES t (a)); INSERT INTO t VALUES (1);",
+            )
             .unwrap();
 
         let reader =
@@ -554,8 +550,15 @@ mod tests {
             "WITH x AS (SELECT a FROM t) SELECT a FROM x",
             "VALUES (1)",
             "EXPLAIN QUERY PLAN SELECT a FROM t",
+            // the table info button of the dashboard
             "PRAGMA table_info(t)",
             "PRAGMA main.table_info(t)",
+            "PRAGMA table_info = 't'",
+            "PRAGMA table_xinfo(\"t\")",
+            "PRAGMA index_list(t)",
+            "PRAGMA index_info(sqlite_autoindex_t_1)",
+            "PRAGMA foreign_key_list(t)",
+            "PRAGMA integrity_check(10)",
             "PRAGMA busy_timeout",
             "SELECT * FROM pragma_table_info('t')",
         ] {
@@ -641,7 +644,11 @@ mod tests {
             "/* a comment */ PRAGMA foreign_keys = ON",
             "PRAGMA foreign_keys = OFF",
             "PRAGMA journal_mode = DELETE",
+            "PRAGMA journal_mode(DELETE)",
             "PRAGMA user_version = 3",
+            "PRAGMA user_version(5)",
+            "PRAGMA main.user_version(5)",
+            "PRAGMA query_only(0)",
             "EXPLAIN PRAGMA busy_timeout = 0",
             "EXPLAIN QUERY PLAN PRAGMA busy_timeout = 0",
             "SELECT 1; PRAGMA busy_timeout = 0",
