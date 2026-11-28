@@ -380,7 +380,7 @@ pub(crate) async fn restore_backup_start(
         return Ok(RestoreStart::Applied);
     }
 
-    let mut lock = RestoreLock::acquire(&node_config.data_dir)?;
+    let mut lock = RestoreLock::acquire(&node_config.data_dir).await?;
     let start = if node_config.backup_restore_keep_previous {
         // Node 1 has not even looked at the backup yet, and it may still fail to apply it. The
         // state is only moved aside, and removed once the restored cluster has taken this node in.
@@ -410,11 +410,14 @@ struct RestoreLock {
 }
 
 impl RestoreLock {
-    fn acquire(data_dir: &str) -> Result<Self, Error> {
-        std::fs::create_dir_all(StateMachineSqlite::path_base(data_dir))?;
+    async fn acquire(data_dir: &str) -> Result<Self, Error> {
+        fs::create_dir_all(StateMachineSqlite::path_base(data_dir)).await?;
         let path = StateMachineSqlite::path_lock_file(data_dir);
-        let existed = std::fs::exists(&path)?;
-        let file = StateMachineSqlite::try_lock_file(&path)?;
+        let existed = fs::try_exists(&path).await?;
+        let file = {
+            let path = path.clone();
+            task::spawn_blocking(move || StateMachineSqlite::try_lock_file(&path)).await??
+        };
         Ok(Self {
             path,
             remove_on_drop: !existed,
@@ -605,7 +608,7 @@ async fn stage_local_backup(source: String, directory: &str) -> Result<String, E
 /// `HQL_BACKUP_RESTORE` env var), which both do it for you at startup.
 pub async fn restore_backup(node_config: &NodeConfig, src: BackupSource) -> Result<(), Error> {
     info!("Starting database restore from backup {:?}", src);
-    let mut lock = RestoreLock::acquire(&node_config.data_dir)?;
+    let mut lock = RestoreLock::acquire(&node_config.data_dir).await?;
 
     #[cfg(feature = "s3")]
     if let BackupSource::S3(_) = &src
@@ -1171,17 +1174,17 @@ mod tests {
         super::fs::write(path, b"").await.unwrap();
 
         // a restore that fails before it replaced anything keeps the marker of the old state
-        drop(super::RestoreLock::acquire(dir).unwrap());
+        drop(super::RestoreLock::acquire(dir).await.unwrap());
         assert!(super::fs::try_exists(path).await.unwrap());
 
-        let mut lock = super::RestoreLock::acquire(dir).unwrap();
+        let mut lock = super::RestoreLock::acquire(dir).await.unwrap();
         super::cleanup_restore_data_dirs(dir).await.unwrap();
         lock.state_replaced();
         drop(lock);
         assert!(!super::fs::try_exists(path).await.unwrap());
 
         // a restore that created the lock file never leaves it behind
-        drop(super::RestoreLock::acquire(dir).unwrap());
+        drop(super::RestoreLock::acquire(dir).await.unwrap());
         assert!(!super::fs::try_exists(path).await.unwrap());
     }
 
