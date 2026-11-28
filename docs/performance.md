@@ -19,6 +19,10 @@ the worst case for a replicated write, and the most useful baseline.
 
 - A write is acknowledged by a majority of voters. You pay for a network round trip to your slowest
   voter, on every write. Voters in one region, far node marked: `topology.md`.
+- Replication pipelines its appends, so a write's round trip is hidden by the one after it. What
+  you cannot pipeline away is the round trip of the last write in a burst: a single writer that
+  waits for its own ack pays it in full, every time. That is the latency a far voter costs you, and
+  batching is what removes it.
 - There is one writer. Writes are applied in order by a single connection, so writes serialize
   against each other. Batching and transactions exist for this reason.
 - Reads are local SQLite reads, on a connection its own thread owns, with cached prepared

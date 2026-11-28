@@ -1091,22 +1091,20 @@ async fn handle_socket_concurrent(
 
                 #[cfg(feature = "cache")]
                 ApiStreamRequestPayload::Cache(cache_req) => {
-                    // Bounds-check the cache index before committing to the raft log. Embedded
-                    // clients resolve indices locally, so an out-of-range index can only arrive
-                    // via a hand-crafted wire request; rejecting it here keeps the state
-                    // machine's `.get(idx).unwrap()` in `apply()` from panicking on it.
-                    let cache_idx = match cache_req {
-                        CacheRequest::Get { cache_idx, .. }
-                        | CacheRequest::Put { cache_idx, .. }
-                        | CacheRequest::GetRemove { cache_idx, .. }
-                        | CacheRequest::Replace { cache_idx, .. }
-                        | CacheRequest::Delete { cache_idx, .. }
-                        | CacheRequest::Clear { cache_idx, .. }
-                        | CacheRequest::ClearCounters { cache_idx, .. }
-                        | CacheRequest::CounterGet { cache_idx, .. }
-                        | CacheRequest::CounterSet { cache_idx, .. }
-                        | CacheRequest::CounterAdd { cache_idx, .. }
-                        | CacheRequest::CounterDel { cache_idx, .. } => Some(cache_idx),
+                    // Only propose writes for a cache of this node's own enum: it could not read
+                    // anything else back. A client built with a newer enum gets an error here.
+                    let cache = match &cache_req {
+                        CacheRequest::Get { cache, .. }
+                        | CacheRequest::Put { cache, .. }
+                        | CacheRequest::GetRemove { cache, .. }
+                        | CacheRequest::Replace { cache, .. }
+                        | CacheRequest::Delete { cache, .. }
+                        | CacheRequest::Clear { cache, .. }
+                        | CacheRequest::ClearCounters { cache, .. }
+                        | CacheRequest::CounterGet { cache, .. }
+                        | CacheRequest::CounterSet { cache, .. }
+                        | CacheRequest::CounterAdd { cache, .. }
+                        | CacheRequest::CounterDel { cache, .. } => Some(cache),
                         CacheRequest::ClearAll
                         | CacheRequest::Notify(_)
                         | CacheRequest::Lock(_)
@@ -1115,14 +1113,13 @@ async fn handle_socket_concurrent(
                         | CacheRequest::LockAlive(_) => None,
                     };
 
-                    if let Some(cache_idx) = cache_idx
-                        && cache_idx >= state.raft_cache.tx_caches.len()
+                    if let Some(cache) = cache
+                        && state.raft_cache.tx_caches.get(cache).is_none()
                     {
                         ApiStreamResponse {
                             request_id,
                             result: ApiStreamResponsePayload::Cache(Err(Error::new(format!(
-                                "cache index {cache_idx} out of range (0..{})",
-                                state.raft_cache.tx_caches.len()
+                                "unknown cache {cache}"
                             )))),
                         }
                     } else {
@@ -1144,30 +1141,14 @@ async fn handle_socket_concurrent(
 
                 #[cfg(feature = "cache")]
                 ApiStreamRequestPayload::CacheGet(cache_req) => {
-                    let CacheRequest::Get { cache_idx, key } = cache_req else {
+                    let CacheRequest::Get { cache, key } = cache_req else {
                         unreachable!()
                     };
 
-                    // Bounds-check the cache index before touching the handler channel.
-                    // Embedded clients resolve indices locally, so an out-of-range index can
-                    // only arrive via a hand-crafted wire request; rejecting it here keeps the
-                    // state machine's `.get(idx).unwrap()` in `apply()` from panicking on it.
-                    if cache_idx >= state.raft_cache.tx_caches.len() {
-                        ApiStreamResponse {
-                            request_id,
-                            result: ApiStreamResponsePayload::Cache(Err(Error::new(format!(
-                                "cache index {cache_idx} out of range (0..{})",
-                                state.raft_cache.tx_caches.len()
-                            )))),
-                        }
-                    } else {
+                    // Reads are only served for the caches of this node's own enum.
+                    if let Some(tx) = state.raft_cache.tx_caches.get(&cache) {
                         let (ack, rx) = tokio::sync::oneshot::channel();
-                        state
-                            .raft_cache
-                            .tx_caches
-                            .get(cache_idx)
-                            .unwrap()
-                            .send(CacheRequestHandler::Get { key, reply: ack })
+                        tx.send(CacheRequestHandler::Get { key, reply: ack })
                             .expect("cache handler to always be running");
                         let value = rx
                             .await
@@ -1177,6 +1158,13 @@ async fn handle_socket_concurrent(
                             result: ApiStreamResponsePayload::Cache(Ok(CacheResponse::Value(
                                 value,
                             ))),
+                        }
+                    } else {
+                        ApiStreamResponse {
+                            request_id,
+                            result: ApiStreamResponsePayload::Cache(Err(Error::new(format!(
+                                "unknown cache {cache}"
+                            )))),
                         }
                     }
                 }

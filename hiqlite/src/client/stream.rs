@@ -6,13 +6,12 @@ use crate::{Client, Error, Node, NodeId};
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocket, WebSocketWrite};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{RwLock, oneshot};
-use tokio::task::JoinHandle;
 use tokio::{select, task, time};
 use tracing::{debug, error, info};
 
@@ -35,6 +34,11 @@ const STREAM_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 /// this only trips on genuinely stalled connections. Must be a multiple of
 /// `STREAM_KEEPALIVE_INTERVAL` with margin.
 const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(35);
+
+/// Frames the client stream manager and the two socket tasks pass through their channels at the
+/// same time. Requests are answered one task per request on the server, so several are always in
+/// flight, and a capacity of 1 would serialise them all over again.
+const CLIENT_STREAM_BUFFER: usize = 32;
 
 /// Number of consecutive connection failures that retry at the fast (1 s) interval before the
 /// reconnect loop backs off to `RECONNECT_SLOW_INTERVAL`. A restarting node is only briefly
@@ -79,7 +83,6 @@ pub(crate) enum ClientStreamReq {
 
     // coming from the WebSocket reader
     StreamResponse(ApiStreamResponse),
-    CleanupBuffer,
     /// keepalive ping/pong traffic from the server; proves the connection is alive
     Liveness,
 
@@ -181,12 +184,8 @@ async fn client_stream(
     rx_req: flume::Receiver<ClientStreamReq>,
     raft_type: RaftType,
 ) -> Result<(), Error> {
-    let mut in_flight: HashMap<usize, oneshot::Sender<Result<ApiStreamResponsePayload, Error>>> =
-        HashMap::with_capacity(8);
-    let mut in_flight_buf: HashMap<
-        usize,
-        oneshot::Sender<Result<ApiStreamResponsePayload, Error>>,
-    > = HashMap::new();
+    let mut in_flight: FxHashMap<usize, oneshot::Sender<Result<ApiStreamResponsePayload, Error>>> =
+        FxHashMap::default();
 
     let mut shutdown = false;
     let mut failed_retries: u32 = 0;
@@ -242,8 +241,11 @@ async fn client_stream(
             }
         };
 
-        let (tx_write, rx_write) = flume::bounded(1);
-        let (tx_read, rx_read) = flume::bounded(1);
+        // Both channels carry a pipeline: the server answers every API request in a task of its
+        // own, so a client with several concurrent statements has several answers in flight at the
+        // same time. A capacity of 1 would serialise them all over again.
+        let (tx_write, rx_write) = flume::bounded(CLIENT_STREAM_BUFFER);
+        let (tx_read, rx_read) = flume::bounded(CLIENT_STREAM_BUFFER);
 
         // TODO splitting needs `unstable-split` feature right now but is about to be stabilized soon
         let (rx, write) = ws.split(tokio::io::split);
@@ -253,8 +255,10 @@ async fn client_stream(
         let handle_read = task::spawn(stream_reader(read, tx_read.clone()));
         let handle_write = task::spawn(stream_writer(write, rx_write));
 
-        let handle_buf = cleanup_buffer_timeout(tx_read, 10);
-        let mut awaiting_timeout = true;
+        // Drop our copy of the reader's sender so the reader task's clone is the only one left.
+        // The reconnect drain below only terminates once every sender is gone.
+        // TODO it makes no sense to then clone it in the first place
+        drop(tx_read);
 
         // Liveness tracking: any frame from the server resets `last_frame`. A healthy connection
         // always produces inbound traffic within STREAM_READ_TIMEOUT because we ping every
@@ -553,27 +557,13 @@ async fn client_stream(
 
                 ClientStreamReq::StreamResponse(resp) => {
                     last_frame = time::Instant::now();
-                    try_forward_response(
-                        &mut in_flight,
-                        &mut in_flight_buf,
-                        awaiting_timeout,
-                        resp,
-                    );
+                    try_forward_response(&mut in_flight, resp);
                     None
                 }
 
                 ClientStreamReq::Liveness => {
                     // keepalive pong from the server: connection is alive
                     last_frame = time::Instant::now();
-                    None
-                }
-
-                ClientStreamReq::CleanupBuffer => {
-                    for (_, ack) in in_flight_buf {
-                        let _ = ack.send(Err(Error::Connect("request timed out".to_string())));
-                    }
-                    in_flight_buf = HashMap::new();
-                    awaiting_timeout = false;
                     None
                 }
             };
@@ -600,7 +590,6 @@ async fn client_stream(
             }
         }
 
-        handle_buf.abort();
         handle_write.abort();
         handle_read.abort();
 
@@ -676,10 +665,7 @@ async fn client_stream(
                     update_leader(&leader, node_id, node).await;
                 }
                 ClientStreamReq::StreamResponse(resp) => {
-                    try_forward_response(&mut in_flight, &mut in_flight_buf, false, resp);
-                }
-                ClientStreamReq::CleanupBuffer => {
-                    // ignore - we are re-connecting anyway
+                    try_forward_response(&mut in_flight, resp);
                 }
                 ClientStreamReq::Liveness => {
                     // ignore - we are re-connecting anyway
@@ -687,8 +673,11 @@ async fn client_stream(
             }
         }
 
-        for (req_id, ack) in in_flight.drain() {
-            in_flight_buf.insert(req_id, ack);
+        // A response for a request sent on the dead socket can never arrive on the next one: the
+        // server answers every request on the connection it received it on. Fail the acks loudly
+        // instead of parking them, mirroring the Raft client.
+        for (_, ack) in in_flight.drain() {
+            let _ = ack.send(Err(Error::Connect("Connection to Raft leader lost".into())));
         }
         // drain() already empties the map, so this is a debug-only sanity check.
         debug_assert!(in_flight.is_empty());
@@ -701,40 +690,24 @@ async fn client_stream(
 
 #[inline]
 fn try_forward_response(
-    in_flight: &mut HashMap<usize, Sender<Result<ApiStreamResponsePayload, Error>>>,
-    in_flight_buf: &mut HashMap<usize, Sender<Result<ApiStreamResponsePayload, Error>>>,
-    awaiting_timeout: bool,
+    in_flight: &mut FxHashMap<usize, Sender<Result<ApiStreamResponsePayload, Error>>>,
     response: ApiStreamResponse,
 ) {
     match in_flight.remove(&response.request_id) {
         None => {
-            if awaiting_timeout {
-                match in_flight_buf.remove(&response.request_id) {
-                    None => {
-                        error!("client ack for ApiStreamResponse missing");
-                    }
-                    Some(ack) => match ack.send(Ok(response.result)) {
-                        Ok(()) => {
-                            debug!("ApiStreamResponse sent to client from in_flight_buf");
-                        }
-                        Err(err) => {
-                            error!("client ack could not be sent for {:?}", err);
-                        }
-                    },
-                }
-            } else {
-                error!("client ack for ApiStreamResponse missing");
+            error!(
+                "client ack for ApiStreamResponse missing: {}",
+                response.request_id
+            );
+        }
+        Some(ack) => {
+            if ack.send(Ok(response.result)).is_err() {
+                error!(
+                    "client ack for {} was dropped by the caller",
+                    response.request_id
+                );
             }
         }
-
-        Some(ack) => match ack.send(Ok(response.result)) {
-            Ok(()) => {
-                debug!("ApiStreamResponse sent to client");
-            }
-            Err(err) => {
-                error!("client ack could not be sent for {:?}", err);
-            }
-        },
     }
 }
 
@@ -756,13 +729,6 @@ async fn update_leader(
             *lock = (leader_id, api_addr);
         }
     }
-}
-
-fn cleanup_buffer_timeout(tx: flume::Sender<ClientStreamReq>, seconds: u64) -> JoinHandle<()> {
-    task::spawn(async move {
-        time::sleep(Duration::from_secs(seconds)).await;
-        let _ = tx.send_async(ClientStreamReq::CleanupBuffer).await;
-    })
 }
 
 async fn stream_reader(

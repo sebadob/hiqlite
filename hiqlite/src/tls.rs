@@ -27,10 +27,14 @@ pub fn default_crypto_provider() -> rustls::crypto::CryptoProvider {
     provider
 }
 
-/// `TlsAutoCertificates` will generate self-signed TLS certificates. Clients will not validate
-/// the certificates for ease of use because they don't have to. They do a 3-way handshake
-/// anyway, which validates both client and server without the secret ever being sent over the
-/// network.
+/// `TlsAutoCertificates` will generate self-signed TLS certificates. Clients do not validate
+/// them: the traffic is encrypted, but no peer is authenticated by its certificate.
+///
+/// WebSocket streams authenticate both sides with a challenge-response on the shared secret,
+/// which never sends the secret itself. Plain HTTP API requests send the API secret as-is in the
+/// `Authorization` header though. Whoever can spoof a node or sit between two nodes can read the
+/// API secret from such a request, and the traffic they relay. Auto certificates only protect
+/// against passive eavesdropping; use real certificates where peer authentication matters.
 ///
 /// If you want to handle certificates yourself, your can use the `Specific` variant.
 #[derive(Debug, Clone)]
@@ -73,19 +77,14 @@ impl ServerTlsConfig {
     ///
     /// # Panics
     ///
-    /// If `HQL_TLS_{variant}_NO_VERIFY` is set to a value that does not parse as a bool.
+    /// If `HQL_TLS_AUTO_CERTS` or `HQL_TLS_{variant}_NO_VERIFY` is set to a value that does not
+    /// parse as a bool. A typo must never quietly start a node without the TLS it asked for.
     pub fn from_env(variant: &str) -> Result<Option<Self>, Error> {
-        let tls_auto_certificates =
-            env::var("HQL_TLS_AUTO_CERTS").is_ok_and(|v| v.parse::<bool>().unwrap_or(false));
+        let tls_auto_certificates = Self::env_bool("HQL_TLS_AUTO_CERTS").unwrap_or(false);
 
         let key = env::var(format!("HQL_TLS_{variant}_KEY")).ok();
         let cert = env::var(format!("HQL_TLS_{variant}_CERT")).ok();
-        let no_verify = env::var(format!("HQL_TLS_{variant}_NO_VERIFY"))
-            .ok()
-            .map(|v| {
-                v.parse::<bool>()
-                    .expect("Cannot parse HQL_TLS_*_NO_VERIFY to bool")
-            });
+        let no_verify = Self::env_bool(&format!("HQL_TLS_{variant}_NO_VERIFY"));
 
         match (key, cert) {
             (Some(key), Some(cert)) => Ok(Some(Self::Specific(ServerTlsConfigCerts {
@@ -102,6 +101,19 @@ impl ServerTlsConfig {
             (None, None) if tls_auto_certificates => Ok(Some(Self::TlsAutoCertificates)),
             (None, None) => Ok(None),
         }
+    }
+
+    /// The bool value of the env var `name`, `None` when it is not set.
+    ///
+    /// # Panics
+    ///
+    /// If the value does not parse as a bool.
+    fn env_bool(name: &str) -> Option<bool> {
+        env::var(name).ok().map(|value| {
+            value
+                .parse::<bool>()
+                .unwrap_or_else(|_| panic!("Cannot parse {name} to bool"))
+        })
     }
 
     ///
@@ -162,9 +174,10 @@ impl ServerTlsConfig {
         let now = OffsetDateTime::now_utc();
         params.not_before = now.sub(Duration::from_secs(60));
         // The certificate will be valid for 3 years. We don't really need to care here. It will
-        // not be verified anyway. The 3-way handshake with the secrets will validate client and
-        // server once the connection is established. We only want to take advantage of the
-        // encryption at this point.
+        // not be verified anyway. We only want to take advantage of the encryption at this point:
+        // WebSocket streams authenticate client and server with the secret handshake once the
+        // connection is established, while plain HTTP requests carry the API secret as a bearer
+        // token over this unverified connection.
         let exp = now.add(Duration::from_hours(24 * 365 * 3));
         params.not_after = exp;
 

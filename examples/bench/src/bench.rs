@@ -4,7 +4,9 @@ use hiqlite::macros::params;
 use hiqlite::{Client, Error, Params, Row};
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
+use std::time::Duration;
 use tokio::task;
+use tokio::time;
 use tokio::time::Instant;
 
 /// Matches our test table for this example.
@@ -32,6 +34,18 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     let concurrency = options.concurrency;
     let rows = options.rows;
 
+    // The in-memory cache is the Raft group with no disk in its way, so its numbers are the
+    // cleanest signal for replication depth. Run it on its own to keep a run short.
+    if options.cache_only {
+        let elapsed = put_cache(client.clone(), &options, data).await?;
+        let per_second = rows * 1000 / max(elapsed as usize, 1);
+        log(format!(
+            "{rows} single cache PUTs with concurrency {concurrency} took:\n{elapsed} ms \
+            -> {per_second} inserts / s"
+        ));
+        return Ok(());
+    }
+
     // make sure everything is clean
     client.execute("DELETE FROM _bench", params!()).await?;
 
@@ -42,6 +56,10 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
         -> {per_second} inserts / s"
     ));
 
+    // TEMPORARY for the pipeline benchmark: the transactional insert is a showcase of how fast a
+    // transaction is, not a signal for replication depth, and it doubles the length of every run.
+    // Re-activate this block and `cleanup` before pushing.
+    /*
     // We only want to run transactional inserts without rate-limiting. This impl is very naive, and
     // it can easily crash everything for very high row counts.
     if options.db_rps.is_none() {
@@ -56,6 +74,7 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
             took:\n{elapsed} ms -> {per_second} inserts / s"
         ));
     }
+    */
 
     select_timings(client.clone(), remote).await?;
 
@@ -69,6 +88,20 @@ pub async fn start_benchmark(client: Client, options: Options, remote: bool) -> 
     get_timings(client.clone()).await?;
 
     Ok(())
+}
+
+/// A leader change during a run is a normal event in a Raft cluster. The client has no
+/// leader-following retry for a write, so a write that lands on a node which is not the leader
+/// comes back as `ForwardToLeader`, and this example repeats it a few times instead of dying.
+const LEADER_RETRIES: u32 = 5;
+const LEADER_RETRY_DELAY: Duration = Duration::from_millis(200);
+
+/// `ForwardToLeader` is the shape of a write that hit a node which is not the leader, and of a node
+/// that does not know who the leader is yet. Matched on the message because this example does not
+/// depend on openraft directly.
+fn is_leader_change(err: &Error) -> bool {
+    let msg = err.to_string();
+    msg.contains("ForwardToLeader") || msg.contains("NotLeader")
 }
 
 async fn insert_concurrent(
@@ -103,13 +136,25 @@ async fn insert_concurrent(
         } else {
             task::spawn(async move {
                 for entity in set {
-                    let rows_affected = client
-                        .execute(
-                            "INSERT INTO _bench (id, ts, name) VALUES ($1, $2, $3)",
-                            params!(entity.id, entity.ts, entity.name.clone()),
-                        )
-                        .await
-                        .unwrap();
+                    let mut rows_affected = 0;
+                    for attempt in 1..=LEADER_RETRIES {
+                        match client
+                            .execute(
+                                "INSERT INTO _bench (id, ts, name) VALUES ($1, $2, $3)",
+                                params!(entity.id, entity.ts, entity.name.clone()),
+                            )
+                            .await
+                        {
+                            Ok(rows) => {
+                                rows_affected = rows;
+                                break;
+                            }
+                            Err(err) if attempt < LEADER_RETRIES && is_leader_change(&err) => {
+                                time::sleep(LEADER_RETRY_DELAY).await;
+                            }
+                            Err(err) => panic!("{err}"),
+                        }
+                    }
                     assert_eq!(rows_affected, 1);
                 }
             })
@@ -184,10 +229,18 @@ async fn put_cache(
 
         let handle = task::spawn(async move {
             for entity in set {
-                client
-                    .put(Cache::One, entity.name.clone(), &entity, Some(30))
-                    .await
-                    .unwrap();
+                for attempt in 1..=LEADER_RETRIES {
+                    match client
+                        .put(Cache::One, entity.name.clone(), &entity, Some(30))
+                        .await
+                    {
+                        Ok(()) => break,
+                        Err(err) if attempt < LEADER_RETRIES && is_leader_change(&err) => {
+                            time::sleep(LEADER_RETRY_DELAY).await;
+                        }
+                        Err(err) => panic!("{err}"),
+                    }
+                }
             }
         });
 
@@ -213,6 +266,7 @@ async fn get_timings(client: Client) -> Result<(), Error> {
     Ok(())
 }
 
+// Only used by the commented-out transactional insert block above.
 async fn cleanup(client: &Client) -> Result<(), Error> {
     client.execute("DELETE FROM _bench", params!()).await?;
     Ok(())

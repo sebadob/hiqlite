@@ -17,83 +17,32 @@ enum Cache {
 let client = hiqlite::start_node_with_cache::<Cache>(config).await?;
 ```
 
-Each variant is one cache, and the variant's position is its index: variant 0 is cache 0, variant 1
-is cache 1. The index, not the name, is what the cluster stores. It is encoded in the cache group's
-log entries and in its snapshots. Every node in the cluster must run the same enum in the same
-order, which is trivially true when the enum lives in the crate every node is built from.
+Each variant is one cache, and the variant name identifies it in the cluster. The name is what the
+cache group's log entries and snapshots carry, and each node finds its cache handler by it. The
+derive builds the set of names at compile time, a perfect hash, so a lookup stays O(1).
 
-Implement `CacheVariants` by hand only when a derive is impossible. The derive guarantees dense
-ascending indexes; a hand-written implementation is where the index panic comes from.
+Implement `CacheVariants` by hand only when a derive is impossible.
 
-## The cache index is positional
+## Changing the enum
 
-**Never reorder a variant, and never insert one in the middle.** An insert in the middle re-indexes
-everything behind it. The index is positional, so a shifted enum writes your values into the wrong
-caches - session data landing in the rate-limit cache - and nothing fails on the write. Your enum
-is append-only: when you need a new cache, add the variant at the end. A rename, a removal, or a
-swap of two names is a deploy with steps - see "Removing or Renaming a variant".
+The order of the variants does not matter: reorder them, or insert one in the middle, as you like.
 
-The node enforces this at startup, in two checks.
+**Adding a variant** is a rolling deploy like any other. A node that still runs the old enum keeps
+the entries of the new cache without a variant, logs a warning naming it, and carries it in its
+snapshots, so every node holds the same state. When it is upgraded, the values are there under the
+new variant. While the leader still runs the old enum, it refuses writes to the new cache with an
+`unknown cache` error.
 
-1. The index list must be dense and ascending, `0..n-1`, with no gaps and no duplicates. A
-   hand-written implementation gets this wrong and the node panics at startup, naming the range it
-   expected.
-2. The node keeps a fingerprint of the enum it has persisted - the `<index> <name>` pairs in
-   `cache_index.meta`, inside the cache state machine directory - and compares your enum against it
-   on every start. A pure append at the end is accepted, and the fingerprint grows with it. A
-   re-order, an insert in the middle, a removal, or a rename makes the node refuse to start, and it
-   prints the stored list and your current list side by side. That message is the whole diagnosis:
-   this deploy would have mixed up your caches.
+**A rename is a new, empty cache.** The entries of the old name stay in the cluster as a cache without
+a variant, until they expire or a `clear_cache_all()`. Clear the old cache before the rename if its
+entries have no expiry.
 
-The fingerprint check applies when cache state is persisted: `cache_storage_disk` on, and
-`in-memory-snapshots` off. A node that keeps no cache state on disk has nothing to be incompatible
-with.
-
-The variant name is part of the fingerprint, and it is what you see in logs. A rename changes the
-fingerprint, and the check treats it as one. See "Removing or Renaming a variant" for how to do it
-right.
-
-## Removing or Renaming a variant
+**A removal** works the same way: the entries of the removed name stay until they expire or a
+`clear_cache_all()`.
 
 **Keeping the variant and stopping to use it is the answer for most cases.** A variant you never
-touch is not free: the node runs a background task for it, allocates its channels, and carries it in
-the cache snapshots. It is cheap next to a re-index, and it is the only option with no operational
-work attached.
-
-When you do change the enum, the startup check is what keeps you safe: the node refuses a deploy
-that would mix your caches up, so you find out at startup instead of in production.
-
-**A single rename needs the metadata reset and nothing else.** The index keeps its entries, only the
-name on that index changes, so the cache still means the same thing. `HQL_CACHE_META_RESET=true`
-deletes the stored fingerprint, the node accepts your current enum, and the fingerprint is written
-from it. Nothing else is touched: your database, the Raft logs, and your cache content stay exactly
-where they are.
-
-```bash
-HQL_CACHE_META_RESET=true ./your-app   # for that one start, then unset it
-```
-
-Every node keeps its own fingerprint file, so every node of the cluster needs that reset on its
-start; a node that starts without it refuses. It is env only, so set it for a single start and
-remove it right after. It applies wherever the fingerprint check applies: `cache_storage_disk` on
-and `in-memory-snapshots` off. A node that persists no cache state has no fingerprint to reset.
-
-**A removal needs the metadata reset on every node and a full cache clear, and that guarantee is
-yours to give.** The entries of the removed index are still in the persisted state, and every index
-behind it has shifted, so nothing may read a cache before every node has cleared all of them:
-
-```rust, notest
-// the removal deploy: clear everything first, on every node
-client.clear_cache_all().await?;
-```
-
-Skip that and the node answers with the entries of a shifted index: data from the wrong cache, and
-no error anywhere. Your durable data is in the database; treat everything you keep only in caches as
-gone.
-
-**Swapping the names of two variants is a removal, not a rename.** Each index keeps its entries and
-each name ends up pointing at somebody else's data. Metadata reset on every node, then a full cache
-clear, exactly like a removal.
+touch is not free: the node runs a background task for it and carries it in the cache snapshots, but
+it needs no operational work at all.
 
 A broken Raft state is never solved from the caches side. The way better alternative is always to
 let the node re-sync from its healthy members: start it as a learner, catch it up, promote it. See
@@ -204,13 +153,8 @@ needed. Everything that reads a row is out of scope.
 
 ## Failure modes
 
-- A node refuses to start with a stored-vs-current variant list: your enum changed. Revert it,
-  append only, or reset the cache index metadata on every node for a rename. See "Removing or
-  Renaming a variant".
-- A cache that answers with the entries of a different cache after you removed a variant: the caches
-  were not cleared at startup. Clear all caches on every node and start clean.
-- A node answers "cache index out of range": the enum of that node does not match the cluster. Fix
-  the enum, restart the nodes, and treat the entries in the mismatched cache as garbage.
+- A write answers "unknown cache": the leader runs an enum without that variant. It goes away once
+  the leader is upgraded. See "Changing the enum".
 - Cache entries gone after a restart: the cache was in-memory. Decide once, deliberately, which
   caches are allowed to be empty after a restart.
 - A counter that looks wrong: two code paths use different caches for the same key.

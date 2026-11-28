@@ -10,6 +10,21 @@ pub const VALUE: &str = "test value 123";
 pub const KEY_2: &str = "my key 2";
 pub const VALUE_2: &str = "test value 456";
 
+/// A follower reads from its own state machine, which applies an entry only after the leader told
+/// it about the commit, so it can lag behind the leader for a moment on a slow runner.
+async fn follower_sees(client: &Client, key: &str, want: Option<&str>) -> Result<(), Error> {
+    for _ in 0..100 {
+        let v: Option<String> = client.get(Cache::One, key).await?;
+        if v.as_deref() == want {
+            return Ok(());
+        }
+        time::sleep(Duration::from_millis(10)).await;
+    }
+    let v: Option<String> = client.get(Cache::One, key).await?;
+    assert_eq!(v.as_deref(), want);
+    Ok(())
+}
+
 pub async fn test_cache(
     client_1: &Client,
     client_2: &Client,
@@ -25,11 +40,8 @@ pub async fn test_cache(
     let v: String = client_1.get(Cache::One, KEY).await?.unwrap();
     assert_eq!(&v, VALUE);
 
-    time::sleep(Duration::from_millis(10)).await;
-    let v: String = client_2.get(Cache::One, KEY).await?.unwrap();
-    assert_eq!(&v, VALUE);
-    let v: String = client_3.get(Cache::One, KEY).await?.unwrap();
-    assert_eq!(&v, VALUE);
+    follower_sees(client_2, KEY, Some(VALUE)).await?;
+    follower_sees(client_3, KEY, Some(VALUE)).await?;
 
     log("Delete the value and make sure it's gone");
     client_1.delete(Cache::One, KEY).await?;
@@ -37,11 +49,8 @@ pub async fn test_cache(
     let res: Option<String> = client_1.get(Cache::One, KEY).await?;
     assert!(res.is_none());
 
-    time::sleep(Duration::from_millis(10)).await;
-    let res: Option<String> = client_2.get(Cache::One, KEY).await?;
-    assert!(res.is_none());
-    let res: Option<String> = client_3.get(Cache::One, KEY).await?;
-    assert!(res.is_none());
+    follower_sees(client_2, KEY, None).await?;
+    follower_sees(client_3, KEY, None).await?;
 
     log("Test cache TTL");
     let key = "key exp";

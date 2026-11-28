@@ -161,7 +161,6 @@ sqlite = [
   "dep:hex",
   "dep:rusqlite",
   "dep:rust-embed",
-  "dep:rustc-hash",
   "dep:serde_rusqlite",
   "hiqlite-derive?/sql-check",
   "rusqlite/backup",
@@ -184,6 +183,7 @@ webpki-roots = ["dep:webpki-root-certs"]
 # The external state-machine feature deliberately does not enable it.
 __cluster = [
   "dep:axum",
+  "dep:phf",
   "dep:axum-server",
   "dep:bincode-next",
   "dep:bytes",
@@ -202,6 +202,7 @@ __cluster = [
   "dep:openraft",
   "dep:rcgen",
   "dep:reqwest",
+  "dep:rustc-hash",
   "dep:rustls",
   "dep:rustls-platform-verifier",
   "dep:serde_json",
@@ -247,6 +248,7 @@ hyper = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
 openraft = { workspace = true, optional = true }
+phf = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
@@ -283,6 +285,8 @@ tikv-jemallocator = { workspace = true, optional = true }
 
 [dev-dependencies]
 bincode.workspace = true
+# `phf_map!` for the hand-written `CacheVariants` impls of the unit tests
+phf = { workspace = true, features = ["macros"] }
 # the `conn_pool` bench keeps today's `deadpool` read pool as its baseline
 deadpool = { workspace = true, features = ["rt_tokio_1"] }
 # the `conn_pool` bench compares against a `crossbeam` channel, which is not a regular dependency

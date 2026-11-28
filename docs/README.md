@@ -27,8 +27,8 @@ cargo doc --open -p hiqlite --features full
   region loss, watch-outs.
 - **[Queries](queries.md)** - writes, transactions, batches, returning statements, reads, params,
   row mapping, migrations, remote clients.
-- **[Caches](caches.md)** - caches and TTL, counters, distributed locks, listen and notify, and the
-  cache index: why it is positional, and how to rename, remove, or swap a variant.
+- **[Caches](caches.md)** - caches and TTL, counters, distributed locks, listen and notify, and how
+  to add, rename, or remove a cache variant.
 - **[Backups](backups.md)** - schedule, retention, where files are, the file name prefix and shared
   buckets, manual backups, listing, fetching, restoring from code, verifying, failure modes.
 - **[Disaster Recovery](disaster-recovery.md)** - playbooks: a node lost, the cluster lost, fresh

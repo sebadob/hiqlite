@@ -198,29 +198,6 @@ wal_size = 2097152
 # overwritten by: HQL_CACHE_STORAGE_DISK
 cache_storage_disk = true
 
-# Re-initializes the cache index metadata of your `CacheVariants`
-# enum. Set `HQL_CACHE_META_RESET=true` for a single start: the
-# stored fingerprint is deleted and written from the current enum,
-# which is what a renamed variant needs. Only that fingerprint is
-# deleted - the database, the Raft logs, and your cache content
-# are untouched.
-#
-# Every node keeps its own fingerprint, so set it on every node of
-# the cluster for that single start.
-#
-# A removed variant needs more than this: every node must clear all
-# of its caches at startup, because the entries of the removed index
-# are still persisted. Swapping the names of two variants counts as
-# a removal too.
-#
-# !!!
-# This value can only be set via ENV VAR, and only for that single
-# start. Remove it immediately after.
-# !!!
-#
-# default: false
-#HQL_CACHE_META_RESET=true
-
 # Sets the limit when the Raft will trigger the creation of a new
 # state machine snapshot and purge all logs that are included in
 # the snapshot.
@@ -233,11 +210,19 @@ cache_storage_disk = true
 logs_until_snapshot = 10000
 
 # The `tls_auto_certificates` will generate self-signed TLS
-# certificates for internal Raft and API traffic. Clients will
-# simply not validate the certificates for ease of use because
-# they don't have to. They do a 3-way handshake anyway, which
-# validates both client and server without the secret ever being
-# sent over the network.
+# certificates for internal Raft and API traffic. Clients do not
+# validate these certificates: the traffic is encrypted, but no
+# peer is authenticated by its certificate.
+#
+# WebSocket streams (Raft and API) authenticate both sides with a
+# challenge-response on the shared secret, which never sends the
+# secret itself. Plain HTTP API requests, like the ones during
+# cluster formation and the cluster management calls, send
+# `secret_api` as-is in the `Authorization` header. Anyone who can
+# spoof a node or sit between two nodes can read `secret_api` from
+# such a request, and the traffic they relay. Auto certificates
+# only protect against passive eavesdropping. Use your own
+# certificates on any network you do not fully trust.
 #
 # If you specify specific certificates with either `tls_raft_*` or
 # `tls_api_*`, they will be used instead.

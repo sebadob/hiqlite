@@ -82,7 +82,7 @@ async fn read_vote<V: DeserializeOwned>(
         .await
         .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
-    let vote = read_response(closed, async {
+    let vote = response_or_stopped(closed, READER_STOPPED, async {
         rx.await.map_err(io::Error::other)?.map_err(io::Error::from)
     })
     .await?;
@@ -90,20 +90,25 @@ async fn read_vote<V: DeserializeOwned>(
         .transpose()
 }
 
-async fn read_response<T>(
+pub(crate) const READER_STOPPED: &str = "WAL reader stopped";
+pub(crate) const WRITER_STOPPED: &str = "WAL writer stopped";
+
+/// Awaits `response`, or fails with `stopped` once the thread behind `closed` has exited.
+///
+/// A request queued behind a thread that exits still owns its reply sender, and the queue keeps
+/// it alive for as long as any sender of that channel exists, so the reply alone could be awaited
+/// forever.
+pub(crate) async fn response_or_stopped<T>(
     closed: &flume::Receiver<()>,
+    stopped: &'static str,
     response: impl Future<Output = io::Result<T>>,
 ) -> io::Result<T> {
     let mut response = pin!(response);
     let mut closed = pin!(closed.recv_async());
-    // A request queued behind shutdown can still own its reply sender after the reader exits.
     poll_fn(|cx| match response.as_mut().poll(cx) {
         Poll::Pending if closed.as_mut().poll(cx).is_ready() => match response.as_mut().poll(cx) {
             Poll::Ready(result) => Poll::Ready(result),
-            Poll::Pending => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "WAL reader stopped",
-            ))),
+            Poll::Pending => Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, stopped))),
         },
         result => result,
     })
@@ -152,7 +157,7 @@ async fn try_get_log_entries<
         .await
         .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
-    read_response(closed, async {
+    response_or_stopped(closed, READER_STOPPED, async {
         while let Some(data_res) = rx.recv_async().await.map_err(io::Error::other)? {
             let data = data_res.map_err(io::Error::from)?;
             let entry = deserialize::<EntryOf<T>>(&data)
@@ -181,7 +186,7 @@ where
             .await
             .map_err(|err| io::Error::from(error::Error::from(err)))?;
 
-        let log_state = read_response(&self.reader_closed, async {
+        let log_state = response_or_stopped(&self.reader_closed, READER_STOPPED, async {
             rx.await.map_err(io::Error::other)?.map_err(io::Error::from)
         })
         .await?;
@@ -270,17 +275,12 @@ where
         debug!("Entering save_vote(): {:?}", vote);
 
         let (ack, rx) = oneshot::channel();
-        self.writer
-            .send_async(writer::Action::Vote {
-                value: serialize(vote).unwrap(),
-                ack,
-            })
-            .await
-            .map_err(|err| io::Error::from(error::Error::from(err)))?;
-
-        rx.await.unwrap().map_err(io::Error::from)?;
-
-        Ok(())
+        self.send_to_writer(writer::Action::Vote {
+            value: serialize(vote).unwrap(),
+            ack,
+        })
+        .await?;
+        self.writer_response(rx).await
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
@@ -295,24 +295,34 @@ where
         let (ack, ack_rx) = oneshot::channel();
 
         let callback = Box::new(move |res| callback.io_completed(res));
-        self.writer
-            .send_async(writer::Action::Append { rx, callback, ack })
-            .await
-            .map_err(|err| io::Error::from(error::Error::from(err)))?;
+        self.send_to_writer(writer::Action::Append { rx, callback, ack })
+            .await?;
 
-        for entry in entries {
-            let data = serialize(&entry).unwrap();
-            tx.send_async(Some((entry.log_id().index, data)))
-                .await
-                .map_err(|err| io::Error::from(error::Error::from(err)))?;
+        // The writer stops reading a batch as soon as it rejects it, which closes the entry
+        // channel. The reason for that is in the ack, so a failed send must not hide it.
+        let sent = response_or_stopped(&self.writer_closed, WRITER_STOPPED, async {
+            for entry in entries {
+                let data = serialize(&entry).unwrap();
+                if tx
+                    .send_async(Some((entry.log_id().index, data)))
+                    .await
+                    .is_err()
+                {
+                    return Ok(false);
+                }
+            }
+            Ok(tx.send_async(None).await.is_ok())
+        })
+        .await?;
+
+        self.writer_response(ack_rx).await?;
+        if sent {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "WAL writer acknowledged an append it did not fully receive",
+            ))
         }
-        tx.send_async(None)
-            .await
-            .map_err(|err| io::Error::from(error::Error::from(err)))?;
-
-        ack_rx.await.unwrap().map_err(io::Error::from)?;
-
-        Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
@@ -326,17 +336,14 @@ where
         };
 
         let (ack, rx) = oneshot::channel();
-        self.writer
-            .send_async(writer::Action::Remove {
-                from,
-                until: u64::MAX,
-                last_log: None,
-                ack,
-            })
-            .await
-            .map_err(|err| io::Error::from(error::Error::from(err)))?;
-
-        rx.await.unwrap().map_err(io::Error::from)
+        self.send_to_writer(writer::Action::Remove {
+            from,
+            until: u64::MAX,
+            last_log: None,
+            ack,
+        })
+        .await?;
+        self.writer_response(rx).await
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
@@ -345,19 +352,42 @@ where
 
         let last_log = Some(serialize(&log_id).unwrap());
         let (ack, rx) = oneshot::channel();
-        self.writer
-            .send_async(writer::Action::Remove {
-                from: 0,
-                // openraft's `purge` is inclusive, while `shift_delete_logs` keeps the id it is
-                // given as the new front - so the new front is the entry after the purge point.
-                until: log_id.index + 1,
-                last_log,
-                ack,
-            })
-            .await
-            .map_err(|err| io::Error::from(error::Error::from(err)))?;
+        self.send_to_writer(writer::Action::Remove {
+            from: 0,
+            // openraft's `purge` is inclusive, while `shift_delete_logs` keeps the id it is
+            // given as the new front - so the new front is the entry after the purge point.
+            until: log_id.index + 1,
+            last_log,
+            ack,
+        })
+        .await?;
+        self.writer_response(rx).await
+    }
+}
 
-        rx.await.unwrap().map_err(io::Error::from)
+impl<T> LogStore<T>
+where
+    T: RaftTypeConfig,
+{
+    async fn send_to_writer(&self, action: writer::Action) -> io::Result<()> {
+        self.writer
+            .send_async(action)
+            .await
+            .map_err(|err| io::Error::from(error::Error::from(err)))
+    }
+
+    /// Awaits the writer's answer to an action, failing once the writer thread is gone.
+    async fn writer_response(
+        &self,
+        ack: oneshot::Receiver<Result<(), error::Error>>,
+    ) -> io::Result<()> {
+        response_or_stopped(&self.writer_closed, WRITER_STOPPED, async {
+            // the writer drops an ack unanswered only when it exits
+            ack.await
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, WRITER_STOPPED))?
+                .map_err(io::Error::from)
+        })
+        .await
     }
 }
 
@@ -373,9 +403,12 @@ mod tests {
     use openraft::impls::leader_id_adv::LeaderId;
     use openraft::storage::IOFlushed;
     use openraft::storage::RaftLogStorage;
+    use openraft::type_config::TypeConfigExt;
     use openraft::vote::RaftLeaderId;
     use std::fs;
     use std::future::Future;
+    use std::time::Duration;
+    use tokio::time::timeout;
 
     openraft::declare_raft_types!(
         pub TestConfig:
@@ -402,9 +435,11 @@ mod tests {
             let (done, closed) = flume::bounded::<()>(0);
             let (_queued_reply, reply) = oneshot::channel::<()>();
             drop(done);
-            let err = read_response(&closed, async { reply.await.map_err(io::Error::other) })
-                .await
-                .unwrap_err();
+            let err = response_or_stopped(&closed, READER_STOPPED, async {
+                reply.await.map_err(io::Error::other)
+            })
+            .await
+            .unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
         });
     }
@@ -489,6 +524,198 @@ mod tests {
             let committed = store.read_committed().await.unwrap();
             assert_eq!(committed.map(|id| id.index), Some(4));
 
+            Ok(())
+        })
+    }
+
+    const PROMPTLY: Duration = Duration::from_secs(10);
+
+    async fn start_store(name: &str, wal_size: u32) -> Result<LogStore<TestConfig>, Error> {
+        let base = format!("test_data/{name}");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base)?;
+        LogStore::<TestConfig>::start(base, LogSync::Immediate, wal_size).await
+    }
+
+    fn entry_bytes(index: u64, payload: String) -> (u64, Vec<u8>) {
+        let entry = EntryOf::<TestConfig>::new_normal(log_id(index), payload);
+        (index, serialize(&entry).unwrap())
+    }
+
+    /// Two of these never fit into one 64 kB WAL file.
+    fn big_payload() -> String {
+        "x".repeat(40 * 1024)
+    }
+
+    /// Hands the writer an append and one of its entries, but not the end marker. The entry
+    /// channel is a rendezvous, so once this returns the writer is busy with that batch.
+    async fn open_batch(
+        store: &LogStore<TestConfig>,
+        first: (u64, Vec<u8>),
+    ) -> (
+        flume::Sender<Option<(u64, Vec<u8>)>>,
+        oneshot::Receiver<Result<(), Error>>,
+        std::sync::mpsc::Receiver<Result<(), io::Error>>,
+    ) {
+        let (entries, rx) = flume::bounded(0);
+        let (ack, ack_rx) = oneshot::channel();
+        let (cb_tx, cb_rx) = std::sync::mpsc::channel();
+        let callback = Box::new(move |res| {
+            let _ = cb_tx.send(res);
+        });
+        store
+            .writer
+            .send_async(writer::Action::Append { rx, callback, ack })
+            .await
+            .unwrap();
+        entries.send_async(Some(first)).await.unwrap();
+        (entries, ack_rx, cb_rx)
+    }
+
+    async fn wait_until_queued(writer: &flume::Sender<writer::Action>) {
+        timeout(PROMPTLY, async {
+            while writer.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the action never reached the writer queue");
+    }
+
+    /// An append whose entry sender is dropped before the end marker is incomplete, and must
+    /// never be reported as a success on the ack or the openraft callback.
+    #[test]
+    fn a_truncated_append_is_an_error_and_stops_the_writer() -> Result<(), Error> {
+        block_on(async {
+            let mut store = start_store("truncated_append", 64 * 1024).await?;
+            let (entries, ack, callback) =
+                open_batch(&store, entry_bytes(1, "payload-1".into())).await;
+            drop(entries);
+
+            let res = timeout(PROMPTLY, ack).await.unwrap().unwrap();
+            assert!(
+                res.is_err(),
+                "a truncated append must not be acked: {res:?}"
+            );
+            let res = callback.recv_timeout(PROMPTLY).unwrap();
+            assert!(
+                res.is_err(),
+                "a truncated append must not complete: {res:?}"
+            );
+
+            // the writer has stopped, and says so instead of panicking or hanging
+            let entries = (2..=3).map(|i| Entry::new_normal(log_id(i), format!("payload-{i}")));
+            let res = timeout(PROMPTLY, store.append(entries, IOFlushed::noop()))
+                .await
+                .unwrap();
+            assert!(res.is_err(), "the writer must have stopped: {res:?}");
+            Ok(())
+        })
+    }
+
+    /// Work that is already queued when the writer stops is never read and never dropped, so it
+    /// must fail on the writer having stopped instead of waiting forever.
+    #[test]
+    fn work_queued_behind_a_stopped_writer_fails_instead_of_hanging() -> Result<(), Error> {
+        block_on(async {
+            let mut store = start_store("queued_behind_stop_append", 64 * 1024).await?;
+            let writer = store.writer.clone();
+            let (entries, _ack, _callback) =
+                open_batch(&store, entry_bytes(1, big_payload())).await;
+            let queued = tokio::spawn(async move {
+                let entries = (2..=4).map(|i| Entry::new_normal(log_id(i), format!("p-{i}")));
+                let res = store.append(entries, IOFlushed::noop()).await;
+                let vote = store.save_vote(&openraft::Vote::new(1, 0)).await;
+                (res, vote)
+            });
+            wait_until_queued(&writer).await;
+            // the next entry needs a new WAL file, which cannot be created
+            fs::remove_dir_all("test_data/queued_behind_stop_append")?;
+            let _ = entries
+                .send_async(Some(entry_bytes(2, big_payload())))
+                .await;
+
+            let (res, vote) = timeout(PROMPTLY, queued)
+                .await
+                .expect("an append queued behind a stopped writer hangs")
+                .unwrap();
+            let err = res.unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::BrokenPipe, "{err}");
+            assert!(vote.is_err(), "the writer must have stopped: {vote:?}");
+
+            let store = start_store("queued_behind_stop_shutdown", 64 * 1024).await?;
+            let writer = store.writer.clone();
+            let (entries, _ack, _callback) =
+                open_batch(&store, entry_bytes(1, big_payload())).await;
+            let shutdown = store.shutdown_handle();
+            let queued = tokio::spawn(async move { shutdown.shutdown().await });
+            wait_until_queued(&writer).await;
+            fs::remove_dir_all("test_data/queued_behind_stop_shutdown")?;
+            let _ = entries
+                .send_async(Some(entry_bytes(2, big_payload())))
+                .await;
+
+            let res = timeout(PROMPTLY, queued)
+                .await
+                .expect("a shutdown queued behind a stopped writer hangs")
+                .unwrap();
+            assert!(
+                res.is_err(),
+                "the writer stopped before the shutdown: {res:?}"
+            );
+            Ok(())
+        })
+    }
+
+    /// A WAL file that cannot be created ends the writer, and the append that needed it is
+    /// answered with the error on both channels instead of leaving its caller to panic.
+    #[test]
+    fn a_failed_roll_over_fails_the_append() -> Result<(), Error> {
+        block_on(async {
+            let mut store = start_store("failed_roll_over", 64 * 1024).await?;
+            let big = |i: u64| Entry::new_normal(log_id(i), big_payload());
+            store
+                .append([big(1)], IOFlushed::noop())
+                .await
+                .expect("the first entry fits into the active WAL file");
+
+            // the next entry needs a new WAL file, and its directory is gone
+            fs::remove_dir_all("test_data/failed_roll_over")?;
+            let (cb_tx, cb_rx) = TestConfig::oneshot();
+            let res = timeout(PROMPTLY, store.append([big(2)], IOFlushed::signal(cb_tx)))
+                .await
+                .unwrap();
+            assert!(
+                res.is_err(),
+                "a failed roll over must fail the append: {res:?}"
+            );
+            let res = timeout(PROMPTLY, cb_rx).await.unwrap().unwrap();
+            assert!(
+                res.is_err(),
+                "a failed roll over must not complete: {res:?}"
+            );
+
+            let res = timeout(PROMPTLY, store.append([big(3)], IOFlushed::noop()))
+                .await
+                .unwrap();
+            assert!(res.is_err(), "the writer must have stopped: {res:?}");
+            Ok(())
+        })
+    }
+
+    /// The writer closes the entry channel when it rejects a batch, which fails the next send.
+    /// The caller must still see the reason from the ack, not the closed channel.
+    #[cfg(feature = "oversized-entry-error")]
+    #[test]
+    fn a_rejected_append_reports_the_writer_error() -> Result<(), Error> {
+        block_on(async {
+            let mut store = start_store("rejected_append", 64 * 1024).await?;
+            let entries = (1..=3).map(|i| Entry::new_normal(log_id(i), "x".repeat(70 * 1024)));
+            let err = timeout(PROMPTLY, store.append(entries, IOFlushed::noop()))
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert!(err.to_string().contains("WalSizeExceeded"), "{err}");
             Ok(())
         })
     }

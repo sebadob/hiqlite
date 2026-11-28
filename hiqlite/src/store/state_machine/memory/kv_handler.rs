@@ -1,4 +1,5 @@
 use chrono::Utc;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::thread;
 use std::time::Duration;
@@ -72,7 +73,7 @@ pub enum CacheRequestHandler {
     },
 }
 
-pub fn spawn(cache_name: &'static str) -> flume::Sender<CacheRequestHandler> {
+pub fn spawn(cache_name: Cow<'static, str>) -> flume::Sender<CacheRequestHandler> {
     let (tx, rx) = flume::unbounded();
     task::spawn(kv_handler(cache_name, rx));
     tx
@@ -112,7 +113,7 @@ fn remove_expiry(expiries: &mut BTreeMap<i64, Vec<String>>, exp: i64, key: &str)
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-async fn kv_handler(cache_name: &'static str, rx: flume::Receiver<CacheRequestHandler>) {
+async fn kv_handler(cache_name: Cow<'static, str>, rx: flume::Receiver<CacheRequestHandler>) {
     info!(
         "Cache {} running on Thread {:?}",
         cache_name,
@@ -322,7 +323,7 @@ mod tests {
     }
 
     fn harness() -> flume::Sender<CacheRequestHandler> {
-        spawn("test")
+        spawn(Cow::Borrowed("test"))
     }
 
     /// A `SnapshotBuild` roundtrip: guarantees everything sent before it has been processed.
